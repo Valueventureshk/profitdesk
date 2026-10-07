@@ -204,6 +204,25 @@ function renderCurrencyPicker() {
     .join("");
 }
 
+/* Notices fold into one line; click it to see them all. The open/closed
+   choice is kept across refreshes so it doesn't snap shut every load. */
+let warningsOpen = false;
+function renderWarnings(list) {
+  const box = $("warnings");
+  if (!list.length) { box.innerHTML = ""; return; }
+  if (list.length === 1) { box.innerHTML = `<div class="warn">${esc(list[0])}</div>`; return; }
+  box.innerHTML = `
+    <div class="warn warn-group${warningsOpen ? " open" : ""}">
+      <button type="button" class="warn-head" aria-expanded="${warningsOpen}">
+        <span class="warn-count">${list.length} notices</span>
+        <span class="warn-first">${esc(list[0])}</span>
+        <span class="warn-toggle">${warningsOpen ? "Hide \u25B4" : "Show all \u25BE"}</span>
+      </button>
+      <ul${warningsOpen ? "" : " hidden"}>${list.map((w) => `<li>${esc(w)}</li>`).join("")}</ul>
+    </div>`;
+  box.querySelector(".warn-head").onclick = () => { warningsOpen = !warningsOpen; renderWarnings(list); };
+}
+
 function renderFxNote(d) {
   const el = $("fxNote");
   if (!d.fx) { el.hidden = true; return; }
@@ -271,8 +290,7 @@ async function load(fresh = false) {
   $("viewTitle").textContent = d.title;
   $("viewSub").textContent = rangeLabel(d.range);
 
-  $("warnings").innerHTML = d.warnings
-    .map((w) => `<div class="warn">${esc(w)}</div>`).join("");
+  renderWarnings(d.warnings);
 
   renderFxNote(d);
   renderCards(d);

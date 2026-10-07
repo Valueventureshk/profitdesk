@@ -283,6 +283,22 @@ button, input, select { font-family: inherit; font-size: inherit; }
   margin-bottom: 8px;
 }
 
+.warn-group { padding: 0; }
+.warn-head {
+  display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 14px;
+  background: none; border: 0; color: inherit; font: inherit; text-align: left;
+  cursor: pointer; min-width: 0;
+}
+.warn-count {
+  flex: none; font-weight: 600; font-size: 12px;
+  background: #FDE68A; border-radius: 999px; padding: 1px 8px;
+}
+.warn-first { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.warn-toggle { flex: none; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.warn-group.open .warn-first { visibility: hidden; }
+.warn-group ul { margin: 0; padding: 0 14px 10px 32px; }
+.warn-group li { margin: 3px 0; }
+
 /* ------------------------------------------------ settings drawer */
 
 .drawer { position: fixed; inset: 0; z-index: 40; }
