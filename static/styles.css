@@ -281,13 +281,13 @@ button, input, select { font-family: inherit; font-size: inherit; }
 .warnings:empty { display: none; }
 .warn {
   background: #FFFBEB; border: 1px solid #FDE68A; color: #92400E;
-  border-radius: 10px; padding: 10px 14px; font-size: 13px; line-height: 1.5;
-  margin-bottom: 8px;
+  border-radius: 8px; padding: 6px 10px; font-size: 12px; line-height: 1.4;
+  margin-bottom: 6px;
 }
 
 .warn-group { padding: 0; }
 .warn-head {
-  display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 14px;
+  display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 10px;
   background: none; border: 0; color: inherit; font: inherit; text-align: left;
   cursor: pointer; min-width: 0;
 }
@@ -426,7 +426,7 @@ button, input, select { font-family: inherit; font-size: inherit; }
 .steps li { margin-bottom: 6px; }
 .steps code { font-size: 11.5px; background: var(--line-soft); padding: 1px 4px; border-radius: 4px; word-break: break-all; }
 
-.fx-note { margin: 0 0 12px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.fx-note { margin: 0 0 10px; font-size: 11px; line-height: 1.4; color: var(--muted); font-variant-numeric: tabular-nums; }
 .fx-note strong { color: var(--ink); font-weight: 600; }
 
 .fee-group { border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin-bottom: 10px; }

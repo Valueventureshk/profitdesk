@@ -238,10 +238,11 @@ function renderWarnings(list) {
 function renderFxNote(d) {
   const el = $("fxNote");
   if (!d.fx) { el.hidden = true; return; }
-  const parts = Object.entries(d.fx.rates).map(([code, f]) =>
-    `1 ${esc(code)} = ${f.toFixed(4)} ${esc(d.currency)}`);
-  el.innerHTML = `All figures in <strong>${esc(d.currency)}</strong> · ${parts.join(" · ")}
-    · daily rate from ${esc(d.fx.source)}${d.fx.date ? `, ${esc(d.fx.date)}` : ""}`;
+  const parts = Object.entries(d.fx.rates).map(([code, f]) => `${esc(code)} ${f.toFixed(4)}`);
+  el.innerHTML = `In <strong>${esc(d.currency)}</strong> · ${parts.join(" · ")}` +
+    (d.fx.date ? ` · rate ${esc(d.fx.date.slice(8))}/${esc(d.fx.date.slice(5, 7))}` : "");
+  el.title = `1 unit of each currency in ${d.currency}, daily rate from ${d.fx.source}` +
+    (d.fx.date ? `, ${d.fx.date}` : "");
   el.hidden = false;
 }
 
