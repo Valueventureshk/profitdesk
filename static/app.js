@@ -363,6 +363,7 @@ function renderCards(d) {
       </div>
       <div class="card-value">${value}</div>
       ${c.key === "ad_spend" ? spendSplit(d.totals) : ""}
+      ${c.key === "orders" ? `<div class="card-note">AOV ${fmt(d.totals.aov, "money")}</div>` : ""}
       ${sparkline(d.series, c.key, c.dot)}
     </div>`;
   }).join("");
@@ -473,6 +474,7 @@ function renderStoreTable(d) {
       <td>${fmt(t.ad_spend, "money")}
         <span class="sub">G ${fmt(t.google_spend, "money")} · M ${fmt(t.meta_spend, "money")}</span></td>
       <td>${fmt(t.roas, "ratio")}</td>
+      <td>${fmt(t.aov, "money")}</td>
       <td class="${profitClass}">${fmt(t.net_profit, "money")}</td>
       <td>${fmt(t.net_margin, "pct")}</td>
       <td>${fmt(t.orders, "int")}</td>
@@ -481,7 +483,7 @@ function renderStoreTable(d) {
 
   $("storeTable").innerHTML = `
     <thead><tr>
-      <th>Store</th><th>Total sales</th><th>Ad spend</th><th>ROAS</th>
+      <th>Store</th><th>Total sales</th><th>Ad spend</th><th>ROAS</th><th>AOV</th>
       <th>Net profit</th><th>Margin</th><th>Orders</th>
     </tr></thead>
     <tbody>${rows}</tbody>`;
