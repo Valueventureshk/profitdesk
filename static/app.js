@@ -724,8 +724,26 @@ function wireGroupEditor(ed) {
 function renderGoogleBox() {
   const g = state.setup.google;
   if (!g.configured) {
-    $("googleBox").innerHTML = `<p class="notice">No Google sign-in is set up in this
-      copy yet. Add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to your .env file.</p>`;
+    $("googleBox").innerHTML = `
+      <p class="hint">Paste the OAuth client from Google Cloud Console → Google Auth
+        Platform → Clients. Its redirect URI must be <code>${esc(g.redirect_uri)}</code></p>
+      <label class="field"><span>Client ID</span>
+        <input id="gClientId" type="text" placeholder="…apps.googleusercontent.com" autocomplete="off"></label>
+      <label class="field"><span>Client secret</span>
+        <input id="gClientSecret" type="password" placeholder="GOCSPX-…" autocomplete="off"></label>
+      <button id="gSave" class="btn btn-primary btn-block">Save Google keys</button>`;
+    $("gSave").onclick = async () => {
+      try {
+        await jsonPost("/api/google/app", {
+          client_id: $("gClientId").value, client_secret: $("gClientSecret").value,
+        });
+        toast("Google keys saved. Now sign in with Google.");
+        state.setup = await api("/api/setup");
+        renderGoogleBox();
+      } catch (e) {
+        toast(e.message, true);
+      }
+    };
     return;
   }
   if (!g.connected) {
@@ -739,9 +757,6 @@ function renderGoogleBox() {
       <div class="who"><strong>Connected</strong><span>${esc(g.email || "Google account")}</span></div>
       <button id="googleOff" class="btn btn-sm btn-danger">Disconnect</button>
     </div>
-    ${g.has_developer_token ? "" : `<p class="notice">Google Ads also needs a developer
-      token before spend can be read. Add GOOGLE_DEVELOPER_TOKEN to your .env file once
-      Google approves yours.</p>`}`;
   $("googleOff").onclick = async () => {
     await api("/api/google/disconnect", { method: "POST" });
     state.accounts = null;
@@ -845,7 +860,7 @@ function metaSelect(store) {
 
 async function loadAccounts() {
   const g = state.setup.google;
-  if (!g.connected || !g.has_developer_token) return;
+  if (!g.connected) return;
   try {
     const r = await api("/api/google/accounts");
     state.accounts = r.accounts;
@@ -947,7 +962,6 @@ function renderStoreSettings() {
 function accountSelect(store) {
   const g = state.setup.google;
   if (!g.connected) return `<select class="account" disabled><option>Sign in with Google first</option></select>`;
-  if (!g.has_developer_token) return `<select class="account" disabled><option>Developer token needed</option></select>`;
   if (!state.accounts) return `<select class="account" disabled><option>Loading accounts…</option></select>`;
 
   const options = [`<option value="">Not linked</option>`];

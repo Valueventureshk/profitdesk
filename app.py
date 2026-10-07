@@ -156,7 +156,7 @@ def api_setup():
             "configured": gads.is_configured(),
             "connected": bool(auth),
             "email": auth["email"] if auth else None,
-            "has_developer_token": gads.has_developer_token(),
+
             "redirect_uri": GOOGLE_REDIRECT,
         },
         "display_currency": _display_currency(),
@@ -274,6 +274,20 @@ def api_update_store(store_id: int, payload: dict):
 
 
 # ---------------------------------------------------------------- google
+
+@app.post("/api/google/app")
+def api_google_app(payload: dict):
+    """Save the Google sign-in keys (OAuth client) from Settings."""
+    cid = (payload.get("client_id") or "").strip()
+    secret = (payload.get("client_secret") or "").strip()
+    if not cid.endswith(".apps.googleusercontent.com"):
+        raise HTTPException(400, "That Client ID doesn't look right. It ends with "
+                                 ".apps.googleusercontent.com")
+    if not secret:
+        raise HTTPException(400, "Paste the Client secret too.")
+    gads.save_app(cid, secret)
+    return {"ok": True}
+
 
 @app.get("/auth/google/start")
 def google_start():
@@ -725,9 +739,6 @@ async def _store_window(store, start, end, auth, meta_auth):
         if not auth:
             notes.append(f"{store['name']}: Google is not connected, so ad spend shows as zero.")
             return {}
-        if not gads.has_developer_token():
-            notes.append(f"{store['name']}: no Google Ads developer token yet, so ad spend shows as zero.")
-            return {}
         return await gads.daily_spend(
             auth["refresh_token"], store["google_customer_id"],
             store["google_login_cid"], start, end_for_api,
@@ -827,7 +838,7 @@ async def _same_time_yesterday(store, day, auth, meta_auth):
         return got.get(day, {"sales": 0.0, "orders": 0, "payments": {}})
 
     async def google():
-        if not (store["google_customer_id"] and auth and gads.has_developer_token()):
+        if not (store["google_customer_id"] and auth):
             return 0.0
         return await gads.spend_until_hour(auth["refresh_token"], store["google_customer_id"],
                                            store["google_login_cid"], day, now.hour)

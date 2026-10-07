@@ -5,8 +5,15 @@ from the dropdown.
 
 Only one figure is read: account-level cost per day. No clicks, no impressions,
 no conversions, no per-campaign breakdown.
+
+The Google sign-in keys (OAuth client ID and secret) come from Settings, or
+from .env. Google no longer requires a developer token: what decides whether
+real ad accounts can be read is the Google Cloud project's API access level
+(Explorer or above). A token in .env is still sent if present.
 """
 import os
+
+import db
 from urllib.parse import urlencode
 
 import httpx
@@ -26,8 +33,8 @@ class GoogleAdsError(RuntimeError):
 
 def _cfg():
     return (
-        os.getenv("GOOGLE_CLIENT_ID", ""),
-        os.getenv("GOOGLE_CLIENT_SECRET", ""),
+        db.get_setting("google_client_id") or os.getenv("GOOGLE_CLIENT_ID", ""),
+        db.get_setting("google_client_secret") or os.getenv("GOOGLE_CLIENT_SECRET", ""),
         os.getenv("GOOGLE_DEVELOPER_TOKEN", ""),
         os.getenv("GOOGLE_ADS_API_VERSION", "v25"),
     )
@@ -38,8 +45,9 @@ def is_configured() -> bool:
     return bool(cid and secret)
 
 
-def has_developer_token() -> bool:
-    return bool(os.getenv("GOOGLE_DEVELOPER_TOKEN", ""))
+def save_app(client_id: str, client_secret: str):
+    db.set_setting("google_client_id", client_id)
+    db.set_setting("google_client_secret", client_secret)
 
 
 # ---------------------------------------------------------------- sign-in
@@ -115,9 +123,10 @@ async def _access_token(refresh_token: str) -> str:
 def _headers(access_token, dev_token, login_cid=None):
     h = {
         "Authorization": f"Bearer {access_token}",
-        "developer-token": dev_token,
         "Content-Type": "application/json",
     }
+    if dev_token:  # no longer required by Google, but harmless if set
+        h["developer-token"] = dev_token
     if login_cid:
         h["login-customer-id"] = str(login_cid).replace("-", "")
     return h
@@ -133,9 +142,9 @@ async def _search(client, version, customer_id, query, headers):
         r = await client.post(url, headers=headers, json=body)
         if r.status_code == 403:
             raise GoogleAdsError(
-                "Google Ads refused the request. Usually the developer token is still "
-                "limited to test accounts, or this Google login has no access to that "
-                "ad account."
+                "Google Ads refused the request. Usually the ProfitDesk Google Cloud "
+                "project is still on Test access (Google Cloud Console > Google Ads API "
+                "> Access levels), or this Google login can't see that ad account."
             )
         if r.status_code >= 400:
             raise GoogleAdsError(f"Google Ads error {r.status_code}: {r.text[:300]}")
@@ -149,11 +158,6 @@ async def _search(client, version, customer_id, query, headers):
 async def list_accounts(refresh_token: str):
     """Every ad account this Google login can reach, flattened for the dropdown."""
     _, _, dev_token, version = _cfg()
-    if not dev_token:
-        raise GoogleAdsError(
-            "No Google Ads developer token yet. Add GOOGLE_DEVELOPER_TOKEN to .env "
-            "once Google approves yours."
-        )
 
     access = await _access_token(refresh_token)
     accounts, seen = [], set()
@@ -202,8 +206,6 @@ async def spend_until_hour(refresh_token, customer_id, login_cid, day, hour):
     """One day's spend from midnight to the end of `hour` (0-23), in the ad
     account's timezone. Google reports by the hour, so this is as fine as it gets."""
     _, _, dev_token, version = _cfg()
-    if not dev_token:
-        raise GoogleAdsError("No Google Ads developer token set.")
 
     access = await _access_token(refresh_token)
     query = (
@@ -223,8 +225,6 @@ async def spend_until_hour(refresh_token, customer_id, login_cid, day, hour):
 async def daily_spend(refresh_token, customer_id, login_cid, start, end):
     """Account-level cost per day. Spend is the only thing we take from Google."""
     _, _, dev_token, version = _cfg()
-    if not dev_token:
-        raise GoogleAdsError("No Google Ads developer token set.")
 
     access = await _access_token(refresh_token)
     query = (
