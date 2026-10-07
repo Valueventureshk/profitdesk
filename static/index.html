@@ -51,13 +51,15 @@
     </div>
 
     <nav id="storeNav" class="nav"></nav>
+    <!-- Phones: the store list becomes this dropdown. -->
+    <select id="storePick" class="control store-pick" aria-label="Choose a store"></select>
 
     <div class="sidebar-foot">
-      <button id="addStore" class="nav-item nav-add">
-        <span class="ico">+</span> Add a store
+      <button id="addStore" class="nav-item nav-add" title="Add a store" aria-label="Add a store">
+        <span class="ico">+</span> <span class="foot-txt">Add a store</span>
       </button>
-      <button id="openSettings" class="nav-item">
-        <span class="ico">&#9881;</span> Settings
+      <button id="openSettings" class="nav-item" title="Settings" aria-label="Settings">
+        <span class="ico">&#9881;</span> <span class="foot-txt">Settings</span>
       </button>
     </div>
   </aside>

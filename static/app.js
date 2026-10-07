@@ -251,13 +251,22 @@ function renderNav() {
   $("storeNav").innerHTML = parts.join("");
 
   for (const btn of $("storeNav").querySelectorAll(".nav-item")) {
-    btn.onclick = () => {
-      state.scope = btn.dataset.scope;
-      renderNav();
-      if ($("rangeSelect").value !== "custom") applyRange();  // "today" depends on whose clock
-      load();
-    };
+    btn.onclick = () => pickScope(btn.dataset.scope);
   }
+
+  const options = stores.length > 1
+    ? [`<option value="all">All stores</option>`,
+       ...stores.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`)]
+    : stores.map((s) => `<option value="all">${esc(s.name)}</option>`);  // one store: it is "all"
+  $("storePick").innerHTML = options.join("");
+  $("storePick").value = state.scope;
+}
+
+function pickScope(scope) {
+  state.scope = scope;
+  renderNav();
+  if ($("rangeSelect").value !== "custom") applyRange();  // "today" depends on whose clock
+  load();
 }
 
 function navItem(scope, label, icon) {
@@ -778,6 +787,7 @@ document.addEventListener("keydown", (e) => {
 });
 
 $("rangeSelect").onchange = () => { applyRange(); load(); };
+$("storePick").onchange = (e) => pickScope(e.target.value);
 $("currencySelect").onchange = async (e) => {
   try {
     await jsonPost("/api/settings", { display_currency: e.target.value }, "PUT");
