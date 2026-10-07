@@ -23,7 +23,9 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+import airwallex_client as awx
 import auth
+import cashflow
 import db
 import demo
 import fx
@@ -299,6 +301,11 @@ async def _sheet_err(request, exc):
     return JSONResponse({"error": str(exc)}, status_code=400)
 
 
+@app.exception_handler(awx.AirwallexError)
+async def _awx_err(request, exc):
+    return JSONResponse({"error": str(exc)}, status_code=400)
+
+
 @app.exception_handler(db.AlreadyLinked)
 async def _linked_err(request, exc):
     return JSONResponse({"error": str(exc)}, status_code=400)
@@ -333,9 +340,15 @@ def index(request: Request):
         if domain and shop.verify_hmac(params, _shopify_app(domain)):
             return RedirectResponse(f"/auth/shopify/start?shop_domain={domain}")
 
-    with open(os.path.join(STATIC_DIR, "index.html")) as f:
+    return _page("index.html", ("app.js", "nav.js", "styles.css"))
+
+
+def _page(filename: str, assets) -> HTMLResponse:
+    """Serve a page with each script and stylesheet stamped by its edit time,
+    so a browser never keeps running an old copy after an update."""
+    with open(os.path.join(STATIC_DIR, filename)) as f:
         html = f.read()
-    for name in ("app.js", "styles.css"):
+    for name in assets:
         stamp = int(os.path.getmtime(os.path.join(STATIC_DIR, name)))
         html = html.replace(f"/static/{name}", f"/static/{name}?v={stamp}")
     return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
@@ -578,6 +591,70 @@ def api_link_google(store_id: int, payload: dict):
 def api_unlink_google(store_id: int):
     db.unlink_google(store_id)
     _cache.clear()
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------- cash flow
+
+CASH_TZ = ZoneInfo(os.getenv("CASH_TIMEZONE", "Asia/Hong_Kong"))  # the business's own clock
+
+
+@app.get("/cash", response_class=HTMLResponse)
+def cash_page():
+    return _page("cash.html", ("cash.js", "nav.js", "styles.css"))
+
+
+@app.get("/api/cash")
+async def api_cash(currency: str = None):
+    conns = db.list_cash_connections()
+    base = (currency or _display_currency()).upper()
+    if not conns:
+        return {"currency": base, "connected": [], "summary": None, "problems": []}
+
+    async def one(c):
+        if c["provider"] == "airwallex":
+            return await awx.snapshot(c["client_id"], c["secret"])
+        raise RuntimeError(f"Unknown provider {c['provider']}")
+
+    got = await asyncio.gather(*[one(c) for c in conns], return_exceptions=True)
+    accounts, problems = [], []
+    for c, g in zip(conns, got):
+        if isinstance(g, Exception):
+            problems.append(f"{c['label']}: {g}")
+            continue
+        accounts.append({"id": c["id"], "label": c["label"], "provider": c["provider"], **g})
+
+    codes = {b["currency"] for a in accounts for b in a["balances"]} | \
+            {p["currency"] for a in accounts for p in a["pending"]}
+    fx_table = await fx.table(base) if codes - {base} else None
+    factor = (lambda code: fx.factor(fx_table, code, base)) if fx_table else (lambda code: 1.0)
+    today = datetime.now(CASH_TZ).date()
+    return {
+        "currency": base,
+        "today": today.isoformat(),
+        "connected": [{"id": c["id"], "label": c["label"], "provider": c["provider"]} for c in conns],
+        "summary": cashflow.summarize(accounts, factor, today, CASH_TZ),
+        "problems": problems,
+        "fx": None if not fx_table else {"date": fx_table.get("date"),
+                                         "source": fx_table.get("source")},
+    }
+
+
+@app.post("/api/cash/airwallex")
+async def api_add_airwallex(payload: dict):
+    cid = (payload.get("client_id") or "").strip()
+    key = (payload.get("api_key") or "").strip()
+    label = (payload.get("label") or "").strip() or "Airwallex"
+    if not cid or not key:
+        raise HTTPException(400, "Paste both the Client ID and the API key from Airwallex.")
+    snap = await awx.snapshot(cid, key, lookback_days=1)  # proves the key works
+    db.add_cash_connection("airwallex", label[:60], cid, key)
+    return {"ok": True, "currencies": [b["currency"] for b in snap["balances"]]}
+
+
+@app.delete("/api/cash/{connection_id}")
+def api_remove_cash(connection_id: int):
+    db.delete_cash_connection(connection_id)
     return {"ok": True}
 
 

@@ -232,6 +232,19 @@ order total and aren't given back on refunds. Afterpay's rate through Airwallex
 is 5.90% + HK$2.00, confirmed against real Airwallex settlements. These are estimates;
 exact fees from PayPal and Airwallex are a planned next step.
 
+## Cash flow
+
+Tap the **PD logo** to switch section. **Cash flow** (`/cash`) shows money that's
+available now in connected accounts, and what lands by tomorrow and over the
+next 7, 14, 30, 60 and 90 days: sales still settling, payment reserve releases,
+minus pending refunds and payouts, using each provider's own estimated
+settlement dates. Days follow Hong Kong time (`CASH_TIMEZONE`). Figures are
+worked out in `cashflow.py`.
+
+Airwallex connects with a **restricted, view-only API key** (Settings →
+Developer → API keys) with access to Balances and Financial transactions.
+PayPal is next.
+
 ## Store groups
 
 Settings → **Store groups** lets you make named sets of stores, e.g. *Meta

@@ -438,3 +438,39 @@ button, input, select { font-family: inherit; font-size: inherit; }
 .fee-plans { list-style: none; padding: 0; margin: 6px 0 0; font-size: 12.5px; }
 .fee-plans li { display: flex; justify-content: space-between; gap: 8px; padding: 3px 0; border-bottom: 1px solid var(--line-soft); }
 .fee-plans small { color: var(--faint); white-space: nowrap; }
+
+/* ------------------------------------------------ section menu (PD logo) */
+[data-section-menu] { cursor: pointer; border-radius: 8px; }
+[data-section-menu]:hover .brand-mark { box-shadow: 0 0 0 3px var(--line); }
+.brand-name::after { content: " \25BE"; font-size: 10px; color: var(--faint); }
+.section-menu {
+  position: absolute; z-index: 70; width: 260px; padding: 6px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, .12);
+}
+.section-item { display: block; padding: 9px 10px; border-radius: 8px; color: var(--ink); text-decoration: none; }
+.section-item strong { display: block; font-size: 13.5px; }
+.section-item span { display: block; font-size: 11.5px; color: var(--faint); }
+a.section-item:hover { background: var(--line-soft); }
+.section-item.on { background: var(--tint); }
+.section-item.on strong { color: #065F46; }
+.section-item.soon { opacity: .55; cursor: default; }
+
+/* ------------------------------------------------ cash flow page */
+.cash-page { max-width: 1240px; margin: 0 auto; }
+.cash-top {
+  display: flex; align-items: center; gap: 16px; padding: 16px 24px;
+  border-bottom: 1px solid var(--line); background: var(--panel);
+}
+.cash-top .brand { padding: 0; }
+.cash-top .crumb { flex: 1; min-width: 0; }
+.cash-top .crumb h1 { font-size: 18px; }
+.cash-top .crumb p { margin: 2px 0 0; color: var(--faint); font-size: 12.5px; }
+.cash-empty { padding: 18px; }
+.cash-empty h2 { font-size: 15px; margin-bottom: 4px; }
+.cash-connect-body { padding: 14px 16px; }
+@media (max-width: 780px) {
+  .cash-top { flex-wrap: wrap; padding: 12px; gap: 10px; }
+  .cash-top .crumb { order: 3; flex-basis: 100%; }
+  .cash-top .controls { margin-left: auto; }
+}

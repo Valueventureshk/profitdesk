@@ -93,6 +93,17 @@ CREATE TABLE IF NOT EXISTS sessions (
     created_at TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Money accounts for the Cash flow page (Airwallex now, PayPal next).
+-- Keys are read-only API credentials created in each provider.
+CREATE TABLE IF NOT EXISTS cash_connections (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider   TEXT    NOT NULL,
+    label      TEXT    NOT NULL,
+    client_id  TEXT    NOT NULL,
+    secret     TEXT    NOT NULL,
+    created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
 -- Small app-wide preferences, e.g. the currency the dashboard shows.
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
@@ -418,6 +429,32 @@ def delete_sessions_for(user_id: int, keep=None):
     """Sign a user out everywhere (e.g. after a password change)."""
     with _conn() as con:
         con.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+
+
+# ---------------------------------------------------------------- cash connections
+
+def list_cash_connections():
+    with _conn() as con:
+        return [dict(r) for r in con.execute("SELECT * FROM cash_connections ORDER BY id")]
+
+
+def add_cash_connection(provider: str, label: str, client_id: str, secret: str) -> int:
+    with _conn() as con:
+        existing = con.execute(
+            "SELECT id FROM cash_connections WHERE provider = ? AND client_id = ?",
+            (provider, client_id)).fetchone()
+        if existing:
+            con.execute("UPDATE cash_connections SET label = ?, secret = ? WHERE id = ?",
+                        (label, secret, existing["id"]))
+            return existing["id"]
+        return con.execute(
+            "INSERT INTO cash_connections (provider, label, client_id, secret) VALUES (?, ?, ?, ?)",
+            (provider, label, client_id, secret)).lastrowid
+
+
+def delete_cash_connection(connection_id: int):
+    with _conn() as con:
+        con.execute("DELETE FROM cash_connections WHERE id = ?", (connection_id,))
 
 
 # ---------------------------------------------------------------- settings

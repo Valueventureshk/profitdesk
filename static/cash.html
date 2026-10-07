@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ProfitDesk · Cash flow</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<div class="cash-page">
+  <header class="cash-top">
+    <div class="brand" data-section-menu title="Switch section">
+      <span class="brand-mark">PD</span>
+      <span class="brand-name">ProfitDesk</span>
+    </div>
+    <div class="crumb">
+      <h1>Cash flow</h1>
+      <p id="sub">Loading…</p>
+    </div>
+    <div class="controls">
+      <select id="currencySelect" class="control" title="Show every figure in this currency"></select>
+      <button id="refresh" class="btn btn-ghost">Refresh</button>
+    </div>
+  </header>
+
+  <main class="content">
+    <div id="problems" class="warnings"></div>
+
+    <section id="empty" class="panel cash-empty" hidden>
+      <h2>Connect your first money account</h2>
+      <p class="hint">Add Airwallex below to see what's available now and what lands over the
+        next 90 days. PayPal is next.</p>
+    </section>
+
+    <section id="cards" class="cards"></section>
+
+    <section class="panel" id="schedulePanel" hidden>
+      <div class="panel-head"><h2>Arriving, day by day</h2>
+        <span class="hint" id="laterNote"></span></div>
+      <div class="table-wrap"><table class="table" id="schedule"></table></div>
+    </section>
+
+    <section class="panel" id="accountsPanel" hidden>
+      <div class="panel-head"><h2>By account</h2></div>
+      <div class="table-wrap"><table class="table" id="accounts"></table></div>
+    </section>
+
+    <section class="panel cash-connect">
+      <div class="panel-head"><h2>Connections</h2></div>
+      <div class="cash-connect-body">
+        <div id="connList"></div>
+        <details class="advanced" id="addAwx">
+          <summary>Add an Airwallex account</summary>
+          <p class="hint">In Airwallex: <strong>Settings → Developer → API keys → Create
+            restricted key</strong>. Give it <strong>view</strong> access to <strong>Balances</strong>
+            and <strong>Financial transactions</strong> only, then paste its Client ID and API key here.</p>
+          <label class="field"><span>Name</span>
+            <input id="awxLabel" type="text" placeholder="e.g. Airwallex HK"></label>
+          <label class="field"><span>Client ID</span>
+            <input id="awxClient" type="text" autocomplete="off"></label>
+          <label class="field"><span>API key</span>
+            <input id="awxKey" type="password" autocomplete="off"></label>
+          <button id="awxAdd" class="btn btn-primary btn-block">Connect Airwallex</button>
+        </details>
+      </div>
+    </section>
+  </main>
+</div>
+<div id="toast" class="toast" hidden></div>
+<script src="/static/nav.js"></script>
+<script src="/static/cash.js"></script>
+</body>
+</html>
