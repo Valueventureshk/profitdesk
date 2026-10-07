@@ -469,6 +469,7 @@ a.section-item:hover { background: var(--line-soft); }
 .cash-empty { padding: 18px; }
 .cash-empty h2 { font-size: 15px; margin-bottom: 4px; }
 .cash-connect-body { padding: 14px 16px; }
+#storeTable td.roas { font-weight: 700; }
 #storeTable th, #storeTable td { padding-left: 13px; padding-right: 13px; }
 #storeTable th:first-child, #storeTable td:first-child { padding-left: 16px; }
 #storeTable th:last-child, #storeTable td:last-child { padding-right: 16px; }

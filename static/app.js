@@ -486,7 +486,7 @@ function renderStoreTable(d) {
         <span class="sub">${esc(linkedAccounts(s))}</span></td>
       <td>${fmt(t.sales, "money")}</td>
       <td>${fmt(t.ad_spend, "money")}</td>
-      <td>${fmt(t.roas, "ratio")}</td>
+      <td class="roas">${fmt(t.roas, "ratio")}</td>
       <td>${fmt(t.processing_fee, "money")}</td>
       <td>${s.cost_pct === null || s.cost_pct === undefined ? "—" : `${Number(s.cost_pct).toLocaleString(undefined, { maximumFractionDigits: 2 })}%`}</td>
       <td>${fmt(t.aov, "money")}</td>
