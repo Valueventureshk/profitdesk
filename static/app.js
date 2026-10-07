@@ -457,7 +457,10 @@ function renderStoreTable(d) {
   if (!d.stores.length) { panel.hidden = true; return; }
   panel.hidden = false;
 
-  const rows = d.stores.map((s) => {
+  // Biggest seller first. Order only; the figures themselves come from the server.
+  const ranked = [...d.stores].sort((a, b) =>
+    (b.totals.sales || 0) - (a.totals.sales || 0) || a.name.localeCompare(b.name));
+  const rows = ranked.map((s) => {
     const t = s.totals;
     const profitClass = t.net_profit >= 0 ? "pos" : "neg";
     return `<tr>
