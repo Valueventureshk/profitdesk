@@ -1073,6 +1073,18 @@ $("newTokenConnect").onclick = async () => {
 };
 
 $("openSettings").onclick = openSettings;
+$("restoreGo").onclick = async () => {
+  const f = $("restoreFile").files[0];
+  if (!f) { toast("Choose the backup file first.", true); return; }
+  if (!confirm("Replace everything in this ProfitDesk with that backup?")) return;
+  try {
+    const r = await fetch("/api/restore", { method: "POST", body: f });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(body.error || "Couldn't restore that backup.");
+    alert(`Restored ${body.stores} stores. Log in again.`);
+    location.href = "/login";
+  } catch (e) { toast(e.message, true); }
+};
 $("logOut").onclick = async () => {
   await fetch("/api/logout", { method: "POST" });
   location.href = "/login";

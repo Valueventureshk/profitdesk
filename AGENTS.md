@@ -17,11 +17,17 @@ knowledge. This means:
 
 ## What this app is
 
-A local-only profit dashboard. Pulls Shopify orders and Google Ads spend,
+A profit dashboard. Pulls Shopify orders and Google Ads spend,
 applies cost assumptions, shows true net profit and blended metrics. Answers
 one question: *did I actually make money, and are my ads working?*
 
-Runs at `http://127.0.0.1:8787`. SQLite file, no cloud, no auth. Single user.
+Runs at `http://127.0.0.1:8787` on the owner's Mac and is being moved to
+Railway (deploys from GitHub `Valueventureshk/profitdesk`, branch `main`).
+SQLite file (on a Railway volume via `DB_PATH`). Email + password login for the
+owner and their partner (`auth.py`); every route except /login and /healthz
+needs a session. On Railway, set `PUBLIC_URL`, `DB_PATH` and `SETUP_CODE`.
+Settings → Backup downloads/restores the whole database (that's how data moves
+between the Mac and Railway).
 
 ## Stack
 

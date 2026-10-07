@@ -34,7 +34,12 @@ import metrics
 import shopify_client as shop
 from shopify_client import ShopifyClient, ShopifyError
 
-HOST = os.getenv("HOST", "127.0.0.1")
+# On Railway (or any host that sets RAILWAY_ENVIRONMENT) listen on all
+# interfaces; on a Mac stay on this computer only.
+HOST = "0.0.0.0" if os.getenv("RAILWAY_ENVIRONMENT") else os.getenv("HOST", "127.0.0.1")
+# While ProfitDesk has no accounts yet, creating the owner or restoring a
+# backup needs this code when it's set (always set it on a public server).
+SETUP_CODE = os.getenv("SETUP_CODE", "")
 PORT = int(os.getenv("PORT", "8787"))
 # Where people reach ProfitDesk. On a server set PUBLIC_URL (e.g.
 # https://app.example.com); every return address for Shopify and Google is
@@ -63,7 +68,8 @@ _cache: dict[tuple, tuple[float, dict]] = {}
 # ---------------------------------------------------------------- login wall
 
 # Reachable without logging in: the login page itself and what it needs.
-_OPEN = {"/login", "/api/login", "/api/logout", "/api/first-user", "/healthz"}
+_OPEN = {"/login", "/api/login", "/api/logout", "/api/first-user", "/api/first-restore",
+         "/healthz"}
 
 
 @app.middleware("http")
@@ -104,8 +110,19 @@ def login_page():
         html = f.read()
     stamp = int(os.path.getmtime(os.path.join(STATIC_DIR, "styles.css")))
     html = html.replace("/static/styles.css", f"/static/styles.css?v={stamp}")
-    return HTMLResponse(html.replace("__FIRST_RUN__", "true" if not auth.has_users() else "false"),
-                        headers={"Cache-Control": "no-cache"})
+    html = html.replace("__FIRST_RUN__", "true" if not auth.has_users() else "false")
+    html = html.replace("__NEEDS_CODE__",
+                        "true" if SETUP_CODE or os.getenv("RAILWAY_ENVIRONMENT") else "false")
+    return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
+
+
+def _check_setup_code(code: str):
+    if os.getenv("RAILWAY_ENVIRONMENT") and not SETUP_CODE:
+        # A public server with no accounts must never be claimable by whoever
+        # finds it first.
+        raise HTTPException(400, "Setup is locked. Add a SETUP_CODE variable in Railway first.")
+    if SETUP_CODE and not secrets.compare_digest(code or "", SETUP_CODE):
+        raise HTTPException(400, "That setup code isn't right.")
 
 
 @app.post("/api/login")
@@ -124,6 +141,7 @@ def api_first_user(payload: dict, request: Request):
     """Create the owner account. Only works while there are no accounts at all."""
     if auth.has_users():
         raise HTTPException(400, "ProfitDesk already has an owner. Log in instead.")
+    _check_setup_code(payload.get("setup_code"))
     try:
         auth.create_user(payload.get("email"), payload.get("name"), payload.get("password"))
         token = auth.log_in(payload.get("email"), payload.get("password"), _client_ip(request))
@@ -132,6 +150,51 @@ def api_first_user(payload: dict, request: Request):
     resp = JSONResponse({"ok": True})
     _set_session(resp, request, token)
     return resp
+
+
+_MAX_BACKUP = 50 * 1024 * 1024
+
+
+@app.post("/api/first-restore")
+async def api_first_restore(request: Request):
+    """Fill a brand-new ProfitDesk from a backup, before any account exists.
+    Needs the setup code; afterwards you log in with the accounts in the backup."""
+    if auth.has_users():
+        raise HTTPException(400, "ProfitDesk already has accounts. Log in, then restore "
+                                 "from Settings → Backup.")
+    _check_setup_code(request.headers.get("x-setup-code"))
+    return await _restore(request)
+
+
+@app.post("/api/restore")
+async def api_restore(request: Request):
+    """Replace everything with a backup (logged in)."""
+    return await _restore(request)
+
+
+async def _restore(request: Request):
+    data = await request.body()
+    if not data or len(data) > _MAX_BACKUP:
+        raise HTTPException(400, "Choose a ProfitDesk backup file (.db) to upload.")
+    try:
+        db.restore_bytes(data)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    _cache.clear()
+    _plans.clear()
+    resp = JSONResponse({"ok": True, "stores": len(db.list_stores())})
+    resp.delete_cookie(auth.SESSION_COOKIE, path="/")  # log in again with the backup's accounts
+    return resp
+
+
+@app.get("/api/backup")
+def api_backup():
+    """Download the whole database: stores, connections, settings and accounts."""
+    from fastapi.responses import Response
+    stamp = datetime.now().strftime("%Y-%m-%d-%H%M")
+    return Response(db.backup_bytes(), media_type="application/octet-stream",
+                    headers={"Content-Disposition": f'attachment; filename="profitdesk-backup-{stamp}.db"',
+                             "Cache-Control": "no-store"})
 
 
 @app.post("/api/logout")

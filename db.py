@@ -13,6 +13,8 @@ import sqlite3
 from contextlib import contextmanager
 
 DB_PATH = os.getenv("DB_PATH") or os.path.join(os.path.dirname(__file__), "profitdesk.db")
+if os.path.dirname(DB_PATH):
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)  # e.g. a fresh /data volume
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS stores (
@@ -129,6 +131,54 @@ _ADDED_COLUMNS = {
         ("google_timezone", "TEXT"),
     ],
 }
+
+
+# ---------------------------------------------------------------- backup & restore
+
+REQUIRED_TABLES = {"stores", "users", "settings"}
+
+
+def backup_bytes() -> bytes:
+    """A consistent copy of the whole database, safe to take while running."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "backup.db")
+        src, dst = sqlite3.connect(DB_PATH), sqlite3.connect(path)
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+            src.close()
+        with open(path, "rb") as f:
+            return f.read()
+
+
+def restore_bytes(data: bytes):
+    """Replace the database with a backup, after checking it's a ProfitDesk one."""
+    import tempfile
+    if not data.startswith(b"SQLite format 3\x00"):
+        raise ValueError("That file isn't a ProfitDesk backup.")
+    folder = os.path.dirname(os.path.abspath(DB_PATH))
+    fd, tmp = tempfile.mkstemp(dir=folder, suffix=".restore")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        con = sqlite3.connect(tmp)
+        try:
+            tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            con.execute("PRAGMA integrity_check").fetchone()
+        finally:
+            con.close()
+        missing = REQUIRED_TABLES - tables
+        if missing:
+            raise ValueError("That file isn't a ProfitDesk backup (missing "
+                             + ", ".join(sorted(missing)) + ").")
+        os.replace(tmp, DB_PATH)
+    except Exception:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
+    init()  # bring an older backup's tables up to date
 
 
 def init():
