@@ -69,7 +69,7 @@ _cache: dict[tuple, tuple[float, dict]] = {}
 
 # Reachable without logging in: the login page itself and what it needs.
 _OPEN = {"/login", "/api/login", "/api/logout", "/api/first-user", "/api/first-restore",
-         "/healthz"}
+         "/healthz", "/about", "/privacy", "/terms"}
 
 
 @app.middleware("http")
@@ -97,6 +97,27 @@ def _set_session(response, request: Request, token: str):
 def _client_ip(request: Request) -> str:
     fwd = request.headers.get("x-forwarded-for", "")
     return fwd.split(",")[0].strip() or (request.client.host if request.client else "?")
+
+
+def _legal(name):
+    with open(os.path.join(STATIC_DIR, "legal", f"{name}.html")) as f:
+        return HTMLResponse(f.read())
+
+
+# Public pages Google asks for before an OAuth app can be published.
+@app.get("/about", response_class=HTMLResponse)
+def about_page():
+    return _legal("home")
+
+
+@app.get("/privacy", response_class=HTMLResponse)
+def privacy_page():
+    return _legal("privacy")
+
+
+@app.get("/terms", response_class=HTMLResponse)
+def terms_page():
+    return _legal("terms")
 
 
 @app.get("/healthz")
