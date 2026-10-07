@@ -146,6 +146,9 @@ _ADDED_COLUMNS = {
         ("google_source", "TEXT"),      # "sheet" when spend comes from the script's Sheet
         ("google_timezone", "TEXT"),
     ],
+    "cash_connections": [
+        ("account_id", "TEXT"),          # Airwallex sub-account (x-login-as), if any
+    ],
 }
 
 
@@ -438,18 +441,21 @@ def list_cash_connections():
         return [dict(r) for r in con.execute("SELECT * FROM cash_connections ORDER BY id")]
 
 
-def add_cash_connection(provider: str, label: str, client_id: str, secret: str) -> int:
+def add_cash_connection(provider: str, label: str, client_id: str, secret: str,
+                        account_id: str = None) -> int:
     with _conn() as con:
         existing = con.execute(
-            "SELECT id FROM cash_connections WHERE provider = ? AND client_id = ?",
-            (provider, client_id)).fetchone()
+            "SELECT id FROM cash_connections WHERE provider = ? AND client_id = ?"
+            " AND COALESCE(account_id, '') = ?",
+            (provider, client_id, account_id or "")).fetchone()
         if existing:
             con.execute("UPDATE cash_connections SET label = ?, secret = ? WHERE id = ?",
                         (label, secret, existing["id"]))
             return existing["id"]
         return con.execute(
-            "INSERT INTO cash_connections (provider, label, client_id, secret) VALUES (?, ?, ?, ?)",
-            (provider, label, client_id, secret)).lastrowid
+            "INSERT INTO cash_connections (provider, label, client_id, secret, account_id)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (provider, label, client_id, secret, account_id or None)).lastrowid
 
 
 def delete_cash_connection(connection_id: int):

@@ -4,6 +4,8 @@ Read-only. Uses a restricted API key (Client ID + API key) created in the
 Airwallex web app with view access to Balances and Financial transactions.
 
     login                 POST /api/v1/authentication/login   (token lasts 30 min)
+                          with x-login-as: <account id> when one key covers
+                          several sub-accounts (each read separately)
     balances              GET  /api/v1/balances/current
     upcoming settlements  GET  /api/v1/financial_transactions?status=PENDING
                           each has net amount, currency and estimated_settled_at:
@@ -17,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 import httpx
 
 API = "https://api.airwallex.com"
-_tokens: dict[str, tuple[float, str]] = {}
+_tokens: dict[tuple, tuple[float, str]] = {}
 
 
 class AirwallexError(RuntimeError):
@@ -39,19 +41,21 @@ def _explain(r: httpx.Response, what: str) -> AirwallexError:
     return AirwallexError(f"Airwallex error {r.status_code} reading {what}: {msg}")
 
 
-async def _token(client, client_id: str, api_key: str) -> str:
-    hit = _tokens.get(client_id)
+async def _token(client, client_id: str, api_key: str, account_id: str = None) -> str:
+    hit = _tokens.get((client_id, account_id))
     if hit and time.time() < hit[0]:
         return hit[1]
+    headers = {"x-client-id": client_id, "x-api-key": api_key}
+    if account_id:
+        headers["x-login-as"] = account_id
     try:
-        r = await client.post(f"{API}/api/v1/authentication/login",
-                              headers={"x-client-id": client_id, "x-api-key": api_key})
+        r = await client.post(f"{API}/api/v1/authentication/login", headers=headers)
     except httpx.RequestError as e:
         raise AirwallexError(f"Could not reach Airwallex ({type(e).__name__}).") from e
     if r.status_code >= 400:
         raise _explain(r, "the login")
     token = r.json().get("token")
-    _tokens[client_id] = (time.time() + 25 * 60, token)  # reuse for 25 of its 30 minutes
+    _tokens[(client_id, account_id)] = (time.time() + 25 * 60, token)  # reuse for 25 of its 30 minutes
     return token
 
 
@@ -66,14 +70,15 @@ async def _get(client, path, token, params=None, what="data"):
     return r.json()
 
 
-async def snapshot(client_id: str, api_key: str, lookback_days: int = 120) -> dict:
+async def snapshot(client_id: str, api_key: str, lookback_days: int = 120,
+                   account_id: str = None) -> dict:
     """{"balances": [...], "pending": [...]} straight from Airwallex.
 
     Reserve holds are released ~90 days after the payment, so pending items are
     searched from `lookback_days` ago to catch every one still waiting.
     """
     async with httpx.AsyncClient(timeout=60) as client:
-        token = await _token(client, client_id, api_key)
+        token = await _token(client, client_id, api_key, account_id)
         balances = await _get(client, "/api/v1/balances/current", token, what="balances")
 
         since = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).strftime(

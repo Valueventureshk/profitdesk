@@ -613,7 +613,7 @@ async def api_cash(currency: str = None):
 
     async def one(c):
         if c["provider"] == "airwallex":
-            return await awx.snapshot(c["client_id"], c["secret"])
+            return await awx.snapshot(c["client_id"], c["secret"], account_id=c["account_id"])
         raise RuntimeError(f"Unknown provider {c['provider']}")
 
     got = await asyncio.gather(*[one(c) for c in conns], return_exceptions=True)
@@ -647,9 +647,20 @@ async def api_add_airwallex(payload: dict):
     label = (payload.get("label") or "").strip() or "Airwallex"
     if not cid or not key:
         raise HTTPException(400, "Paste both the Client ID and the API key from Airwallex.")
-    snap = await awx.snapshot(cid, key, lookback_days=1)  # proves the key works
-    db.add_cash_connection("airwallex", label[:60], cid, key)
-    return {"ok": True, "currencies": [b["currency"] for b in snap["balances"]]}
+    # One key can cover several sub-accounts; each is read separately by its ID.
+    ids = [x.strip() for x in re.split(r"[\s,]+", payload.get("account_ids") or "") if x.strip()]
+    targets = ids or [None]
+    checked = await asyncio.gather(
+        *[awx.snapshot(cid, key, lookback_days=1, account_id=a) for a in targets],
+        return_exceptions=True)
+    bad = [f"{a or 'main account'}: {e}" for a, e in zip(targets, checked) if isinstance(e, Exception)]
+    if bad:
+        raise HTTPException(400, "Couldn't read " + "; ".join(bad))
+    for n, a in enumerate(targets, 1):
+        name = label if len(targets) == 1 else f"{label} · {a[-6:]}"
+        db.add_cash_connection("airwallex", name[:60], cid, key, a)
+    currencies = sorted({b["currency"] for s in checked for b in s["balances"]})
+    return {"ok": True, "accounts": len(targets), "currencies": currencies}
 
 
 @app.delete("/api/cash/{connection_id}")

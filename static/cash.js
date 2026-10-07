@@ -155,9 +155,11 @@ $("awxAdd").onclick = async () => {
   try {
     const r = await post("/api/cash/airwallex", {
       label: $("awxLabel").value, client_id: $("awxClient").value, api_key: $("awxKey").value,
+      account_ids: $("awxAccounts").value,
     });
-    for (const id of ["awxLabel", "awxClient", "awxKey"]) $(id).value = "";
-    toast(`Airwallex connected · ${r.currencies.length} currencies.`);
+    for (const id of ["awxLabel", "awxClient", "awxKey", "awxAccounts"]) $(id).value = "";
+    toast(`Airwallex connected · ${r.accounts} account${r.accounts === 1 ? "" : "s"}, ` +
+          `${r.currencies.length} currencies.`);
     load();
   } catch (e) {
     toast(e.message, true);
