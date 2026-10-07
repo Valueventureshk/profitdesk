@@ -110,7 +110,8 @@ function renderSchedule(s) {
   let running = s.available;
   const rows = s.schedule.map((d, i) => {
     running += d.total;
-    const kinds = Object.entries(d.kinds).map(([k, v]) => `${esc(k)} ${money(v)}`).join(" · ");
+    const kinds = Object.entries(d.kinds).filter(([, v]) => Math.abs(v) >= 0.5)
+      .map(([k, v]) => `<span class="kind">${esc(k)} ${money(v)}</span>`).join("");
     const hide = i >= FIRST_DAYS && !showAllDays ? " hidden" : "";
     return `<tr${hide}><td class="name">${niceDate(d.date)}<span class="sub">${kinds}</span></td>
       <td>${d.total >= 0 ? "+" : ""}${money(d.total)}</td><td>${money(running)}</td></tr>`;
