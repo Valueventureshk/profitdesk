@@ -448,8 +448,11 @@ function renderChart(series) {
 }
 
 function linkedAccounts(s) {
-  const names = [s.google_account_name, s.meta_account_name].filter(Boolean);
-  return names.length ? names.join(" · ") : "No ad account linked";
+  const meta = !!s.meta_account_name, google = !!s.google_account_name;
+  if (meta && google) return "Meta + Google Ads connected";
+  if (meta) return "Meta connected";
+  if (google) return "Google Ads connected";
+  return "No ad account linked";
 }
 
 function renderStoreTable(d) {
