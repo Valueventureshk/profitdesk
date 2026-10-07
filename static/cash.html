@@ -62,9 +62,10 @@
             <input id="awxKey" type="password" autocomplete="off"></label>
           <label class="field"><span>Sub-account IDs (only if the key covers several)</span>
             <textarea id="awxAccounts" rows="3" class="control"
-              placeholder="One per line. Leave empty for a single account."></textarea></label>
-          <p class="hint">Find each ID in Airwallex: switch to the sub-account, then
-            <strong>Settings → Account details → Account ID</strong>.</p>
+              placeholder="One per line, e.g.&#10;Vogue Straya acct_-YFD78TfMYimpjKE7woHtw&#10;Beige Rue acct_HA-HkH40M56Rd4EpnQtYNA&#10;Leave empty for a single account."></textarea></label>
+          <p class="hint">One sub-account per line: its name (optional) then its Account ID
+            (starts with <code>acct_</code>). Copy each ID with the copy button next to it in
+            Airwallex.</p>
           <button id="awxAdd" class="btn btn-primary btn-block">Connect Airwallex</button>
         </details>
       </div>
