@@ -816,6 +816,7 @@ function renderGoogleBox() {
   $("googleBox").innerHTML = `
     <div class="google-state">
       <div class="who"><strong>Connected</strong><span>${esc(g.email || "Google account")}</span></div>
+      <button id="googleAgain" class="btn btn-sm btn-ghost" title="Renew the Google sign-in; store links stay as they are">Sign in again</button>
       <button id="googleOff" class="btn btn-sm btn-danger">Disconnect</button>
     </div>
     <label class="field" style="margin-top:10px"><span>Spend Sheet (filled by the Google Ads script)</span>
@@ -826,6 +827,7 @@ function renderGoogleBox() {
     <p class="hint">Until Google approves direct access, a small script in each Google Ads
       account copies its spend into this Sheet every hour. The script is in the ProfitDesk
       folder as <code>google-ads-script.js</code>.</p>`;
+  $("googleAgain").onclick = () => popup("/auth/google/start");
   $("gSheetSave").onclick = async () => {
     try {
       await jsonPost("/api/google/sheet", { url: $("gSheet").value });
