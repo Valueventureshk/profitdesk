@@ -87,3 +87,32 @@ async def snapshot(client_id: str, secret: str) -> dict:
         } for b in body.get("balances", []) if b.get("currency")],
         "pending": [],
     }
+
+
+async def transactions(client_id: str, secret: str, days: int = 75) -> list:
+    """Every transaction_info row from the last `days` days (31-day windows,
+    PayPal's limit per search)."""
+    from datetime import datetime, timedelta, timezone
+    end = datetime.now(timezone.utc) - timedelta(minutes=5)
+    out = []
+    async with httpx.AsyncClient(timeout=60) as client:
+        token = await _token(client, client_id, secret)
+        start = end - timedelta(days=days)
+        while start < end:
+            stop = min(start + timedelta(days=31), end)
+            page = 1
+            while True:
+                r = await client.get(f"{API}/v1/reporting/transactions", params={
+                    "start_date": start.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                    "end_date": stop.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                    "fields": "transaction_info", "page_size": 500, "page": page,
+                }, headers={"Authorization": f"Bearer {token}"})
+                if r.status_code >= 400:
+                    raise _explain(r, "transactions")
+                body = r.json()
+                out.extend(d.get("transaction_info", {}) for d in body.get("transaction_details", []))
+                if page >= int(body.get("total_pages") or 1) or page >= 40:
+                    break
+                page += 1
+            start = stop
+    return out

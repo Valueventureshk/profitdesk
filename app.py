@@ -687,6 +687,32 @@ async def api_add_paypal(payload: dict):
     return {"ok": True, "accounts": 1, "currencies": sorted(b["currency"] for b in snap["balances"])}
 
 
+@app.get("/api/cash/paypal-debug")
+async def api_paypal_debug():
+    # TEMPORARY: what PayPal's transaction feed says about holds. No keys returned.
+    out = []
+    for c in db.list_cash_connections():
+        if c["provider"] != "paypal":
+            continue
+        rows = await paypal.transactions(c["client_id"], c["secret"])
+        codes = {}
+        for t in rows:
+            k = t.get("transaction_event_code", "?")
+            e = codes.setdefault(k, {"n": 0, "sum": 0.0, "cur": set(), "first": "9", "last": "0"})
+            e["n"] += 1
+            e["sum"] += float((t.get("transaction_amount") or {}).get("value") or 0)
+            e["cur"].add((t.get("transaction_amount") or {}).get("currency_code"))
+            d = (t.get("transaction_initiation_date") or "")[:10]
+            e["first"], e["last"] = min(e["first"], d), max(e["last"], d)
+        samples = [{k: v for k, v in t.items() if k not in ("payer_info",)}
+                   for t in rows if str(t.get("transaction_event_code", "")).startswith(("T15", "T21"))][:12]
+        out.append({"label": c["label"], "rows": len(rows),
+                    "codes": {k: {**v, "cur": sorted(x for x in v["cur"] if x), "sum": round(v["sum"], 2)}
+                              for k, v in sorted(codes.items())},
+                    "samples": samples})
+    return out
+
+
 @app.put("/api/cash/{connection_id}")
 def api_rename_cash(connection_id: int, payload: dict):
     label = (payload.get("label") or "").strip()
