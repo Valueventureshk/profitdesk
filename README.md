@@ -209,7 +209,7 @@ profit as **Processing fees**, shown split into *Payments* and *Shopify*.
 
 Rates live in Settings → **Processing fees**. Fees are charged on the original
 order total and aren't given back on refunds. Afterpay's rate through Airwallex
-isn't published, so 6% is a placeholder until confirmed. These are estimates;
+is 5.90% + HK$2.00, confirmed against real Airwallex settlements. These are estimates;
 exact fees from PayPal and Airwallex are a planned next step.
 
 ## Store groups

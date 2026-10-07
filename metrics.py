@@ -29,9 +29,11 @@ SUMMABLE = ("sales", "orders", "google_spend", "meta_spend", "ad_spend",
 #   PayPal HK (effective 7 Aug 2025): 3.90% + fixed fee, +0.50% cross-border,
 #     3.00% to convert a foreign-currency payment into HKD.
 #   Airwallex HK: international cards 3.60% + HK$2.35 (Apple Pay / Google Pay
-#     are priced as the card behind them); FX "from 0.2%".
-#   Afterpay via Airwallex: not published ("HK$2.00 + payment method fee");
-#     6.00% is a placeholder until confirmed from the Airwallex fee schedule.
+#     are priced as the card behind them).
+#   Afterpay via Airwallex: 5.90% payment method fee + HK$2.00 gateway fee,
+#     confirmed against three real CUTEHOME settlements (Sep-Oct 2026).
+#   Airwallex settles in the payment's own currency (AUD stays AUD), so no
+#     conversion is charged at payment time; FX is 0 unless that changes.
 DEFAULT_FEE_RATES = {
     "paypal_pct": 4.40,
     "paypal_fixed": {"AUD": 0.30, "USD": 0.30, "CAD": 0.30, "EUR": 0.35,
@@ -39,9 +41,9 @@ DEFAULT_FEE_RATES = {
     "paypal_fx_pct": 3.00,
     "awx_card_pct": 3.60,
     "awx_card_fixed_hkd": 2.35,
-    "awx_afterpay_pct": 6.00,
+    "awx_afterpay_pct": 5.90,
     "awx_afterpay_fixed_hkd": 2.00,
-    "awx_fx_pct": 0.20,
+    "awx_fx_pct": 0.00,
 }
 
 # Shopify's own fee on orders paid through anything other than Shopify Payments.
