@@ -254,8 +254,10 @@ function renderNav() {
     btn.onclick = () => pickScope(btn.dataset.scope);
   }
 
+  // Phones: the All stores button sits beside this, so the dropdown lists only
+  // the stores and reads "Stores" while the blended view is showing.
   const options = stores.length > 1
-    ? [`<option value="all">All stores</option>`,
+    ? [`<option value="all" disabled>Stores</option>`,
        ...stores.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`)]
     : stores.map((s) => `<option value="all">${esc(s.name)}</option>`);  // one store: it is "all"
   $("storePick").innerHTML = options.join("");

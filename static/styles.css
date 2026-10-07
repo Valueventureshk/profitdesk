@@ -379,7 +379,12 @@ button, input, select { font-family: inherit; font-size: inherit; }
   }
   .brand { padding: 0 6px 0 0; }
   .brand-name { display: none; }
-  .nav { display: none; }
+  /* Phones: keep only the All stores button; the stores move to the dropdown. */
+  .nav { flex: none; }
+  .nav .nav-item:not([data-scope="all"]) { display: none; }
+  .nav .nav-item[data-scope="all"] { padding: 8px 10px; }
+  .sidebar { gap: 6px; }
+  .store-pick { padding-left: 9px; padding-right: 6px; }
   .store-pick { display: block; flex: 1; min-width: 0; font-weight: 500; }
   .foot-txt { display: none; }
   .sidebar-foot .nav-item { padding: 8px 10px; font-size: 16px; }
