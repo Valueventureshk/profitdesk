@@ -85,7 +85,7 @@ function kindsNote(byKind) {
 
 function renderCards(s) {
   const position = `<div class="card position">
-      <div class="card-label"><span class="dot" style="background:var(--up)"></span>Available + receivable</div>
+      <div class="card-label"><span class="dot" style="background:var(--sales)"></span>Available + receivable</div>
       <div class="card-value">${money(s.position)}</div>
       <div class="card-note">${money(s.available)} available now + ${money(s.receivable)} receivable
         (sales settling, reserves and PayPal holds still to be released)</div>
