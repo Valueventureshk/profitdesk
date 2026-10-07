@@ -13,6 +13,11 @@ import sqlite3
 from contextlib import contextmanager
 
 DB_PATH = os.getenv("DB_PATH") or os.path.join(os.path.dirname(__file__), "profitdesk.db")
+# On Railway the data must live on the attached volume, or every deploy starts
+# from an empty database. Use it whenever DB_PATH doesn't already point there.
+_VOLUME = os.getenv("RAILWAY_VOLUME_MOUNT_PATH")
+if _VOLUME and not os.path.abspath(DB_PATH).startswith(_VOLUME.rstrip("/") + "/"):
+    DB_PATH = os.path.join(_VOLUME, "profitdesk.db")
 if os.path.dirname(DB_PATH):
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)  # e.g. a fresh /data volume
 
