@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ProfitDesk · Log in</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<div class="setup">
+  <form class="setup-card" id="form" autocomplete="on">
+    <div class="setup-mark">PD</div>
+    <h1 id="title">Log in to ProfitDesk</h1>
+    <p class="setup-sub" id="sub">Use the email and password you were given.</p>
+
+    <label class="field" id="nameField" hidden>
+      <span>Your name</span>
+      <input id="name" type="text" autocomplete="name">
+    </label>
+    <label class="field">
+      <span>Email</span>
+      <input id="email" type="email" autocomplete="username" required>
+    </label>
+    <label class="field">
+      <span>Password</span>
+      <input id="password" type="password" autocomplete="current-password" required>
+    </label>
+    <label class="field" id="confirmField" hidden>
+      <span>Password again</span>
+      <input id="confirm" type="password" autocomplete="new-password">
+    </label>
+
+    <button class="btn btn-primary btn-block" id="go" type="submit">Log in</button>
+    <p class="notice" id="notice" hidden></p>
+  </form>
+</div>
+<script>
+  // The server fills this in: true when no account exists yet.
+  const FIRST_RUN = __FIRST_RUN__;
+  const $ = (id) => document.getElementById(id);
+
+  if (FIRST_RUN) {
+    $("title").textContent = "Create the owner account";
+    $("sub").textContent = "ProfitDesk has no accounts yet. This first one is yours. " +
+      "You can add your partner afterwards in Settings → People.";
+    $("nameField").hidden = false;
+    $("confirmField").hidden = false;
+    $("password").autocomplete = "new-password";
+    $("go").textContent = "Create account";
+  }
+
+  function next() {
+    const n = new URLSearchParams(location.search).get("next") || "/";
+    return n.startsWith("/") && !n.startsWith("//") ? n : "/";  // stay on this site
+  }
+
+  $("form").onsubmit = async (e) => {
+    e.preventDefault();
+    const notice = $("notice");
+    notice.hidden = true;
+    if (FIRST_RUN && $("password").value !== $("confirm").value) {
+      notice.textContent = "The two passwords don't match.";
+      notice.hidden = false;
+      return;
+    }
+    $("go").disabled = true;
+    try {
+      const r = await fetch(FIRST_RUN ? "/api/first-user" : "/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: $("name").value, email: $("email").value, password: $("password").value,
+        }),
+      });
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(body.error || "Couldn't log in.");
+      location.href = next();
+    } catch (err) {
+      notice.textContent = err.message;
+      notice.hidden = false;
+      $("go").disabled = false;
+    }
+  };
+</script>
+</body>
+</html>

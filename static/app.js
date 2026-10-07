@@ -72,6 +72,10 @@ async function api(path, options) {
   const r = await fetch(path, options);
   let body = {};
   try { body = await r.json(); } catch { /* empty body is fine */ }
+  if (r.status === 401 && body.login) {   // logged out or session expired
+    location.href = "/login?next=" + encodeURIComponent(location.pathname + location.search);
+    throw new Error("Please log in again.");
+  }
   if (!r.ok) throw new Error(body.error || `Request failed (${r.status})`);
   return body;
 }
@@ -558,6 +562,7 @@ async function openSettings() {
   renderMetaBox();
   renderGroupSettings();
   renderFeeSettings();
+  renderPeople();
   renderStoreSettings();
   await Promise.all([loadAccounts(), loadMetaAccounts()]);
 }
@@ -568,6 +573,62 @@ async function openGroupSettings() {
   const pending = openSettings();
   $("groupsBlock").scrollIntoView({ block: "start" });
   await pending;
+}
+
+/* ------------------------------------------------ people */
+
+async function renderPeople() {
+  let r;
+  try { r = await api("/api/users"); } catch (e) { toast(e.message, true); return; }
+  const rows = r.users.map((u) => `
+    <div class="group-row">
+      <div class="group-name"><strong>${esc(u.name || u.email)}${u.id === r.me.id ? " (you)" : ""}</strong>
+        <span>${esc(u.email)}</span></div>
+      ${u.id === r.me.id ? "" : `<button class="btn btn-sm btn-danger" data-remove-user="${u.id}">Remove</button>`}
+    </div>`).join("");
+
+  $("peopleBox").innerHTML = `${rows}
+    <details class="advanced"><summary>Add a person</summary>
+      <label class="field"><span>Name</span><input id="puName" type="text"></label>
+      <label class="field"><span>Email</span><input id="puEmail" type="email" autocomplete="off"></label>
+      <label class="field"><span>Starting password (10+ characters)</span>
+        <input id="puPass" type="password" autocomplete="new-password"></label>
+      <p class="hint">Send them the email and password yourself. They can change the
+        password after logging in.</p>
+      <button id="puAdd" class="btn btn-primary btn-block">Add person</button>
+    </details>
+    <details class="advanced"><summary>Change my password</summary>
+      <label class="field"><span>Current password</span>
+        <input id="pwOld" type="password" autocomplete="current-password"></label>
+      <label class="field"><span>New password (10+ characters)</span>
+        <input id="pwNew" type="password" autocomplete="new-password"></label>
+      <button id="pwSave" class="btn btn-ghost btn-block">Change password</button>
+    </details>`;
+
+  $("puAdd").onclick = async () => {
+    try {
+      await jsonPost("/api/users", { name: $("puName").value, email: $("puEmail").value,
+                                     password: $("puPass").value });
+      toast("Added. Share their email and password with them.");
+      renderPeople();
+    } catch (e) { toast(e.message, true); }
+  };
+  $("pwSave").onclick = async () => {
+    try {
+      await jsonPost("/api/me/password", { current: $("pwOld").value, new: $("pwNew").value });
+      toast("Password changed. Other devices have been signed out.");
+      renderPeople();
+    } catch (e) { toast(e.message, true); }
+  };
+  for (const b of $("peopleBox").querySelectorAll("[data-remove-user]")) {
+    b.onclick = async () => {
+      const u = r.users.find((x) => String(x.id) === b.dataset.removeUser);
+      if (!confirm(`Remove ${u.email}? They won't be able to log in any more.`)) return;
+      await api(`/api/users/${u.id}`, { method: "DELETE" });
+      toast(`${u.email} removed.`);
+      renderPeople();
+    };
+  }
 }
 
 /* ------------------------------------------------ processing fee rates */
@@ -1012,6 +1073,10 @@ $("newTokenConnect").onclick = async () => {
 };
 
 $("openSettings").onclick = openSettings;
+$("logOut").onclick = async () => {
+  await fetch("/api/logout", { method: "POST" });
+  location.href = "/login";
+};
 $("addStore").onclick = async () => { await openSettings(); $("newDomain").focus(); };
 for (const el of document.querySelectorAll("[data-close]")) el.onclick = closeSettings;
 document.addEventListener("keydown", (e) => {

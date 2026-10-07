@@ -23,6 +23,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+import auth
 import db
 import demo
 import fx
@@ -35,7 +36,10 @@ from shopify_client import ShopifyClient, ShopifyError
 
 HOST = os.getenv("HOST", "127.0.0.1")
 PORT = int(os.getenv("PORT", "8787"))
-BASE_URL = f"http://{HOST}:{PORT}"
+# Where people reach ProfitDesk. On a server set PUBLIC_URL (e.g.
+# https://app.example.com); every return address for Shopify and Google is
+# built from it.
+BASE_URL = (os.getenv("PUBLIC_URL") or f"http://{HOST}:{PORT}").rstrip("/")
 GOOGLE_REDIRECT = f"{BASE_URL}/auth/google/callback"
 SHOPIFY_REDIRECT = f"{BASE_URL}/auth/shopify/callback"
 
@@ -54,6 +58,123 @@ app = FastAPI(title="ProfitDesk", docs_url=None, redoc_url=None, lifespan=lifesp
 _google_states: set[str] = set()
 _shopify_states: dict[str, str] = {}
 _cache: dict[tuple, tuple[float, dict]] = {}
+
+
+# ---------------------------------------------------------------- login wall
+
+# Reachable without logging in: the login page itself and what it needs.
+_OPEN = {"/login", "/api/login", "/api/logout", "/api/first-user", "/healthz"}
+
+
+@app.middleware("http")
+async def _require_login(request: Request, call_next):
+    path = request.url.path
+    user = auth.user_for(request.cookies.get(auth.SESSION_COOKIE))
+    request.state.user = user
+    if user or path in _OPEN or path.startswith("/static/"):
+        return await call_next(request)
+    if path.startswith("/api/"):
+        return JSONResponse({"error": "Please log in again.", "login": True}, status_code=401)
+    target = path + (f"?{request.url.query}" if request.url.query else "")
+    from urllib.parse import quote
+    return RedirectResponse(f"/login?next={quote(target, safe='')}", status_code=303)
+
+
+def _set_session(response, request: Request, token: str):
+    secure = (request.url.scheme == "https"
+              or request.headers.get("x-forwarded-proto") == "https"
+              or BASE_URL.startswith("https://"))
+    response.set_cookie(auth.SESSION_COOKIE, token, max_age=auth.SESSION_DAYS * 86400,
+                        httponly=True, samesite="lax", secure=secure, path="/")
+
+
+def _client_ip(request: Request) -> str:
+    fwd = request.headers.get("x-forwarded-for", "")
+    return fwd.split(",")[0].strip() or (request.client.host if request.client else "?")
+
+
+@app.get("/healthz")
+def healthz():
+    return {"ok": True}
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page():
+    with open(os.path.join(STATIC_DIR, "login.html")) as f:
+        html = f.read()
+    stamp = int(os.path.getmtime(os.path.join(STATIC_DIR, "styles.css")))
+    html = html.replace("/static/styles.css", f"/static/styles.css?v={stamp}")
+    return HTMLResponse(html.replace("__FIRST_RUN__", "true" if not auth.has_users() else "false"),
+                        headers={"Cache-Control": "no-cache"})
+
+
+@app.post("/api/login")
+def api_login(payload: dict, request: Request):
+    try:
+        token = auth.log_in(payload.get("email"), payload.get("password"), _client_ip(request))
+    except auth.AuthError as e:
+        raise HTTPException(400, str(e))
+    resp = JSONResponse({"ok": True})
+    _set_session(resp, request, token)
+    return resp
+
+
+@app.post("/api/first-user")
+def api_first_user(payload: dict, request: Request):
+    """Create the owner account. Only works while there are no accounts at all."""
+    if auth.has_users():
+        raise HTTPException(400, "ProfitDesk already has an owner. Log in instead.")
+    try:
+        auth.create_user(payload.get("email"), payload.get("name"), payload.get("password"))
+        token = auth.log_in(payload.get("email"), payload.get("password"), _client_ip(request))
+    except auth.AuthError as e:
+        raise HTTPException(400, str(e))
+    resp = JSONResponse({"ok": True})
+    _set_session(resp, request, token)
+    return resp
+
+
+@app.post("/api/logout")
+def api_logout(request: Request):
+    auth.log_out(request.cookies.get(auth.SESSION_COOKIE))
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(auth.SESSION_COOKIE, path="/")
+    return resp
+
+
+@app.get("/api/users")
+def api_users(request: Request):
+    return {"me": request.state.user, "users": db.list_users()}
+
+
+@app.post("/api/users")
+def api_add_user(payload: dict):
+    try:
+        uid = auth.create_user(payload.get("email"), payload.get("name"), payload.get("password"))
+    except auth.AuthError as e:
+        raise HTTPException(400, str(e))
+    return {"id": uid}
+
+
+@app.delete("/api/users/{user_id}")
+def api_remove_user(user_id: int, request: Request):
+    if user_id == request.state.user["id"]:
+        raise HTTPException(400, "You can't remove your own account while logged in with it.")
+    db.delete_user(user_id)
+    return {"ok": True}
+
+
+@app.post("/api/me/password")
+def api_change_password(payload: dict, request: Request):
+    me = request.state.user
+    try:
+        auth.change_password(me["id"], payload.get("current"), payload.get("new"))
+        token = auth.log_in(me["email"], payload.get("new"), _client_ip(request))
+    except auth.AuthError as e:
+        raise HTTPException(400, str(e))
+    resp = JSONResponse({"ok": True})
+    _set_session(resp, request, token)  # this device stays logged in; others are signed out
+    return resp
 
 
 @app.exception_handler(HTTPException)

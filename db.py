@@ -69,6 +69,23 @@ CREATE TABLE IF NOT EXISTS store_group_members (
     PRIMARY KEY (group_id, store_id)
 );
 
+-- People who can log in. Only a salted scrypt hash of each password is kept.
+CREATE TABLE IF NOT EXISTS users (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    email         TEXT    NOT NULL UNIQUE,
+    name          TEXT,
+    password_hash TEXT    NOT NULL,
+    created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Logged-in browsers. Only a SHA-256 of each session token is kept.
+CREATE TABLE IF NOT EXISTS sessions (
+    token_hash TEXT    PRIMARY KEY,
+    user_id    INTEGER NOT NULL,
+    expires_at REAL    NOT NULL,
+    created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
 -- Small app-wide preferences, e.g. the currency the dashboard shows.
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
@@ -277,6 +294,75 @@ def delete_group(group_id: int):
     with _conn() as con:
         con.execute("DELETE FROM store_group_members WHERE group_id = ?", (group_id,))
         con.execute("DELETE FROM store_groups WHERE id = ?", (group_id,))
+
+
+# ---------------------------------------------------------------- users & sessions
+
+def list_users():
+    with _conn() as con:
+        return [dict(r) for r in con.execute(
+            "SELECT id, email, name, created_at FROM users ORDER BY id")]
+
+
+def get_user(user_id: int):
+    with _conn() as con:
+        row = con.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def get_user_by_email(email: str):
+    with _conn() as con:
+        row = con.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+    return dict(row) if row else None
+
+
+def create_user(email: str, name: str, password_hash: str) -> int:
+    with _conn() as con:
+        return con.execute(
+            "INSERT INTO users (email, name, password_hash) VALUES (?, ?, ?)",
+            (email, name, password_hash),
+        ).lastrowid
+
+
+def set_user_password(user_id: int, password_hash: str):
+    with _conn() as con:
+        con.execute("UPDATE users SET password_hash = ? WHERE id = ?", (password_hash, user_id))
+
+
+def delete_user(user_id: int):
+    with _conn() as con:
+        con.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        con.execute("DELETE FROM users WHERE id = ?", (user_id,))
+
+
+def create_session(token_hash: str, user_id: int, expires_at: float):
+    with _conn() as con:
+        con.execute("DELETE FROM sessions WHERE expires_at < strftime('%s','now')")
+        con.execute(
+            "INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)",
+            (token_hash, user_id, expires_at),
+        )
+
+
+def get_session_user(token_hash: str, now: float):
+    with _conn() as con:
+        row = con.execute(
+            "SELECT u.id, u.email, u.name FROM sessions s JOIN users u ON u.id = s.user_id"
+            " WHERE s.token_hash = ? AND s.expires_at > ?",
+            (token_hash, now),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def delete_session(token_hash: str):
+    with _conn() as con:
+        con.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
+
+
+def delete_sessions_for(user_id: int, keep=None):
+    """Sign a user out everywhere (e.g. after a password change)."""
+    with _conn() as con:
+        con.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
 
 
 # ---------------------------------------------------------------- settings
