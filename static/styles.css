@@ -473,7 +473,8 @@ a.section-item:hover { background: var(--line-soft); }
 #schedule .kind { display: block; }
 #schedule td.name { width: 100%; }
 @media (max-width: 560px) {
-  #schedule th, #schedule td { padding-left: 10px; padding-right: 10px; }
+  #schedule th, #schedule td { padding-left: 8px; padding-right: 8px; }
+  #schedule th:last-child, #schedule td:last-child { padding-right: 14px; }
   #schedule th:first-child, #schedule td:first-child { padding-left: 14px; }
 }
 .schedule-more { display: block; width: calc(100% - 32px); margin: 12px 16px 16px; }

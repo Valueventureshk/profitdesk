@@ -116,7 +116,7 @@ function renderSchedule(s) {
     return `<tr${hide}><td class="name">${niceDate(d.date)}<span class="sub">${kinds}</span></td>
       <td>${d.total >= 0 ? "+" : ""}${money(d.total)}</td><td>${money(running)}</td></tr>`;
   }).join("");
-  $("schedule").innerHTML = `<thead><tr><th>Day</th><th>Arriving</th><th>Available after</th></tr></thead>
+  $("schedule").innerHTML = `<thead><tr><th>Day</th><th>Arriving</th><th>Balance after</th></tr></thead>
     <tbody>${rows}</tbody>`;
   const extra = s.schedule.length - FIRST_DAYS;
   if (extra > 0) {
