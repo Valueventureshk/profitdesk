@@ -197,6 +197,15 @@ appears when that happens.
 
 ---
 
+## Store groups
+
+Settings → **Store groups** lets you make named sets of stores, e.g. *Meta
+stores*, *Google stores*, *Multiple channel stores*. Each group appears under
+**All stores** (sidebar on a computer, the green dropdown on a phone) and shows
+its stores blended together, with the store-by-store table. Quick buttons tick
+every store with Meta, with Google, or with both linked. A store can be in
+several groups; deleting a group never touches the stores.
+
 ## One currency for everything
 
 The currency picker at the top of the dashboard (next to the date range) sets

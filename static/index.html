@@ -51,7 +51,8 @@
     </div>
 
     <nav id="storeNav" class="nav"></nav>
-    <!-- Phones: the store list becomes this dropdown. -->
+    <!-- Phones: All stores / groups, then the stores, become two dropdowns. -->
+    <select id="viewPick" class="control view-pick" aria-label="Choose a blended view"></select>
     <select id="storePick" class="control store-pick" aria-label="Choose a store"></select>
 
     <div class="sidebar-foot">
@@ -197,6 +198,13 @@
           </label>
           <button id="newTokenConnect" class="btn btn-ghost btn-block">Connect with token</button>
         </details>
+      </section>
+
+      <section class="block" id="groupsBlock">
+        <h3>Store groups</h3>
+        <p class="hint">Group stores to see them blended together, e.g. Meta stores,
+          Google stores, Multiple channel stores. A store can be in several groups.</p>
+        <div id="groupSettings"></div>
       </section>
 
       <section class="block">

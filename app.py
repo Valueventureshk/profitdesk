@@ -143,6 +143,7 @@ def api_setup():
     } for s in db.list_stores()]
     return {
         "stores": stores,
+        "groups": db.list_groups(),
         "shopify": {
             "app_configured": shop.app_configured(),
             "redirect_uri": SHOPIFY_REDIRECT,
@@ -330,6 +331,40 @@ def api_unlink_google(store_id: int):
     return {"ok": True}
 
 
+# ---------------------------------------------------------------- store groups
+
+def _group_payload(payload: dict):
+    name = (payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "Give the group a name, like Meta stores.")
+    ids = payload.get("store_ids") or []
+    if not isinstance(ids, list):
+        raise HTTPException(400, "Pick the stores for this group.")
+    return name[:60], ids
+
+
+@app.post("/api/groups")
+def api_create_group(payload: dict):
+    name, ids = _group_payload(payload)
+    return {"id": db.save_group(name, ids)}
+
+
+@app.put("/api/groups/{group_id}")
+def api_update_group(group_id: int, payload: dict):
+    name, ids = _group_payload(payload)
+    try:
+        db.save_group(name, ids, group_id)
+    except KeyError:
+        raise HTTPException(404, "That store group no longer exists.")
+    return {"ok": True}
+
+
+@app.delete("/api/groups/{group_id}")
+def api_delete_group(group_id: int):
+    db.delete_group(group_id)
+    return {"ok": True}
+
+
 # ---------------------------------------------------------------- currency
 
 def _display_currency() -> str:
@@ -465,7 +500,17 @@ async def api_dashboard(scope: str = "all", start: str = None, end: str = None,
     if not stores:
         raise HTTPException(400, "Connect a store first.")
 
-    if scope != "all":
+    # scope: "all", a store id, or "g<group id>" for a store group.
+    group = None
+    if scope.startswith("g"):
+        group = next((g for g in db.list_groups() if f"g{g['id']}" == scope), None)
+        if not group:
+            raise HTTPException(404, "That store group no longer exists.")
+        stores = [s for s in stores if s["id"] in group["store_ids"]]
+        if not stores:
+            raise HTTPException(400, f"The group {group['name']} has no stores in it yet. "
+                                     "Add some in Settings → Store groups.")
+    elif scope != "all":
         stores = [s for s in stores if str(s["id"]) == str(scope)]
         if not stores:
             raise HTTPException(404, "Store not found.")
@@ -539,7 +584,7 @@ async def api_dashboard(scope: str = "all", start: str = None, end: str = None,
 
     return {
         "scope": scope,
-        "title": "All stores" if scope == "all" else stores[0]["name"],
+        "title": "All stores" if scope == "all" else group["name"] if group else stores[0]["name"],
         "currency": base,
         # What each store's own currency is worth in the display currency.
         "fx": None if not fx_table else {
@@ -556,7 +601,7 @@ async def api_dashboard(scope: str = "all", start: str = None, end: str = None,
         "totals": totals,
         "delta": metrics.compare(totals, prev_totals),
         "series": series,
-        "stores": per_store if scope == "all" else [],
+        "stores": per_store if scope == "all" or group else [],
         "warnings": sorted(set(warnings)),
         "updated_at": datetime.now().isoformat(timespec="seconds"),
     }

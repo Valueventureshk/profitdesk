@@ -56,6 +56,19 @@ CREATE TABLE IF NOT EXISTS meta_auth (
     name         TEXT
 );
 
+-- Named sets of stores ("Meta stores", "Google stores"...) that can be viewed
+-- as one blended dashboard, like All stores but only for the members.
+CREATE TABLE IF NOT EXISTS store_groups (
+    id   INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT    NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS store_group_members (
+    group_id INTEGER NOT NULL,
+    store_id INTEGER NOT NULL,
+    PRIMARY KEY (group_id, store_id)
+);
+
 -- Small app-wide preferences, e.g. the currency the dashboard shows.
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
@@ -165,6 +178,7 @@ def upsert_store(name: str, shop_domain: str, access_token: str, currency: str,
 def delete_store(store_id: int):
     with _conn() as con:
         con.execute("DELETE FROM stores WHERE id = ?", (store_id,))
+        con.execute("DELETE FROM store_group_members WHERE store_id = ?", (store_id,))
 
 
 def rename_store(store_id: int, name: str):
@@ -218,6 +232,45 @@ def linked_customer_ids():
                 " WHERE google_customer_id IS NOT NULL"
             )
         }
+
+
+# ---------------------------------------------------------------- store groups
+
+def list_groups():
+    """[{id, name, store_ids}] in the order they were made."""
+    with _conn() as con:
+        groups = [dict(r) for r in con.execute("SELECT id, name FROM store_groups ORDER BY id")]
+        members = con.execute(
+            "SELECT m.group_id, m.store_id FROM store_group_members m"
+            " JOIN stores s ON s.id = m.store_id ORDER BY s.sort_order, s.id"
+        ).fetchall()
+    for g in groups:
+        g["store_ids"] = [m["store_id"] for m in members if m["group_id"] == g["id"]]
+    return groups
+
+
+def save_group(name: str, store_ids, group_id: int = None) -> int:
+    """Create a group, or rename it and replace its members."""
+    with _conn() as con:
+        if group_id is None:
+            group_id = con.execute("INSERT INTO store_groups (name) VALUES (?)", (name,)).lastrowid
+        else:
+            if not con.execute("SELECT 1 FROM store_groups WHERE id = ?", (group_id,)).fetchone():
+                raise KeyError(group_id)
+            con.execute("UPDATE store_groups SET name = ? WHERE id = ?", (name, group_id))
+            con.execute("DELETE FROM store_group_members WHERE group_id = ?", (group_id,))
+        known = {r["id"] for r in con.execute("SELECT id FROM stores")}
+        con.executemany(
+            "INSERT OR IGNORE INTO store_group_members (group_id, store_id) VALUES (?, ?)",
+            [(group_id, int(s)) for s in store_ids if int(s) in known],
+        )
+    return group_id
+
+
+def delete_group(group_id: int):
+    with _conn() as con:
+        con.execute("DELETE FROM store_group_members WHERE group_id = ?", (group_id,))
+        con.execute("DELETE FROM store_groups WHERE id = ?", (group_id,))
 
 
 # ---------------------------------------------------------------- settings

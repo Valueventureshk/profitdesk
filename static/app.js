@@ -111,7 +111,10 @@ window.addEventListener("message", (e) => {
    haven't reached it yet show nothing until their day begins. */
 function storeZone() {
   const stores = state.setup?.stores || [];
-  const pool = state.scope === "all" ? stores : stores.filter((x) => String(x.id) === state.scope);
+  const group = (state.setup?.groups || []).find((g) => `g${g.id}` === state.scope);
+  const pool = state.scope === "all" ? stores
+    : group ? stores.filter((x) => group.store_ids.includes(x.id))
+    : stores.filter((x) => String(x.id) === state.scope);
   let lead, leadStamp = "";
   for (const s of pool) {
     const stamp = new Intl.DateTimeFormat("sv-SE", {  // "2026-10-07 01:23", sortable
@@ -187,7 +190,8 @@ async function boot() {
   $("setup").hidden = true;
   $("app").hidden = false;
 
-  const ids = state.setup.stores.map((s) => String(s.id));
+  const ids = [...state.setup.stores.map((s) => String(s.id)),
+               ...state.setup.groups.map((g) => `g${g.id}`)];
   if (state.scope !== "all" && !ids.includes(state.scope)) state.scope = "all";
 
   renderNav();
@@ -237,9 +241,13 @@ function renderNav() {
   const stores = state.setup.stores;
   const parts = [];
 
+  const groups = state.setup.groups || [];
   if (stores.length > 1) {
     parts.push(`<div class="nav-label">Blended</div>`);
     parts.push(navItem("all", "All stores", "&#9638;"));
+    for (const g of groups) parts.push(navItem(`g${g.id}`, g.name, "&#9707;"));
+    parts.push(`<button class="nav-item nav-sub" data-manage-groups>
+                  <span class="ico">+</span><span class="txt">New group</span></button>`);
     parts.push(`<div class="nav-label">Stores</div>`);
   } else {
     parts.push(`<div class="nav-label">Store</div>`);
@@ -250,9 +258,22 @@ function renderNav() {
   }
   $("storeNav").innerHTML = parts.join("");
 
-  for (const btn of $("storeNav").querySelectorAll(".nav-item")) {
+  for (const btn of $("storeNav").querySelectorAll(".nav-item[data-scope]")) {
     btn.onclick = () => pickScope(btn.dataset.scope);
   }
+  const manage = $("storeNav").querySelector("[data-manage-groups]");
+  if (manage) manage.onclick = openGroupSettings;
+
+  // Phones: blended views (All stores + groups) in one dropdown.
+  const isStore = stores.some((s) => String(s.id) === state.scope);
+  $("viewPick").innerHTML = [
+    isStore ? `<option value="" disabled>Blended</option>` : "",
+    `<option value="all">All stores</option>`,
+    ...groups.map((g) => `<option value="g${g.id}">${esc(g.name)}</option>`),
+    `<option value="manage">Manage groups…</option>`,
+  ].join("");
+  $("viewPick").value = isStore ? "" : state.scope;
+  $("viewPick").hidden = stores.length < 2;
 
   // Phones: the All stores button sits beside this, so the dropdown lists only
   // the stores and reads "Stores" while the blended view is showing.
@@ -261,7 +282,7 @@ function renderNav() {
        ...stores.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`)]
     : stores.map((s) => `<option value="all">${esc(s.name)}</option>`);  // one store: it is "all"
   $("storePick").innerHTML = options.join("");
-  $("storePick").value = state.scope;
+  $("storePick").value = isStore ? state.scope : "all";
 }
 
 function pickScope(scope) {
@@ -520,11 +541,118 @@ async function openSettings() {
   $("drawer").hidden = false;
   renderGoogleBox();
   renderMetaBox();
+  renderGroupSettings();
   renderStoreSettings();
   await Promise.all([loadAccounts(), loadMetaAccounts()]);
 }
 
 function closeSettings() { $("drawer").hidden = true; }
+
+async function openGroupSettings() {
+  const pending = openSettings();
+  $("groupsBlock").scrollIntoView({ block: "start" });
+  await pending;
+}
+
+/* ------------------------------------------------ store groups */
+
+let editingGroup = null;  // group id being edited, "new", or null
+
+function renderGroupSettings() {
+  const groups = state.setup.groups || [];
+  const rows = groups.map((g) => editingGroup === g.id ? groupEditor(g) : `
+    <div class="group-row">
+      <div class="group-name"><strong>${esc(g.name)}</strong>
+        <span>${g.store_ids.length} store${g.store_ids.length === 1 ? "" : "s"}</span></div>
+      <button class="btn btn-sm btn-ghost" data-edit-group="${g.id}">Edit</button>
+    </div>`).join("");
+
+  $("groupSettings").innerHTML = rows + (editingGroup === "new"
+    ? groupEditor({ id: "new", name: "", store_ids: [] })
+    : `<button id="newGroup" class="btn btn-ghost btn-block">+ New group</button>`);
+
+  const add = $("newGroup");
+  if (add) add.onclick = () => { editingGroup = "new"; renderGroupSettings(); };
+  for (const b of $("groupSettings").querySelectorAll("[data-edit-group]")) {
+    b.onclick = () => { editingGroup = Number(b.dataset.editGroup); renderGroupSettings(); };
+  }
+  const ed = $("groupSettings").querySelector(".group-editor");
+  if (ed) wireGroupEditor(ed);
+}
+
+function groupEditor(g) {
+  const stores = state.setup.stores;
+  const boxes = stores.map((s) => {
+    const tags = [s.meta_account_id ? "Meta" : "", s.google_customer_id ? "Google" : ""]
+      .filter(Boolean).join(" + ") || "no ads linked";
+    return `<label class="group-store">
+      <input type="checkbox" value="${s.id}"${g.store_ids.includes(s.id) ? " checked" : ""}>
+      <span>${esc(s.name)}</span><small>${tags}</small></label>`;
+  }).join("");
+  return `<div class="group-editor" data-group="${g.id}">
+    <label class="field"><span>Group name</span>
+      <input class="group-name-input" type="text" maxlength="60"
+             placeholder="e.g. Meta stores" value="${esc(g.name)}"></label>
+    <div class="group-quick">Tick:
+      <button type="button" class="link" data-tick="meta">stores with Meta</button>
+      <button type="button" class="link" data-tick="google">with Google</button>
+      <button type="button" class="link" data-tick="both">with both</button>
+      <button type="button" class="link" data-tick="none">none</button>
+    </div>
+    <div class="group-stores">${boxes}</div>
+    <div class="row-actions">
+      <button class="btn btn-sm btn-primary" data-save>${g.id === "new" ? "Create group" : "Save"}</button>
+      <button class="btn btn-sm btn-ghost" data-cancel>Cancel</button>
+      ${g.id === "new" ? "" : `<button class="btn btn-sm btn-danger" data-delete>Delete group</button>`}
+    </div>
+  </div>`;
+}
+
+function wireGroupEditor(ed) {
+  const id = ed.dataset.group;
+  const byId = Object.fromEntries(state.setup.stores.map((s) => [String(s.id), s]));
+  const boxes = [...ed.querySelectorAll(".group-stores input")];
+
+  for (const b of ed.querySelectorAll("[data-tick]")) {
+    b.onclick = () => {
+      for (const box of boxes) {
+        const s = byId[box.value];
+        const meta = !!s.meta_account_id, google = !!s.google_customer_id;
+        box.checked = { meta, google, both: meta && google, none: false }[b.dataset.tick];
+      }
+    };
+  }
+
+  ed.querySelector("[data-cancel]").onclick = () => { editingGroup = null; renderGroupSettings(); };
+
+  ed.querySelector("[data-save]").onclick = async () => {
+    const body = {
+      name: ed.querySelector(".group-name-input").value,
+      store_ids: boxes.filter((b) => b.checked).map((b) => Number(b.value)),
+    };
+    try {
+      if (id === "new") await jsonPost("/api/groups", body);
+      else await jsonPost(`/api/groups/${id}`, body, "PUT");
+      toast(`Group ${body.name.trim()} saved.`);
+      editingGroup = null;
+      await boot();
+      renderGroupSettings();
+    } catch (e) {
+      toast(e.message, true);
+    }
+  };
+
+  const del = ed.querySelector("[data-delete]");
+  if (del) del.onclick = async () => {
+    const g = state.setup.groups.find((x) => String(x.id) === id);
+    if (!confirm(`Delete the group ${g.name}? The stores themselves stay connected.`)) return;
+    await api(`/api/groups/${id}`, { method: "DELETE" });
+    toast(`Group ${g.name} deleted.`);
+    editingGroup = null;
+    await boot();
+    renderGroupSettings();
+  };
+}
 
 function renderGoogleBox() {
   const g = state.setup.google;
@@ -790,6 +918,10 @@ document.addEventListener("keydown", (e) => {
 
 $("rangeSelect").onchange = () => { applyRange(); load(); };
 $("storePick").onchange = (e) => pickScope(e.target.value);
+$("viewPick").onchange = (e) => {
+  if (e.target.value === "manage") { renderNav(); openGroupSettings(); return; }
+  pickScope(e.target.value);
+};
 $("currencySelect").onchange = async (e) => {
   try {
     await jsonPost("/api/settings", { display_currency: e.target.value }, "PUT");
