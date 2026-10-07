@@ -15,16 +15,16 @@ const state = {
   metaAccounts: null,
 };
 
-// Top row reads like a P&L: sales, then each cost; bottom row the results.
+// Sales, ad spend and ROAS lead; the other costs and results follow.
 // Costs are neutral ("none"): spending less isn't automatically good.
 const CARDS = [
   { key: "sales",          label: "Total Sales",     fmt: "money", dot: "var(--sales)",  dir: "up" },
   { key: "ad_spend",       label: "Ad Spend",        fmt: "money", dot: "var(--spend)",  dir: "none" },
-  { key: "processing_fee", label: "Processing Fees", fmt: "money", dot: "var(--spend)",  dir: "none" },
+  { key: "roas",           label: "ROAS",            fmt: "ratio", dot: "var(--accent)", dir: "up" },
   { key: "other_costs",    label: "Other Costs",     fmt: "money", dot: "var(--spend)",  dir: "none" },
   { key: "net_profit",     label: "Net Profit",      fmt: "money", dot: "var(--up)",     dir: "up", feature: true },
   { key: "net_margin",     label: "Net Margin",      fmt: "pct",   dot: "var(--up)",     dir: "up" },
-  { key: "roas",           label: "ROAS",            fmt: "ratio", dot: "var(--accent)", dir: "up" },
+  { key: "processing_fee", label: "Processing Fees", fmt: "money", dot: "var(--spend)",  dir: "none" },
   { key: "orders",         label: "Orders",          fmt: "int",   dot: "var(--sales)",  dir: "up" },
 ];
 
