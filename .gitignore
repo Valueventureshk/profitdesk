@@ -11,3 +11,6 @@ __pycache__/
 *.pyc
 server.log
 .DS_Store
+
+# Script copy with your Sheet link filled in (kept off GitHub)
+google-ads-script-READY.js
