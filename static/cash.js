@@ -97,21 +97,32 @@ function renderCards(s) {
   $("cards").innerHTML = now + horizons;
 }
 
+const FIRST_DAYS = 7;
+let showAllDays = false;
+
 function renderSchedule(s) {
   $("laterNote").textContent = Math.abs(s.later) >= 0.5 ? `${money(s.later)} more after 90 days` : "";
+  $("moreDays").hidden = true;
   if (!s.schedule.length) {
     $("schedule").innerHTML = `<tbody><tr><td class="hint">Nothing pending in the next 90 days.</td></tr></tbody>`;
     return;
   }
   let running = s.available;
-  const rows = s.schedule.map((d) => {
+  const rows = s.schedule.map((d, i) => {
     running += d.total;
     const kinds = Object.entries(d.kinds).map(([k, v]) => `${esc(k)} ${money(v)}`).join(" · ");
-    return `<tr><td class="name">${niceDate(d.date)}<span class="sub">${kinds}</span></td>
+    const hide = i >= FIRST_DAYS && !showAllDays ? " hidden" : "";
+    return `<tr${hide}><td class="name">${niceDate(d.date)}<span class="sub">${kinds}</span></td>
       <td>${d.total >= 0 ? "+" : ""}${money(d.total)}</td><td>${money(running)}</td></tr>`;
   }).join("");
   $("schedule").innerHTML = `<thead><tr><th>Day</th><th>Arriving</th><th>Available after</th></tr></thead>
     <tbody>${rows}</tbody>`;
+  const extra = s.schedule.length - FIRST_DAYS;
+  if (extra > 0) {
+    $("moreDays").hidden = false;
+    $("moreDays").textContent = showAllDays ? "Show first 7 days only"
+      : `Show ${extra} more day${extra === 1 ? "" : "s"} (to ${niceDate(s.schedule[s.schedule.length - 1].date)})`;
+  }
 }
 
 function renderAccounts(s) {
@@ -197,6 +208,12 @@ $("ppAdd").onclick = async () => {
     btn.disabled = false;
     btn.textContent = "Connect PayPal";
   }
+};
+
+$("moreDays").onclick = () => {
+  showAllDays = !showAllDays;
+  renderSchedule(data.summary);
+  if (!showAllDays) $("schedulePanel").scrollIntoView({ block: "start", behavior: "smooth" });
 };
 
 $("refresh").onclick = load;
