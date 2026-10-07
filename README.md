@@ -56,6 +56,7 @@ The maths, in full:
 
 ```
   Total sales
+− Processing fees  payment provider + Shopify third-party fee, per order
 − Other costs      your cost % × total sales
 − Ad spend         Google Ads + Meta Ads, account level
 = Net profit
@@ -196,6 +197,20 @@ Stores in different currencies are added up as if they were the same. A warning
 appears when that happens.
 
 ---
+
+## Processing fees
+
+Every order's payment method (PayPal, Airwallex card / Apple Pay / Google Pay,
+Afterpay through Airwallex) is read from Shopify, and a fee is estimated per
+order from a rate card for a Hong Kong PayPal and Airwallex account selling
+abroad. Shopify's own fee for using a third-party provider (Basic 2%,
+Shopify 1%, Advanced 0.6%) is added from each store's plan. Both come out of
+profit as **Processing fees**, shown split into *Payments* and *Shopify*.
+
+Rates live in Settings → **Processing fees**. Fees are charged on the original
+order total and aren't given back on refunds. Afterpay's rate through Airwallex
+isn't published, so 6% is a placeholder until confirmed. These are estimates;
+exact fees from PayPal and Airwallex are a planned next step.
 
 ## Store groups
 

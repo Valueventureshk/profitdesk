@@ -107,6 +107,7 @@ _ADDED_COLUMNS = {
         ("meta_connection_id", "INTEGER"),
         ("meta_timezone", "TEXT"),
         ("google_currency", "TEXT"),
+        ("shopify_plan", "TEXT"),
     ],
 }
 
@@ -311,6 +312,11 @@ def get_shopify_app(shop_domain: str):
 
 
 # ---------------------------------------------------------------- meta link
+
+def set_store_plan(store_id: int, plan: str):
+    with _conn() as con:
+        con.execute("UPDATE stores SET shopify_plan = ? WHERE id = ?", (plan, store_id))
+
 
 def set_meta_timezone(store_id: int, tz: str):
     with _conn() as con:

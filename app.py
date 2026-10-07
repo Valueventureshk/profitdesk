@@ -6,6 +6,7 @@ Nothing is stored except your connections and your cost percentage. Sales and
 ad spend are read live from Shopify, Google and Meta every time the dashboard loads.
 """
 import asyncio
+import json
 import os
 import re
 import secrets
@@ -135,6 +136,7 @@ def api_setup():
         "shop_domain": s["shop_domain"],
         "currency": s["currency"],
         "timezone": s["timezone"],
+        "shopify_plan": s["shopify_plan"],
         "cost_pct": s["cost_pct"],
         "google_customer_id": s["google_customer_id"],
         "google_account_name": s["google_account_name"],
@@ -144,6 +146,8 @@ def api_setup():
     return {
         "stores": stores,
         "groups": db.list_groups(),
+        "fee_rates": _fee_rates(),
+        "shopify_fee_pct": metrics.SHOPIFY_THIRD_PARTY_PCT,
         "shopify": {
             "app_configured": shop.app_configured(),
             "redirect_uri": SHOPIFY_REDIRECT,
@@ -401,9 +405,86 @@ def _in_currency(rows, store, fx_table, base):
     return [
         metrics.day(r["date"], r["sales"] * f_sales, r["orders"],
                     r["google_spend"] * f_google, r["meta_spend"] * f_meta,
-                    store["cost_pct"])
+                    store["cost_pct"], r["payment_fee"] * f_sales, r["shopify_fee"] * f_sales)
         for r in rows
     ]
+
+
+# ---------------------------------------------------------------- processing fees
+
+def _fee_rates() -> dict:
+    """The saved rate card, with any missing entries filled from the defaults."""
+    rates = json.loads(json.dumps(metrics.DEFAULT_FEE_RATES))
+    try:
+        saved = json.loads(db.get_setting("fee_rates") or "{}")
+    except ValueError:
+        saved = {}
+    for k, v in saved.items():
+        if k == "paypal_fixed" and isinstance(v, dict):
+            rates["paypal_fixed"].update({c: float(x) for c, x in v.items()})
+        elif k in rates and not isinstance(rates[k], dict):
+            rates[k] = float(v)
+    return rates
+
+
+@app.put("/api/fee-rates")
+def api_fee_rates(payload: dict):
+    rates = _fee_rates()
+    for k, v in payload.items():
+        try:
+            if k == "paypal_fixed" and isinstance(v, dict):
+                rates["paypal_fixed"].update({c.upper(): max(0.0, float(x)) for c, x in v.items()})
+            elif k in rates and not isinstance(rates[k], dict):
+                rates[k] = max(0.0, min(100.0, float(v))) if k.endswith("_pct") else max(0.0, float(v))
+        except (TypeError, ValueError):
+            raise HTTPException(400, f"{k} needs to be a number.")
+    db.set_setting("fee_rates", json.dumps(rates))
+    _cache.clear()
+    return {"ok": True, "fee_rates": rates}
+
+
+_plans: dict[int, tuple[float, str]] = {}
+
+
+async def _store_plan(store) -> str:
+    """The store's Shopify plan, checked at most every six hours."""
+    hit = _plans.get(store["id"])
+    if hit and time.time() - hit[0] < 6 * 3600:
+        return hit[1]
+    try:
+        plan = await ShopifyClient(store["shop_domain"], store["access_token"]).plan()
+    except ShopifyError:
+        plan = store["shopify_plan"] or ""
+    if plan != store["shopify_plan"]:
+        db.set_store_plan(store["id"], plan)
+    _plans[store["id"]] = (time.time(), plan)
+    return plan
+
+
+async def _fee_context(store, notes):
+    """Everything processing_fees needs for one store: rates, plan, HK$ value."""
+    plan = await _store_plan(store)
+    if plan and plan not in metrics.SHOPIFY_THIRD_PARTY_PCT:
+        notes.append(f"{store['name']}: Shopify plan '{plan}' isn't in the fee table, "
+                     "so Shopify's third-party fee is counted as 0%.")
+    hkd = 1.0
+    if store["currency"] != "HKD":
+        try:
+            hkd = fx.factor(await fx.table(store["currency"]), "HKD", store["currency"])
+        except fx.FxError:
+            hkd = 0.0
+            notes.append(f"{store['name']}: couldn't get the HK$ exchange rate, so "
+                         "Airwallex's fixed HK$ fee per order is left out for now.")
+    return _fee_rates(), plan, hkd
+
+
+def _fees_for(store, payments, ctx, notes):
+    rates, plan, hkd = ctx
+    unknown = sorted({g for g in payments if metrics.payment_method(g) == "other"})
+    if unknown:
+        notes.append(f"{store['name']}: some orders were paid with {', '.join(unknown)}, "
+                     "which has no fee rate yet, so only Shopify's fee is counted for them.")
+    return metrics.processing_fees(payments, rates, plan, store["currency"], hkd)
 
 
 # ---------------------------------------------------------------- meta
@@ -683,12 +764,14 @@ async def _store_window(store, start, end, auth, meta_auth):
     if store["google_customer_id"] is None and store["meta_account_id"] is None:
         notes.append(f"{store['name']}: no ad accounts linked yet, so ad spend shows as zero.")
 
+    ctx = await _fee_context(store, notes)
     rows = []
     for d in _dates(start, end):
-        s = got_sales.get(d, {"sales": 0.0, "orders": 0})
+        s = got_sales.get(d, {"sales": 0.0, "orders": 0, "payments": {}})
+        pay_fee, shop_fee = _fees_for(store, s["payments"], ctx, notes)
         rows.append(metrics.day(d, s["sales"], s["orders"],
                                 got_spend.get(d, 0.0), got_meta.get(d, 0.0),
-                                store["cost_pct"]))
+                                store["cost_pct"], pay_fee, shop_fee))
 
     _cache[key] = (time.time(), (rows, notes))
     return rows, notes
@@ -741,7 +824,7 @@ async def _same_time_yesterday(store, day, auth, meta_auth):
     async def sales():
         client = ShopifyClient(store["shop_domain"], store["access_token"])
         got = await client.daily_sales(day, day, store["timezone"], until=until)
-        return got.get(day, {"sales": 0.0, "orders": 0})
+        return got.get(day, {"sales": 0.0, "orders": 0, "payments": {}})
 
     async def google():
         if not (store["google_customer_id"] and auth and gads.has_developer_token()):
@@ -764,14 +847,16 @@ async def _same_time_yesterday(store, day, auth, meta_auth):
         if isinstance(got, Exception):
             notes.append(f"{store['name']}: could not read {label} for the comparison ({got}).")
     if isinstance(got_sales, Exception):
-        got_sales = {"sales": 0.0, "orders": 0}
+        got_sales = {"sales": 0.0, "orders": 0, "payments": {}}
     if isinstance(got_google, Exception):
         got_google = 0.0
     if isinstance(got_meta, Exception):
         got_meta = 0.0
 
+    pay_fee, shop_fee = _fees_for(store, got_sales["payments"],
+                                  await _fee_context(store, notes), notes)
     return [metrics.day(day, got_sales["sales"], got_sales["orders"],
-                        got_google, got_meta, store["cost_pct"])], notes
+                        got_google, got_meta, store["cost_pct"], pay_fee, shop_fee)], notes
 
 
 def _dates(start: str, end: str):

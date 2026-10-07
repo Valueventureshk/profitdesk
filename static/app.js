@@ -15,13 +15,17 @@ const state = {
   metaAccounts: null,
 };
 
+// Top row reads like a P&L: sales, then each cost; bottom row the results.
+// Costs are neutral ("none"): spending less isn't automatically good.
 const CARDS = [
-  { key: "sales",      label: "Total Sales", fmt: "money", dot: "var(--sales)",  dir: "up" },
-  { key: "ad_spend",   label: "Ad Spend",    fmt: "money", dot: "var(--spend)",  dir: "none" },
-  { key: "roas",       label: "ROAS",        fmt: "ratio", dot: "var(--accent)", dir: "up" },
-  { key: "net_profit", label: "Net Profit",  fmt: "money", dot: "var(--up)",     dir: "up", feature: true },
-  { key: "net_margin", label: "Net Margin",  fmt: "pct",   dot: "var(--up)",     dir: "up" },
-  { key: "orders",     label: "Orders",      fmt: "int",   dot: "var(--sales)",  dir: "up" },
+  { key: "sales",          label: "Total Sales",     fmt: "money", dot: "var(--sales)",  dir: "up" },
+  { key: "ad_spend",       label: "Ad Spend",        fmt: "money", dot: "var(--spend)",  dir: "none" },
+  { key: "processing_fee", label: "Processing Fees", fmt: "money", dot: "var(--spend)",  dir: "none" },
+  { key: "other_costs",    label: "Other Costs",     fmt: "money", dot: "var(--spend)",  dir: "none" },
+  { key: "net_profit",     label: "Net Profit",      fmt: "money", dot: "var(--up)",     dir: "up", feature: true },
+  { key: "net_margin",     label: "Net Margin",      fmt: "pct",   dot: "var(--up)",     dir: "up" },
+  { key: "roas",           label: "ROAS",            fmt: "ratio", dot: "var(--accent)", dir: "up" },
+  { key: "orders",         label: "Orders",          fmt: "int",   dot: "var(--sales)",  dir: "up" },
 ];
 
 /* ------------------------------------------------ formatting */
@@ -364,6 +368,8 @@ function renderCards(d) {
       <div class="card-value">${value}</div>
       ${c.key === "ad_spend" ? spendSplit(d.totals) : ""}
       ${c.key === "orders" ? `<div class="card-note">AOV ${fmt(d.totals.aov, "money")}</div>` : ""}
+      ${c.key === "processing_fee" ? `<div class="card-note">Payments ${fmt(d.totals.payment_fee, "money")}
+        · Shopify ${fmt(d.totals.shopify_fee, "money")}</div>` : ""}
       ${sparkline(d.series, c.key, c.dot)}
     </div>`;
   }).join("");
@@ -473,6 +479,7 @@ function renderStoreTable(d) {
       <td>${fmt(t.sales, "money")}</td>
       <td>${fmt(t.ad_spend, "money")}
         <span class="sub">G ${fmt(t.google_spend, "money")} · M ${fmt(t.meta_spend, "money")}</span></td>
+      <td>${fmt(t.processing_fee, "money")}</td>
       <td>${fmt(t.roas, "ratio")}</td>
       <td>${fmt(t.aov, "money")}</td>
       <td class="${profitClass}">${fmt(t.net_profit, "money")}</td>
@@ -483,7 +490,7 @@ function renderStoreTable(d) {
 
   $("storeTable").innerHTML = `
     <thead><tr>
-      <th>Store</th><th>Total sales</th><th>Ad spend</th><th>ROAS</th><th>AOV</th>
+      <th>Store</th><th>Total sales</th><th>Ad spend</th><th>Fees</th><th>ROAS</th><th>AOV</th>
       <th>Net profit</th><th>Margin</th><th>Orders</th>
     </tr></thead>
     <tbody>${rows}</tbody>`;
@@ -550,6 +557,7 @@ async function openSettings() {
   renderGoogleBox();
   renderMetaBox();
   renderGroupSettings();
+  renderFeeSettings();
   renderStoreSettings();
   await Promise.all([loadAccounts(), loadMetaAccounts()]);
 }
@@ -560,6 +568,57 @@ async function openGroupSettings() {
   const pending = openSettings();
   $("groupsBlock").scrollIntoView({ block: "start" });
   await pending;
+}
+
+/* ------------------------------------------------ processing fee rates */
+
+const FEE_FIELDS = [
+  ["PayPal", [["paypal_pct", "% per payment"], ["paypal_fx_pct", "% to convert to HKD"]]],
+  ["Airwallex cards, Apple Pay, Google Pay", [["awx_card_pct", "% per payment"], ["awx_card_fixed_hkd", "HK$ per payment"]]],
+  ["Afterpay (through Airwallex)", [["awx_afterpay_pct", "% per payment"], ["awx_afterpay_fixed_hkd", "HK$ per payment"]]],
+  ["Airwallex currency conversion", [["awx_fx_pct", "% to convert to HKD"]]],
+];
+
+function renderFeeSettings() {
+  const r = state.setup.fee_rates;
+  const used = [...new Set(state.setup.stores.map((s) => s.currency))].filter((c) => c !== "HKD");
+  const plans = state.setup.stores.map((s) => {
+    const pct = state.setup.shopify_fee_pct[s.shopify_plan];
+    return `<li><span>${esc(s.name)}</span><small>${esc(s.shopify_plan || "plan not checked yet")}
+      · ${pct === undefined ? "—" : pct + "%"}</small></li>`;
+  }).join("");
+
+  $("feeSettings").innerHTML = `
+    ${FEE_FIELDS.map(([title, fields]) => `
+      <div class="fee-group"><div class="fee-title">${esc(title)}</div>
+        ${fields.map(([k, label]) => `<label class="inline-field">
+          <input type="number" min="0" step="0.01" data-fee="${k}" value="${r[k]}">
+          <span class="suffix">${label}</span></label>`).join("")}
+        ${title === "PayPal" ? `<div class="fee-fixed">Fixed fee per payment:
+          ${used.map((c) => `<label><input type="number" min="0" step="0.01"
+             data-fixed="${c}" value="${r.paypal_fixed[c] ?? ""}"> ${c}</label>`).join("")}</div>` : ""}
+      </div>`).join("")}
+    <div class="fee-group"><div class="fee-title">Shopify's fee for using PayPal / Airwallex</div>
+      <p class="hint">Set automatically from each store's Shopify plan: Basic 2%, Shopify 1%, Advanced 0.6%.</p>
+      <ul class="fee-plans">${plans}</ul></div>
+    <button id="saveFees" class="btn btn-primary btn-block">Save fee rates</button>`;
+
+  $("saveFees").onclick = async () => {
+    const body = { paypal_fixed: {} };
+    for (const i of $("feeSettings").querySelectorAll("[data-fee]")) body[i.dataset.fee] = i.value;
+    for (const i of $("feeSettings").querySelectorAll("[data-fixed]")) {
+      if (i.value !== "") body.paypal_fixed[i.dataset.fixed] = i.value;
+    }
+    try {
+      await jsonPost("/api/fee-rates", body, "PUT");
+      toast("Fee rates saved.");
+      state.setup = await api("/api/setup");
+      renderFeeSettings();
+      load(true);
+    } catch (e) {
+      toast(e.message, true);
+    }
+  };
 }
 
 /* ------------------------------------------------ store groups */

@@ -25,6 +25,7 @@ SCOPES = "read_orders"
 SHOP_DOMAIN_RE = re.compile(r"^[a-z0-9][a-z0-9-]*\.myshopify\.com$")
 
 SHOP_QUERY = "{ shop { name currencyCode myshopifyDomain ianaTimezone } }"
+PLAN_QUERY = "{ shop { plan { displayName } } }"
 
 ORDERS_QUERY = """
 query Orders($cursor: String, $q: String!) {
@@ -33,6 +34,7 @@ query Orders($cursor: String, $q: String!) {
     nodes {
       createdAt
       test
+      paymentGatewayNames
       totalPriceSet { shopMoney { amount } }
       totalRefundedSet { shopMoney { amount } }
     }
@@ -198,6 +200,12 @@ class ShopifyClient:
             raise ShopifyError(str(first.get("message", first)))
         return payload["data"]
 
+    async def plan(self) -> str:
+        """The store's Shopify plan name, e.g. "Basic" or "Shopify"."""
+        async with httpx.AsyncClient(timeout=30) as client:
+            data = await self._post(client, PLAN_QUERY)
+        return ((data["shop"].get("plan") or {}).get("displayName")) or ""
+
     async def shop_info(self):
         async with httpx.AsyncClient(timeout=30) as client:
             data = await self._post(client, SHOP_QUERY)
@@ -221,7 +229,9 @@ class ShopifyClient:
             f"created_at:<='{hi.astimezone(timezone.utc):%Y-%m-%dT%H:%M:%SZ}'"
         )
 
-        days = defaultdict(lambda: {"sales": 0.0, "orders": 0})
+        # payments: how each order was paid, {method: [orders, amount]}, so the
+        # profit engine can work out processing fees per payment method.
+        days = defaultdict(lambda: {"sales": 0.0, "orders": 0, "payments": {}})
         cursor = None
         async with httpx.AsyncClient(timeout=90) as client:
             while True:
@@ -241,6 +251,12 @@ class ShopifyClient:
                         _money(o, "totalPriceSet") - _money(o, "totalRefundedSet")
                     )
                     bucket["orders"] += 1
+                    # Fees are charged on what was paid, and providers keep them
+                    # when an order is refunded, so the base is the original total.
+                    via = ", ".join(o.get("paymentGatewayNames") or [])
+                    paid = bucket["payments"].setdefault(via, [0, 0.0])
+                    paid[0] += 1
+                    paid[1] += _money(o, "totalPriceSet")
                 if not conn["pageInfo"]["hasNextPage"]:
                     break
                 cursor = conn["pageInfo"]["endCursor"]
