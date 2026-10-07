@@ -29,7 +29,7 @@
     <section id="empty" class="panel cash-empty" hidden>
       <h2>Connect your first money account</h2>
       <p class="hint">Add Airwallex below to see what's available now and what lands over the
-        next 90 days. PayPal is next.</p>
+        next 90 days.</p>
     </section>
 
     <section id="cards" class="cards"></section>
@@ -67,6 +67,22 @@
             (starts with <code>acct_</code>). Copy each ID with the copy button next to it in
             Airwallex.</p>
           <button id="awxAdd" class="btn btn-primary btn-block">Connect Airwallex</button>
+        </details>
+        <details class="advanced" id="addPp">
+          <summary>Add a PayPal account</summary>
+          <p class="hint">At <strong>developer.paypal.com</strong>, log in with the PayPal business
+            account, switch to <strong>Live</strong>, open <strong>Apps &amp; Credentials → Create
+            App</strong>, then under Features tick <strong>Transaction search</strong>. Paste the
+            app's Client ID and Secret here.</p>
+          <label class="field"><span>Name</span>
+            <input id="ppLabel" type="text" placeholder="e.g. PayPal HK"></label>
+          <label class="field"><span>Client ID</span>
+            <input id="ppClient" type="text" autocomplete="off"></label>
+          <label class="field"><span>Secret</span>
+            <input id="ppSecret" type="password" autocomplete="off"></label>
+          <p class="hint">PayPal doesn't share when held money is released, so PayPal holds show
+            under "held" rather than on a date.</p>
+          <button id="ppAdd" class="btn btn-primary btn-block">Connect PayPal</button>
         </details>
       </div>
     </section>

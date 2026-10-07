@@ -93,7 +93,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     created_at TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
--- Money accounts for the Cash flow page (Airwallex now, PayPal next).
+-- Money accounts for the Cash flow page (Airwallex, PayPal).
 -- Keys are read-only API credentials created in each provider.
 CREATE TABLE IF NOT EXISTS cash_connections (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,

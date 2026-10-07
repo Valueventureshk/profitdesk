@@ -24,6 +24,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 import airwallex_client as awx
+import paypal_client as paypal
 import auth
 import cashflow
 import db
@@ -614,6 +615,8 @@ async def api_cash(currency: str = None):
     async def one(c):
         if c["provider"] == "airwallex":
             return await awx.snapshot(c["client_id"], c["secret"], account_id=c["account_id"])
+        if c["provider"] == "paypal":
+            return await paypal.snapshot(c["client_id"], c["secret"])
         raise RuntimeError(f"Unknown provider {c['provider']}")
 
     got = await asyncio.gather(*[one(c) for c in conns], return_exceptions=True)
@@ -667,6 +670,21 @@ async def api_add_airwallex(payload: dict):
         db.add_cash_connection("airwallex", name[:60], cid, key, a)
     currencies = sorted({b["currency"] for s in checked for b in s["balances"]})
     return {"ok": True, "accounts": len(targets), "currencies": currencies}
+
+
+@app.post("/api/cash/paypal")
+async def api_add_paypal(payload: dict):
+    cid = (payload.get("client_id") or "").strip()
+    secret = (payload.get("secret") or "").strip()
+    label = (payload.get("label") or "").strip() or "PayPal"
+    if not cid or not secret:
+        raise HTTPException(400, "Paste both the Client ID and the Secret from PayPal.")
+    try:
+        snap = await paypal.snapshot(cid, secret)
+    except paypal.PayPalError as e:
+        raise HTTPException(400, str(e))
+    db.add_cash_connection("paypal", label[:60], cid, secret)
+    return {"ok": True, "accounts": 1, "currencies": sorted(b["currency"] for b in snap["balances"])}
 
 
 @app.put("/api/cash/{connection_id}")

@@ -131,7 +131,7 @@ function renderConnections() {
   const list = data.connected || [];
   $("connList").innerHTML = list.length ? list.map((c) => `
     <div class="group-row">
-      <div class="group-name"><strong>${esc(c.label)}</strong><span>${esc(c.provider)}</span></div>
+      <div class="group-name"><strong>${esc(c.label)}</strong><span>${esc(c.provider === "paypal" ? "PayPal" : c.provider === "airwallex" ? "Airwallex" : c.provider)}</span></div>
       <button class="btn btn-sm btn-ghost" data-rename="${c.id}">Rename</button>
       <button class="btn btn-sm btn-danger" data-remove="${c.id}">Remove</button>
     </div>`).join("") : `<p class="hint">No accounts connected yet.</p>`;
@@ -176,6 +176,26 @@ $("awxAdd").onclick = async () => {
   } finally {
     btn.disabled = false;
     btn.textContent = "Connect Airwallex";
+  }
+};
+
+$("ppAdd").onclick = async () => {
+  const btn = $("ppAdd");
+  btn.disabled = true;
+  btn.textContent = "Checking with PayPal…";
+  try {
+    const r = await post("/api/cash/paypal", {
+      label: $("ppLabel").value, client_id: $("ppClient").value, secret: $("ppSecret").value,
+    });
+    for (const id of ["ppLabel", "ppClient", "ppSecret"]) $(id).value = "";
+    $("addPp").open = false;
+    toast(`PayPal connected · ${r.currencies.length} currenc${r.currencies.length === 1 ? "y" : "ies"}.`);
+    load();
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Connect PayPal";
   }
 };
 
