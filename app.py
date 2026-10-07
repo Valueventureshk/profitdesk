@@ -122,7 +122,13 @@ def terms_page():
 
 @app.get("/healthz")
 def healthz():
-    return {"ok": True}
+    """Up check for Railway, plus where the database lives (paths only) so a
+    missing volume is easy to spot."""
+    vol = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "")
+    path = os.path.abspath(db.DB_PATH)
+    return {"ok": True, "db_path": path, "volume_mount": vol or None,
+            "db_on_volume": bool(vol) and path.startswith(vol.rstrip("/") + "/"),
+            "has_accounts": auth.has_users()}
 
 
 @app.get("/login", response_class=HTMLResponse)
