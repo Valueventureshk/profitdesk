@@ -485,10 +485,10 @@ function renderStoreTable(d) {
       <td class="name">${esc(s.name)}
         <span class="sub">${esc(linkedAccounts(s))}</span></td>
       <td>${fmt(t.sales, "money")}</td>
-      <td>${fmt(t.ad_spend, "money")}
-        <span class="sub">G ${fmt(t.google_spend, "money")} · M ${fmt(t.meta_spend, "money")}</span></td>
-      <td>${fmt(t.processing_fee, "money")}</td>
+      <td>${fmt(t.ad_spend, "money")}</td>
       <td>${fmt(t.roas, "ratio")}</td>
+      <td>${fmt(t.processing_fee, "money")}</td>
+      <td>${s.cost_pct === null || s.cost_pct === undefined ? "—" : `${Number(s.cost_pct).toLocaleString(undefined, { maximumFractionDigits: 2 })}%`}</td>
       <td>${fmt(t.aov, "money")}</td>
       <td class="${profitClass}">${fmt(t.net_profit, "money")}</td>
       <td>${fmt(t.net_margin, "pct")}</td>
@@ -498,7 +498,8 @@ function renderStoreTable(d) {
 
   $("storeTable").innerHTML = `
     <thead><tr>
-      <th>Store</th><th>Total sales</th><th>Ad spend</th><th>Fees</th><th>ROAS</th><th>AOV</th>
+      <th>Store</th><th>Total sales</th><th>Ad spend</th><th>ROAS</th><th>Fees</th>
+      <th title="Other costs, as a % of sales (set per store)">Cost %</th><th>AOV</th>
       <th>Net profit</th><th>Margin</th><th>Orders</th>
     </tr></thead>
     <tbody>${rows}</tbody>`;
