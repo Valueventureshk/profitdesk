@@ -115,6 +115,15 @@ def _fit(balances: list, pending: list) -> list:
         net = min(p["net"], room)
         used[p["currency"]] = used.get(p["currency"], 0.0) + net
         out.append({**p, "net": round(net, 2)})
+    # Held money the feed hasn't caught up with yet (it lags a few hours):
+    # assume the longer of today's rules from now, so it still counts as receivable.
+    now = datetime.now(timezone.utc)
+    for cur, total in held.items():
+        rest = round(total - used.get(cur, 0.0), 2)
+        if rest >= 0.01:
+            out.append({"currency": cur, "net": rest, "type": "PAYPAL_HOLD_RELEASE",
+                        "estimated": (now + timedelta(days=GENERAL_DAYS)).isoformat(),
+                        "created": now.isoformat()})
     return sorted(out, key=lambda p: p["estimated"])
 
 
@@ -149,7 +158,7 @@ async def snapshot(client_id: str, secret: str) -> dict:
 
 async def transactions(client_id: str, secret: str, days: int = 75) -> list:
     """Every transaction_info row from the last `days` days (31-day windows,
-    PayPal's limit per search). Kept for 10 minutes; PayPal's feed itself
+    PayPal's limit per search). Kept for 5 minutes; PayPal's feed itself
     lags by up to a few hours."""
     hit = _feed.get(client_id)
     if hit and time.time() < hit[0] and days == 75:
@@ -177,5 +186,5 @@ async def transactions(client_id: str, secret: str, days: int = 75) -> list:
                 page += 1
             start = stop
     if days == 75:
-        _feed[client_id] = (time.time() + 600, out)
+        _feed[client_id] = (time.time() + 300, out)
     return out

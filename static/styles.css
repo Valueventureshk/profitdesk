@@ -469,6 +469,7 @@ a.section-item:hover { background: var(--line-soft); }
 .cash-empty { padding: 18px; }
 .cash-empty h2 { font-size: 15px; margin-bottom: 4px; }
 .cash-connect-body { padding: 14px 16px; }
+.card.position { grid-column: 1 / -1; min-height: 0; background: var(--tint); border-color: #A7F3D0; }
 #schedule .sub { line-height: 1.45; margin-top: 2px; white-space: normal; }
 #schedule .kind { display: block; }
 #schedule td.name { width: 100%; }

@@ -8,6 +8,10 @@ connected account's balances and its pending (not-yet-settled) transactions.
                          on or before today + N (anything overdue or undated
                          counts as arriving by tomorrow)
     Available by day N   available now + arriving by day N
+    Receivable           every pending amount, whatever its date: sales not yet
+                         settled, reserves still held, PayPal holds
+    Available + receivable   available now + receivable: everything that is
+                         yours, spendable now or on its way
 
 Pending amounts are net: refunds and payouts waiting to leave are negative.
 Card spending on hold (ISSUING_AUTHORISATION_HOLD/RELEASE) is left out: the
@@ -110,9 +114,12 @@ def summarize(accounts: list, factor, today: date, tz) -> dict:
             "balances": acct["balances"],
         })
 
+    receivable = incoming[HORIZONS[-1][0]] + later
     return {
         "available": available,
         "reserved": reserved,
+        "receivable": receivable,
+        "position": available + receivable,
         "horizons": [{
             "key": key, "label": label, "days": n,
             "until": (today + timedelta(days=n)).isoformat(),

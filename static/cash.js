@@ -53,6 +53,7 @@ const post = (path, body, method = "POST") => api(path, {
 /* ------------------------------------------------ load + draw */
 
 async function load() {
+  lastLoad = Date.now();
   $("sub").textContent = "Asking your accounts…";
   try {
     data = await api("/api/cash?currency=" + encodeURIComponent($("currencySelect").value));
@@ -83,6 +84,12 @@ function kindsNote(byKind) {
 }
 
 function renderCards(s) {
+  const position = `<div class="card position">
+      <div class="card-label"><span class="dot" style="background:var(--up)"></span>Available + receivable</div>
+      <div class="card-value">${money(s.position)}</div>
+      <div class="card-note">${money(s.available)} available now + ${money(s.receivable)} receivable
+        (sales settling, reserves and PayPal holds still to be released)</div>
+    </div>`;
   const now = `<div class="card feature">
       <div class="card-label"><span class="dot" style="background:var(--up)"></span>Available now</div>
       <div class="card-value">${money(s.available)}</div>
@@ -94,7 +101,7 @@ function renderCards(s) {
       <div class="card-note">${h.incoming >= 0 ? "+" : ""}${money(h.incoming)} arriving by ${niceDate(h.until)}</div>
       <div class="card-note">${kindsNote(h.by_kind)}</div>
     </div>`).join("");
-  $("cards").innerHTML = now + horizons;
+  $("cards").innerHTML = position + now + horizons;
 }
 
 const FIRST_DAYS = 7;
@@ -218,6 +225,12 @@ $("moreDays").onclick = () => {
 };
 
 $("refresh").onclick = load;
+// Keep figures current while the page is open: every 5 minutes, and on coming back to it.
+setInterval(() => { if (!document.hidden) load(); }, 5 * 60 * 1000);
+let lastLoad = Date.now();
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && Date.now() - lastLoad > 60 * 1000) load();
+});
 $("currencySelect").onchange = async (e) => {
   try { await post("/api/settings", { display_currency: e.target.value }, "PUT"); } catch { /* shown on load */ }
   load();
