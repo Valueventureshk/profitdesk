@@ -27,6 +27,7 @@ import db
 import demo
 import fx
 import google_ads_client as gads
+import google_sheet as gsheet
 import meta_ads_client as meta
 import metrics
 import shopify_client as shop
@@ -80,6 +81,11 @@ async def _meta_err(request, exc):
 async def _fx_err(request, exc):
     return JSONResponse({"error": f"{exc} Figures can't be converted right now; "
                                   "try Refresh in a minute."}, status_code=503)
+
+
+@app.exception_handler(gsheet.SheetError)
+async def _sheet_err(request, exc):
+    return JSONResponse({"error": str(exc)}, status_code=400)
 
 
 @app.exception_handler(db.AlreadyLinked)
@@ -156,6 +162,7 @@ def api_setup():
             "configured": gads.is_configured(),
             "connected": bool(auth),
             "email": auth["email"] if auth else None,
+            "sheet_id": gsheet.sheet_id(),
 
             "redirect_uri": GOOGLE_REDIRECT,
         },
@@ -312,6 +319,14 @@ async def google_callback(request: Request):
     return _closer(f"Connected as {email or 'your Google account'}. You can close this tab.", ok=True)
 
 
+@app.post("/api/google/sheet")
+def api_google_sheet(payload: dict):
+    """Set the Google Sheet the Google Ads script writes spend into."""
+    sid = gsheet.save_sheet(payload.get("url") or "")
+    _cache.clear()
+    return {"ok": True, "sheet_id": sid}
+
+
 @app.post("/api/google/disconnect")
 def api_google_disconnect():
     db.clear_google_auth()
@@ -324,7 +339,12 @@ async def api_google_accounts():
     auth = db.get_google_auth()
     if not auth:
         raise HTTPException(400, "Sign in with Google first.")
-    accounts = await gads.list_accounts(auth["refresh_token"])
+    # With a spend Sheet set, the accounts are the Sheet's tabs; otherwise ask
+    # the Google Ads API (needs the Cloud project approved for Explorer+).
+    if gsheet.sheet_id():
+        accounts = await gsheet.list_accounts(auth["refresh_token"])
+    else:
+        accounts = await gads.list_accounts(auth["refresh_token"])
     taken = db.linked_customer_ids()
     for a in accounts:
         a["linked_to"] = taken.get(a["customer_id"])
@@ -337,7 +357,8 @@ def api_link_google(store_id: int, payload: dict):
     if not cid:
         raise HTTPException(400, "Pick an ad account.")
     db.link_google(store_id, cid, payload.get("login_customer_id"),
-                   payload.get("name") or f"Account {cid}", payload.get("currency"))
+                   payload.get("name") or f"Account {cid}", payload.get("currency"),
+                   payload.get("timezone"), payload.get("source"))
     _cache.clear()
     return {"ok": True}
 
@@ -739,6 +760,9 @@ async def _store_window(store, start, end, auth, meta_auth):
         if not auth:
             notes.append(f"{store['name']}: Google is not connected, so ad spend shows as zero.")
             return {}
+        if store["google_source"] == "sheet":
+            return await gsheet.daily_spend(auth["refresh_token"], store["google_customer_id"],
+                                            start, end_for_api, store["timezone"])
         return await gads.daily_spend(
             auth["refresh_token"], store["google_customer_id"],
             store["google_login_cid"], start, end_for_api,
@@ -840,6 +864,9 @@ async def _same_time_yesterday(store, day, auth, meta_auth):
     async def google():
         if not (store["google_customer_id"] and auth):
             return 0.0
+        if store["google_source"] == "sheet":
+            return await gsheet.spend_until_hour(auth["refresh_token"], store["google_customer_id"],
+                                                 day, now.hour, store["timezone"])
         return await gads.spend_until_hour(auth["refresh_token"], store["google_customer_id"],
                                            store["google_login_cid"], day, now.hour)
 

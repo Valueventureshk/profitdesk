@@ -756,7 +756,28 @@ function renderGoogleBox() {
     <div class="google-state">
       <div class="who"><strong>Connected</strong><span>${esc(g.email || "Google account")}</span></div>
       <button id="googleOff" class="btn btn-sm btn-danger">Disconnect</button>
-    </div>`;
+    </div>
+    <label class="field" style="margin-top:10px"><span>Spend Sheet (filled by the Google Ads script)</span>
+      <input id="gSheet" type="text" autocomplete="off"
+        placeholder="https://docs.google.com/spreadsheets/d/…"
+        value="${g.sheet_id ? `https://docs.google.com/spreadsheets/d/${esc(g.sheet_id)}` : ""}"></label>
+    <button id="gSheetSave" class="btn btn-ghost btn-block">Save Sheet link</button>
+    <p class="hint">Until Google approves direct access, a small script in each Google Ads
+      account copies its spend into this Sheet every hour. The script is in the ProfitDesk
+      folder as <code>google-ads-script.js</code>.</p>`;
+  $("gSheetSave").onclick = async () => {
+    try {
+      await jsonPost("/api/google/sheet", { url: $("gSheet").value });
+      toast("Sheet saved.");
+      state.setup = await api("/api/setup");
+      state.accounts = null;
+      renderGoogleBox();
+      await loadAccounts();
+      load(true);
+    } catch (e) {
+      toast(e.message, true);
+    }
+  };
   $("googleOff").onclick = async () => {
     await api("/api/google/disconnect", { method: "POST" });
     state.accounts = null;

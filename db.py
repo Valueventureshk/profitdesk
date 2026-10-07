@@ -108,6 +108,8 @@ _ADDED_COLUMNS = {
         ("meta_timezone", "TEXT"),
         ("google_currency", "TEXT"),
         ("shopify_plan", "TEXT"),
+        ("google_source", "TEXT"),      # "sheet" when spend comes from the script's Sheet
+        ("google_timezone", "TEXT"),
     ],
 }
 
@@ -195,7 +197,8 @@ def set_cost_pct(store_id: int, pct: float):
 
 # ---------------------------------------------------------------- google link
 
-def link_google(store_id: int, customer_id: str, login_cid, name: str, currency: str = None):
+def link_google(store_id: int, customer_id: str, login_cid, name: str, currency: str = None,
+                timezone: str = None, source: str = None):
     """Attach one ad account to one store, and only one."""
     with _conn() as con:
         clash = con.execute(
@@ -209,8 +212,10 @@ def link_google(store_id: int, customer_id: str, login_cid, name: str, currency:
             )
         con.execute(
             "UPDATE stores SET google_customer_id = ?, google_login_cid = ?,"
-            " google_account_name = ?, google_currency = ? WHERE id = ?",
-            (customer_id, login_cid, name, currency or None, store_id),
+            " google_account_name = ?, google_currency = ?, google_timezone = ?,"
+            " google_source = ? WHERE id = ?",
+            (customer_id, login_cid, name, currency or None, timezone or None,
+             source or None, store_id),
         )
 
 

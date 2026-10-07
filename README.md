@@ -171,6 +171,26 @@ For your own business's ad accounts, the app does not need Meta's App Review.
 
 ---
 
+## Google Ads spend through a Sheet (no API approval needed)
+
+Until the Google Cloud project is approved for the Google Ads API, spend comes
+from a Google Sheet that a small script fills:
+
+1. Make an empty Google Sheet (e.g. "ProfitDesk – Google Ads spend") in the
+   Google account that signs in to ProfitDesk. Turn on the **Google Sheets API**
+   in the ProfitDesk Google Cloud project.
+2. In each Google Ads account: **Tools → Bulk actions → Scripts → +**, paste
+   `google-ads-script.js`, set `SHEET_URL`, **Authorize**, **Run** once (copies
+   the full history), then schedule it **Hourly**. Each account writes its own
+   tab. If an ad account opens under a different Google login, share the Sheet
+   with that email as Editor.
+3. In ProfitDesk: Settings → Google Ads → **Sign in with Google**, paste the
+   Sheet link, **Save Sheet link**, then pick each store's account under Your
+   stores.
+
+Google runs scripts at most hourly and reports spend a few hours late, so
+"Today" can lag; past days are complete.
+
 ## Cost percentage
 
 **Settings → your store → Other costs.** One number per store, applied to total
