@@ -669,6 +669,15 @@ async def api_add_airwallex(payload: dict):
     return {"ok": True, "accounts": len(targets), "currencies": currencies}
 
 
+@app.get("/api/cash/debug/{connection_id}")
+async def api_cash_debug(connection_id: int):
+    """Temporary: raw shape of a connection's pending items, to diagnose figures."""
+    c = next((x for x in db.list_cash_connections() if x["id"] == connection_id), None)
+    if not c:
+        raise HTTPException(404, "No such connection.")
+    return await awx.raw_pending(c["client_id"], c["secret"], c["account_id"])
+
+
 @app.delete("/api/cash/{connection_id}")
 def api_remove_cash(connection_id: int):
     db.delete_cash_connection(connection_id)

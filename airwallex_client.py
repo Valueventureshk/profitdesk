@@ -70,6 +70,21 @@ async def _get(client, path, token, params=None, what="data"):
     return r.json()
 
 
+async def raw_pending(client_id: str, api_key: str, account_id: str = None, n: int = 3):
+    """A few pending items exactly as Airwallex returns them (for checking what an
+    unexpected item is), plus counts by type and whether there are more pages."""
+    async with httpx.AsyncClient(timeout=60) as client:
+        token = await _token(client, client_id, api_key, account_id)
+        since = (datetime.now(timezone.utc) - timedelta(days=120)).strftime("%Y-%m-%dT%H:%M:%S+0000")
+        body = await _get(client, "/api/v1/financial_transactions", token, {
+            "status": "PENDING", "from_created_at": since, "page_num": 0, "page_size": 1000,
+        }, what="financial transactions")
+    items = body.get("items", [])
+    odd = [i for i in items if not i.get("transaction_type")][:n]
+    return {"top_level_keys": sorted(body.keys()), "count": len(items),
+            "has_more": body.get("has_more"), "untyped_samples": odd}
+
+
 async def snapshot(client_id: str, api_key: str, lookback_days: int = 120,
                    account_id: str = None) -> dict:
     """{"balances": [...], "pending": [...]} straight from Airwallex.
