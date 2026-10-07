@@ -5,16 +5,32 @@ developer.paypal.com with the "Transaction search" feature switched on.
 
     login      POST /v1/oauth2/token          (client credentials, ~9 h token)
     balances   GET  /v1/reporting/balances    available + withheld per currency
+    holds      GET  /v1/reporting/transactions (last 75 days, 31-day windows)
 
-PayPal doesn't say when held (withheld) money will be released, so it is
-shown as held rather than placed on a day in the schedule.
+PayPal's feed doesn't carry a release date, but each hold names the sale it
+belongs to, and PayPal's rules on the account fix when it comes back:
+
+    T2103 reserve hold   (a % of each sale)          released RESERVE_DAYS later (T2104)
+    T2101 general hold   (sales over a monthly cap)  released GENERAL_DAYS later (T2102)
+
+A hold whose sale already has its release is done. Whatever is still held is
+scheduled at hold date + those days. Any withheld money this can't place stays
+in "held" with no date.
 """
+import os
 import time
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
 API = "https://api-m.paypal.com"
 _tokens: dict[str, tuple[float, str]] = {}
+_feed: dict[str, tuple[float, list]] = {}
+
+RESERVE_DAYS = int(os.getenv("PAYPAL_RESERVE_DAYS", "60"))
+GENERAL_DAYS = int(os.getenv("PAYPAL_HOLD_DAYS", "21"))
+HOLDS = {"T2103": ("T2104", RESERVE_DAYS, "PAYMENT_RESERVE_RELEASE"),
+         "T2101": ("T2102", GENERAL_DAYS, "PAYPAL_HOLD_RELEASE")}
 
 
 class PayPalError(RuntimeError):
@@ -62,8 +78,48 @@ def _amount(m) -> float:
         return 0.0
 
 
+def releases(rows: list) -> list:
+    """Holds not yet released, each with its expected release date."""
+    released = {(t.get("transaction_event_code"), t.get("paypal_reference_id")) for t in rows}
+    out = []
+    for t in rows:
+        rule = HOLDS.get(t.get("transaction_event_code"))
+        ref = t.get("paypal_reference_id") or t.get("transaction_id")
+        if not rule or (rule[0], ref) in released:
+            continue
+        amt = t.get("transaction_amount") or {}
+        try:
+            held = datetime.fromisoformat(t["transaction_initiation_date"].replace("Z", "+00:00"))
+        except (KeyError, ValueError):
+            continue
+        out.append({
+            "currency": amt.get("currency_code"),
+            "net": -float(amt.get("value") or 0),          # a hold is negative; its release is not
+            "type": rule[2],
+            "estimated": (held + timedelta(days=rule[1])).isoformat(),
+            "created": held.isoformat(),
+        })
+    return out
+
+
+def _fit(balances: list, pending: list) -> list:
+    """Keep the schedule within what PayPal says is withheld, per currency.
+    Earliest releases are already past their date in a few cases (PayPal pays
+    them out late); never schedule more than is actually held."""
+    held = {b["currency"]: b["reserved"] for b in balances}
+    out, used = [], {}
+    for p in sorted(pending, key=lambda p: p["estimated"], reverse=True):  # newest holds are surest
+        room = held.get(p["currency"], 0.0) - used.get(p["currency"], 0.0)
+        if room <= 0.005 or p["net"] <= 0:
+            continue
+        net = min(p["net"], room)
+        used[p["currency"]] = used.get(p["currency"], 0.0) + net
+        out.append({**p, "net": round(net, 2)})
+    return sorted(out, key=lambda p: p["estimated"])
+
+
 async def snapshot(client_id: str, secret: str) -> dict:
-    """{"balances": [...], "pending": []} in the same shape as Airwallex."""
+    """{"balances": [...], "pending": [...]} in the same shape as Airwallex."""
     async with httpx.AsyncClient(timeout=60) as client:
         token = await _token(client, client_id, secret)
         try:
@@ -77,22 +133,27 @@ async def snapshot(client_id: str, secret: str) -> dict:
             raise _explain(r, "balances")
         body = r.json()
 
-    return {
-        "balances": [{
+    balances = [{
             "currency": b.get("currency"),
             "available": _amount(b.get("available_balance")),
             "pending": 0.0,
             "reserved": _amount(b.get("withheld_balance")),
             "total": _amount(b.get("total_balance")),
-        } for b in body.get("balances", []) if b.get("currency")],
-        "pending": [],
-    }
+        } for b in body.get("balances", []) if b.get("currency")]
+    try:
+        rows = await transactions(client_id, secret)
+    except (PayPalError, httpx.HTTPError):
+        rows = []          # balances still show; holds just stay undated
+    return {"balances": balances, "pending": _fit(balances, releases(rows))}
 
 
 async def transactions(client_id: str, secret: str, days: int = 75) -> list:
     """Every transaction_info row from the last `days` days (31-day windows,
-    PayPal's limit per search)."""
-    from datetime import datetime, timedelta, timezone
+    PayPal's limit per search). Kept for 10 minutes; PayPal's feed itself
+    lags by up to a few hours."""
+    hit = _feed.get(client_id)
+    if hit and time.time() < hit[0] and days == 75:
+        return hit[1]
     end = datetime.now(timezone.utc) - timedelta(minutes=5)
     out = []
     async with httpx.AsyncClient(timeout=60) as client:
@@ -115,4 +176,6 @@ async def transactions(client_id: str, secret: str, days: int = 75) -> list:
                     break
                 page += 1
             start = stop
+    if days == 75:
+        _feed[client_id] = (time.time() + 600, out)
     return out

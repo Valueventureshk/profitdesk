@@ -689,27 +689,36 @@ async def api_add_paypal(payload: dict):
 
 @app.get("/api/cash/paypal-debug")
 async def api_paypal_debug():
-    # TEMPORARY: what PayPal's transaction feed says about holds. No keys returned.
+    # TEMPORARY: does the hold schedule add up to what PayPal says is withheld?
     out = []
+    today = datetime.now(CASH_TZ).date().isoformat()
     for c in db.list_cash_connections():
         if c["provider"] != "paypal":
             continue
-        rows = await paypal.transactions(c["client_id"], c["secret"])
-        codes = {}
-        for t in rows:
-            k = t.get("transaction_event_code", "?")
-            e = codes.setdefault(k, {"n": 0, "sum": 0.0, "cur": set(), "first": "9", "last": "0"})
-            e["n"] += 1
-            e["sum"] += float((t.get("transaction_amount") or {}).get("value") or 0)
-            e["cur"].add((t.get("transaction_amount") or {}).get("currency_code"))
-            d = (t.get("transaction_initiation_date") or "")[:10]
-            e["first"], e["last"] = min(e["first"], d), max(e["last"], d)
-        samples = [{k: v for k, v in t.items() if k not in ("payer_info",)}
-                   for t in rows if str(t.get("transaction_event_code", "")).startswith(("T15", "T21"))][:12]
-        out.append({"label": c["label"], "rows": len(rows),
-                    "codes": {k: {**v, "cur": sorted(x for x in v["cur"] if x), "sum": round(v["sum"], 2)}
-                              for k, v in sorted(codes.items())},
-                    "samples": samples})
+        snap = await paypal.snapshot(c["client_id"], c["secret"])
+        raw = paypal.releases(await paypal.transactions(c["client_id"], c["secret"]))
+        per = {}
+        for b in snap["balances"]:
+            per[b["currency"]] = {"withheld": b["reserved"], "raw": 0.0, "fitted": 0.0,
+                                  "raw_overdue": 0.0, "by_type": {}}
+        for p in raw:
+            e = per.setdefault(p["currency"], {"withheld": 0, "raw": 0.0, "fitted": 0.0,
+                                               "raw_overdue": 0.0, "by_type": {}})
+            e["raw"] += p["net"]
+            e["by_type"][p["type"]] = round(e["by_type"].get(p["type"], 0) + p["net"], 2)
+            if p["estimated"][:10] < today:
+                e["raw_overdue"] += p["net"]
+        for p in snap["pending"]:
+            per[p["currency"]]["fitted"] += p["net"]
+        days = {}
+        for p in snap["pending"]:
+            if p["currency"] == "AUD":
+                d = p["estimated"][:10]
+                days[d] = round(days.get(d, 0) + p["net"], 2)
+        out.append({"label": c["label"],
+                    "per": {k: {kk: (round(vv, 2) if isinstance(vv, float) else vv) for kk, vv in v.items()}
+                            for k, v in per.items() if v["withheld"] or v["raw"]},
+                    "aud_days": dict(sorted(days.items())[:10])})
     return out
 
 

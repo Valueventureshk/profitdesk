@@ -26,6 +26,7 @@ KIND = {
     "PAYMENT": "Sales settling",
     "PAYMENT_RESERVE_RELEASE": "Reserve releases",
     "PAYMENT_RESERVE_HOLD": "Reserve holds",
+    "PAYPAL_HOLD_RELEASE": "PayPal holds released",
     "REFUND": "Refunds",
     "REFUND_FAILURE": "Refunds",
     "REFUND_REVERSAL": "Refunds",
