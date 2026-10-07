@@ -502,7 +502,24 @@ function renderStoreTable(d) {
       <th title="Other costs, as a % of sales (set per store)">Cost %</th><th>AOV</th>
       <th>Net profit</th><th>Margin</th><th>Orders</th>
     </tr></thead>
-    <tbody>${rows}</tbody>`;
+    <tbody>${rows}</tbody>
+    ${ranked.length > 1 ? storeTotalsRow(d.totals) : ""}`;
+}
+
+// The same totals as the cards above, so the bottom line always agrees with them.
+function storeTotalsRow(t) {
+  return `<tfoot><tr>
+      <td class="name">Total<span class="sub">All stores shown</span></td>
+      <td>${fmt(t.sales, "money")}</td>
+      <td>${fmt(t.ad_spend, "money")}</td>
+      <td class="roas">${fmt(t.roas, "ratio")}</td>
+      <td>${fmt(t.processing_fee, "money")}</td>
+      <td title="Other costs as a share of total sales">${fmt(t.cost_share, "pct")}</td>
+      <td>${fmt(t.aov, "money")}</td>
+      <td class="${t.net_profit >= 0 ? "pos" : "neg"}">${fmt(t.net_profit, "money")}</td>
+      <td>${fmt(t.net_margin, "pct")}</td>
+      <td>${fmt(t.orders, "int")}</td>
+    </tr></tfoot>`;
 }
 
 /* ------------------------------------------------ connecting stores */

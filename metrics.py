@@ -165,6 +165,8 @@ def summarize(days):
     totals["roas"] = _div(totals["sales"], totals["ad_spend"])
     totals["net_margin"] = _div(totals["net_profit"], totals["sales"])
     totals["aov"] = _div(totals["sales"], totals["orders"])
+    # Other costs as a share of sales: each store's own % blended by its sales.
+    totals["cost_share"] = _div(totals["other_costs"], totals["sales"])
     return totals
 
 
