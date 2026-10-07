@@ -756,7 +756,7 @@ function renderGoogleBox() {
     <div class="google-state">
       <div class="who"><strong>Connected</strong><span>${esc(g.email || "Google account")}</span></div>
       <button id="googleOff" class="btn btn-sm btn-danger">Disconnect</button>
-    </div>
+    </div>`;
   $("googleOff").onclick = async () => {
     await api("/api/google/disconnect", { method: "POST" });
     state.accounts = null;
