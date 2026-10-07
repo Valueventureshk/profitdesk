@@ -687,41 +687,6 @@ async def api_add_paypal(payload: dict):
     return {"ok": True, "accounts": 1, "currencies": sorted(b["currency"] for b in snap["balances"])}
 
 
-@app.get("/api/cash/paypal-debug")
-async def api_paypal_debug():
-    # TEMPORARY: does the hold schedule add up to what PayPal says is withheld?
-    out = []
-    today = datetime.now(CASH_TZ).date().isoformat()
-    for c in db.list_cash_connections():
-        if c["provider"] != "paypal":
-            continue
-        snap = await paypal.snapshot(c["client_id"], c["secret"])
-        raw = paypal.releases(await paypal.transactions(c["client_id"], c["secret"]))
-        per = {}
-        for b in snap["balances"]:
-            per[b["currency"]] = {"withheld": b["reserved"], "raw": 0.0, "fitted": 0.0,
-                                  "raw_overdue": 0.0, "by_type": {}}
-        for p in raw:
-            e = per.setdefault(p["currency"], {"withheld": 0, "raw": 0.0, "fitted": 0.0,
-                                               "raw_overdue": 0.0, "by_type": {}})
-            e["raw"] += p["net"]
-            e["by_type"][p["type"]] = round(e["by_type"].get(p["type"], 0) + p["net"], 2)
-            if p["estimated"][:10] < today:
-                e["raw_overdue"] += p["net"]
-        for p in snap["pending"]:
-            per[p["currency"]]["fitted"] += p["net"]
-        days = {}
-        for p in snap["pending"]:
-            if p["currency"] == "AUD":
-                d = p["estimated"][:10]
-                days[d] = round(days.get(d, 0) + p["net"], 2)
-        out.append({"label": c["label"],
-                    "per": {k: {kk: (round(vv, 2) if isinstance(vv, float) else vv) for kk, vv in v.items()}
-                            for k, v in per.items() if v["withheld"] or v["raw"]},
-                    "aud_days": dict(sorted(days.items())[:10])})
-    return out
-
-
 @app.put("/api/cash/{connection_id}")
 def api_rename_cash(connection_id: int, payload: dict):
     label = (payload.get("label") or "").strip()
