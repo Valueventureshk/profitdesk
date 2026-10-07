@@ -1,0 +1,13 @@
+# Live credentials and real business data. Never upload these.
+.env
+.env.backup*
+*.db
+*.db.bak
+*.db-journal
+*.sqlite
+
+# Generated / local-only
+__pycache__/
+*.pyc
+server.log
+.DS_Store

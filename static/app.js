@@ -1,0 +1,779 @@
+/* ProfitDesk dashboard.
+
+   This file draws things. It never calculates a metric — every figure comes
+   from the server already worked out. */
+
+const $ = (id) => document.getElementById(id);
+
+const state = {
+  setup: null,
+  scope: "all",
+  start: null,
+  end: null,
+  data: null,
+  accounts: null,
+  metaAccounts: null,
+};
+
+const CARDS = [
+  { key: "sales",      label: "Total Sales", fmt: "money", dot: "var(--sales)",  dir: "up" },
+  { key: "ad_spend",   label: "Ad Spend",    fmt: "money", dot: "var(--spend)",  dir: "none" },
+  { key: "roas",       label: "ROAS",        fmt: "ratio", dot: "var(--accent)", dir: "up" },
+  { key: "net_profit", label: "Net Profit",  fmt: "money", dot: "var(--up)",     dir: "up", feature: true },
+  { key: "net_margin", label: "Net Margin",  fmt: "pct",   dot: "var(--up)",     dir: "up" },
+  { key: "orders",     label: "Orders",      fmt: "int",   dot: "var(--sales)",  dir: "up" },
+];
+
+/* ------------------------------------------------ formatting */
+
+function money(v) {
+  if (v === null || v === undefined) return "—";
+  const cur = state.data?.currency;
+  const opts = { maximumFractionDigits: 0 };
+  if (cur) { opts.style = "currency"; opts.currency = cur; }
+  try { return new Intl.NumberFormat(undefined, opts).format(v); }
+  catch { return Math.round(v).toLocaleString(); }
+}
+
+function fmt(v, kind) {
+  if (v === null || v === undefined || Number.isNaN(v)) return "—";
+  if (kind === "money") return money(v);
+  if (kind === "ratio") return v.toFixed(2);
+  if (kind === "pct")   return (v * 100).toFixed(1) + "%";
+  return Math.round(v).toLocaleString();
+}
+
+function niceDate(iso) {
+  return new Date(iso + "T12:00:00").toLocaleDateString(undefined, {
+    month: "short", day: "numeric",
+  });
+}
+
+function niceTime(hhmm) {
+  const [h, m] = hhmm.split(":").map(Number);
+  return new Date(2000, 0, 1, h, m).toLocaleTimeString(undefined, {
+    hour: "numeric", minute: "2-digit",
+  });
+}
+
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+  ));
+}
+
+/* ------------------------------------------------ plumbing */
+
+async function api(path, options) {
+  const r = await fetch(path, options);
+  let body = {};
+  try { body = await r.json(); } catch { /* empty body is fine */ }
+  if (!r.ok) throw new Error(body.error || `Request failed (${r.status})`);
+  return body;
+}
+
+function jsonPost(path, data, method = "POST") {
+  return api(path, {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+}
+
+let toastTimer;
+function toast(message, bad = false) {
+  const el = $("toast");
+  el.textContent = message;
+  el.className = "toast" + (bad ? " bad" : "");
+  el.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.hidden = true; }, bad ? 6000 : 3000);
+}
+
+function popup(url) {
+  const w = 560, h = 680;
+  const x = window.screenX + (window.outerWidth - w) / 2;
+  const y = window.screenY + 80;
+  return window.open(url, "profitdesk_connect", `width=${w},height=${h},left=${x},top=${y}`);
+}
+
+window.addEventListener("message", (e) => {
+  if (e.data === "profitdesk:connected") boot();
+});
+
+/* ------------------------------------------------ dates */
+
+/* Which clock decides what "today" is: always a store's, never this computer's.
+   One store: that store's own clock, so its page matches its Shopify reports.
+   All stores: the clock of whichever store is furthest ahead. With an
+   Australian store connected, "today" turns over when Australia's day does;
+   the server then reads that date on each store's own clock, so stores that
+   haven't reached it yet show nothing until their day begins. */
+function storeZone() {
+  const stores = state.setup?.stores || [];
+  const pool = state.scope === "all" ? stores : stores.filter((x) => String(x.id) === state.scope);
+  let lead, leadStamp = "";
+  for (const s of pool) {
+    const stamp = new Intl.DateTimeFormat("sv-SE", {  // "2026-10-07 01:23", sortable
+      timeZone: s.timezone, year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", hour12: false,
+    }).format(new Date());
+    if (stamp > leadStamp) { leadStamp = stamp; lead = s.timezone; }
+  }
+  return lead;
+}
+
+function isoInZone(d, tz) {
+  try {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit",
+    }).format(d);
+  } catch {
+    return new Intl.DateTimeFormat("en-CA").format(d);
+  }
+}
+
+function shiftDays(isoDate, n) {
+  const d = new Date(isoDate + "T12:00:00Z");
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+function applyRange() {
+  const choice = $("rangeSelect").value;
+  $("customRange").hidden = choice !== "custom";
+
+  const todayIso = isoInZone(new Date(), storeZone());
+
+  if (choice === "custom") {
+    state.start = $("startDate").value || state.start;
+    state.end = $("endDate").value || state.end;
+    return;
+  }
+  if (choice === "today") {
+    state.start = state.end = todayIso;
+  } else if (choice === "yesterday") {
+    state.start = state.end = shiftDays(todayIso, -1);
+  } else if (choice === "mtd") {
+    state.start = todayIso.slice(0, 8) + "01";
+    state.end = todayIso;
+  } else {
+    const days = parseInt(choice, 10);
+    state.start = shiftDays(todayIso, -(days - 1));
+    state.end = todayIso;
+  }
+  $("startDate").value = state.start;
+  $("endDate").value = state.end;
+}
+
+/* ------------------------------------------------ boot */
+
+async function boot() {
+  state.setup = await api("/api/setup");
+
+  if (!state.setup.stores.length) {
+    $("setup").hidden = false;
+    $("app").hidden = true;
+    if (!state.setup.shopify.app_configured) {
+      showNotice(
+        "No Shopify app is set up in this copy yet, so the Connect button cannot ask " +
+        "for access. Use an access token below, or add SHOPIFY_CLIENT_ID and " +
+        "SHOPIFY_CLIENT_SECRET to your .env file."
+      );
+    }
+    return;
+  }
+
+  $("setup").hidden = true;
+  $("app").hidden = false;
+
+  const ids = state.setup.stores.map((s) => String(s.id));
+  if (state.scope !== "all" && !ids.includes(state.scope)) state.scope = "all";
+
+  renderNav();
+  renderCurrencyPicker();
+  if (!state.start) applyRange();
+  await load();
+}
+
+function renderCurrencyPicker() {
+  const sel = $("currencySelect");
+  const chosen = state.setup.display_currency;
+  sel.innerHTML = state.setup.currency_options
+    .map((c) => `<option value="${esc(c)}"${c === chosen ? " selected" : ""}>${esc(c)}</option>`)
+    .join("");
+}
+
+function renderFxNote(d) {
+  const el = $("fxNote");
+  if (!d.fx) { el.hidden = true; return; }
+  const parts = Object.entries(d.fx.rates).map(([code, f]) =>
+    `1 ${esc(code)} = ${f.toFixed(4)} ${esc(d.currency)}`);
+  el.innerHTML = `All figures in <strong>${esc(d.currency)}</strong> · ${parts.join(" · ")}
+    · daily rate from ${esc(d.fx.source)}${d.fx.date ? `, ${esc(d.fx.date)}` : ""}`;
+  el.hidden = false;
+}
+
+function renderNav() {
+  const stores = state.setup.stores;
+  const parts = [];
+
+  if (stores.length > 1) {
+    parts.push(`<div class="nav-label">Blended</div>`);
+    parts.push(navItem("all", "All stores", "&#9638;"));
+    parts.push(`<div class="nav-label">Stores</div>`);
+  } else {
+    parts.push(`<div class="nav-label">Store</div>`);
+  }
+
+  for (const s of stores) {
+    parts.push(navItem(String(s.id), s.name, null));
+  }
+  $("storeNav").innerHTML = parts.join("");
+
+  for (const btn of $("storeNav").querySelectorAll(".nav-item")) {
+    btn.onclick = () => {
+      state.scope = btn.dataset.scope;
+      renderNav();
+      if ($("rangeSelect").value !== "custom") applyRange();  // "today" depends on whose clock
+      load();
+    };
+  }
+}
+
+function navItem(scope, label, icon) {
+  const on = state.scope === scope ? " on" : "";
+  const mark = icon ? `<span class="ico">${icon}</span>` : `<span class="dot"></span>`;
+  return `<button class="nav-item${on}" data-scope="${esc(scope)}">
+            ${mark}<span class="txt">${esc(label)}</span>
+          </button>`;
+}
+
+/* ------------------------------------------------ dashboard */
+
+async function load(fresh = false) {
+  const params = new URLSearchParams({
+    scope: state.scope, start: state.start, end: state.end,
+  });
+  if (fresh) params.set("fresh", "1");
+  if ($("rangeSelect").value === "today") params.set("compare", "same_time");
+
+  $("viewSub").textContent = "Loading…";
+  try {
+    state.data = await api("/api/dashboard?" + params);
+  } catch (e) {
+    $("viewSub").textContent = "Could not load";
+    toast(e.message, true);
+    return;
+  }
+
+  const d = state.data;
+  $("viewTitle").textContent = d.title;
+  $("viewSub").textContent = rangeLabel(d.range);
+
+  $("warnings").innerHTML = d.warnings
+    .map((w) => `<div class="warn">${esc(w)}</div>`).join("");
+
+  renderFxNote(d);
+  renderCards(d);
+  renderChart(d.series);
+  renderStoreTable(d);
+}
+
+function rangeLabel(r) {
+  const choice = $("rangeSelect").value;
+  if (choice === "today") {
+    if (!state.data?.previous?.until) return `Today so far, ${niceDate(r.start)} · vs all of yesterday`;
+    // Each store is compared against the same share of its own day; the time
+    // shown is the clock that picked "today".
+    const now = new Intl.DateTimeFormat("en-GB", {
+      timeZone: storeZone(), hour: "2-digit", minute: "2-digit", hour12: false,
+    }).format(new Date());
+    return `Today so far, ${niceDate(r.start)} · vs yesterday up to ${niceTime(now)}`;
+  }
+  if (choice === "yesterday") return `Yesterday, ${niceDate(r.start)} · vs the day before`;
+  if (r.days === 1) return `${niceDate(r.start)} · vs the day before`;
+  return `${niceDate(r.start)} – ${niceDate(r.end)} · vs previous ${r.days} days`;
+}
+
+function renderCards(d) {
+  $("cards").innerHTML = CARDS.map((c) => {
+    const value = fmt(d.totals[c.key], c.fmt);
+    const delta = d.delta[c.key];
+    let chip = `<span class="chip flat">—</span>`;
+    if (delta !== null && delta !== undefined) {
+      const rising = delta >= 0;
+      const tone = c.dir === "none" ? "flat" : (rising ? "up" : "down");
+      const arrow = rising ? "&#9650;" : "&#9660;";
+      chip = `<span class="chip ${tone}">${arrow} ${Math.abs(delta).toFixed(1)}%</span>`;
+    }
+    return `<div class="card${c.feature ? " feature" : ""}">
+      <div class="card-label">
+        <span class="dot" style="background:${c.dot}"></span>${c.label}${chip}
+      </div>
+      <div class="card-value">${value}</div>
+      ${c.key === "ad_spend" ? spendSplit(d.totals) : ""}
+      ${sparkline(d.series, c.key, c.dot)}
+    </div>`;
+  }).join("");
+}
+
+function spendSplit(t) {
+  return `<div class="card-note">Google ${fmt(t.google_spend, "money")}
+    · Meta ${fmt(t.meta_spend, "money")}</div>`;
+}
+
+function sparkline(series, key, colour) {
+  const values = series.map((r) => (typeof r[key] === "number" ? r[key] : 0));
+  if (values.length < 2) return `<div class="spark"></div>`;
+
+  const lo = Math.min(...values, 0);
+  const hi = Math.max(...values);
+  const span = hi - lo || 1;
+  const step = 100 / (values.length - 1);
+
+  const points = values
+    .map((v, i) => `${(i * step).toFixed(2)},${(28 - ((v - lo) / span) * 26).toFixed(2)}`)
+    .join(" ");
+
+  return `<svg class="spark" viewBox="0 0 100 28" preserveAspectRatio="none">
+    <polyline points="${points}" fill="none" stroke="${colour}"
+      stroke-width="1.6" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+  </svg>`;
+}
+
+function renderChart(series) {
+  if (!series.length) {
+    $("chart").innerHTML = `<div class="empty">Nothing in this date range.</div>`;
+    return;
+  }
+  if (series.length === 1) {
+    $("chart").innerHTML = `<div class="empty">This is a single day, so there is no trend
+      line to draw. Pick 7 days or longer to see one.</div>`;
+    return;
+  }
+
+  const W = 1000, H = 240, padL = 56, padR = 12, padT = 14, padB = 26;
+  const innerW = W - padL - padR, innerH = H - padT - padB;
+
+  const peak = Math.max(...series.map((r) => Math.max(r.sales, r.ad_spend)), 1);
+  const x = (i) => padL + (series.length === 1 ? innerW / 2 : (i / (series.length - 1)) * innerW);
+  const y = (v) => padT + innerH - (v / peak) * innerH;
+
+  const path = (key) => series.map((r, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(r[key]).toFixed(1)}`).join("");
+
+  const gridCount = 4;
+  let grid = "";
+  for (let i = 0; i <= gridCount; i++) {
+    const v = (peak / gridCount) * i;
+    const gy = y(v).toFixed(1);
+    grid += `<line class="grid-line" x1="${padL}" y1="${gy}" x2="${W - padR}" y2="${gy}"/>
+             <text class="axis-text" x="${padL - 8}" y="${gy}" text-anchor="end"
+                   dominant-baseline="middle">${money(v)}</text>`;
+  }
+
+  const ticks = [0, Math.floor((series.length - 1) / 2), series.length - 1];
+  const labels = [...new Set(ticks)].map((i) =>
+    `<text class="axis-text" x="${x(i).toFixed(1)}" y="${H - 6}"
+           text-anchor="${i === 0 ? "start" : i === series.length - 1 ? "end" : "middle"}"
+     >${niceDate(series[i].date)}</text>`).join("");
+
+  const area = `M${x(0).toFixed(1)},${(padT + innerH).toFixed(1)}`
+    + series.map((r, i) => `L${x(i).toFixed(1)},${y(r.sales).toFixed(1)}`).join("")
+    + `L${x(series.length - 1).toFixed(1)},${(padT + innerH).toFixed(1)}Z`;
+
+  $("chart").innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+    <defs>
+      <linearGradient id="salesFade" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%"   stop-color="var(--sales)" stop-opacity=".16"/>
+        <stop offset="100%" stop-color="var(--sales)" stop-opacity="0"/>
+      </linearGradient>
+    </defs>
+    ${grid}
+    <path class="area-sales" d="${area}"/>
+    <path class="line-sales" d="${path("sales")}"/>
+    <path class="line-spend" d="${path("ad_spend")}"/>
+    ${labels}
+  </svg>`;
+}
+
+function linkedAccounts(s) {
+  const names = [s.google_account_name, s.meta_account_name].filter(Boolean);
+  return names.length ? names.join(" · ") : "No ad account linked";
+}
+
+function renderStoreTable(d) {
+  const panel = $("storesPanel");
+  if (!d.stores.length) { panel.hidden = true; return; }
+  panel.hidden = false;
+
+  const rows = d.stores.map((s) => {
+    const t = s.totals;
+    const profitClass = t.net_profit >= 0 ? "pos" : "neg";
+    return `<tr>
+      <td class="name">${esc(s.name)}
+        <span class="sub">${esc(linkedAccounts(s))}</span></td>
+      <td>${fmt(t.sales, "money")}</td>
+      <td>${fmt(t.ad_spend, "money")}
+        <span class="sub">G ${fmt(t.google_spend, "money")} · M ${fmt(t.meta_spend, "money")}</span></td>
+      <td>${fmt(t.roas, "ratio")}</td>
+      <td class="${profitClass}">${fmt(t.net_profit, "money")}</td>
+      <td>${fmt(t.net_margin, "pct")}</td>
+      <td>${fmt(t.orders, "int")}</td>
+    </tr>`;
+  }).join("");
+
+  $("storeTable").innerHTML = `
+    <thead><tr>
+      <th>Store</th><th>Total sales</th><th>Ad spend</th><th>ROAS</th>
+      <th>Net profit</th><th>Margin</th><th>Orders</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>`;
+}
+
+/* ------------------------------------------------ connecting stores */
+
+function showNotice(message, ok = false) {
+  const el = $("setupNotice");
+  el.textContent = message;
+  el.className = "notice" + (ok ? " ok" : "");
+  el.hidden = false;
+}
+
+function connectShopify(domain) {
+  const value = (domain || "").trim();
+  if (!value) { toast("Type your store address first.", true); return; }
+  popup("/auth/shopify/start?shop_domain=" + encodeURIComponent(value));
+}
+
+async function connectWithApp() {
+  const body = {
+    shop_domain: $("newDomain").value,
+    client_id: $("newClientId").value,
+    client_secret: $("newClientSecret").value,
+    install_link: $("newInstallLink").value,
+  };
+  if (!body.shop_domain.trim()) { toast("Type the store address first.", true); return; }
+  // Open the window now, while the click still counts, or the browser blocks it.
+  const win = popup("about:blank");
+  try {
+    const r = await jsonPost("/api/shopify/apps", body);
+    if (win) win.location = r.open; else popup(r.open);
+    for (const id of ["newClientId", "newClientSecret", "newInstallLink"]) $(id).value = "";
+    toast("Approve ProfitDesk in the Shopify window to finish connecting.");
+  } catch (e) {
+    if (win) win.close();
+    toast(e.message, true);
+  }
+}
+
+async function connectWithToken(domain, token) {
+  if (!domain.trim() || !token.trim()) {
+    toast("Both the store address and the token are needed.", true);
+    return;
+  }
+  try {
+    const r = await jsonPost("/api/stores/token", {
+      shop_domain: domain, access_token: token,
+    });
+    toast(`${r.name} connected.`);
+    await boot();
+    return true;
+  } catch (e) {
+    toast(e.message, true);
+    return false;
+  }
+}
+
+/* ------------------------------------------------ settings drawer */
+
+async function openSettings() {
+  $("drawer").hidden = false;
+  renderGoogleBox();
+  renderMetaBox();
+  renderStoreSettings();
+  await Promise.all([loadAccounts(), loadMetaAccounts()]);
+}
+
+function closeSettings() { $("drawer").hidden = true; }
+
+function renderGoogleBox() {
+  const g = state.setup.google;
+  if (!g.configured) {
+    $("googleBox").innerHTML = `<p class="notice">No Google sign-in is set up in this
+      copy yet. Add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to your .env file.</p>`;
+    return;
+  }
+  if (!g.connected) {
+    $("googleBox").innerHTML =
+      `<button id="googleConnect" class="btn btn-primary btn-block">Sign in with Google</button>`;
+    $("googleConnect").onclick = () => popup("/auth/google/start");
+    return;
+  }
+  $("googleBox").innerHTML = `
+    <div class="google-state">
+      <div class="who"><strong>Connected</strong><span>${esc(g.email || "Google account")}</span></div>
+      <button id="googleOff" class="btn btn-sm btn-danger">Disconnect</button>
+    </div>
+    ${g.has_developer_token ? "" : `<p class="notice">Google Ads also needs a developer
+      token before spend can be read. Add GOOGLE_DEVELOPER_TOKEN to your .env file once
+      Google approves yours.</p>`}`;
+  $("googleOff").onclick = async () => {
+    await api("/api/google/disconnect", { method: "POST" });
+    state.accounts = null;
+    toast("Google disconnected.");
+    await boot();
+    renderGoogleBox();
+    renderStoreSettings();
+  };
+}
+
+function renderMetaBox() {
+  const m = state.setup.meta;
+  const tokenForm = `
+    <label class="field">
+      <span>System User access token</span>
+      <input id="metaToken" type="password" placeholder="EAA..." autocomplete="off">
+    </label>
+    <button id="metaConnect" class="btn ${m.connected ? "btn-ghost" : "btn-primary"} btn-block">
+      ${m.connected ? "Connect this business" : "Connect Meta Ads"}</button>`;
+
+  const rows = m.connections.map((c) => `
+    <div class="google-state meta-conn">
+      <div class="who"><strong>Connected</strong><span>${esc(c.label)}</span></div>
+      <button class="btn btn-sm btn-danger" data-meta-off="${c.id}">Disconnect</button>
+    </div>`).join("");
+
+  $("metaBox").innerHTML = m.connected
+    ? `${rows}
+       <details class="advanced">
+         <summary>Add another Meta business</summary>
+         <p class="hint">For a store whose ad account lives in a different business.
+           Make a ProfitDesk system user and token in <strong>that</strong> business,
+           the same way as the first, and paste it here.</p>
+         ${tokenForm}
+       </details>`
+    : tokenForm;
+
+  $("metaConnect").onclick = async () => {
+    const token = $("metaToken").value.trim();
+    if (!token) { toast("Paste the access token first.", true); return; }
+    $("metaConnect").disabled = true;
+    $("metaConnect").textContent = "Checking with Meta…";
+    try {
+      const r = await jsonPost("/api/meta/token", { access_token: token });
+      toast(`Connected ${r.name} · ${r.accounts} ad account${r.accounts === 1 ? "" : "s"}.`);
+      state.setup = await api("/api/setup");
+      renderMetaBox();
+      await loadMetaAccounts();
+    } catch (e) {
+      toast(e.message, true);
+      renderMetaBox();
+    }
+  };
+
+  for (const btn of $("metaBox").querySelectorAll("[data-meta-off]")) {
+    btn.onclick = async () => {
+      const c = m.connections.find((x) => String(x.id) === btn.dataset.metaOff);
+      if (!confirm(`Disconnect ${c.label}? Stores using its ad accounts stop showing `
+                 + `Meta spend until you connect it again.`)) return;
+      await api(`/api/meta/connections/${c.id}`, { method: "DELETE" });
+      state.metaAccounts = null;
+      toast(`${c.label} disconnected.`);
+      await boot();
+      renderMetaBox();
+      renderStoreSettings();
+      await loadMetaAccounts();
+    };
+  }
+}
+
+async function loadMetaAccounts() {
+  if (!state.setup.meta.connected) return;
+  try {
+    const r = await api("/api/meta/accounts");
+    state.metaAccounts = r.accounts;
+    if (r.problems.length) toast(r.problems.join(" "), true);
+    renderStoreSettings();
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+function metaSelect(store) {
+  if (!state.setup.meta.connected) return `<select class="meta-account" disabled><option>Connect Meta first</option></select>`;
+  if (!state.metaAccounts) return `<select class="meta-account" disabled><option>Loading accounts…</option></select>`;
+
+  const options = [`<option value="">Not linked</option>`];
+  for (const a of state.metaAccounts) {
+    const taken = a.linked_to && a.account_id !== store.meta_account_id;
+    const selected = a.account_id === store.meta_account_id ? " selected" : "";
+    const tags = [a.currency, a.active ? "" : "inactive",
+                  taken ? `on ${a.linked_to}` : ""]
+      .filter(Boolean).join(", ");
+    options.push(
+      `<option value="${esc(a.account_id)}"${selected}${taken ? " disabled" : ""}>
+        ${esc(a.name)} · ${esc(a.account_id)}${tags ? ` (${esc(tags)})` : ""}
+      </option>`);
+  }
+  return `<select class="meta-account">${options.join("")}</select>`;
+}
+
+async function loadAccounts() {
+  const g = state.setup.google;
+  if (!g.connected || !g.has_developer_token) return;
+  try {
+    const r = await api("/api/google/accounts");
+    state.accounts = r.accounts;
+    renderStoreSettings();
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+function renderStoreSettings() {
+  $("storeSettings").innerHTML = state.setup.stores.map((s) => `
+    <div class="store-row" data-store="${s.id}">
+      <div class="store-row-head">
+        <strong>${esc(s.name)}</strong>
+        <span>${esc(s.shop_domain)}</span>
+      </div>
+
+      <label class="inline-field">
+        <span>Other costs</span>
+        <input type="number" class="cost" min="0" max="100" step="0.1" value="${s.cost_pct}">
+        <span class="suffix">% of sales</span>
+      </label>
+
+      <label class="inline-field">
+        <span>Google Ads</span>
+        ${accountSelect(s)}
+      </label>
+
+      <label class="inline-field">
+        <span>Meta Ads</span>
+        ${metaSelect(s)}
+      </label>
+
+      <div class="row-actions">
+        <button class="btn btn-sm remove btn-danger">Remove store</button>
+      </div>
+    </div>`).join("");
+
+  for (const row of $("storeSettings").querySelectorAll(".store-row")) {
+    const id = row.dataset.store;
+
+    row.querySelector(".cost").onchange = async (e) => {
+      await jsonPost(`/api/stores/${id}`, { cost_pct: parseFloat(e.target.value) || 0 }, "PUT");
+      toast("Cost percentage saved.");
+      state.setup = await api("/api/setup");
+      load(true);
+    };
+
+    const select = row.querySelector(".account");
+    if (select) select.onchange = async (e) => {
+      try {
+        if (!e.target.value) {
+          await api(`/api/stores/${id}/google`, { method: "DELETE" });
+        } else {
+          const account = state.accounts.find((a) => a.customer_id === e.target.value);
+          await jsonPost(`/api/stores/${id}/google`, account);
+        }
+        toast("Ad account updated.");
+        state.setup = await api("/api/setup");
+        renderStoreSettings();
+        load(true);
+      } catch (err) {
+        toast(err.message, true);
+        renderStoreSettings();
+      }
+    };
+
+    const metaPick = row.querySelector(".meta-account");
+    if (metaPick && !metaPick.disabled) metaPick.onchange = async (e) => {
+      try {
+        if (!e.target.value) {
+          await api(`/api/stores/${id}/meta`, { method: "DELETE" });
+        } else {
+          const account = state.metaAccounts.find((a) => a.account_id === e.target.value);
+          await jsonPost(`/api/stores/${id}/meta`, account);
+        }
+        toast("Meta ad account updated.");
+        state.setup = await api("/api/setup");
+        renderStoreSettings();
+        load(true);
+      } catch (err) {
+        toast(err.message, true);
+        renderStoreSettings();
+      }
+    };
+
+    row.querySelector(".remove").onclick = async () => {
+      const store = state.setup.stores.find((s) => String(s.id) === id);
+      if (!confirm(`Remove ${store.name}? Its figures disappear from ProfitDesk. `
+                 + `Nothing changes inside Shopify.`)) return;
+      await api(`/api/stores/${id}`, { method: "DELETE" });
+      toast("Store removed.");
+      await boot();
+      if (state.setup.stores.length) { renderStoreSettings(); } else { closeSettings(); }
+    };
+  }
+}
+
+function accountSelect(store) {
+  const g = state.setup.google;
+  if (!g.connected) return `<select class="account" disabled><option>Sign in with Google first</option></select>`;
+  if (!g.has_developer_token) return `<select class="account" disabled><option>Developer token needed</option></select>`;
+  if (!state.accounts) return `<select class="account" disabled><option>Loading accounts…</option></select>`;
+
+  const options = [`<option value="">Not linked</option>`];
+  for (const a of state.accounts) {
+    const taken = a.linked_to && a.customer_id !== store.google_customer_id;
+    const selected = a.customer_id === store.google_customer_id ? " selected" : "";
+    options.push(
+      `<option value="${esc(a.customer_id)}"${selected}${taken ? " disabled" : ""}>
+        ${esc(a.name)} · ${esc(a.display_id)}${taken ? ` (on ${esc(a.linked_to)})` : ""}
+      </option>`);
+  }
+  return `<select class="account">${options.join("")}</select>`;
+}
+
+/* ------------------------------------------------ wiring */
+
+$("setupConnect").onclick = () => connectShopify($("setupDomain").value);
+$("setupTokenConnect").onclick = () =>
+  connectWithToken($("setupDomain").value, $("setupToken").value);
+
+$("newConnect").onclick = connectWithApp;
+$("newTokenConnect").onclick = async () => {
+  if (await connectWithToken($("newDomain").value, $("newToken").value)) {
+    $("newDomain").value = ""; $("newToken").value = "";
+    renderStoreSettings();
+  }
+};
+
+$("openSettings").onclick = openSettings;
+$("addStore").onclick = async () => { await openSettings(); $("newDomain").focus(); };
+for (const el of document.querySelectorAll("[data-close]")) el.onclick = closeSettings;
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("drawer").hidden) closeSettings();
+});
+
+$("rangeSelect").onchange = () => { applyRange(); load(); };
+$("currencySelect").onchange = async (e) => {
+  try {
+    await jsonPost("/api/settings", { display_currency: e.target.value }, "PUT");
+    state.setup.display_currency = e.target.value;
+    load();
+  } catch (err) {
+    toast(err.message, true);
+  }
+};
+$("startDate").onchange = () => { applyRange(); load(); };
+$("endDate").onchange = () => { applyRange(); load(); };
+$("refresh").onclick = () => {
+  if ($("rangeSelect").value !== "custom") applyRange();  // "Today" moves on after midnight
+  load(true);
+};
+
+boot().catch((e) => toast(e.message, true));

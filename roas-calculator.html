@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ROAS Calculator</title>
+<style>
+  :root {
+    --bg: #F6F7F9; --panel: #FFFFFF; --ink: #0F172A; --muted: #64748B;
+    --faint: #94A3B8; --line: #E7EAEF; --line-soft: #F1F3F6;
+    --up: #0F9D74; --down: #DC2626; --warn: #B45309; --tint: #ECFDF5;
+    --radius: 12px;
+    --shadow: 0 1px 2px rgba(15,23,42,.04), 0 1px 3px rgba(15,23,42,.06);
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: var(--font); font-size: 14px; color: var(--ink);
+         background: var(--bg); -webkit-font-smoothing: antialiased; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 32px 16px 48px; }
+  header h1 { margin: 0; font-size: 22px; font-weight: 600; }
+  header p { margin: 6px 0 24px; color: var(--muted); }
+  .grid { display: grid; grid-template-columns: 1fr 1.2fr; gap: 16px; }
+  @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+          box-shadow: var(--shadow); padding: 20px; }
+  .card h2 { margin: 0 0 4px; font-size: 13px; font-weight: 600; text-transform: uppercase;
+             letter-spacing: .04em; color: var(--muted); }
+  .section { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line-soft); }
+  .section:first-of-type { margin-top: 12px; padding-top: 0; border-top: 0; }
+  .section-title { font-size: 12px; color: var(--faint); margin-bottom: 10px; }
+  label { display: block; margin-bottom: 12px; }
+  label span { display: block; font-weight: 500; margin-bottom: 4px; }
+  label small { display: block; color: var(--faint); margin-top: 3px; font-size: 12px; }
+  .field { position: relative; }
+  .field input { width: 100%; padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px;
+                 font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 14px;
+                 background: #fff; color: var(--ink); }
+  .field input:focus { outline: none; border-color: var(--faint); box-shadow: 0 0 0 3px var(--line-soft); }
+  .field.pre input { padding-left: 26px; }
+  .field.suf input { padding-right: 28px; }
+  .field .pre, .field .suf { position: absolute; top: 50%; transform: translateY(-50%);
+                             color: var(--faint); font-family: var(--mono); pointer-events: none; }
+  .field .pre { left: 11px; } .field .suf { right: 11px; }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
+  .hero { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin: 6px 0 4px; }
+  .hero .big { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 44px;
+               font-weight: 600; letter-spacing: -.02em; }
+  .verdict { display: inline-block; padding: 4px 10px; border-radius: 999px; font-weight: 600; font-size: 13px; }
+  .verdict.good { background: var(--tint); color: var(--up); }
+  .verdict.bad  { background: #FEF2F2; color: var(--down); }
+  .verdict.even { background: #FFFBEB; color: var(--warn); }
+  .explain { color: var(--muted); margin: 6px 0 16px; line-height: 1.5; }
+
+  .meter { position: relative; height: 10px; background: var(--line-soft); border-radius: 999px; margin: 8px 0 26px; }
+  .meter .fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; transition: width .25s; }
+  .meter .tick { position: absolute; top: -4px; bottom: -4px; width: 2px; background: var(--ink); }
+  .meter .tick-label { position: absolute; top: 16px; transform: translateX(-50%); white-space: nowrap;
+                       font-size: 11px; color: var(--muted); }
+
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .stat { border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+  .stat .k { font-size: 12px; color: var(--muted); }
+  .stat .v { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 20px;
+             font-weight: 600; margin-top: 4px; }
+  .stat .h { font-size: 11px; color: var(--faint); margin-top: 3px; line-height: 1.4; }
+  .pos { color: var(--up); } .neg { color: var(--down); }
+
+  table.breakdown { width: 100%; border-collapse: collapse; margin-top: 16px; }
+  table.breakdown td { padding: 7px 0; border-bottom: 1px solid var(--line-soft); }
+  table.breakdown td:last-child { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  table.breakdown tr.total td { font-weight: 600; border-bottom: 0; border-top: 1px solid var(--line); }
+  footer { margin-top: 20px; color: var(--faint); font-size: 12px; text-align: center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>ROAS Calculator</h1>
+    <p>Are your ads actually making money? Fill in the boxes. Results update as you type.</p>
+  </header>
+
+  <div class="grid">
+    <!-- Inputs -->
+    <div class="card">
+      <h2>Your numbers</h2>
+
+      <div class="section">
+        <div class="section-title">Ads</div>
+        <label><span>Ad spend</span>
+          <div class="field pre"><b class="pre cur">$</b><input id="spend" type="number" min="0" step="any" value="1000"></div>
+        </label>
+        <label><span>Revenue from those ads</span>
+          <div class="field pre"><b class="pre cur">$</b><input id="revenue" type="number" min="0" step="any" value="3500"></div>
+          <small>Sales excluding tax.</small>
+        </label>
+        <label><span>Number of orders <em style="color:var(--faint);font-style:normal">(optional)</em></span>
+          <div class="field"><input id="orders" type="number" min="0" step="1" value="50"></div>
+          <small>Lets us show cost per order and average order value.</small>
+        </label>
+      </div>
+
+      <div class="section">
+        <div class="section-title">Costs, as a % of revenue</div>
+        <div class="row2">
+          <label><span>Product cost</span>
+            <div class="field suf"><input id="cogs" type="number" min="0" max="100" step="any" value="30"><b class="suf">%</b></div>
+          </label>
+          <label><span>Shipping &amp; packing</span>
+            <div class="field suf"><input id="ship" type="number" min="0" max="100" step="any" value="10"><b class="suf">%</b></div>
+          </label>
+        </div>
+        <div class="row2">
+          <label><span>Payment fees</span>
+            <div class="field suf"><input id="fees" type="number" min="0" max="100" step="any" value="3"><b class="suf">%</b></div>
+          </label>
+          <label><span>Profit goal</span>
+            <div class="field suf"><input id="goal" type="number" min="0" max="100" step="any" value="15"><b class="suf">%</b></div>
+            <small>Profit you want to keep after ads.</small>
+          </label>
+        </div>
+      </div>
+
+      <div class="section">
+        <label style="margin:0"><span>Currency symbol</span>
+          <div class="field"><input id="currency" type="text" maxlength="3" value="$" style="font-family:var(--font)"></div>
+        </label>
+      </div>
+    </div>
+
+    <!-- Results -->
+    <div class="card">
+      <h2>Your ROAS</h2>
+      <div class="hero">
+        <div class="big" id="roas">–</div>
+        <span class="verdict" id="verdict">–</span>
+      </div>
+      <p class="explain" id="explain"></p>
+
+      <div class="meter" id="meter">
+        <div class="fill" id="fill"></div>
+        <div class="tick" id="tickBe"><span class="tick-label" id="tickBeLabel"></span></div>
+      </div>
+
+      <div class="stats">
+        <div class="stat"><div class="k">Break-even ROAS</div><div class="v" id="be">–</div>
+          <div class="h">Below this, ads lose money.</div></div>
+        <div class="stat"><div class="k">Target ROAS</div><div class="v" id="target">–</div>
+          <div class="h" id="targetHint">Hit this to reach your profit goal.</div></div>
+        <div class="stat"><div class="k">Profit after ads</div><div class="v" id="profit">–</div>
+          <div class="h" id="profitMargin">&nbsp;</div></div>
+        <div class="stat"><div class="k">Max ad spend to break even</div><div class="v" id="maxSpend">–</div>
+          <div class="h">For this much revenue.</div></div>
+        <div class="stat" id="cpaBox"><div class="k">Cost per order</div><div class="v" id="cpa">–</div>
+          <div class="h" id="cpaHint">&nbsp;</div></div>
+        <div class="stat" id="aovBox"><div class="k">Average order value</div><div class="v" id="aov">–</div>
+          <div class="h">Revenue ÷ orders.</div></div>
+      </div>
+
+      <table class="breakdown">
+        <tbody>
+          <tr><td>Revenue</td><td id="bRev">–</td></tr>
+          <tr><td>− Product cost</td><td id="bCogs">–</td></tr>
+          <tr><td>− Shipping &amp; packing</td><td id="bShip">–</td></tr>
+          <tr><td>− Payment fees</td><td id="bFees">–</td></tr>
+          <tr><td>− Ad spend</td><td id="bSpend">–</td></tr>
+          <tr class="total"><td>Profit</td><td id="bProfit">–</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <footer>ROAS = revenue ÷ ad spend. Break-even ROAS = 1 ÷ (share of revenue left after product, shipping and fees).</footer>
+</div>
+
+<script>
+  const $ = id => document.getElementById(id);
+  const num = id => { const v = parseFloat($(id).value); return isFinite(v) && v > 0 ? v : 0; };
+
+  function money(n) {
+    const sym = $('currency').value || '';
+    const sign = n < 0 ? '−' : '';
+    return sign + sym + Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+  const x = n => isFinite(n) ? n.toFixed(2) + '×' : '–';
+
+  function calc() {
+    document.querySelectorAll('.cur').forEach(el => el.textContent = $('currency').value || '');
+
+    const spend = num('spend'), revenue = num('revenue'), orders = num('orders');
+    const costPct = (num('cogs') + num('ship') + num('fees')) / 100;
+    const margin = 1 - costPct;            // share of revenue left before ads
+    const goal = num('goal') / 100;
+
+    const roas = spend > 0 ? revenue / spend : NaN;
+    const beRoas = margin > 0 ? 1 / margin : Infinity;
+    const targetRoas = margin - goal > 0 ? 1 / (margin - goal) : Infinity;
+
+    const cogs = revenue * num('cogs') / 100, ship = revenue * num('ship') / 100, fees = revenue * num('fees') / 100;
+    const profit = revenue - cogs - ship - fees - spend;
+
+    // Headline
+    $('roas').textContent = x(roas);
+    const v = $('verdict'), ex = $('explain');
+    if (!spend || !revenue) {
+      v.className = 'verdict even'; v.textContent = 'Add your numbers';
+      ex.textContent = 'Enter your ad spend and the revenue it brought in.';
+    } else if (margin <= 0) {
+      v.className = 'verdict bad'; v.textContent = 'Costs too high';
+      ex.textContent = 'Your product, shipping and fee costs eat all of your revenue, so no ROAS can be profitable. Raise prices or cut costs first.';
+    } else if (Math.abs(roas - beRoas) / beRoas < 0.03) {
+      v.className = 'verdict even'; v.textContent = 'Breaking even';
+      ex.textContent = `Every ${money(1)} on ads brings back ${money(roas)} in sales, which just about covers costs. You need about ${x(beRoas)} to break even.`;
+    } else if (roas > beRoas) {
+      v.className = 'verdict good'; v.textContent = 'Profitable';
+      ex.textContent = `Every ${money(1)} on ads brings back ${money(roas)} in sales. You only need ${x(beRoas)} to break even, so these ads are making money.`;
+    } else {
+      v.className = 'verdict bad'; v.textContent = 'Losing money';
+      ex.textContent = `Every ${money(1)} on ads brings back ${money(roas)} in sales, but you need ${x(beRoas)} just to cover costs. These ads are costing you money.`;
+    }
+
+    // Meter: scale to whichever is bigger, ROAS or target, with headroom
+    const scale = Math.max(isFinite(roas) ? roas : 0, isFinite(targetRoas) ? targetRoas : 0, isFinite(beRoas) ? beRoas : 0) * 1.2 || 1;
+    const pct = n => Math.min(100, Math.max(0, n / scale * 100));
+    $('fill').style.width = (isFinite(roas) ? pct(roas) : 0) + '%';
+    $('fill').style.background = roas >= beRoas ? 'var(--up)' : 'var(--down)';
+    if (isFinite(beRoas)) {
+      $('tickBe').style.display = ''; $('tickBe').style.left = pct(beRoas) + '%';
+      $('tickBeLabel').textContent = 'break-even ' + x(beRoas);
+    } else $('tickBe').style.display = 'none';
+
+    // Stats
+    $('be').textContent = x(beRoas);
+    $('target').textContent = x(targetRoas);
+    $('targetHint').textContent = isFinite(targetRoas)
+      ? `Hit this to keep ${(goal * 100).toFixed(0)}% as profit.` : 'Goal is higher than your margin allows.';
+    $('profit').textContent = money(profit);
+    $('profit').className = 'v ' + (profit > 0 ? 'pos' : profit < 0 ? 'neg' : '');
+    $('profitMargin').textContent = revenue ? `${(profit / revenue * 100).toFixed(1)}% of revenue` : ' ';
+    $('maxSpend').textContent = money(Math.max(0, revenue * margin));
+
+    const hasOrders = orders > 0;
+    $('cpaBox').style.opacity = $('aovBox').style.opacity = hasOrders ? 1 : .45;
+    $('cpa').textContent = hasOrders ? money(spend / orders) : '–';
+    $('aov').textContent = hasOrders ? money(revenue / orders) : '–';
+    $('cpaHint').textContent = hasOrders
+      ? `Break-even is ${money(Math.max(0, revenue / orders * margin))} per order.` : 'Add orders to see this.';
+
+    // Breakdown
+    $('bRev').textContent = money(revenue);
+    $('bCogs').textContent = money(-cogs);
+    $('bShip').textContent = money(-ship);
+    $('bFees').textContent = money(-fees);
+    $('bSpend').textContent = money(-spend);
+    $('bProfit').textContent = money(profit);
+    $('bProfit').className = profit > 0 ? 'pos' : profit < 0 ? 'neg' : '';
+  }
+
+  document.querySelectorAll('input').forEach(i => i.addEventListener('input', calc));
+  calc();
+</script>
+</body>
+</html>

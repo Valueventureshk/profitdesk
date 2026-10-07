@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ProfitDesk</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+
+<!-- ------------------------------------------------ first run -->
+<div id="setup" class="setup" hidden>
+  <div class="setup-card">
+    <div class="setup-mark">PD</div>
+    <h1>Connect your first store</h1>
+    <p class="setup-sub">
+      ProfitDesk installs into Shopify as an app and asks for view access to your
+      orders. Nothing is changed in your store.
+    </p>
+
+    <label class="field">
+      <span>Shopify store address</span>
+      <input id="setupDomain" type="text" placeholder="your-store.myshopify.com" autocomplete="off">
+    </label>
+    <button id="setupConnect" class="btn btn-primary btn-block">Connect Shopify store</button>
+
+    <p id="setupNotice" class="notice" hidden></p>
+
+    <details class="advanced">
+      <summary>Connect with an access token instead</summary>
+      <p class="hint">
+        For stores where you have already made a custom app in
+        Settings &rsaquo; Apps and sales channels &rsaquo; Develop apps.
+      </p>
+      <label class="field">
+        <span>Admin API access token</span>
+        <input id="setupToken" type="password" placeholder="shpat_..." autocomplete="off">
+      </label>
+      <button id="setupTokenConnect" class="btn btn-ghost btn-block">Connect with token</button>
+    </details>
+  </div>
+</div>
+
+<!-- ------------------------------------------------ dashboard -->
+<div id="app" class="layout" hidden>
+
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-mark">PD</span>
+      <span class="brand-name">ProfitDesk</span>
+    </div>
+
+    <nav id="storeNav" class="nav"></nav>
+
+    <div class="sidebar-foot">
+      <button id="addStore" class="nav-item nav-add">
+        <span class="ico">+</span> Add a store
+      </button>
+      <button id="openSettings" class="nav-item">
+        <span class="ico">&#9881;</span> Settings
+      </button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div class="crumb">
+        <h1 id="viewTitle">All stores</h1>
+        <p id="viewSub">Last updated just now</p>
+      </div>
+      <div class="controls">
+        <select id="currencySelect" class="control" title="Show every figure in this currency"></select>
+        <select id="rangeSelect" class="control">
+          <option value="today" selected>Today</option>
+          <option value="yesterday">Yesterday</option>
+          <option value="7">Last 7 days</option>
+          <option value="30">Last 30 days</option>
+          <option value="90">Last 90 days</option>
+          <option value="mtd">This month</option>
+          <option value="custom">Custom&hellip;</option>
+        </select>
+        <span id="customRange" class="control-group" hidden>
+          <input id="startDate" type="date" class="control">
+          <input id="endDate" type="date" class="control">
+        </span>
+        <button id="refresh" class="btn btn-ghost" title="Pull fresh figures">Refresh</button>
+      </div>
+    </header>
+
+    <div class="content">
+      <div id="warnings" class="warnings"></div>
+      <p id="fxNote" class="fx-note" hidden></p>
+
+      <section id="cards" class="cards"></section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Sales and ad spend</h2>
+          <div class="legend">
+            <span class="key key-sales">Total sales</span>
+            <span class="key key-spend">Ad spend</span>
+          </div>
+        </div>
+        <div id="chart" class="chart"></div>
+      </section>
+
+      <section id="storesPanel" class="panel" hidden>
+        <div class="panel-head"><h2>Store by store</h2></div>
+        <div class="table-wrap">
+          <table class="table" id="storeTable"></table>
+        </div>
+      </section>
+    </div>
+  </main>
+</div>
+
+<!-- ------------------------------------------------ settings -->
+<div id="drawer" class="drawer" hidden>
+  <div class="drawer-scrim" data-close></div>
+  <div class="drawer-panel">
+    <div class="drawer-head">
+      <h2>Settings</h2>
+      <button class="icon-btn" data-close aria-label="Close">&times;</button>
+    </div>
+    <div class="drawer-body">
+
+      <section class="block">
+        <h3>Google Ads</h3>
+        <p class="hint">One Google sign-in covers every store. Each store then reads
+          spend from one ad account.</p>
+        <div id="googleBox"></div>
+      </section>
+
+      <section class="block">
+        <h3>Meta Ads</h3>
+        <p class="hint">Facebook and Instagram ads. One access token covers every
+          store. Each store then reads spend from one ad account.</p>
+        <div id="metaBox"></div>
+      </section>
+
+      <section class="block">
+        <h3>Add a Shopify store</h3>
+        <p class="hint">Each store connects through its own small ProfitDesk app in
+          Shopify. Make one per store, then paste its details here.</p>
+        <label class="field">
+          <span>Store address</span>
+          <input id="newDomain" type="text" placeholder="your-store.myshopify.com" autocomplete="off">
+        </label>
+        <label class="field">
+          <span>App Client ID</span>
+          <input id="newClientId" type="text" placeholder="32 letters and numbers" autocomplete="off">
+        </label>
+        <label class="field">
+          <span>App Client secret</span>
+          <input id="newClientSecret" type="password" placeholder="shpss_..." autocomplete="off">
+        </label>
+        <label class="field">
+          <span>Install link</span>
+          <input id="newInstallLink" type="text" autocomplete="off"
+                 placeholder="https://admin.shopify.com/store/.../oauth/install_custom_app?...">
+        </label>
+        <button id="newConnect" class="btn btn-primary btn-block">Connect store</button>
+
+        <details class="advanced">
+          <summary>How do I get these?</summary>
+          <ol class="hint steps">
+            <li>Go to <strong>dev.shopify.com</strong>, pick the organization that owns
+              the store, then <strong>Create app → Start from Dev Dashboard</strong>.
+              Name it ProfitDesk.</li>
+            <li>On <strong>Versions</strong>, set App URL to
+              <code>http://127.0.0.1:8787</code>, scopes to <code>read_orders</code>,
+              and Redirect URL to
+              <code>http://127.0.0.1:8787/auth/shopify/callback</code>. Untick
+              "Embed app in Shopify admin" if you see it. Click <strong>Release</strong>.</li>
+            <li>On <strong>Settings</strong>, copy the <strong>Client ID</strong> and
+              <strong>Client secret</strong>.</li>
+            <li>Open <strong>Distribution</strong>, choose <strong>Custom
+              distribution</strong>, enter the store address, leave the Plus box
+              unticked, and click <strong>Generate link</strong>. Copy the
+              <strong>Install link</strong>.</li>
+            <li>Paste all four here and click <strong>Connect store</strong>. Shopify
+              asks you to approve; click <strong>Install</strong> and ProfitDesk
+              finishes the rest.</li>
+          </ol>
+          <p class="hint">Leave the install link empty only for an app that is
+            already installed on the store. To retry a store you've already added,
+            just type its address and click Connect store; its keys are saved.</p>
+        </details>
+
+        <details class="advanced">
+          <summary>Connect with an access token instead</summary>
+          <label class="field">
+            <span>Admin API access token</span>
+            <input id="newToken" type="password" placeholder="shpat_..." autocomplete="off">
+          </label>
+          <button id="newTokenConnect" class="btn btn-ghost btn-block">Connect with token</button>
+        </details>
+      </section>
+
+      <section class="block">
+        <h3>Your stores</h3>
+        <div id="storeSettings"></div>
+      </section>
+
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
