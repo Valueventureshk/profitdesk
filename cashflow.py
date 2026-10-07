@@ -10,6 +10,9 @@ connected account's balances and its pending (not-yet-settled) transactions.
     Available by day N   available now + arriving by day N
 
 Pending amounts are net: refunds and payouts waiting to leave are negative.
+Card spending on hold (ISSUING_AUTHORISATION_HOLD/RELEASE) is left out: the
+provider has already taken it off the available balance, so counting it as
+"arriving" would subtract it twice.
 Days follow the business's own clock (Hong Kong). Everything is converted to
 one display currency at the latest daily rate.
 """
@@ -32,8 +35,13 @@ KIND = {
     "DISPUTE": "Disputes",
     "DISPUTE_LOST": "Disputes",
     "DISPUTE_REVERSAL": "Disputes",
+    "PRE_CHARGEBACK_ACCEPTED": "Disputes",
     "FEE": "Fees",
 }
+
+
+# Already reflected in the available balance; not money still to arrive or leave.
+ALREADY_IN_BALANCE = {"ISSUING_AUTHORISATION_HOLD", "ISSUING_AUTHORISATION_RELEASE"}
 
 
 def _kind(t: str) -> str:
@@ -68,6 +76,8 @@ def summarize(accounts: list, factor, today: date, tz) -> dict:
         reserved += a_reserved
 
         for p in acct["pending"]:
+            if p["type"] in ALREADY_IN_BALANCE:
+                continue
             amount = p["net"] * factor(p["currency"])
             due = _due(p["estimated"], tz)
             t = by_type.setdefault(p["type"] or "?", {"count": 0, "amount": 0.0,

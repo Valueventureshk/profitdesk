@@ -86,7 +86,7 @@ function renderCards(s) {
   const now = `<div class="card feature">
       <div class="card-label"><span class="dot" style="background:var(--up)"></span>Available now</div>
       <div class="card-value">${money(s.available)}</div>
-      <div class="card-note">${s.reserved ? `Plus ${money(s.reserved)} held in reserve` : "&nbsp;"}</div>
+      <div class="card-note">${s.reserved ? `Plus ${money(s.reserved)} held (payment reserves and card holds)` : "&nbsp;"}</div>
     </div>`;
   const horizons = s.horizons.map((h) => `<div class="card">
       <div class="card-label"><span class="dot" style="background:var(--sales)"></span>${esc(h.label)}</div>
@@ -123,7 +123,7 @@ function renderAccounts(s) {
     return `<tr><td class="name">${esc(a.label)}<span class="sub">${bal || "No balances"}</span></td>
       <td>${money(a.available)}</td><td>${money(a.reserved)}</td><td>${money(d30)}</td></tr>`;
   }).join("");
-  $("accounts").innerHTML = `<thead><tr><th>Account</th><th>Available</th><th>In reserve</th>
+  $("accounts").innerHTML = `<thead><tr><th>Account</th><th>Available</th><th>Held</th>
     <th>Arriving 30 days</th></tr></thead><tbody>${rows}</tbody>`;
 }
 

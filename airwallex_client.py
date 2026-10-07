@@ -70,19 +70,13 @@ async def _get(client, path, token, params=None, what="data"):
     return r.json()
 
 
-async def raw_pending(client_id: str, api_key: str, account_id: str = None, n: int = 3):
-    """A few pending items exactly as Airwallex returns them (for checking what an
-    unexpected item is), plus counts by type and whether there are more pages."""
-    async with httpx.AsyncClient(timeout=60) as client:
-        token = await _token(client, client_id, api_key, account_id)
-        since = (datetime.now(timezone.utc) - timedelta(days=120)).strftime("%Y-%m-%dT%H:%M:%S+0000")
-        body = await _get(client, "/api/v1/financial_transactions", token, {
-            "status": "PENDING", "from_created_at": since, "page_num": 0, "page_size": 1000,
-        }, what="financial transactions")
-    items = body.get("items", [])
-    odd = [i for i in items if not i.get("transaction_type")][:n]
-    return {"top_level_keys": sorted(body.keys()), "count": len(items),
-            "has_more": body.get("has_more"), "untyped_samples": odd}
+def _f(d: dict, snake: str):
+    """Read a field whether Airwallex sent it as snake_case or camelCase; some
+    accounts answer in one, some in the other."""
+    if snake in d:
+        return d[snake]
+    head, *rest = snake.split("_")
+    return d.get(head + "".join(w.title() for w in rest))
 
 
 async def snapshot(client_id: str, api_key: str, lookback_days: int = 120,
@@ -105,7 +99,7 @@ async def snapshot(client_id: str, api_key: str, lookback_days: int = 120,
                 "page_num": page, "page_size": 1000,
             }, what="financial transactions")
             pending.extend(body.get("items", []))
-            if not body.get("has_more") or page >= 50:
+            if not _f(body, "has_more") or page >= 50:
                 break
             page += 1
 
@@ -113,16 +107,16 @@ async def snapshot(client_id: str, api_key: str, lookback_days: int = 120,
     return {
         "balances": [{
             "currency": b.get("currency"),
-            "available": float(b.get("available_amount") or 0),
-            "pending": float(b.get("pending_amount") or 0),
-            "reserved": float(b.get("reserved_amount") or 0),
-            "total": float(b.get("total_amount") or 0),
+            "available": float(_f(b, "available_amount") or 0),
+            "pending": float(_f(b, "pending_amount") or 0),
+            "reserved": float(_f(b, "reserved_amount") or 0),
+            "total": float(_f(b, "total_amount") or 0),
         } for b in rows if b.get("currency")],
         "pending": [{
             "currency": t.get("currency"),
             "net": float(t.get("net") if t.get("net") is not None else t.get("amount") or 0),
-            "type": t.get("transaction_type") or t.get("source_type") or "",
-            "estimated": t.get("estimated_settled_at") or "",
-            "created": t.get("created_at") or "",
+            "type": _f(t, "transaction_type") or _f(t, "source_type") or "",
+            "estimated": _f(t, "estimated_settled_at") or "",
+            "created": _f(t, "created_at") or "",
         } for t in pending if t.get("currency")],
     }
