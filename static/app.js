@@ -365,16 +365,19 @@ function renderCards(d) {
       const arrow = rising ? "&#9650;" : "&#9660;";
       chip = `<span class="chip ${tone}">${arrow} ${Math.abs(delta).toFixed(1)}%</span>`;
     }
-    return `<div class="card${c.feature ? " feature" : ""}">
+    // Profit and margin turn red when they go below zero; costs stay neutral.
+    const loss = (c.key === "net_profit" || c.key === "net_margin") && d.totals[c.key] < 0;
+    const dot = loss ? "var(--down)" : c.dot;
+    return `<div class="card${c.feature ? " feature" : ""}${loss ? " loss" : ""}">
       <div class="card-label">
-        <span class="dot" style="background:${c.dot}"></span>${c.label}${chip}
+        <span class="dot" style="background:${dot}"></span>${c.label}${chip}
       </div>
       <div class="card-value">${value}</div>
       ${c.key === "ad_spend" ? spendSplit(d.totals) : ""}
       ${c.key === "orders" ? `<div class="card-note">AOV ${fmt(d.totals.aov, "money")}</div>` : ""}
       ${c.key === "processing_fee" ? `<div class="card-note">Payments ${fmt(d.totals.payment_fee, "money")}
         · Shopify ${fmt(d.totals.shopify_fee, "money")}</div>` : ""}
-      ${sparkline(d.series, c.key, c.dot)}
+      ${sparkline(d.series, c.key, dot)}
     </div>`;
   }).join("");
 }

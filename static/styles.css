@@ -201,6 +201,8 @@ button, input, select { font-family: inherit; font-size: inherit; }
   min-height: 132px;
 }
 .card.feature { background: var(--tint); border-color: #A7F3D0; }
+.card.loss .card-value { color: var(--down); }
+.card.feature.loss { background: #FEF2F2; border-color: #FECACA; }
 .card-label {
   font-size: 12.5px; font-weight: 500; color: var(--muted);
   display: flex; align-items: center; gap: 7px;
