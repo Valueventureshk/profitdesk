@@ -58,6 +58,7 @@ def summarize(accounts: list, factor, today: date, tz) -> dict:
     later = 0.0
     days: dict[str, dict] = {}
     per_account = []
+    by_type: dict[str, dict] = {}   # raw Airwallex types, to check what "Other" is
 
     for acct in accounts:
         a_avail = sum(b["available"] * factor(b["currency"]) for b in acct["balances"])
@@ -69,6 +70,12 @@ def summarize(accounts: list, factor, today: date, tz) -> dict:
         for p in acct["pending"]:
             amount = p["net"] * factor(p["currency"])
             due = _due(p["estimated"], tz)
+            t = by_type.setdefault(p["type"] or "?", {"count": 0, "amount": 0.0,
+                                                      "undated": 0, "overdue": 0})
+            t["count"] += 1
+            t["amount"] += amount
+            t["undated"] += due is None
+            t["overdue"] += due is not None and due < today
             when = max(due or today, today)            # overdue/undated: treat as today
             ahead = (when - today).days
             kind = _kind(p["type"])
@@ -105,4 +112,5 @@ def summarize(accounts: list, factor, today: date, tz) -> dict:
         "later": later,
         "schedule": [days[d] for d in sorted(days)],
         "accounts": per_account,
+        "by_type": dict(sorted(by_type.items(), key=lambda kv: -abs(kv[1]["amount"]))),
     }
