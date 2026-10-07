@@ -132,9 +132,19 @@ function renderConnections() {
   $("connList").innerHTML = list.length ? list.map((c) => `
     <div class="group-row">
       <div class="group-name"><strong>${esc(c.label)}</strong><span>${esc(c.provider)}</span></div>
+      <button class="btn btn-sm btn-ghost" data-rename="${c.id}">Rename</button>
       <button class="btn btn-sm btn-danger" data-remove="${c.id}">Remove</button>
     </div>`).join("") : `<p class="hint">No accounts connected yet.</p>`;
   $("addAwx").open = !list.length;
+  for (const b of $("connList").querySelectorAll("[data-rename]")) {
+    b.onclick = async () => {
+      const c = list.find((x) => String(x.id) === b.dataset.rename);
+      const name = prompt("Name for this account", c.label);
+      if (!name || name === c.label) return;
+      try { await post(`/api/cash/${c.id}`, { label: name }, "PUT"); load(); }
+      catch (e) { toast(e.message, true); }
+    };
+  }
   for (const b of $("connList").querySelectorAll("[data-remove]")) {
     b.onclick = async () => {
       const c = list.find((x) => String(x.id) === b.dataset.remove);

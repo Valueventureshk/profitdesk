@@ -458,6 +458,11 @@ def add_cash_connection(provider: str, label: str, client_id: str, secret: str,
             (provider, label, client_id, secret, account_id or None)).lastrowid
 
 
+def rename_cash_connection(connection_id: int, label: str):
+    with _conn() as con:
+        con.execute("UPDATE cash_connections SET label = ? WHERE id = ?", (label, connection_id))
+
+
 def delete_cash_connection(connection_id: int):
     with _conn() as con:
         con.execute("DELETE FROM cash_connections WHERE id = ?", (connection_id,))

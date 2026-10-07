@@ -669,6 +669,15 @@ async def api_add_airwallex(payload: dict):
     return {"ok": True, "accounts": len(targets), "currencies": currencies}
 
 
+@app.put("/api/cash/{connection_id}")
+def api_rename_cash(connection_id: int, payload: dict):
+    label = (payload.get("label") or "").strip()
+    if not label:
+        raise HTTPException(400, "Give it a name.")
+    db.rename_cash_connection(connection_id, label[:60])
+    return {"ok": True}
+
+
 @app.delete("/api/cash/{connection_id}")
 def api_remove_cash(connection_id: int):
     db.delete_cash_connection(connection_id)
