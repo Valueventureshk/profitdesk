@@ -27,6 +27,7 @@ import airwallex_client as awx
 import paypal_client as paypal
 import auth
 import cashflow
+import statement
 import db
 import demo
 import fx
@@ -605,12 +606,13 @@ def cash_page():
     return _page("cash.html", ("cash.js", "nav.js", "styles.css"))
 
 
-@app.get("/api/cash")
-async def api_cash(currency: str = None):
+async def _cash_state(currency: str = None) -> dict:
+    """Live balances and pending money from every connected account, summarised."""
     conns = db.list_cash_connections()
     base = (currency or _display_currency()).upper()
     if not conns:
-        return {"currency": base, "connected": [], "summary": None, "problems": []}
+        return {"base": base, "conns": [], "summary": None, "problems": [], "fx": None,
+                "factor": lambda code: 1.0, "today": datetime.now(CASH_TZ).date()}
 
     async def one(c):
         if c["provider"] == "airwallex":
@@ -632,15 +634,87 @@ async def api_cash(currency: str = None):
     fx_table = await fx.table(base) if codes - {base} else None
     factor = (lambda code: fx.factor(fx_table, code, base)) if fx_table else (lambda code: 1.0)
     today = datetime.now(CASH_TZ).date()
+    return {"base": base, "conns": conns, "problems": problems, "factor": factor, "today": today,
+            "fx_table": fx_table, "summary": cashflow.summarize(accounts, factor, today, CASH_TZ)}
+
+
+@app.get("/api/cash")
+async def api_cash(currency: str = None):
+    st = await _cash_state(currency)
+    if not st["conns"]:
+        return {"currency": st["base"], "connected": [], "summary": None, "problems": []}
+    fx_table = st["fx_table"]
     return {
-        "currency": base,
-        "today": today.isoformat(),
-        "connected": [{"id": c["id"], "label": c["label"], "provider": c["provider"]} for c in conns],
-        "summary": cashflow.summarize(accounts, factor, today, CASH_TZ),
-        "problems": problems,
+        "currency": st["base"],
+        "today": st["today"].isoformat(),
+        "connected": [{"id": c["id"], "label": c["label"], "provider": c["provider"]}
+                      for c in st["conns"]],
+        "summary": st["summary"],
+        "problems": st["problems"],
         "fx": None if not fx_table else {"date": fx_table.get("date"),
                                          "source": fx_table.get("source")},
     }
+
+
+@app.get("/api/cash/statement")
+async def api_cash_statement(start: str, end: str = None, currency: str = None):
+    """How "available + receivable" moved between two dates (business clock)."""
+    try:
+        d0 = datetime.strptime(start, "%Y-%m-%d").date()
+        d1 = datetime.strptime(end or start, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(400, "Pick a start and end date.")
+    now = datetime.now(CASH_TZ)
+    if d1 < d0:
+        d0, d1 = d1, d0
+    d1 = min(d1, now.date())
+    if (now.date() - d0).days > 92:
+        raise HTTPException(400, "The statement goes back up to 92 days. Pick a later start date.")
+    t0 = datetime.combine(d0, datetime.min.time(), CASH_TZ)
+    t1 = datetime.combine(d1 + timedelta(days=1), datetime.min.time(), CASH_TZ)
+
+    st = await _cash_state(currency)
+    if not st["summary"]:
+        raise HTTPException(400, "Connect Airwallex or PayPal first.")
+
+    async def moves_for(c):
+        if c["provider"] == "airwallex":
+            rows, early, cards = await asyncio.gather(
+                awx.transactions(c["client_id"], c["secret"], t0, now, c["account_id"]),
+                # Reserve releases landing in the range were created ~90 days before.
+                awx.transactions(c["client_id"], c["secret"], t0 - timedelta(days=100),
+                                 min(t1 - timedelta(days=80), t0), c["account_id"]),
+                awx.card_transactions(c["client_id"], c["secret"], t0 - timedelta(days=7),
+                                      c["account_id"]))
+            early = [r for r in early if awx._f(r, "transaction_type") == "PAYMENT_RESERVE_RELEASE"]
+            return statement.airwallex_moves(c["label"], rows + early, cards)
+        if c["provider"] == "paypal":
+            days = (now - t0).days + 2
+            rows = await paypal.transactions(c["client_id"], c["secret"], days=days,
+                                             fields="transaction_info,payer_info", full=True)
+            return statement.paypal_moves(c["label"], rows)
+        return []
+
+    got = await asyncio.gather(*[moves_for(c) for c in st["conns"]], return_exceptions=True)
+    moves, problems = [], list(st["problems"])
+    for c, g in zip(st["conns"], got):
+        if isinstance(g, Exception):
+            problems.append(f"{c['label']}: {g}")
+        else:
+            moves.extend(g)
+
+    shop = None
+    try:
+        dash = await api_dashboard(scope="all", start=d0.isoformat(), end=d1.isoformat(),
+                                   currency=st["base"])
+        shop = dash["totals"]
+    except Exception:
+        pass
+
+    out = statement.build(moves, st["factor"], st["summary"]["position"], t0, t1, now,
+                          shopify_sales=shop and shop.get("sales"),
+                          ad_spend=shop and shop.get("ad_spend"))
+    return {"currency": st["base"], "problems": problems, **out}
 
 
 @app.post("/api/cash/airwallex")
@@ -685,88 +759,6 @@ async def api_add_paypal(payload: dict):
         raise HTTPException(400, str(e))
     db.add_cash_connection("paypal", label[:60], cid, secret)
     return {"ok": True, "accounts": 1, "currencies": sorted(b["currency"] for b in snap["balances"])}
-
-
-@app.get("/api/cash/statement-debug")
-async def api_statement_debug(days: int = 3):
-    # TEMPORARY: how each provider labels its movements. No keys returned.
-    from datetime import timedelta as _td
-    until = datetime.now(CASH_TZ)
-    since = until - _td(days=days)
-    out = []
-    for c in db.list_cash_connections():
-        try:
-            if c["provider"] == "airwallex":
-                rows = await awx.transactions(c["client_id"], c["secret"], since, until, c["account_id"])
-                key = lambda t: f"{awx._f(t, 'transaction_type')}|{t.get('status')}"
-            else:
-                rows = await paypal.transactions(c["client_id"], c["secret"], days=days,
-                                                 fields="all", full=True)
-                key = lambda t: t["transaction_info"].get("transaction_event_code")
-        except Exception as e:
-            out.append({"label": c["label"], "error": str(e)})
-            continue
-        groups = {}
-        for t in rows:
-            g = groups.setdefault(key(t), {"n": 0, "samples": []})
-            g["n"] += 1
-            if len(g["samples"]) < 4:
-                if c["provider"] == "paypal":
-                    ti = t["transaction_info"]
-                    g["samples"].append({"amt": ti.get("transaction_amount"), "fee": ti.get("fee_amount"),
-                                         "date": ti.get("transaction_initiation_date"),
-                                         "subject": ti.get("transaction_subject"), "note": ti.get("transaction_note"),
-                                         "payer": (t.get("payer_info") or {}).get("payer_name"),
-                                         "payer_email_domain": ((t.get("payer_info") or {}).get("email_address") or "@").split("@")[-1],
-                                         "keys": sorted(ti.keys())})
-                else:
-                    g["samples"].append({k: t.get(k) for k in t if k not in ("id",)})
-        out.append({"label": c["label"], "provider": c["provider"], "rows": len(rows), "groups": groups})
-    return out
-
-
-@app.get("/api/cash/issuing-debug")
-async def api_issuing_debug():
-    # TEMPORARY: do card ledger rows line up with card transactions? No keys returned.
-    import httpx as _hx
-    from datetime import timedelta as _td
-    out = []
-    until = datetime.now(CASH_TZ); since = until - _td(days=3)
-    for c in db.list_cash_connections():
-        if c["provider"] != "airwallex":
-            continue
-        fin = await awx.transactions(c["client_id"], c["secret"], since, until, c["account_id"])
-        src = {awx._f(t, "source_id"): awx._f(t, "transaction_type") for t in fin
-               if "ISSUING" in (awx._f(t, "transaction_type") or "")}
-        items, page = [], 0
-        async with _hx.AsyncClient(timeout=60) as client:
-            token = await awx._token(client, c["client_id"], c["secret"], c["account_id"])
-            while page < 20:
-                r = await client.get(f"{awx.API}/api/v1/issuing/transactions", params={
-                    "from_created_at": (since - _td(days=5)).strftime("%Y-%m-%dT%H:%M:%S%z"),
-                    "page_size": 200, "page_num": page},
-                    headers={"Authorization": f"Bearer {token}"})
-                if r.status_code >= 400:
-                    items = r.text[:200]; break
-                body = r.json(); items += body.get("items", [])
-                if not body.get("has_more"): break
-                page += 1
-        if isinstance(items, str):
-            out.append({"label": c["label"], "fin_card_rows": len(src), "error": items}); continue
-        hits = {}
-        for field in ("transaction_id", "lifecycle_id"):
-            ids = {i.get(field) for i in items}
-            hits[field] = sum(1 for k in src if k in ids)
-        ev = {i.get("card_transaction_data", {}).get("card_transaction_event_id") for i in items}
-        hits["event_id"] = sum(1 for k in src if k in ev)
-        types = {}
-        for i in items:
-            k = f"{i.get('transaction_type')}|{i.get('status')}"
-            types[k] = types.get(k, 0) + 1
-        out.append({"label": c["label"], "fin_card_rows": len(src), "issuing_rows": len(items),
-                    "hits": hits, "issuing_types": types,
-                    "fin_types": {t: list(src.values()).count(t) for t in set(src.values())}})
-    return out
 
 
 @app.put("/api/cash/{connection_id}")

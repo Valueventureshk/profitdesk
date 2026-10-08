@@ -89,6 +89,30 @@
     </section>
   </main>
 </div>
+<dialog id="stmt" class="stmt">
+  <div class="stmt-head">
+    <div>
+      <h2>Statement</h2>
+      <p class="hint" id="stmtSub">Available + receivable</p>
+    </div>
+    <button class="btn btn-sm btn-ghost" id="stmtClose" aria-label="Close">✕</button>
+  </div>
+  <div class="stmt-range">
+    <select id="stmtPreset" class="control">
+      <option value="today">Today</option>
+      <option value="yesterday" selected>Yesterday</option>
+      <option value="7">Last 7 days</option>
+      <option value="30">Last 30 days</option>
+      <option value="month">This month</option>
+      <option value="custom">Pick dates…</option>
+    </select>
+    <span id="stmtDates" class="stmt-dates" hidden>
+      <input type="date" id="stmtFrom" class="control"> <span class="hint">to</span>
+      <input type="date" id="stmtTo" class="control">
+    </span>
+  </div>
+  <div id="stmtBody" class="stmt-body"></div>
+</dialog>
 <div id="toast" class="toast" hidden></div>
 <script src="/static/nav.js"></script>
 <script src="/static/cash.js"></script>

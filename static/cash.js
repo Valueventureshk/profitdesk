@@ -84,11 +84,13 @@ function kindsNote(byKind) {
 }
 
 function renderCards(s) {
-  const position = `<div class="card position">
+  const position = `<div class="card position" id="positionCard" role="button" tabindex="0"
+      title="Open the statement">
       <div class="card-label"><span class="dot" style="background:var(--sales)"></span>Available + receivable</div>
       <div class="card-value">${money(s.position)}</div>
       <div class="card-note">${money(s.available)} available now + ${money(s.receivable)} receivable
         (sales settling, reserves and PayPal holds still to be released)</div>
+      <div class="card-link">View statement →</div>
     </div>`;
   const now = `<div class="card feature">
       <div class="card-label"><span class="dot" style="background:var(--up)"></span>Available now</div>
@@ -102,6 +104,8 @@ function renderCards(s) {
       <div class="card-note">${kindsNote(h.by_kind)}</div>
     </div>`).join("");
   $("cards").innerHTML = position + now + horizons;
+  $("positionCard").onclick = openStatement;
+  $("positionCard").onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") openStatement(); };
 }
 
 const FIRST_DAYS = 7;
@@ -174,6 +178,119 @@ function renderConnections() {
     };
   }
 }
+
+/* ------------------------------------------------ statement */
+
+const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+function stmtRange() {
+  const today = new Date((data?.today || iso(new Date())) + "T12:00:00");
+  const back = (n) => { const d = new Date(today); d.setDate(d.getDate() - n); return iso(d); };
+  const v = $("stmtPreset").value;
+  if (v === "today") return [iso(today), iso(today)];
+  if (v === "yesterday") return [back(1), back(1)];
+  if (v === "7") return [back(6), iso(today)];
+  if (v === "30") return [back(29), iso(today)];
+  if (v === "month") return [iso(new Date(today.getFullYear(), today.getMonth(), 1)), iso(today)];
+  return [$("stmtFrom").value || back(1), $("stmtTo").value || $("stmtFrom").value || back(1)];
+}
+
+function openStatement() {
+  const dlg = $("stmt");
+  if (!dlg.open) dlg.showModal();
+  loadStatement();
+}
+
+let stmtSeq = 0;
+async function loadStatement() {
+  const [from, to] = stmtRange();
+  $("stmtDates").hidden = $("stmtPreset").value !== "custom";
+  if ($("stmtPreset").value !== "custom") { $("stmtFrom").value = from; $("stmtTo").value = to; }
+  $("stmtSub").textContent = from === to ? niceDate(from) : `${niceDate(from)} – ${niceDate(to)}`;
+  $("stmtBody").innerHTML = `<p class="hint stmt-wait">Reading every movement from Airwallex and PayPal…</p>`;
+  const seq = ++stmtSeq;
+  let st;
+  try {
+    st = await api(`/api/cash/statement?start=${from}&end=${to}&currency=` +
+                   encodeURIComponent($("currencySelect").value));
+  } catch (e) {
+    if (seq === stmtSeq) $("stmtBody").innerHTML = `<div class="warn">${esc(e.message)}</div>`;
+    return;
+  }
+  if (seq !== stmtSeq) return;            // a newer range was picked meanwhile
+  renderStatement(st);
+}
+
+function renderStatement(st) {
+  const cur = st.currency;
+  const m2 = (v) => {
+    const opts = { style: "currency", currency: cur, minimumFractionDigits: 2, maximumFractionDigits: 2 };
+    try { return new Intl.NumberFormat(undefined, opts).format(v); } catch { return v.toFixed(2); }
+  };
+  const sgn = (v) => (Math.abs(v) < 0.005 ? m2(0) : (v > 0 ? "+" : "−") + m2(Math.abs(v)));
+  const sec = st.sections.map((s) => {
+    const moved = s.name === "Moved between your accounts";
+    const rows = s.lines.map((l) => {
+      const n = l.count > 1 && !moved ? ` <span class="stmt-n">×${l.count}</span>` : "";
+      const via = l.via ? `<span class="stmt-via">${esc(l.via)}</span>` : "";
+      const details = (l.details || []).filter((d) => Math.abs(d.amount) >= 0.5)
+        .map((d) => `<div class="stmt-detail"><span>${esc(d.name)}</span><span>${sgn(d.amount)}</span></div>`).join("");
+      const amount = moved
+        ? `<span class="stmt-info">${m2(Math.abs(l.info))}</span>${Math.abs(l.amount) >= 0.005
+            ? `<span class="stmt-sub">${sgn(l.amount)} on its way</span>` : ""}`
+        : sgn(l.amount);
+      return `<div class="stmt-row${moved ? " moved" : ""}">
+          <div class="stmt-what">${esc(l.line)}${n}${via}</div>
+          <div class="stmt-amt ${!moved && l.amount < 0 ? "out" : ""}">${amount}</div>
+        </div>${details}`;
+    }).join("");
+    return `<section class="stmt-sec">
+        <div class="stmt-sec-head"><span>${esc(s.name)}</span>
+          ${moved ? `<span class="hint">no change to your total</span>` : `<span>${sgn(s.total)}</span>`}</div>
+        ${rows}
+      </section>`;
+  }).join("");
+
+  const c = st.checks;
+  const pct = (v) => (v === null || v === undefined ? "—" : `${(v * 100).toFixed(1)}%`);
+  const checks = [];
+  if (c.shopify_sales !== null && c.shopify_sales !== undefined) {
+    checks.push(`<div class="stmt-row"><div class="stmt-what">Shopify sales (all stores)</div><div class="stmt-amt">${m2(c.shopify_sales)}</div></div>
+      <div class="stmt-row"><div class="stmt-what">Sales received in Airwallex + PayPal<span class="stmt-via">${c.payments} payments</span></div><div class="stmt-amt">${m2(c.received)}</div></div>
+      <div class="stmt-row strong"><div class="stmt-what">Matched</div><div class="stmt-amt">${pct(c.matched)}</div></div>`);
+  }
+  if (c.ad_spend !== null && c.ad_spend !== undefined) {
+    checks.push(`<div class="stmt-row"><div class="stmt-what">Ads paid from these accounts<span class="stmt-via">Meta + Google charges</span></div><div class="stmt-amt">${m2(c.ads_paid)}</div></div>
+      <div class="stmt-row"><div class="stmt-what">Ad spend reported by Meta + Google</div><div class="stmt-amt">${m2(c.ad_spend)}</div></div>`);
+  }
+  if (c.fee_rate !== null) {
+    checks.push(`<div class="stmt-row"><div class="stmt-what">Fees and costs as % of sales received</div><div class="stmt-amt">${pct(c.fee_rate)}</div></div>`);
+  }
+
+  $("stmtBody").innerHTML = `
+    ${(st.problems || []).map((p) => `<div class="warn">${esc(p)}</div>`).join("")}
+    <div class="stmt-row stmt-total"><div class="stmt-what">Opening balance<span class="stmt-via">start of ${niceDate(st.start.slice(0, 10))}</span></div>
+      <div class="stmt-amt">${m2(st.opening)}</div></div>
+    ${sec || `<p class="hint stmt-wait">No movements in this period.</p>`}
+    <div class="stmt-row stmt-total"><div class="stmt-what">Closing balance<span class="stmt-via">${
+      st.end.slice(0, 10) === data?.today ? "now" : "end of " + niceDate(st.end.slice(0, 10))}</span></div>
+      <div class="stmt-amt">${m2(st.closing)}</div></div>
+    <div class="stmt-row stmt-change"><div class="stmt-what">Change over the period</div>
+      <div class="stmt-amt ${st.change < 0 ? "out" : "in"}">${sgn(st.change)}</div></div>
+    ${checks.length ? `<section class="stmt-sec"><div class="stmt-sec-head"><span>Checks</span></div>${checks.join("")}
+      <p class="hint stmt-note">Shopify sales include stores paid through gateways not connected here (e.g. Shopify Payments), and count refunds on the order's day, so 100% isn't expected. Ads are paid when Meta and Google bill your card, which can be a day or two after the spend.</p></section>` : ""}
+    <p class="hint stmt-note">Each currency is converted at today's daily rate, so this ties exactly to the live card. PayPal's activity can run a few hours behind.</p>`;
+}
+
+$("stmtClose").onclick = () => $("stmt").close();
+$("stmt").addEventListener("click", (e) => { if (e.target === $("stmt")) $("stmt").close(); });
+$("stmtPreset").onchange = () => {
+  if ($("stmtPreset").value === "custom") { $("stmtDates").hidden = false; return; }
+  loadStatement();
+};
+$("stmtFrom").onchange = $("stmtTo").onchange = () => {
+  if ($("stmtPreset").value === "custom" && $("stmtFrom").value) loadStatement();
+};
 
 /* ------------------------------------------------ wiring */
 

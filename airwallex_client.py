@@ -140,3 +140,25 @@ async def transactions(client_id: str, api_key: str, since: datetime, until: dat
                 break
             page += 1
     return out
+
+
+async def card_transactions(client_id: str, api_key: str, since: datetime,
+                            account_id: str = None) -> list:
+    """Card (Issuing) transactions since `since`: merchant name and card nickname
+    for each card charge. Empty if the key can't see cards."""
+    out, page = [], 0
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            token = await _token(client, client_id, api_key, account_id)
+            while page < 50:
+                body = await _get(client, "/api/v1/issuing/transactions", token, {
+                    "from_created_at": since.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+0000"),
+                    "page_num": page, "page_size": 200,
+                }, what="card transactions")
+                out.extend(body.get("items", []))
+                if not _f(body, "has_more"):
+                    break
+                page += 1
+    except AirwallexError:
+        return out
+    return out
