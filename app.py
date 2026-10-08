@@ -706,17 +706,44 @@ async def api_cash_statement(start: str, end: str = None, currency: str = None):
         else:
             moves.extend(g)
 
-    shop = None
+    # Shopify sales on the same (business) clock as the statement, split by how
+    # they were paid, so each payment provider can be checked against its own.
+    async def store_sales(store):
+        if not store.get("access_token"):
+            return store, {}
+        client = ShopifyClient(store["shop_domain"], store["access_token"])
+        return store, await client.daily_sales(d0.isoformat(), d1.isoformat(), str(CASH_TZ))
+
+    shop_rows = await asyncio.gather(*[store_sales(x) for x in db.list_stores()],
+                                     return_exceptions=True)
+    by_gateway, shop_ok = {}, True
+    for got in shop_rows:
+        if isinstance(got, Exception):
+            shop_ok = False
+            problems.append(f"Shopify: {got}")
+            continue
+        store, days = got
+        f = st["factor"](store["currency"])
+        for d in days.values():
+            # Net of refunds: what customers paid and kept paid.
+            total = sum(v[1] for v in d["payments"].values()) or 0.0
+            refunds = total - d["sales"]
+            for name, (n, amount) in d["payments"].items():
+                key = statement.gateway(name)
+                g = by_gateway.setdefault(key, {"orders": 0, "amount": 0.0})
+                g["orders"] += n
+                g["amount"] += (amount - (refunds * amount / total if total else 0)) * f
+
+    ad_spend = None
     try:
         dash = await api_dashboard(scope="all", start=d0.isoformat(), end=d1.isoformat(),
                                    currency=st["base"])
-        shop = dash["totals"]
+        ad_spend = dash["totals"].get("ad_spend")
     except Exception:
         pass
 
     out = statement.build(moves, st["factor"], st["summary"]["position"], t0, t1, now,
-                          shopify_sales=shop and shop.get("sales"),
-                          ad_spend=shop and shop.get("ad_spend"))
+                          shopify=by_gateway if shop_ok else None, ad_spend=ad_spend)
     return {"currency": st["base"], "problems": problems, **out}
 
 
@@ -762,30 +789,6 @@ async def api_add_paypal(payload: dict):
         raise HTTPException(400, str(e))
     db.add_cash_connection("paypal", label[:60], cid, secret)
     return {"ok": True, "accounts": 1, "currencies": sorted(b["currency"] for b in snap["balances"])}
-
-
-@app.get("/api/cash/match-debug")
-async def api_match_debug(day: str = "2026-10-07"):
-    # TEMPORARY: Shopify sales for a day split by payment gateway, on each store's
-    # clock and on the Hong Kong clock. Totals only; no customer data.
-    base = _display_currency()
-    table = await fx.table(base)
-    out = []
-    for store in db.list_stores():
-        if not store.get("access_token"):
-            continue
-        client = ShopifyClient(store["shop_domain"], store["access_token"])
-        f = fx.factor(table, store["currency"], base)
-        row = {"store": store["name"], "tz": store["timezone"], "currency": store["currency"]}
-        for label, tz in (("store_clock", store["timezone"]), ("hk_clock", "Asia/Hong_Kong")):
-            try:
-                got = (await client.daily_sales(day, day, tz)).get(day, {})
-            except Exception as e:
-                row[label] = str(e)[:120]; continue
-            row[label] = {"net_sales": round(got.get("sales", 0) * f, 2), "orders": got.get("orders", 0),
-                          "by_gateway": {k: [v[0], round(v[1] * f, 2)] for k, v in got.get("payments", {}).items()}}
-        out.append(row)
-    return out
 
 
 @app.put("/api/cash/{connection_id}")

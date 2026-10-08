@@ -65,6 +65,16 @@ def payee(name: str) -> str:
     return (name or "").strip() or "Card spend"
 
 
+def gateway(name: str) -> str:
+    """Which connected account a Shopify payment gateway pays into."""
+    n = (name or "").lower()
+    if "paypal" in n:
+        return "PayPal"
+    if "airwallex" in n:
+        return "Airwallex"
+    return "Other"
+
+
 class Card:
     """Merchant names for Airwallex card spend, from the card transaction list."""
 
@@ -266,7 +276,8 @@ def _pair_transfers(moves: list):
 
 
 def build(moves: list, factor, position_now: float, start: datetime, end: datetime,
-          now: datetime, shopify_sales: float = None, ad_spend: float = None) -> dict:
+          now: datetime, shopify: dict = None, ad_spend: float = None) -> dict:
+    """shopify: Shopify sales on the same clock, {"PayPal"|"Airwallex"|"Other": {orders, amount}}."""
     """moves: from airwallex_moves/paypal_moves. Returns the statement."""
     _pair_transfers(moves)
     _pair_own(moves)
@@ -333,6 +344,17 @@ def build(moves: list, factor, position_now: float, start: datetime, end: dateti
 
     received = sum(m["amount"] for m in inside if m.get("kind") == "sales")
     orders = sum(1 for m in inside if m.get("kind") == "sales")
+    match = None
+    if shopify is not None:
+        match = []
+        for g in ("Airwallex", "PayPal", "Other"):
+            sold = shopify.get(g, {"orders": 0, "amount": 0.0})
+            got = [m for m in inside if m.get("kind") == "sales" and m["source"].startswith(g)]
+            if abs(sold["amount"]) < 0.5 and not got:
+                continue
+            match.append({"via": g, "shopify": sold["amount"], "orders": sold["orders"],
+                          "received": sum(m["amount"] for m in got), "payments": len(got)})
+    shopify_sales = sum(g["amount"] for g in shopify.values()) if shopify else (0.0 if shopify is not None else None)
     ads_paid = -sum(m["amount"] for m in inside
                     if m["section"] == OUT and m["line"] in ("Meta ads", "Google Ads", "TikTok ads",
                                                              "Pinterest ads"))
@@ -346,6 +368,7 @@ def build(moves: list, factor, position_now: float, start: datetime, end: dateti
             "received": received, "payments": orders,
             "shopify_sales": shopify_sales,
             "matched": (received / shopify_sales) if shopify_sales else None,
+            "by_gateway": match,
             "ads_paid": ads_paid, "ad_spend": ad_spend,
             "fees": fees, "fee_rate": (fees / received) if received else None,
         },

@@ -256,9 +256,15 @@ function renderStatement(st) {
   const pct = (v) => (v === null || v === undefined ? "—" : `${(v * 100).toFixed(1)}%`);
   const checks = [];
   if (c.shopify_sales !== null && c.shopify_sales !== undefined) {
-    checks.push(`<div class="stmt-row"><div class="stmt-what">Shopify sales (all stores)</div><div class="stmt-amt">${m2(c.shopify_sales)}</div></div>
+    const gw = (c.by_gateway || []).map((g) => {
+      const gap = g.received - g.shopify;
+      const label = g.via === "Other" ? "Other payment methods (not connected here)" : `Paid via ${g.via}`;
+      return `<div class="stmt-row"><div class="stmt-what">${esc(label)}<span class="stmt-via">Shopify ${m2(g.shopify)} (${g.orders} orders) · received ${m2(g.received)} (${g.payments})</span></div>
+        <div class="stmt-amt">${Math.abs(gap) < 0.5 ? "✓ matches" : sgn(gap)}</div></div>`;
+    }).join("");
+    checks.push(`<div class="stmt-row"><div class="stmt-what">Shopify sales (all stores)<span class="stmt-via">after refunds, on Hong Kong time like this statement</span></div><div class="stmt-amt">${m2(c.shopify_sales)}</div></div>
       <div class="stmt-row"><div class="stmt-what">Sales received in Airwallex + PayPal<span class="stmt-via">${c.payments} payments</span></div><div class="stmt-amt">${m2(c.received)}</div></div>
-      <div class="stmt-row strong"><div class="stmt-what">Matched</div><div class="stmt-amt">${pct(c.matched)}</div></div>`);
+      <div class="stmt-row strong"><div class="stmt-what">Matched</div><div class="stmt-amt">${pct(c.matched)}</div></div>${gw}`);
   }
   if (c.ad_spend !== null && c.ad_spend !== undefined) {
     checks.push(`<div class="stmt-row"><div class="stmt-what">Ads paid from these accounts<span class="stmt-via">Meta + Google charges</span></div><div class="stmt-amt">${m2(c.ads_paid)}</div></div>
@@ -279,7 +285,7 @@ function renderStatement(st) {
     <div class="stmt-row stmt-change"><div class="stmt-what">Change over the period</div>
       <div class="stmt-amt ${st.change < 0 ? "out" : "in"}">${sgn(st.change)}</div></div>
     ${checks.length ? `<section class="stmt-sec"><div class="stmt-sec-head"><span>Checks</span></div>${checks.join("")}
-      <p class="hint stmt-note">Shopify sales include stores paid through gateways not connected here (e.g. Shopify Payments), and count refunds on the order's day, so 100% isn't expected. Ads are paid when Meta and Google bill your card, which can be a day or two after the spend.</p></section>` : ""}
+      <p class="hint stmt-note">A gap usually means a refund (Shopify takes it off the order's day, the money leaves on the day it's refunded), an order paid some other way, or a payment that hasn't shown up yet. Ads are paid when Meta and Google bill your card, which can be a day or two after the spend.</p></section>` : ""}
     <p class="hint stmt-note">Each currency is converted at today's daily rate, so this ties exactly to the live card. Because of that, "Currency conversions" also includes how rates have moved since the day you converted. PayPal's activity can run a few hours behind.</p>`;
 }
 
