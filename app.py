@@ -791,6 +791,40 @@ async def api_add_paypal(payload: dict):
     return {"ok": True, "accounts": 1, "currencies": sorted(b["currency"] for b in snap["balances"])}
 
 
+@app.get("/api/meta/billing-debug")
+async def api_meta_billing_debug():
+    # TEMPORARY: which billing fields Meta returns for ad accounts. No tokens returned.
+    import httpx as _hx
+    conns = db.list_meta_connections()
+    out = {"fields": {}, "accounts": []}
+    async with _hx.AsyncClient(timeout=60) as client:
+        c = conns[0]
+        accts = await meta._get_all(client, "me/adaccounts", c["access_token"],
+                                    {"fields": "account_id,name", "limit": 5})
+        aid = accts[0]["account_id"]
+        for f in ["balance", "amount_spent", "spend_cap", "is_prepay_account", "funding_source_details",
+                  "next_bill_date", "billing_threshold", "current_unbilled_spend", "threshold_amount",
+                  "prepay_balance", "adtrust_dsl", "disable_reason", "account_status", "min_billing_threshold",
+                  "current_unbilled_spend_cents", "funding_source"]:
+            r = await client.get(f"{meta.GRAPH}/{meta._version()}/act_{aid}",
+                                 params=meta._params(c["access_token"], {"fields": f}))
+            try:
+                body = r.json()
+            except ValueError:
+                body = r.text[:100]
+            out["fields"][f] = body.get(f) if r.status_code < 400 else ("ERR " + str(body.get("error", {}).get("message", ""))[:90])
+        for c in conns:
+            rows = await meta._get_all(client, "me/adaccounts", c["access_token"], {
+                "fields": "name,account_id,currency,account_status,balance,amount_spent,spend_cap,is_prepay_account,funding_source_details",
+                "limit": 200})
+            for a in rows:
+                fs = a.get("funding_source_details") or {}
+                out["accounts"].append({"name": a.get("name"), "cur": a.get("currency"), "status": a.get("account_status"),
+                    "balance": a.get("balance"), "spent": a.get("amount_spent"), "cap": a.get("spend_cap"),
+                    "prepay": a.get("is_prepay_account"), "fs_type": fs.get("type"), "fs": (fs.get("display_string") or "")[:40]})
+    return out
+
+
 @app.put("/api/cash/{connection_id}")
 def api_rename_cash(connection_id: int, payload: dict):
     label = (payload.get("label") or "").strip()
