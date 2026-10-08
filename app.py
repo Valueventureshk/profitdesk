@@ -867,6 +867,24 @@ async def api_add_paypal(payload: dict):
     return {"ok": True, "accounts": 1, "currencies": sorted(b["currency"] for b in snap["balances"])}
 
 
+@app.get("/api/cash/gcharge-debug")
+async def api_gcharge_debug(days: int = 60):
+    # TEMPORARY: Google card charges seen per account. No keys returned.
+    now = datetime.now(timezone.utc)
+    out = {}
+    for c in db.list_cash_connections():
+        if c["provider"] != "airwallex":
+            continue
+        items = await awx.card_transactions(c["client_id"], c["secret"], now - timedelta(days=days), c["account_id"])
+        g = [i for i in items if "GOOGLE" in ((i.get("merchant") or {}).get("name") or "").upper()]
+        out[c["label"]] = {"items": len(items),
+                           "first": min((i.get("transaction_date") or "") for i in items) if items else None,
+                           "last": max((i.get("transaction_date") or "") for i in items) if items else None,
+                           "google": [[i.get("transaction_date", "")[:16], i.get("merchant", {}).get("name"), i.get("transaction_type"),
+                                       i.get("status"), i.get("transaction_amount"), i.get("transaction_currency")] for i in g][-25:]}
+    return out
+
+
 @app.put("/api/cash/{connection_id}")
 def api_rename_cash(connection_id: int, payload: dict):
     label = (payload.get("label") or "").strip()
