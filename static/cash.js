@@ -235,9 +235,10 @@ function renderStatement(st) {
       const via = l.via ? `<span class="stmt-via">${esc(l.via)}</span>` : "";
       const details = (l.details || []).filter((d) => Math.abs(d.amount) >= 0.5)
         .map((d) => `<div class="stmt-detail"><span>${esc(d.name)}</span><span>${sgn(d.amount)}</span></div>`).join("");
-      const amount = moved
-        ? `<span class="stmt-info">${m2(Math.abs(l.info))}</span>${Math.abs(l.amount) >= 0.005
-            ? `<span class="stmt-sub">${sgn(l.amount)} on its way</span>` : ""}`
+      // Moves inside your own money show their size in grey; only money still
+      // travelling (or arriving from an earlier day) changes the total.
+      const amount = moved && Math.abs(l.amount) < 0.005
+        ? `<span class="stmt-info">${m2(Math.abs(l.info))}</span>`
         : sgn(l.amount);
       return `<div class="stmt-row${moved ? " moved" : ""}">
           <div class="stmt-what">${esc(l.line)}${n}${via}</div>
@@ -246,7 +247,7 @@ function renderStatement(st) {
     }).join("");
     return `<section class="stmt-sec">
         <div class="stmt-sec-head"><span>${esc(s.name)}</span>
-          ${moved ? `<span class="hint">no change to your total</span>` : `<span>${sgn(s.total)}</span>`}</div>
+          ${moved && Math.abs(s.total) < 0.005 ? `<span class="hint">no change to your total</span>` : `<span>${sgn(s.total)}</span>`}</div>
         ${rows}
       </section>`;
   }).join("");

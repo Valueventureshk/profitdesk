@@ -96,6 +96,15 @@ def airwallex_moves(label: str, rows: list, cards: list) -> list:
     """Movements from one Airwallex account's financial transactions."""
     card = Card(cards)
     out, conversions = [], {}
+    # A card hold, its release and its capture share or chain ids; whatever one of
+    # them matched, the others in the same lifecycle get the same merchant.
+    by_source = {}
+    for t in rows:
+        if (_f(t, "transaction_type") or "").startswith("ISSUING"):
+            info = card.find(_f(t, "source_id"), _when(_f(t, "created_at")), t.get("currency"),
+                             _num(t.get("amount")))
+            if info:
+                by_source[_f(t, "source_id")] = info
     for t in rows:
         typ = _f(t, "transaction_type") or ""
         cur = t.get("currency")
@@ -127,7 +136,7 @@ def airwallex_moves(label: str, rows: list, cards: list) -> list:
         elif typ.startswith(("DISPUTE", "PRE_CHARGEBACK", "CHARGEBACK")):
             out.append({**base, "section": OUT, "line": "Disputes and chargebacks", "amount": net})
         elif typ.startswith("ISSUING"):
-            info = card.find(_f(t, "source_id"), when, cur, amount)
+            info = by_source.get(_f(t, "source_id")) or card.find(_f(t, "source_id"), when, cur, amount)
             out.append({**base, "section": OUT, "line": (info or {}).get("merchant") or "Card spend",
                         "amount": net, "detail": (info or {}).get("card"), "card": True})
         elif typ == "FEE":
@@ -228,9 +237,8 @@ def _pair_transfers(moves: list):
         for dep in deposits:
             if (dep["currency"] == w["currency"] and abs(dep["amount"] + w["amount"]) < 0.01
                     and timedelta(0) <= dep["time"] - w["time"] <= timedelta(days=7)):
-                dep.update(section=MOVED, line="PayPal withdrawals", info=dep["amount"],
-                           deposit=False, paired=True)
-                w["paired"] = True
+                dep.update(section=MOVED, deposit=False, partner=w)
+                w["partner"] = dep
                 deposits.remove(dep)
                 break
 
@@ -252,6 +260,19 @@ def build(moves: list, factor, position_now: float, start: datetime, end: dateti
 
     after = sum(m["amount"] for m in moves if m["time"] >= end)
     inside = [m for m in moves if start <= m["time"] < end]
+
+    # PayPal -> Airwallex: one line when both ends are in the range (they cancel),
+    # otherwise say which end is missing so the amount makes sense.
+    for m in inside:
+        p = m.get("partner")
+        if m.get("withdrawal"):
+            m["line"] = ("PayPal → Airwallex" if p and start <= p["time"] < end else
+                         "Sent from PayPal, arriving in Airwallex later" if p or m["time"] > end - timedelta(days=4)
+                         else "Withdrawn from PayPal to a bank not connected here")
+        elif p:
+            m["line"] = ("PayPal → Airwallex" if start <= p["time"] < end
+                         else "Arrived in Airwallex from PayPal (sent earlier)")
+            m.pop("detail", None)
     closing = position_now - after
     opening = closing - sum(m["amount"] for m in inside)
 
@@ -264,7 +285,7 @@ def build(moves: list, factor, position_now: float, start: datetime, end: dateti
         ln["info"] += m.get("info", 0.0)
         ln["count"] += 1
         ln["sources"].add(m["source"].split(" · ")[0])
-        if m.get("detail"):
+        if m.get("detail") and m["section"] != MOVED:
             ln["details"][m["detail"]] = ln["details"].get(m["detail"], 0.0) + m["amount"]
 
     sections = []

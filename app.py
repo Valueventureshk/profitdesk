@@ -680,16 +680,19 @@ async def api_cash_statement(start: str, end: str = None, currency: str = None):
     async def moves_for(c):
         if c["provider"] == "airwallex":
             rows, early, cards = await asyncio.gather(
-                awx.transactions(c["client_id"], c["secret"], t0, now, c["account_id"]),
+                # From a week early, so card holds and transfers that began just
+                # before the range can be paired with what happened inside it.
+                awx.transactions(c["client_id"], c["secret"], t0 - timedelta(days=7), now,
+                                 c["account_id"]),
                 # Reserve releases landing in the range were created ~90 days before.
                 awx.transactions(c["client_id"], c["secret"], t0 - timedelta(days=100),
                                  min(t1 - timedelta(days=80), t0), c["account_id"]),
-                awx.card_transactions(c["client_id"], c["secret"], t0 - timedelta(days=7),
+                awx.card_transactions(c["client_id"], c["secret"], t0 - timedelta(days=14),
                                       c["account_id"]))
             early = [r for r in early if awx._f(r, "transaction_type") == "PAYMENT_RESERVE_RELEASE"]
             return statement.airwallex_moves(c["label"], rows + early, cards)
         if c["provider"] == "paypal":
-            days = (now - t0).days + 2
+            days = (now - t0).days + 8
             rows = await paypal.transactions(c["client_id"], c["secret"], days=days,
                                              fields="transaction_info,payer_info", full=True)
             return statement.paypal_moves(c["label"], rows)
