@@ -355,6 +355,13 @@ function rangeLabel(r) {
   return `${niceDate(r.start)} – ${niceDate(r.end)} · vs previous ${r.days} days`;
 }
 
+// Small brand marks for the cards (inline, so nothing extra to load).
+const LOGO = {
+  shopify: `<svg class="logo" viewBox="0 0 24 24" aria-label="Shopify"><path fill="#95BF47" d="M5 7.5h14l-1.3 12.7a1 1 0 0 1-1 .9H7.3a1 1 0 0 1-1-.9z"/><path d="M8.8 7.5V6.6a3.2 3.2 0 0 1 6.4 0v.9" fill="none" stroke="#5E8E3E" stroke-width="1.6"/><path fill="#fff" d="M13.9 11.2c-.4-.2-.9-.4-1.6-.4-1.5 0-2.4.9-2.4 1.9 0 1.9 2.6 1.8 2.6 2.9 0 .4-.4.7-.9.7-.7 0-1.4-.4-1.4-.4l-.4 1.2s.7.5 1.8.5c1.5 0 2.5-.9 2.5-2.1 0-2-2.6-1.9-2.6-2.9 0-.3.3-.6.9-.6.7 0 1.1.3 1.1.3z"/></svg>`,
+  google: `<svg class="logo" viewBox="0 0 48 48" aria-label="Google"><path fill="#EA4335" d="M24 9.5c3.5 0 6.7 1.2 9.2 3.6l6.9-6.9C35.9 2.4 30.5 0 24 0 14.6 0 6.5 5.4 2.6 13.2l8 6.2C12.4 13.7 17.7 9.5 24 9.5z"/><path fill="#4285F4" d="M47 24.5c0-1.6-.2-3.1-.4-4.5H24v9h12.9c-.6 3-2.3 5.5-4.8 7.2l7.7 6c4.5-4.2 7.2-10.4 7.2-17.7z"/><path fill="#FBBC05" d="M10.5 28.6c-.5-1.5-.8-3-.8-4.6s.3-3.1.8-4.6l-8-6.2C.9 16.5 0 20.1 0 24s.9 7.5 2.6 10.8z"/><path fill="#34A853" d="M24 48c6.5 0 11.9-2.1 15.9-5.8l-7.7-6c-2.2 1.5-4.9 2.3-8.2 2.3-6.3 0-11.6-4.2-13.5-9.9l-8 6.2C6.5 42.6 14.6 48 24 48z"/></svg>`,
+  meta: `<svg class="logo" viewBox="0 0 24 24" aria-label="Meta"><path d="M3 14.6c0-4 2-7.1 4.4-7.1 3.6 0 5.6 9 9.2 9 2.4 0 4.4-1.9 4.4-4.4s-1.9-4.6-4.3-4.6c-3.6 0-5.6 9-9.3 9C5 16.5 3 15.6 3 14.6z" fill="none" stroke="#0866FF" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+};
+
 function renderCards(d) {
   $("cards").innerHTML = CARDS.map((c) => {
     const value = fmt(d.totals[c.key], c.fmt);
@@ -371,7 +378,7 @@ function renderCards(d) {
     const dot = loss ? "var(--down)" : c.dot;
     return `<div class="card${c.feature ? " feature" : ""}${loss ? " loss" : ""}">
       <div class="card-label">
-        <span class="dot" style="background:${dot}"></span>${c.label}${chip}
+        ${c.key === "sales" ? LOGO.shopify : `<span class="dot" style="background:${dot}"></span>`}${c.label}${chip}
       </div>
       <div class="card-value">${value}</div>
       ${c.key === "ad_spend" ? spendSplit(d.totals) : ""}
@@ -384,8 +391,10 @@ function renderCards(d) {
 }
 
 function spendSplit(t) {
-  return `<div class="card-note">Google ${fmt(t.google_spend, "money")}
-    · Meta ${fmt(t.meta_spend, "money")}</div>`;
+  return `<div class="spend-split">
+      <div>${LOGO.google}<span>Google</span><b>${fmt(t.google_spend, "money")}</b></div>
+      <div>${LOGO.meta}<span>Meta</span><b>${fmt(t.meta_spend, "money")}</b></div>
+    </div>`;
 }
 
 function sparkline(series, key, colour) {
