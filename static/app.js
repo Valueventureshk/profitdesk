@@ -382,12 +382,23 @@ function renderCards(d) {
       </div>
       <div class="card-value">${value}</div>
       ${c.key === "ad_spend" ? spendSplit(d.totals) : ""}
+      ${c.key === "roas" ? roasSplit(d.platform_roas) : ""}
       ${c.key === "orders" ? `<div class="card-note">AOV ${fmt(d.totals.aov, "money")}</div>` : ""}
       ${c.key === "processing_fee" ? `<div class="card-note">Payments ${fmt(d.totals.payment_fee, "money")}
         · Shopify ${fmt(d.totals.shopify_fee, "money")}</div>` : ""}
       ${sparkline(d.series, c.key, dot)}
     </div>`;
   }).join("");
+}
+
+// ROAS per platform, by store (each store counted under the one platform it uses).
+function roasSplit(p) {
+  if (!p) return "";
+  const line = (key, label) => p[key].stores
+    ? `<div title="${p[key].stores} store${p[key].stores === 1 ? "" : "s"} on ${label}: ${fmt(p[key].sales, "money")} sales ÷ ${fmt(p[key].ad_spend, "money")} spend">${LOGO[key]}<span>${label}</span><b>${fmt(p[key].roas, "ratio")}</b></div>`
+    : "";
+  const rows = line("google", "Google") + line("meta", "Meta");
+  return rows ? `<div class="spend-split">${rows}</div>` : "";
 }
 
 function spendSplit(t) {

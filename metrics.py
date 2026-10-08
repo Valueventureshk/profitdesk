@@ -176,6 +176,24 @@ def summarize(days):
     return totals
 
 
+def platform_roas(stores):
+    """ROAS per ad platform, by store: each store is counted under the one platform
+    it advertises on (no guessing which ad drove which order). Stores on both
+    platforms, or neither, are left out and counted in "mixed".
+
+    stores: [{"platform": "google" | "meta" | "both" | None, "totals": summarize(...)}]
+    """
+    out = {}
+    for key in ("google", "meta"):
+        group = [s["totals"] for s in stores if s["platform"] == key]
+        sales = sum(t["sales"] for t in group)
+        spend = sum(t["ad_spend"] for t in group)
+        out[key] = {"stores": len(group), "sales": sales, "ad_spend": spend,
+                    "roas": _div(sales, spend)}
+    out["mixed"] = sum(1 for s in stores if s["platform"] == "both")
+    return out
+
+
 def compare(current, previous):
     """Percentage change per metric. None when the previous period had nothing."""
     out = {}

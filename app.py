@@ -1259,6 +1259,11 @@ async def api_dashboard(scope: str = "all", start: str = None, end: str = None,
             "until": _now_in(stores[0]).strftime("%H:%M") if same_time else None,
         },
         "totals": totals,
+        "platform_roas": metrics.platform_roas([{
+            "platform": ("both" if x["google_account_name"] and x["meta_account_name"] else
+                         "google" if x["google_account_name"] else
+                         "meta" if x["meta_account_name"] else None),
+            "totals": x["totals"]} for x in per_store]),
         "delta": metrics.compare(totals, prev_totals),
         "series": series,
         "stores": per_store if scope == "all" or group else [],
