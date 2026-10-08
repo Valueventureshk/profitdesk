@@ -725,6 +725,33 @@ async def api_statement_debug(days: int = 3):
     return out
 
 
+@app.get("/api/cash/issuing-debug")
+async def api_issuing_debug():
+    # TEMPORARY: can the Airwallex key see card merchant names? No keys returned.
+    import httpx as _hx
+    from datetime import timedelta as _td
+    c = next(c for c in db.list_cash_connections() if c["label"].startswith("Value Ventures"))
+    until = datetime.now(CASH_TZ); since = until - _td(days=2)
+    fin = await awx.transactions(c["client_id"], c["secret"], since, until, c["account_id"])
+    caps = [{"src": awx._f(t, "source_id"), "batch": awx._f(t, "batch_id"), "amt": t.get("amount"),
+             "type": awx._f(t, "transaction_type")} for t in fin if "ISSUING" in (awx._f(t, "transaction_type") or "")][:6]
+    out = {"caps": caps}
+    async with _hx.AsyncClient(timeout=60) as client:
+        token = await awx._token(client, c["client_id"], c["secret"], c["account_id"])
+        for path in ("/api/v1/issuing/transactions", "/api/v1/issuing/authorizations"):
+            r = await client.get(f"{awx.API}{path}", params={
+                "from_created_at": since.strftime("%Y-%m-%dT%H:%M:%S%z"), "page_size": 5},
+                headers={"Authorization": f"Bearer {token}"})
+            try:
+                body = r.json()
+            except ValueError:
+                body = r.text[:300]
+            out[path] = {"status": r.status_code, "body": body if r.status_code >= 400 else
+                         [{k: v for k, v in i.items() if k not in ("card_number", "masked_card_number")}
+                          for i in (body.get("items") or [])[:4]]}
+    return out
+
+
 @app.put("/api/cash/{connection_id}")
 def api_rename_cash(connection_id: int, payload: dict):
     label = (payload.get("label") or "").strip()
