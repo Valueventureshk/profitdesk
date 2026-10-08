@@ -764,6 +764,30 @@ async def api_add_paypal(payload: dict):
     return {"ok": True, "accounts": 1, "currencies": sorted(b["currency"] for b in snap["balances"])}
 
 
+@app.get("/api/cash/match-debug")
+async def api_match_debug(day: str = "2026-10-07"):
+    # TEMPORARY: Shopify sales for a day split by payment gateway, on each store's
+    # clock and on the Hong Kong clock. Totals only; no customer data.
+    base = _display_currency()
+    table = await fx.table(base)
+    out = []
+    for store in db.list_stores():
+        if not store.get("access_token"):
+            continue
+        client = ShopifyClient(store["shop_domain"], store["access_token"])
+        f = fx.factor(table, store["currency"], base)
+        row = {"store": store["name"], "tz": store["timezone"], "currency": store["currency"]}
+        for label, tz in (("store_clock", store["timezone"]), ("hk_clock", "Asia/Hong_Kong")):
+            try:
+                got = (await client.daily_sales(day, day, tz)).get(day, {})
+            except Exception as e:
+                row[label] = str(e)[:120]; continue
+            row[label] = {"net_sales": round(got.get("sales", 0) * f, 2), "orders": got.get("orders", 0),
+                          "by_gateway": {k: [v[0], round(v[1] * f, 2)] for k, v in got.get("payments", {}).items()}}
+        out.append(row)
+    return out
+
+
 @app.put("/api/cash/{connection_id}")
 def api_rename_cash(connection_id: int, payload: dict):
     label = (payload.get("label") or "").strip()
