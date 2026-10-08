@@ -361,6 +361,18 @@ def _page(filename: str, assets) -> HTMLResponse:
 
 # ---------------------------------------------------------------- setup state
 
+@app.get("/api/cog/sheet-peek")
+async def api_cog_sheet_peek(sid: str, rows: int = 8):
+    # TEMPORARY: the layout of the orders/COG sheet (tabs, headers, a few rows, sizes).
+    auth = db.get_google_auth()
+    if not auth:
+        raise HTTPException(400, "Google isn't signed in.")
+    head = await gsheet.read_tabs(auth["refresh_token"], sid, rows=rows)
+    full = await gsheet.read_tabs(auth["refresh_token"], sid)
+    return {t: {"rows": len(full[t]), "first": head[t][:rows],
+                "last": full[t][-3:] if full[t] else []} for t in head}
+
+
 @app.get("/api/history")
 async def api_history(fresh: int = 0):
     """How far back each store's sales go: Shopify's window, whether the store has

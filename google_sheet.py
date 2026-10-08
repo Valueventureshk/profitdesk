@@ -175,3 +175,22 @@ async def spend_until_hour(refresh_token, customer_id, day, hour, store_tz=None)
         if local.date().isoformat() == day and local.hour <= hour:
             total += c
     return total
+
+
+# ---------------------------------------------------------------- any sheet (orders / COG)
+
+async def read_tabs(refresh_token: str, sid: str, rows: int = None) -> dict:
+    """{tab title: [[cell, ...], ...]} for every tab of any Sheet the signed-in
+    Google account can view. `rows` limits each tab to its first N rows."""
+    access = await gads._access_token(refresh_token)
+    async with httpx.AsyncClient(timeout=120) as client:
+        info = await _get(client, f"{API}/{sid}",
+                          access, {"fields": "properties.title,sheets.properties(title,gridProperties)"})
+        titles = [s["properties"]["title"] for s in info.get("sheets", [])]
+        if not titles:
+            return {}
+        end = f"{rows}" if rows else ""
+        ranges = [f"'{t}'!A1:Z{end}" for t in titles]
+        url = f"{API}/{sid}/values:batchGet?" + "&".join(f"ranges={quote(r)}" for r in ranges)
+        got = await _get(client, url + "&valueRenderOption=UNFORMATTED_VALUE&dateTimeRenderOption=FORMATTED_STRING", access)
+    return {t: vr.get("values", []) for t, vr in zip(titles, got.get("valueRanges", []))}
