@@ -206,6 +206,15 @@ class ShopifyClient:
             data = await self._post(client, PLAN_QUERY)
         return ((data["shop"].get("plan") or {}).get("displayName")) or ""
 
+    async def access_scopes(self) -> set:
+        """The permissions the store actually granted this app."""
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.get(f"https://{self.domain}/admin/oauth/access_scopes.json",
+                                 headers=self.headers)
+        if r.status_code >= 400:
+            raise ShopifyError(f"Shopify error {r.status_code} reading the app's permissions.")
+        return {x.get("handle") for x in r.json().get("access_scopes", [])}
+
     async def shop_info(self):
         async with httpx.AsyncClient(timeout=30) as client:
             data = await self._post(client, SHOP_QUERY)

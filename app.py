@@ -1210,6 +1210,14 @@ async def api_dashboard(scope: str = "all", start: str = None, end: str = None,
     totals = metrics.summarize(series)
     prev_totals = metrics.summarize(metrics.blend(previous))
 
+    short = await _short_history(stores, min(start, prev_start))
+    if short:
+        names = ", ".join(x["name"].strip() for x in short)
+        warnings.append(
+            f"Shopify only shares the last 60 days of orders with ProfitDesk for {names}, so "
+            f"sales before {short[0]['_from']} show as zero (ad spend still counts). "
+            "Full history needs Shopify's \"Read all orders\" approval for each store's app.")
+
     if fx_table and fx_table.get("stale"):
         warnings.append("Couldn't reach the exchange-rate service, so the last saved "
                         f"rates (from {fx_table.get('date')}) are being used.")
@@ -1339,6 +1347,31 @@ def _zone(store):
 
 def _now_in(store) -> datetime:
     return datetime.now(_zone(store))
+
+
+_scopes: dict = {}
+
+
+async def _short_history(stores, earliest: str) -> list:
+    """Stores whose app can't read orders as old as `earliest` (Shopify's 60-day
+    limit without the read_all_orders permission). Permissions kept for 6 hours."""
+    out = []
+    for x in stores:
+        if demo.is_demo(x) or not x.get("access_token"):
+            continue
+        cutoff = (_store_today(x) - timedelta(days=59)).isoformat()
+        if earliest >= cutoff:
+            continue
+        hit = _scopes.get(x["id"])
+        if not hit or time.time() - hit[0] > 6 * 3600:
+            try:
+                got = await ShopifyClient(x["shop_domain"], x["access_token"]).access_scopes()
+            except Exception:
+                got = set()
+            hit = _scopes[x["id"]] = (time.time(), got)
+        if "read_all_orders" not in hit[1]:
+            out.append({**x, "_from": cutoff})
+    return out
 
 
 def _store_today(store) -> date:
