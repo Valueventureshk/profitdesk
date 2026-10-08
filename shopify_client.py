@@ -72,6 +72,10 @@ query OrderLines($cursor: String, $q: String!) {
 """
 
 
+ORDER_LINES_QUERY_LITE = ORDER_LINES_QUERY.replace(
+    "          variant { id }\n          product { id }\n", "")
+
+
 class ShopifyError(RuntimeError):
     pass
 
@@ -254,14 +258,19 @@ class ShopifyClient:
         hi = datetime.combine(datetime.fromisoformat(end).date(), time.max, tz)
         q = (f"created_at:>='{lo.astimezone(timezone.utc):%Y-%m-%dT%H:%M:%SZ}' "
              f"created_at:<='{hi.astimezone(timezone.utc):%Y-%m-%dT%H:%M:%SZ}'")
-        out, cursor = [], None
+        out, cursor, query = [], None, ORDER_LINES_QUERY
         async with httpx.AsyncClient(timeout=90) as client:
             while True:
-                for attempt in range(5):
+                for attempt in range(6):
                     try:
-                        data = await self._post(client, ORDER_LINES_QUERY, {"cursor": cursor, "q": q})
+                        data = await self._post(client, query, {"cursor": cursor, "q": q})
                         break
                     except ShopifyError as e:
+                        if "read_products" in str(e) and query is ORDER_LINES_QUERY:
+                            # The app can't see products yet (read_products not granted):
+                            # same order lines, without product and variant ids.
+                            query = ORDER_LINES_QUERY_LITE
+                            continue
                         if "throttl" not in str(e).lower() and "rate" not in str(e).lower():
                             raise
                         await _aio.sleep(2 + attempt * 3)
