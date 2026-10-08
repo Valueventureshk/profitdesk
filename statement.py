@@ -339,6 +339,7 @@ def build(moves: list, factor, position_now: float, start: datetime, end: dateti
     fees = -sum(m["amount"] for m in inside if m["section"] == FEES)
     return {
         "start": start.isoformat(), "end": min(end, now).isoformat(),
+        "last_day": (end - timedelta(days=1)).date().isoformat(), "to_now": end > now,
         "opening": opening, "closing": closing, "change": closing - opening,
         "sections": sections,
         "checks": {

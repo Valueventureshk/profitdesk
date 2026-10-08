@@ -274,7 +274,7 @@ function renderStatement(st) {
       <div class="stmt-amt">${m2(st.opening)}</div></div>
     ${sec || `<p class="hint stmt-wait">No movements in this period.</p>`}
     <div class="stmt-row stmt-total"><div class="stmt-what">Closing balance<span class="stmt-via">${
-      st.end.slice(0, 10) === data?.today ? "now" : "end of " + niceDate(st.end.slice(0, 10))}</span></div>
+      st.to_now ? "now" : "end of " + niceDate(st.last_day)}</span></div>
       <div class="stmt-amt">${m2(st.closing)}</div></div>
     <div class="stmt-row stmt-change"><div class="stmt-what">Change over the period</div>
       <div class="stmt-amt ${st.change < 0 ? "out" : "in"}">${sgn(st.change)}</div></div>
