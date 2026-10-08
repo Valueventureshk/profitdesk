@@ -60,7 +60,9 @@ CACHE_TTL = 60  # seconds; the Refresh button bypasses it
 @asynccontextmanager
 async def lifespan(app):
     db.init()
+    saver = asyncio.create_task(_save_all_history())
     yield
+    saver.cancel()
 
 
 app = FastAPI(title="ProfitDesk", docs_url=None, redoc_url=None, lifespan=lifespan)
@@ -358,6 +360,16 @@ def _page(filename: str, assets) -> HTMLResponse:
 
 
 # ---------------------------------------------------------------- setup state
+
+@app.get("/api/history")
+def api_history():
+    """How far back each store's sales go: Shopify's window and the saved days."""
+    saved = db.shopify_history()
+    return [{"store": x["name"].strip(), "shopify_from": _shopify_cutoff(x),
+             "saved_from": (saved.get(x["id"]) or (None,))[0],
+             "saved_days": (saved.get(x["id"]) or (None, None, 0))[2]}
+            for x in db.list_stores() if not demo.is_demo(x)]
+
 
 @app.get("/api/setup")
 def api_setup():
@@ -1215,8 +1227,9 @@ async def api_dashboard(scope: str = "all", start: str = None, end: str = None,
         names = ", ".join(x["name"].strip() for x in short)
         warnings.append(
             f"Shopify only shares the last 60 days of orders with ProfitDesk for {names}, so "
-            f"sales before {short[0]['_from']} show as zero (ad spend still counts). "
-            "Full history needs Shopify's \"Read all orders\" approval for each store's app.")
+            f"sales before {short[0]['_from']} show as zero (ad spend still counts). ProfitDesk "
+            "now saves every day, so history grows from here; older days need Shopify's "
+            "\"Read all orders\" approval for each store's app.")
 
     if fx_table and fx_table.get("stale"):
         warnings.append("Couldn't reach the exchange-rate service, so the last saved "
@@ -1275,8 +1288,22 @@ async def _store_window(store, start, end, auth, meta_auth):
     end_for_api = min(end, store_today)
 
     async def sales():
-        client = ShopifyClient(store["shop_domain"], store["access_token"])
-        return await client.daily_sales(start, end_for_api, store["timezone"])
+        # Shopify only shares the last 60 days; older days come from the totals
+        # ProfitDesk saved while they were still inside that window.
+        cutoff = _shopify_cutoff(store)
+        if start < cutoff and "read_all_orders" in await _granted(store):
+            cutoff = start            # approved for full history: ask Shopify for all of it
+        got = {}
+        live_from = max(start, cutoff)
+        if live_from <= end_for_api:
+            client = ShopifyClient(store["shop_domain"], store["access_token"])
+            got = await client.daily_sales(live_from, end_for_api, store["timezone"])
+            _save_sales(store, got, live_from, end_for_api)
+        if start < cutoff:
+            older = db.saved_shopify_days(store["id"], start,
+                                          (date.fromisoformat(cutoff) - timedelta(days=1)).isoformat())
+            got = {**older, **got}
+        return got
 
     async def spend():
         if not store["google_customer_id"]:
@@ -1349,29 +1376,67 @@ def _now_in(store) -> datetime:
     return datetime.now(_zone(store))
 
 
+def _shopify_cutoff(store) -> str:
+    """Oldest day Shopify still shares for this store (its 60-day window)."""
+    return (_store_today(store) - timedelta(days=59)).isoformat()
+
+
+def _save_sales(store, got: dict, start: str, end: str):
+    """Keep each day's totals, zero days included, so they outlive the 60-day window."""
+    days = {d: got.get(d, {"sales": 0.0, "orders": 0, "payments": {}}) for d in _dates(start, end)}
+    db.save_shopify_days(store["id"], days, store["timezone"])
+
+
+async def _save_all_history():
+    """Save every day Shopify still shares, for every store. Runs at start-up and
+    every 6 hours, so nothing ages out of the 60-day window unsaved."""
+    while True:
+        for x in db.list_stores():
+            if demo.is_demo(x) or not x.get("access_token"):
+                continue
+            try:
+                start, end = _shopify_cutoff(x), _store_today(x).isoformat()
+                got = await ShopifyClient(x["shop_domain"], x["access_token"]).daily_sales(
+                    start, end, x["timezone"])
+                _save_sales(x, got, start, end)
+            except Exception as e:
+                print(f"Saving Shopify history for {x['name']} failed: {e}", flush=True)
+        await asyncio.sleep(6 * 3600)
+
+
 _scopes: dict = {}
 
 
 async def _short_history(stores, earliest: str) -> list:
-    """Stores whose app can't read orders as old as `earliest` (Shopify's 60-day
-    limit without the read_all_orders permission). Permissions kept for 6 hours."""
+    """Stores whose sales can't reach back to `earliest`: Shopify's 60-day limit
+    (no read_all_orders permission) and no saved days that old. Kept 6 hours."""
     out = []
     for x in stores:
         if demo.is_demo(x) or not x.get("access_token"):
             continue
-        cutoff = (_store_today(x) - timedelta(days=59)).isoformat()
+        cutoff = _shopify_cutoff(x)
         if earliest >= cutoff:
             continue
-        hit = _scopes.get(x["id"])
-        if not hit or time.time() - hit[0] > 6 * 3600:
-            try:
-                got = await ShopifyClient(x["shop_domain"], x["access_token"]).access_scopes()
-            except Exception:
-                got = set()
-            hit = _scopes[x["id"]] = (time.time(), got)
-        if "read_all_orders" not in hit[1]:
+        saved = db.first_saved_shopify_day(x["id"])
+        if saved and saved <= earliest:
+            continue
+        if saved and saved < cutoff:
+            cutoff = saved
+        if "read_all_orders" not in await _granted(x):
             out.append({**x, "_from": cutoff})
     return out
+
+
+async def _granted(store) -> set:
+    """The permissions this store granted its app, checked at most every 6 hours."""
+    hit = _scopes.get(store["id"])
+    if not hit or time.time() - hit[0] > 6 * 3600:
+        try:
+            got = await ShopifyClient(store["shop_domain"], store["access_token"]).access_scopes()
+        except Exception:
+            got = set()
+        hit = _scopes[store["id"]] = (time.time(), got)
+    return hit[1]
 
 
 def _store_today(store) -> date:

@@ -5,8 +5,10 @@ cost percentage), the linked Google Ads and Meta Ads account per store, one
 Google sign-in shared across all stores, and one Meta access token per Meta
 business (each store's ad account is read through the token that can see it).
 
-No sales or spend figures are stored. Those are fetched live every time the
-dashboard loads.
+Spend figures are fetched live every time the dashboard loads. Shopify sales
+are fetched live too, but each day's totals are also saved (shopify_days),
+because Shopify only shares the last 60 days of orders: saved days are how
+history older than that stays available.
 """
 import os
 import sqlite3
@@ -102,6 +104,19 @@ CREATE TABLE IF NOT EXISTS cash_connections (
     client_id  TEXT    NOT NULL,
     secret     TEXT    NOT NULL,
     created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Each store's Shopify sales per day (on the store's own clock), saved as they
+-- are read, so days older than Shopify's 60-day window can still be shown.
+CREATE TABLE IF NOT EXISTS shopify_days (
+    store_id   INTEGER NOT NULL,
+    date       TEXT    NOT NULL,
+    sales      REAL    NOT NULL,
+    orders     INTEGER NOT NULL,
+    payments   TEXT    NOT NULL DEFAULT '{}',   -- {gateway: [orders, amount]}
+    timezone   TEXT,
+    saved_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (store_id, date)
 );
 
 -- Small app-wide preferences, e.g. the currency the dashboard shows.
@@ -265,9 +280,48 @@ def upsert_store(name: str, shop_domain: str, access_token: str, currency: str,
         return cur.lastrowid
 
 
+def save_shopify_days(store_id: int, days: dict, tz: str):
+    """days: {date: {"sales", "orders", "payments"}}; replaces what was saved."""
+    import json
+    with _conn() as con:
+        con.executemany(
+            "INSERT INTO shopify_days (store_id, date, sales, orders, payments, timezone, saved_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, datetime('now'))"
+            " ON CONFLICT(store_id, date) DO UPDATE SET sales = excluded.sales,"
+            " orders = excluded.orders, payments = excluded.payments,"
+            " timezone = excluded.timezone, saved_at = excluded.saved_at",
+            [(store_id, d, float(v["sales"]), int(v["orders"]), json.dumps(v.get("payments") or {}), tz)
+             for d, v in days.items()])
+
+
+def saved_shopify_days(store_id: int, start: str, end: str) -> dict:
+    import json
+    with _conn() as con:
+        rows = con.execute("SELECT * FROM shopify_days WHERE store_id = ? AND date BETWEEN ? AND ?",
+                           (store_id, start, end)).fetchall()
+    return {r["date"]: {"sales": r["sales"], "orders": r["orders"],
+                        "payments": json.loads(r["payments"] or "{}")} for r in rows}
+
+
+def shopify_history():
+    """{store_id: (oldest saved day, newest, days saved)}"""
+    with _conn() as con:
+        rows = con.execute("SELECT store_id, MIN(date) a, MAX(date) b, COUNT(*) n"
+                           " FROM shopify_days GROUP BY store_id").fetchall()
+    return {r["store_id"]: (r["a"], r["b"], r["n"]) for r in rows}
+
+
+def first_saved_shopify_day(store_id: int):
+    with _conn() as con:
+        r = con.execute("SELECT MIN(date) AS d FROM shopify_days WHERE store_id = ?",
+                        (store_id,)).fetchone()
+    return r["d"] if r else None
+
+
 def delete_store(store_id: int):
     with _conn() as con:
         con.execute("DELETE FROM stores WHERE id = ?", (store_id,))
+        con.execute("DELETE FROM shopify_days WHERE store_id = ?", (store_id,))
         con.execute("DELETE FROM store_group_members WHERE store_id = ?", (store_id,))
 
 

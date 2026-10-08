@@ -159,6 +159,8 @@ taller viewBox (`narrow` flag in `renderChart`); confirm it still reads.
 ## Gotchas
 
 - Shopify returns only 60 days of orders unless the app has `read_all_orders`.
+  ProfitDesk saves each day's totals (`shopify_days`, every 6 hours and on every
+  read), so days older than 60 come from the saved copy. `/api/history` shows coverage.
 - Shopify API version is quarterly (`2026-07`); Google Ads is yearly (`v25`).
   Both are in `.env`. A 404 or version error usually means bumping one.
 - "New customers" derives from Shopify's lifetime order count — a proxy, not
