@@ -280,7 +280,7 @@ function renderStatement(st) {
       <div class="stmt-amt ${st.change < 0 ? "out" : "in"}">${sgn(st.change)}</div></div>
     ${checks.length ? `<section class="stmt-sec"><div class="stmt-sec-head"><span>Checks</span></div>${checks.join("")}
       <p class="hint stmt-note">Shopify sales include stores paid through gateways not connected here (e.g. Shopify Payments), and count refunds on the order's day, so 100% isn't expected. Ads are paid when Meta and Google bill your card, which can be a day or two after the spend.</p></section>` : ""}
-    <p class="hint stmt-note">Each currency is converted at today's daily rate, so this ties exactly to the live card. PayPal's activity can run a few hours behind.</p>`;
+    <p class="hint stmt-note">Each currency is converted at today's daily rate, so this ties exactly to the live card. Because of that, "Currency conversions" also includes how rates have moved since the day you converted. PayPal's activity can run a few hours behind.</p>`;
 }
 
 $("stmtClose").onclick = () => $("stmt").close();

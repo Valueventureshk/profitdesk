@@ -137,7 +137,9 @@ def airwallex_moves(label: str, rows: list, cards: list) -> list:
             out.append({**base, "section": OUT, "line": "Disputes and chargebacks", "amount": net})
         elif typ.startswith("ISSUING"):
             info = by_source.get(_f(t, "source_id")) or card.find(_f(t, "source_id"), when, cur, amount)
-            out.append({**base, "section": OUT, "line": (info or {}).get("merchant") or "Card spend",
+            name = (info or {}).get("merchant") or (
+                "Card spend" if net < 0 else "Card refunds and released holds")
+            out.append({**base, "section": OUT, "line": name,
                         "amount": net, "detail": (info or {}).get("card"), "card": True})
         elif typ == "FEE":
             out.append({**base, "section": FEES, "line": "Airwallex account fees", "amount": net})
@@ -165,7 +167,7 @@ def airwallex_moves(label: str, rows: list, cards: list) -> list:
 
     for legs in conversions.values():
         out.append({"time": legs[0]["time"], "source": legs[0]["source"], "section": FEES,
-                    "line": "Currency conversion cost", "legs": legs})
+                    "line": "Currency conversions (at today's rate)", "legs": legs})
     return out
 
 
@@ -225,8 +227,28 @@ def paypal_moves(label: str, rows: list) -> list:
 
     for legs in conversions.values():
         out.append({"time": legs[0]["time"], "source": legs[0]["source"], "section": FEES,
-                    "line": "Currency conversion cost", "legs": legs})
+                    "line": "Currency conversions (at today's rate)", "legs": legs})
     return out
+
+
+def _pair_own(moves: list):
+    """Airwallex account-to-account transfers: a debit in one connected account and
+    the matching credit in another cancel out. Whatever has no partner went to (or
+    came from) an Airwallex account that isn't connected here."""
+    own = [m for m in moves if m.get("own")]
+    for m in own:
+        if m.get("matched"):
+            continue
+        for o in own:
+            if (o is not m and not o.get("matched") and o["currency"] == m["currency"]
+                    and abs(o["amount"] + m["amount"]) < 0.01
+                    and abs((o["time"] - m["time"]).total_seconds()) < 900):
+                m["matched"] = o["matched"] = True
+                break
+    for m in own:
+        if not m.get("matched"):
+            m["line"] = ("Sent to an Airwallex account not connected here" if m["amount"] < 0
+                         else "Received from an Airwallex account not connected here")
 
 
 def _pair_transfers(moves: list):
@@ -247,6 +269,7 @@ def build(moves: list, factor, position_now: float, start: datetime, end: dateti
           now: datetime, shopify_sales: float = None, ad_spend: float = None) -> dict:
     """moves: from airwallex_moves/paypal_moves. Returns the statement."""
     _pair_transfers(moves)
+    _pair_own(moves)
     # Into the display currency at today's rate.
     for m in moves:
         if "legs" in m:
