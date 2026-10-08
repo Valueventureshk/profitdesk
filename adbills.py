@@ -127,9 +127,18 @@ def google_row(store: dict, tab: dict, charges: list, now: datetime) -> dict:
         row["note"] = "No spend figures from the Google Ads script yet."
         return row
     if last:
+        # A declined attempt for the same amount just before is the same bill,
+        # retried: the bill covers spend up to the first attempt.
+        billed = last["time"]
+        for c in charges:
+            if (c["failed"] and c["currency"] == last["currency"]
+                    and abs(c["amount"] - last["amount"]) < 0.01
+                    and timedelta(0) < last["time"] - c["time"] < timedelta(days=3)):
+                billed = min(billed, c["time"])
         row["last_charge"] = {"time": last["time"].isoformat(), "amount": last["amount"],
-                              "currency": last["currency"], "card": last["card"]}
-        row["owed"] = spend_since(tab["rows"], tab["meta"]["timezone"], last["time"], now)
+                              "currency": last["currency"], "card": last["card"],
+                              "first_try": billed.isoformat() if billed != last["time"] else None}
+        row["owed"] = spend_since(tab["rows"], tab["meta"]["timezone"], billed, now)
     else:
         row["note"] = ("No Google charge for this account on your Airwallex cards in the last "
                        "60 days, so ProfitDesk can't tell what's been paid. It may be paid "
