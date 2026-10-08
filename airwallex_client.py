@@ -120,3 +120,23 @@ async def snapshot(client_id: str, api_key: str, lookback_days: int = 120,
             "created": _f(t, "created_at") or "",
         } for t in pending if t.get("currency")],
     }
+
+
+async def transactions(client_id: str, api_key: str, since: datetime, until: datetime,
+                       account_id: str = None) -> list:
+    """Every financial transaction (settled and pending) created in [since, until)."""
+    fmt = "%Y-%m-%dT%H:%M:%S+0000"
+    out, page = [], 0
+    async with httpx.AsyncClient(timeout=60) as client:
+        token = await _token(client, client_id, api_key, account_id)
+        while True:
+            body = await _get(client, "/api/v1/financial_transactions", token, {
+                "from_created_at": since.astimezone(timezone.utc).strftime(fmt),
+                "to_created_at": until.astimezone(timezone.utc).strftime(fmt),
+                "page_num": page, "page_size": 1000,
+            }, what="financial transactions")
+            out.extend(body.get("items", []))
+            if not _f(body, "has_more") or page >= 50:
+                break
+            page += 1
+    return out

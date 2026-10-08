@@ -687,6 +687,44 @@ async def api_add_paypal(payload: dict):
     return {"ok": True, "accounts": 1, "currencies": sorted(b["currency"] for b in snap["balances"])}
 
 
+@app.get("/api/cash/statement-debug")
+async def api_statement_debug(days: int = 3):
+    # TEMPORARY: how each provider labels its movements. No keys returned.
+    from datetime import timedelta as _td
+    until = datetime.now(CASH_TZ)
+    since = until - _td(days=days)
+    out = []
+    for c in db.list_cash_connections():
+        try:
+            if c["provider"] == "airwallex":
+                rows = await awx.transactions(c["client_id"], c["secret"], since, until, c["account_id"])
+                key = lambda t: f"{awx._f(t, 'transaction_type')}|{t.get('status')}"
+            else:
+                rows = await paypal.transactions(c["client_id"], c["secret"], days=days,
+                                                 fields="all", full=True)
+                key = lambda t: t["transaction_info"].get("transaction_event_code")
+        except Exception as e:
+            out.append({"label": c["label"], "error": str(e)})
+            continue
+        groups = {}
+        for t in rows:
+            g = groups.setdefault(key(t), {"n": 0, "samples": []})
+            g["n"] += 1
+            if len(g["samples"]) < 4:
+                if c["provider"] == "paypal":
+                    ti = t["transaction_info"]
+                    g["samples"].append({"amt": ti.get("transaction_amount"), "fee": ti.get("fee_amount"),
+                                         "date": ti.get("transaction_initiation_date"),
+                                         "subject": ti.get("transaction_subject"), "note": ti.get("transaction_note"),
+                                         "payer": (t.get("payer_info") or {}).get("payer_name"),
+                                         "payer_email_domain": ((t.get("payer_info") or {}).get("email_address") or "@").split("@")[-1],
+                                         "keys": sorted(ti.keys())})
+                else:
+                    g["samples"].append({k: t.get(k) for k in t if k not in ("id",)})
+        out.append({"label": c["label"], "provider": c["provider"], "rows": len(rows), "groups": groups})
+    return out
+
+
 @app.put("/api/cash/{connection_id}")
 def api_rename_cash(connection_id: int, payload: dict):
     label = (payload.get("label") or "").strip()

@@ -156,12 +156,13 @@ async def snapshot(client_id: str, secret: str) -> dict:
     return {"balances": balances, "pending": _fit(balances, releases(rows))}
 
 
-async def transactions(client_id: str, secret: str, days: int = 75) -> list:
+async def transactions(client_id: str, secret: str, days: int = 75, fields: str = "transaction_info",
+                       full: bool = False) -> list:
     """Every transaction_info row from the last `days` days (31-day windows,
     PayPal's limit per search). Kept for 5 minutes; PayPal's feed itself
     lags by up to a few hours."""
     hit = _feed.get(client_id)
-    if hit and time.time() < hit[0] and days == 75:
+    if hit and time.time() < hit[0] and days == 75 and not full:
         return hit[1]
     end = datetime.now(timezone.utc) - timedelta(minutes=5)
     out = []
@@ -175,16 +176,17 @@ async def transactions(client_id: str, secret: str, days: int = 75) -> list:
                 r = await client.get(f"{API}/v1/reporting/transactions", params={
                     "start_date": start.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
                     "end_date": stop.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
-                    "fields": "transaction_info", "page_size": 500, "page": page,
+                    "fields": fields, "page_size": 500, "page": page,
                 }, headers={"Authorization": f"Bearer {token}"})
                 if r.status_code >= 400:
                     raise _explain(r, "transactions")
                 body = r.json()
-                out.extend(d.get("transaction_info", {}) for d in body.get("transaction_details", []))
+                out.extend((d if full else d.get("transaction_info", {}))
+                           for d in body.get("transaction_details", []))
                 if page >= int(body.get("total_pages") or 1) or page >= 40:
                     break
                 page += 1
             start = stop
-    if days == 75:
+    if days == 75 and not full:
         _feed[client_id] = (time.time() + 300, out)
     return out
