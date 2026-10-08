@@ -145,20 +145,36 @@ async def transactions(client_id: str, api_key: str, since: datetime, until: dat
 async def card_transactions(client_id: str, api_key: str, since: datetime,
                             account_id: str = None) -> list:
     """Card (Issuing) transactions since `since`: merchant name and card nickname
-    for each card charge. Empty if the key can't see cards."""
-    out, page = [], 0
+    for each card charge. Empty if the key can't see cards.
+
+    Airwallex answers at most about a month per search (oldest first), so the
+    period is read in 25-day windows."""
+    fmt = "%Y-%m-%dT%H:%M:%S+0000"
+    out = []
+    now = datetime.now(timezone.utc)
+    start = since.astimezone(timezone.utc)
     try:
         async with httpx.AsyncClient(timeout=60) as client:
             token = await _token(client, client_id, api_key, account_id)
-            while page < 50:
-                body = await _get(client, "/api/v1/issuing/transactions", token, {
-                    "from_created_at": since.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+0000"),
-                    "page_num": page, "page_size": 200,
-                }, what="card transactions")
-                out.extend(body.get("items", []))
-                if not _f(body, "has_more"):
-                    break
-                page += 1
+            while start < now:
+                stop = min(start + timedelta(days=25), now)
+                page = 0
+                while page < 50:
+                    body = await _get(client, "/api/v1/issuing/transactions", token, {
+                        "from_created_at": start.strftime(fmt), "to_created_at": stop.strftime(fmt),
+                        "page_num": page, "page_size": 200,
+                    }, what="card transactions")
+                    out.extend(body.get("items", []))
+                    if not _f(body, "has_more"):
+                        break
+                    page += 1
+                start = stop
     except AirwallexError:
         return out
-    return out
+    seen, unique = set(), []
+    for i in out:                      # windows touch at their edges
+        k = (i.get("transaction_id"), i.get("transaction_type"), i.get("status"))
+        if k not in seen:
+            seen.add(k)
+            unique.append(i)
+    return unique
