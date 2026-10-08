@@ -12,7 +12,7 @@ import re
 import secrets
 import time
 from contextlib import asynccontextmanager
-from datetime import date, datetime, time as clock, timedelta
+from datetime import date, datetime, time as clock, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dotenv import load_dotenv
@@ -28,6 +28,7 @@ import paypal_client as paypal
 import auth
 import cashflow
 import statement
+import adbills
 import db
 import demo
 import fx
@@ -606,7 +607,67 @@ def cash_page():
     return _page("cash.html", ("cash.js", "nav.js", "styles.css"))
 
 
-async def _cash_state(currency: str = None) -> dict:
+_ads_cache: dict = {}
+
+
+async def _ad_bills_raw() -> list:
+    """Every linked ad account and what it owes, in its own currency (see adbills.py).
+    Kept for 5 minutes: card charges and Meta balances don't move faster than that."""
+    hit = _ads_cache.get("rows")
+    if hit and time.time() - hit[0] < 300:
+        return hit[1]
+    now = datetime.now(timezone.utc)
+    stores = db.list_stores()
+    rows = []
+
+    meta_stores = [x for x in stores if x["meta_account_id"]]
+    if meta_stores:
+        got = await asyncio.gather(*[meta.billing(c["access_token"])
+                                     for c in db.list_meta_connections()], return_exceptions=True)
+        accounts = {}
+        for g in got:
+            if not isinstance(g, Exception):
+                accounts.update(g)
+        for x in meta_stores:
+            a = accounts.get(str(x["meta_account_id"]))
+            if a:
+                rows.append(adbills.meta_row(x, a))
+            else:
+                rows.append({"platform": "Meta", "store": x["name"], "account_id": x["meta_account_id"],
+                             "account": x["meta_account_name"] or "", "currency": x["meta_currency"] or "",
+                             "owed": None, "failed": [], "last_charge": None,
+                             "note": "Meta didn't return this ad account. Check it's still in the connected business."})
+
+    google_stores = [x for x in stores if x["google_customer_id"]]
+    auth = db.get_google_auth()
+    if google_stores:
+        tabs, cards = {}, []
+        if auth and gsheet.sheet_id():
+            try:
+                tabs = {_digits_only(k): v for k, v in (await gsheet._read_all(auth["refresh_token"])).items()}
+            except Exception:
+                tabs = {}
+        got = await asyncio.gather(*[awx.card_transactions(c["client_id"], c["secret"],
+                                                           now - timedelta(days=60), c["account_id"])
+                                     for c in db.list_cash_connections() if c["provider"] == "airwallex"],
+                                   return_exceptions=True)
+        for g in got:
+            if not isinstance(g, Exception):
+                cards.extend(g)
+        charges = adbills.google_charges(cards)
+        for x in google_stores:
+            cid = _digits_only(x["google_customer_id"])
+            rows.append(adbills.google_row(x, tabs.get(cid), charges.get(cid, []), now))
+
+    _ads_cache["rows"] = (time.time(), rows)
+    return rows
+
+
+def _digits_only(v) -> str:
+    return "".join(ch for ch in str(v or "") if ch.isdigit())
+
+
+async def _cash_state(currency: str = None, with_ads: bool = False) -> dict:
     """Live balances and pending money from every connected account, summarised."""
     conns = db.list_cash_connections()
     base = (currency or _display_currency()).upper()
@@ -621,6 +682,7 @@ async def _cash_state(currency: str = None) -> dict:
             return await paypal.snapshot(c["client_id"], c["secret"])
         raise RuntimeError(f"Unknown provider {c['provider']}")
 
+    ads_task = asyncio.ensure_future(_ad_bills_raw()) if with_ads else None
     got = await asyncio.gather(*[one(c) for c in conns], return_exceptions=True)
     accounts, problems = [], []
     for c, g in zip(conns, got):
@@ -629,18 +691,32 @@ async def _cash_state(currency: str = None) -> dict:
             continue
         accounts.append({"id": c["id"], "label": c["label"], "provider": c["provider"], **g})
 
+    ad_rows = None
+    if ads_task:
+        try:
+            ad_rows = [dict(r, failed=[dict(f) for f in r["failed"]]) for r in await ads_task]
+        except Exception as e:
+            problems.append(f"Ad bills: {e}")
+
     codes = {b["currency"] for a in accounts for b in a["balances"]} | \
-            {p["currency"] for a in accounts for p in a["pending"]}
+            {p["currency"] for a in accounts for p in a["pending"]} | \
+            {r["currency"] for r in (ad_rows or []) if r.get("currency")}
     fx_table = await fx.table(base) if codes - {base} else None
     factor = (lambda code: fx.factor(fx_table, code, base)) if fx_table else (lambda code: 1.0)
     today = datetime.now(CASH_TZ).date()
+    summary = cashflow.summarize(accounts, factor, today, CASH_TZ)
+    if ad_rows is not None:
+        ads = adbills.summarize(ad_rows, factor)
+        summary["ads"] = ads
+        summary["ads_payable"] = ads["total"]
+        summary["after_ads"] = summary["position"] - ads["total"]
     return {"base": base, "conns": conns, "problems": problems, "factor": factor, "today": today,
-            "fx_table": fx_table, "summary": cashflow.summarize(accounts, factor, today, CASH_TZ)}
+            "fx_table": fx_table, "summary": summary}
 
 
 @app.get("/api/cash")
 async def api_cash(currency: str = None):
-    st = await _cash_state(currency)
+    st = await _cash_state(currency, with_ads=True)
     if not st["conns"]:
         return {"currency": st["base"], "connected": [], "summary": None, "problems": []}
     fx_table = st["fx_table"]
@@ -789,48 +865,6 @@ async def api_add_paypal(payload: dict):
         raise HTTPException(400, str(e))
     db.add_cash_connection("paypal", label[:60], cid, secret)
     return {"ok": True, "accounts": 1, "currencies": sorted(b["currency"] for b in snap["balances"])}
-
-
-@app.get("/api/meta/billing-debug")
-async def api_meta_billing_debug():
-    # TEMPORARY: which billing fields Meta returns for ad accounts. No tokens returned.
-    import httpx as _hx
-    conns = db.list_meta_connections()
-    out = {"fields": {}, "accounts": []}
-    async with _hx.AsyncClient(timeout=60) as client:
-        c = conns[0]
-        out["ok_fields"] = None
-        accts = await meta._get_all(client, "me/adaccounts", c["access_token"],
-                                    {"fields": "account_id,name", "limit": 5})
-        aid = accts[0]["account_id"]
-        for f in ["balance", "amount_spent", "spend_cap", "is_prepay_account", "funding_source_details",
-                  "next_bill_date", "billing_threshold", "current_unbilled_spend", "threshold_amount",
-                  "prepay_balance", "adtrust_dsl", "disable_reason", "account_status", "min_billing_threshold",
-                  "current_unbilled_spend_cents", "funding_source"]:
-            r = await client.get(f"{meta.GRAPH}/{meta._version()}/act_{aid}",
-                                 params=meta._params(c["access_token"], {"fields": f}))
-            try:
-                body = r.json()
-            except ValueError:
-                body = r.text[:100]
-            out["fields"][f] = (body.get(f) if not isinstance(body.get(f), dict) else "dict:" + ",".join(body[f].keys())) if r.status_code < 400 else ("ERR " + str(body.get("error", {}).get("message", ""))[:90])
-        ok = [f for f in ("balance", "amount_spent", "spend_cap", "is_prepay_account",
-                          "funding_source_details", "current_unbilled_spend", "next_bill_date")
-              if not str(out["fields"].get(f)).startswith("ERR")]
-        for c in conns:
-            try:
-                rows = await meta._get_all(client, "me/adaccounts", c["access_token"], {
-                    "fields": "name,account_id,currency,account_status," + ",".join(ok),
-                    "limit": 200})
-            except Exception as e:
-                out["accounts"].append({"conn": c["label"], "error": str(e)[:150]}); continue
-            for a in rows:
-                fs = a.get("funding_source_details") or {}
-                out["accounts"].append({"name": a.get("name"), "cur": a.get("currency"), "status": a.get("account_status"),
-                    "balance": a.get("balance"), "spent": a.get("amount_spent"), "cap": a.get("spend_cap"),
-                    "prepay": a.get("is_prepay_account"), "fs_type": fs.get("type"), "fs": (fs.get("display_string") or "")[:40],
-                    "unbilled": a.get("current_unbilled_spend"), "next_bill": a.get("next_bill_date")})
-    return out
 
 
 @app.put("/api/cash/{connection_id}")

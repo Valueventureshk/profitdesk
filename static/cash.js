@@ -75,6 +75,7 @@ async function load() {
   renderCards(s);
   renderSchedule(s);
   renderAccounts(s);
+  renderAdBills(s.ads);
 }
 
 function kindsNote(byKind) {
@@ -87,9 +88,12 @@ function renderCards(s) {
   const position = `<div class="card position" id="positionCard" role="button" tabindex="0"
       title="Open the statement">
       <div class="card-label"><span class="dot" style="background:var(--sales)"></span>Available + receivable</div>
-      <div class="card-value">${money(s.position)}</div>
+      <div class="card-value">${money(s.position)}${s.ads_payable !== undefined && Math.abs(s.ads_payable) >= 0.5
+        ? `<span class="ads-owed" title="Ad spend Meta and Google haven't charged yet">−${money(s.ads_payable)} ads payable</span>` : ""}</div>
+      ${s.after_ads !== undefined ? `<div class="after-ads">${money(s.after_ads)} <span>after ad bills</span></div>` : ""}
       <div class="card-note">${money(s.available)} available now + ${money(s.receivable)} receivable
-        (sales settling, reserves and PayPal holds still to be released)</div>
+        (sales settling, reserves and PayPal holds still to be released)${s.ads
+          ? ` · ad bills: Meta ${money(s.ads.meta)}, Google ${money(s.ads.google)}` : ""}</div>
       <div class="card-link">View statement →</div>
     </div>`;
   const now = `<div class="card feature">
@@ -148,6 +152,30 @@ function renderAccounts(s) {
   }).join("");
   $("accounts").innerHTML = `<thead><tr><th>Account</th><th>Available</th><th>Held</th>
     <th>Arriving 30 days</th></tr></thead><tbody>${rows}</tbody>`;
+}
+
+function renderAdBills(ads) {
+  $("adsPanel").hidden = !ads;
+  if (!ads) return;
+  $("adsNote").textContent = `${money(ads.total)} owed, not yet charged`;
+  const when = (iso) => new Date(iso).toLocaleString(undefined,
+    { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
+  const rows = ads.accounts.map((a) => {
+    const id = a.platform === "Google"
+      ? String(a.account_id).replace(/(\d{3})(\d{3})(\d{4})/, "$1-$2-$3") : a.account_id;
+    const last = a.last_charge
+      ? `Last charged ${when(a.last_charge.time)} · ${a.last_charge.currency || ""} ${Number(a.last_charge.amount).toLocaleString(undefined, { maximumFractionDigits: 2 })} · card ${esc(a.last_charge.card)}`
+      : (a.platform === "Meta" ? "Amount owed, from Meta" : "");
+    const fails = a.failed.map((f) => `<span class="ads-fail">Declined ${when(f.time)}: ${money(f.amount_display)} on ${esc(f.card)}${f.reason ? ` (${esc(f.reason)})` : ""}</span>`).join("");
+    const note = a.note ? `<span class="sub">${esc(a.note)}</span>` : "";
+    return `<tr><td class="name">${esc(a.store)} · ${esc(a.platform)}
+        <span class="sub">${esc(a.account)} · ${esc(id)}</span>
+        <span class="sub">${last}</span>${note}${fails}</td>
+      <td class="ads-amt">${a.owed_display === null ? "—" : money(a.owed_display)}</td></tr>`;
+  }).join("");
+  $("adsTable").innerHTML = `<thead><tr><th>Ad account</th><th>Owed</th></tr></thead><tbody>${rows}</tbody>
+    <tfoot><tr><td class="name">Total ads payable${ads.unknown ? `<span class="sub">${ads.unknown} account${ads.unknown === 1 ? "" : "s"} unknown, not included</span>` : ""}</td>
+      <td class="ads-amt">${money(ads.total)}</td></tr></tfoot>`;
 }
 
 function renderConnections() {

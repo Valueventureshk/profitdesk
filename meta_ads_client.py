@@ -234,3 +234,13 @@ async def _daily_on_account_clock(token: str, account_id: str, start: str, end: 
         if d:
             spend[d] = spend.get(d, 0.0) + float(row.get("spend") or 0)
     return spend
+
+
+async def billing(token: str) -> dict:
+    """{account_id: {name, currency, account_status, balance}} for every ad account
+    this token can read. balance = spend owed, not yet charged, in cents."""
+    async with httpx.AsyncClient(timeout=60) as client:
+        rows = await _get_all(client, "me/adaccounts", token, {
+            "fields": "name,account_id,currency,account_status,balance", "limit": 200,
+        })
+    return {str(a.get("account_id")): a for a in rows if a.get("account_id")}

@@ -482,6 +482,15 @@ a.section-item:hover { background: var(--line-soft); }
 }
 .card.position { grid-column: 1 / -1; min-height: 0; cursor: pointer; }
 .card.position:hover { border-color: var(--sales); }
+.ads-owed { font-size: 14px; font-weight: 600; color: var(--down); margin-left: 10px;
+  letter-spacing: 0; white-space: nowrap; }
+.after-ads { font-size: 15px; font-weight: 600; margin-top: 2px; }
+.after-ads span { font-weight: 400; color: var(--muted); font-size: 12.5px; }
+#adsTable td.name .sub + .sub { margin-top: 1px; }
+.ads-fail { display: block; font-size: 11.5px; color: var(--down); }
+#adsTable tfoot td { font-weight: 600; border-top: 2px solid var(--ink); }
+.ads-amt { color: var(--down); }
+.ads-help { padding: 0 16px 14px; font-size: 11.5px; line-height: 1.45; margin: 8px 0 0; }
 .card-link { font-size: 12px; font-weight: 600; color: var(--sales); margin-top: 6px; }
 
 /* statement pop-up */
