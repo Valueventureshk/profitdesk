@@ -362,13 +362,20 @@ def _page(filename: str, assets) -> HTMLResponse:
 # ---------------------------------------------------------------- setup state
 
 @app.get("/api/history")
-def api_history():
-    """How far back each store's sales go: Shopify's window and the saved days."""
+async def api_history(fresh: int = 0):
+    """How far back each store's sales go: Shopify's window, whether the store has
+    approved full order history, and the days ProfitDesk has saved."""
     saved = db.shopify_history()
-    return [{"store": x["name"].strip(), "shopify_from": _shopify_cutoff(x),
+    stores = [x for x in db.list_stores() if not demo.is_demo(x)]
+    if fresh:
+        for x in stores:
+            _scopes.pop(x["id"], None)
+    granted = await asyncio.gather(*[_granted(x) for x in stores])
+    return [{"store": x["name"].strip(), "full_history": "read_all_orders" in g,
+             "shopify_from": None if "read_all_orders" in g else _shopify_cutoff(x),
              "saved_from": (saved.get(x["id"]) or (None,))[0],
              "saved_days": (saved.get(x["id"]) or (None, None, 0))[2]}
-            for x in db.list_stores() if not demo.is_demo(x)]
+            for x, g in zip(stores, granted)]
 
 
 @app.get("/api/setup")
