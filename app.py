@@ -799,6 +799,7 @@ async def api_meta_billing_debug():
     out = {"fields": {}, "accounts": []}
     async with _hx.AsyncClient(timeout=60) as client:
         c = conns[0]
+        out["ok_fields"] = None
         accts = await meta._get_all(client, "me/adaccounts", c["access_token"],
                                     {"fields": "account_id,name", "limit": 5})
         aid = accts[0]["account_id"]
@@ -812,16 +813,23 @@ async def api_meta_billing_debug():
                 body = r.json()
             except ValueError:
                 body = r.text[:100]
-            out["fields"][f] = body.get(f) if r.status_code < 400 else ("ERR " + str(body.get("error", {}).get("message", ""))[:90])
+            out["fields"][f] = (body.get(f) if not isinstance(body.get(f), dict) else "dict:" + ",".join(body[f].keys())) if r.status_code < 400 else ("ERR " + str(body.get("error", {}).get("message", ""))[:90])
+        ok = [f for f in ("balance", "amount_spent", "spend_cap", "is_prepay_account",
+                          "funding_source_details", "current_unbilled_spend", "next_bill_date")
+              if not str(out["fields"].get(f)).startswith("ERR")]
         for c in conns:
-            rows = await meta._get_all(client, "me/adaccounts", c["access_token"], {
-                "fields": "name,account_id,currency,account_status,balance,amount_spent,spend_cap,is_prepay_account,funding_source_details",
-                "limit": 200})
+            try:
+                rows = await meta._get_all(client, "me/adaccounts", c["access_token"], {
+                    "fields": "name,account_id,currency,account_status," + ",".join(ok),
+                    "limit": 200})
+            except Exception as e:
+                out["accounts"].append({"conn": c["label"], "error": str(e)[:150]}); continue
             for a in rows:
                 fs = a.get("funding_source_details") or {}
                 out["accounts"].append({"name": a.get("name"), "cur": a.get("currency"), "status": a.get("account_status"),
                     "balance": a.get("balance"), "spent": a.get("amount_spent"), "cap": a.get("spend_cap"),
-                    "prepay": a.get("is_prepay_account"), "fs_type": fs.get("type"), "fs": (fs.get("display_string") or "")[:40]})
+                    "prepay": a.get("is_prepay_account"), "fs_type": fs.get("type"), "fs": (fs.get("display_string") or "")[:40],
+                    "unbilled": a.get("current_unbilled_spend"), "next_bill": a.get("next_bill_date")})
     return out
 
 
