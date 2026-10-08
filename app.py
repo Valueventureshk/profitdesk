@@ -727,28 +727,45 @@ async def api_statement_debug(days: int = 3):
 
 @app.get("/api/cash/issuing-debug")
 async def api_issuing_debug():
-    # TEMPORARY: can the Airwallex key see card merchant names? No keys returned.
+    # TEMPORARY: do card ledger rows line up with card transactions? No keys returned.
     import httpx as _hx
     from datetime import timedelta as _td
-    c = next(c for c in db.list_cash_connections() if c["label"].startswith("Value Ventures"))
-    until = datetime.now(CASH_TZ); since = until - _td(days=2)
-    fin = await awx.transactions(c["client_id"], c["secret"], since, until, c["account_id"])
-    caps = [{"src": awx._f(t, "source_id"), "batch": awx._f(t, "batch_id"), "amt": t.get("amount"),
-             "type": awx._f(t, "transaction_type")} for t in fin if "ISSUING" in (awx._f(t, "transaction_type") or "")][:6]
-    out = {"caps": caps}
-    async with _hx.AsyncClient(timeout=60) as client:
-        token = await awx._token(client, c["client_id"], c["secret"], c["account_id"])
-        for path in ("/api/v1/issuing/transactions", "/api/v1/issuing/authorizations"):
-            r = await client.get(f"{awx.API}{path}", params={
-                "from_created_at": since.strftime("%Y-%m-%dT%H:%M:%S%z"), "page_size": 10},
-                headers={"Authorization": f"Bearer {token}"})
-            try:
-                body = r.json()
-            except ValueError:
-                body = r.text[:300]
-            out[path] = {"status": r.status_code, "body": body if r.status_code >= 400 else
-                         [{k: v for k, v in i.items() if k not in ("card_number", "masked_card_number")}
-                          for i in (body.get("items") or [])[:4]]}
+    out = []
+    until = datetime.now(CASH_TZ); since = until - _td(days=3)
+    for c in db.list_cash_connections():
+        if c["provider"] != "airwallex":
+            continue
+        fin = await awx.transactions(c["client_id"], c["secret"], since, until, c["account_id"])
+        src = {awx._f(t, "source_id"): awx._f(t, "transaction_type") for t in fin
+               if "ISSUING" in (awx._f(t, "transaction_type") or "")}
+        items, page = [], 0
+        async with _hx.AsyncClient(timeout=60) as client:
+            token = await awx._token(client, c["client_id"], c["secret"], c["account_id"])
+            while page < 20:
+                r = await client.get(f"{awx.API}/api/v1/issuing/transactions", params={
+                    "from_created_at": (since - _td(days=5)).strftime("%Y-%m-%dT%H:%M:%S%z"),
+                    "page_size": 200, "page_num": page},
+                    headers={"Authorization": f"Bearer {token}"})
+                if r.status_code >= 400:
+                    items = r.text[:200]; break
+                body = r.json(); items += body.get("items", [])
+                if not body.get("has_more"): break
+                page += 1
+        if isinstance(items, str):
+            out.append({"label": c["label"], "fin_card_rows": len(src), "error": items}); continue
+        hits = {}
+        for field in ("transaction_id", "lifecycle_id"):
+            ids = {i.get(field) for i in items}
+            hits[field] = sum(1 for k in src if k in ids)
+        ev = {i.get("card_transaction_data", {}).get("card_transaction_event_id") for i in items}
+        hits["event_id"] = sum(1 for k in src if k in ev)
+        types = {}
+        for i in items:
+            k = f"{i.get('transaction_type')}|{i.get('status')}"
+            types[k] = types.get(k, 0) + 1
+        out.append({"label": c["label"], "fin_card_rows": len(src), "issuing_rows": len(items),
+                    "hits": hits, "issuing_types": types,
+                    "fin_types": {t: list(src.values()).count(t) for t in set(src.values())}})
     return out
 
 
