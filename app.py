@@ -740,7 +740,7 @@ async def api_issuing_debug():
         token = await awx._token(client, c["client_id"], c["secret"], c["account_id"])
         for path in ("/api/v1/issuing/transactions", "/api/v1/issuing/authorizations"):
             r = await client.get(f"{awx.API}{path}", params={
-                "from_created_at": since.strftime("%Y-%m-%dT%H:%M:%S%z"), "page_size": 5},
+                "from_created_at": since.strftime("%Y-%m-%dT%H:%M:%S%z"), "page_size": 10},
                 headers={"Authorization": f"Bearer {token}"})
             try:
                 body = r.json()
