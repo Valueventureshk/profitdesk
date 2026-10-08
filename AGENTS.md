@@ -47,10 +47,50 @@ file and have it work.
 | `db.py` | SQLite schema + queries. Schema is at the top. |
 | `shopify_client.py` | Admin GraphQL, rolls orders into daily totals |
 | `google_ads_client.py` | OAuth + GAQL spend reporting |
-| `meta_ads_client.py` | Meta System User token + Insights spend reporting |
+| `meta_ads_client.py` | Meta System User token + Insights spend reporting, ad account balances |
+| `google_sheet.py` | Google spend from the Sheet the Google Ads scripts write hourly |
+| `google-ads-script.js` | The script pasted into each Google Ads account (hourly schedule) |
+| `auth.py` | Email + password login, sessions |
+| `fx.py` | Daily exchange rates (ECB + open.er-api) |
+| `airwallex_client.py` | Airwallex balances, financial transactions, card (Issuing) transactions |
+| `paypal_client.py` | PayPal balances + transaction feed; hold release schedule |
+| `cashflow.py` | **Cash flow engine**: available, receivable, arriving by day N |
+| `statement.py` | The statement pop-up: opening → movements → closing, sales check |
+| `adbills.py` | Ads payable: Meta balance, Google spend since its last card charge |
+| `static/cash.html` `cash.js` `nav.js` | Cash flow page, section menu |
 | `static/index.html` `styles.css` `app.js` | The dashboard |
 | `seed_demo.py` | Generates fake data for testing |
 | `start.command` / `start.bat` | Double-click launchers |
+
+## Current setup (keep this section up to date)
+
+- Live at https://profitdesk-production.up.railway.app (Railway project
+  "sparkling-beauty", service "profitdesk"). Every push to `main` deploys.
+  After a deploy, open `/healthz`: `db_on_volume` must be `true`.
+- Database lives on the Railway volume (`/data/profitdesk.db`). Credentials for
+  Shopify apps, Meta, Google, Airwallex and PayPal are stored in that database,
+  pasted in by the owner through the app. Never ask for them in chat.
+- Railway variables: `PUBLIC_URL`, `DB_PATH`, `SETUP_CODE`, plus the names in
+  `.env` (Shopify/Google client ids and secrets, API versions). Values never in chat.
+- To check the live app, use a browser where the owner is logged in and call the
+  app's own `/api/...` routes. Don't use the owner's personal Chrome without asking.
+- Business clock is Hong Kong (`CASH_TIMEZONE`). Each store has its own clock;
+  "today" is the furthest-ahead store's date.
+
+Cash flow rules learned the hard way:
+
+- Airwallex card authorisation holds are already off the available balance; don't
+  count them as pending. Some sub-accounts answer in camelCase (`_f()` reads both).
+- Airwallex returns at most ~a month per search, oldest first: read in windows.
+- PayPal holds: T2103 reserve (released 60 days later, T2104), T2101 monthly-limit
+  hold (21 days, T2102). The schedule is fitted to PayPal's withheld balance.
+- Statement: opening = position now − movements since; internal moves (reserves,
+  PayPal → Airwallex, sub-account transfers) don't change the total. Sales check
+  uses Shopify on the Hong Kong clock, split by gateway; completed days match to the cent.
+- Google bills: match card charges by the account number in the merchant name
+  (`GOOGLE*ADS5460462568`). A monthly bill on the 1st covers last month only.
+  A retried charge covers spend up to its first attempt. Per-store "Google tax"
+  (ZAVA = 10% GST; Google's balance includes it).
 
 ## Invariants — do not break these
 
