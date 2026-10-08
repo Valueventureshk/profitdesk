@@ -439,7 +439,7 @@ async def api_cog_day(start: str, end: str = None, store: str = "all", currency:
         o["sales"] += sales
         o["cog"] += cost
         o["estimated"] = o["estimated"] or r["source"] == "estimate"
-    out = sorted(orders.values(), key=lambda o: o["created"])
+    out = sorted(orders.values(), key=lambda o: datetime.fromisoformat(o["created"]))
     for o in out:
         o["cog_pct"] = (o["cog"] / o["sales"]) if o["sales"] else None
     sales = sum(o["sales"] for o in out)
