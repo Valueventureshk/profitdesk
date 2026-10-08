@@ -21,7 +21,7 @@ const CARDS = [
   { key: "sales",          label: "Total Sales",     fmt: "money", dot: "var(--sales)",  dir: "up" },
   { key: "ad_spend",       label: "Ad Spend",        fmt: "money", dot: "var(--spend)",  dir: "none" },
   { key: "roas",           label: "ROAS",            fmt: "ratio", dot: "var(--accent)", dir: "up" },
-  { key: "other_costs",    label: "Other Costs",     fmt: "money", dot: "var(--spend)",  dir: "none" },
+  { key: "cogs",           label: "COG",             fmt: "money", dot: "var(--spend)",  dir: "none" },
   { key: "net_profit",     label: "Net Profit",      fmt: "money", dot: "var(--up)",     dir: "up", feature: true },
   { key: "net_margin",     label: "Net Margin",      fmt: "pct",   dot: "var(--up)",     dir: "up" },
   { key: "processing_fee", label: "Processing Fees", fmt: "money", dot: "var(--spend)",  dir: "none" },
@@ -384,6 +384,7 @@ function renderCards(d) {
       ${c.key === "ad_spend" ? spendSplit(d.totals) : ""}
       ${c.key === "roas" ? roasSplit(d.platform_roas) : ""}
       ${c.key === "orders" ? `<div class="card-note">AOV ${fmt(d.totals.aov, "money")}</div>` : ""}
+      ${c.key === "cogs" ? cogNote(d.totals) : ""}
       ${c.key === "processing_fee" ? `<div class="card-note">Payments ${fmt(d.totals.payment_fee, "money")}
         · Shopify ${fmt(d.totals.shopify_fee, "money")}</div>` : ""}
       ${sparkline(d.series, c.key, dot)}
@@ -399,6 +400,13 @@ function roasSplit(p) {
     : "";
   const rows = line("google", "Google") + line("meta", "Meta");
   return rows ? `<div class="spend-split">${rows}</div>` : "";
+}
+
+function cogNote(t) {
+  const share = `${fmt(t.cogs_share, "pct")} of sales`;
+  const est = t.cogs_estimated >= 0.5
+    ? ` · <span class="est" title="Products with no cost history yet, costed at the store's average COG %">${fmt(t.cogs_estimated, "money")} estimated</span>` : "";
+  return `<div class="card-note">${share}${est}</div>`;
 }
 
 function spendSplit(t) {
@@ -508,7 +516,7 @@ function renderStoreTable(d) {
       <td>${fmt(t.ad_spend, "money")}</td>
       <td class="roas">${fmt(t.roas, "ratio")}</td>
       <td>${fmt(t.processing_fee, "money")}</td>
-      <td>${s.cost_pct === null || s.cost_pct === undefined ? "—" : `${Number(s.cost_pct).toLocaleString(undefined, { maximumFractionDigits: 2 })}%`}</td>
+      <td>${fmt(t.cogs_share, "pct")}</td>
       <td>${fmt(t.aov, "money")}</td>
       <td class="${profitClass}">${fmt(t.net_profit, "money")}</td>
       <td>${fmt(t.net_margin, "pct")}</td>
@@ -519,7 +527,7 @@ function renderStoreTable(d) {
   $("storeTable").innerHTML = `
     <thead><tr>
       <th>Store</th><th>Total sales</th><th>Ad spend</th><th>ROAS</th><th>Fees</th>
-      <th title="Other costs, as a % of sales (set per store)">Cost %</th><th>AOV</th>
+      <th title="Cost of goods as a % of sales">COG %</th><th>AOV</th>
       <th>Net profit</th><th>Margin</th><th>Orders</th>
     </tr></thead>
     <tbody>${rows}</tbody>
@@ -534,7 +542,7 @@ function storeTotalsRow(t) {
       <td>${fmt(t.ad_spend, "money")}</td>
       <td class="roas">${fmt(t.roas, "ratio")}</td>
       <td>${fmt(t.processing_fee, "money")}</td>
-      <td title="Other costs as a share of total sales">${fmt(t.cost_share, "pct")}</td>
+      <td title="Cost of goods as a share of total sales">${fmt(t.cogs_share, "pct")}</td>
       <td>${fmt(t.aov, "money")}</td>
       <td class="${t.net_profit >= 0 ? "pos" : "neg"}">${fmt(t.net_profit, "money")}</td>
       <td>${fmt(t.net_margin, "pct")}</td>
@@ -1004,11 +1012,6 @@ function renderStoreSettings() {
         <span>${esc(s.shop_domain)}</span>
       </div>
 
-      <label class="inline-field">
-        <span>Other costs</span>
-        <input type="number" class="cost" min="0" max="100" step="0.1" value="${s.cost_pct}">
-        <span class="suffix">% of sales</span>
-      </label>
 
       <label class="inline-field">
         <span>Google Ads</span>
@@ -1033,13 +1036,6 @@ function renderStoreSettings() {
 
   for (const row of $("storeSettings").querySelectorAll(".store-row")) {
     const id = row.dataset.store;
-
-    row.querySelector(".cost").onchange = async (e) => {
-      await jsonPost(`/api/stores/${id}`, { cost_pct: parseFloat(e.target.value) || 0 }, "PUT");
-      toast("Cost percentage saved.");
-      state.setup = await api("/api/setup");
-      load(true);
-    };
 
     row.querySelector(".gtax").onchange = async (e) => {
       await jsonPost(`/api/stores/${id}`, { google_tax_pct: parseFloat(e.target.value) || 0 }, "PUT");

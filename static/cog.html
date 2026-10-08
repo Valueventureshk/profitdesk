@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ProfitDesk · COG + Products</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<div class="cash-page">
+  <header class="cash-top">
+    <div class="brand" data-section-menu title="Switch section">
+      <span class="brand-mark">PD</span>
+      <span class="brand-name">ProfitDesk</span>
+    </div>
+    <div class="crumb">
+      <h1>COG + Products Monitor</h1>
+      <p id="sub">Loading…</p>
+    </div>
+    <div class="controls">
+      <select id="currencySelect" class="control" title="Show every figure in this currency"></select>
+      <button id="refresh" class="btn btn-ghost" title="Re-read the orders sheet and re-cost recent orders">Refresh</button>
+    </div>
+  </header>
+
+  <main class="content">
+    <div id="problems" class="warnings"></div>
+
+    <div class="cog-tabs" role="tablist">
+      <button class="cog-tab on" data-tab="check" role="tab">Check COG</button>
+      <button class="cog-tab" data-tab="products" role="tab">Products</button>
+    </div>
+
+    <section id="checkView">
+      <div class="cog-filters">
+        <select id="range" class="control">
+          <option value="today">Today</option>
+          <option value="yesterday" selected>Yesterday</option>
+          <option value="7">Last 7 days</option>
+          <option value="custom">Pick dates…</option>
+        </select>
+        <span id="dates" hidden>
+          <input type="date" id="from" class="control"> <span class="hint">to</span>
+          <input type="date" id="to" class="control">
+        </span>
+        <select id="storeSelect" class="control"></select>
+      </div>
+      <section id="cards" class="cards"></section>
+      <div id="estNote"></div>
+      <section class="panel">
+        <div class="panel-head"><h2>Orders, in time order</h2><span class="hint" id="orderCount"></span></div>
+        <div class="table-wrap"><table class="table" id="orders"></table></div>
+      </section>
+      <p class="hint cog-legend">
+        <span class="src invoice">Invoice</span> COG from the supplier's invoice (your sheet) ·
+        <span class="src catalog">History</span> not invoiced yet: the product's last cost ·
+        <span class="src estimate">Estimate</span> never bought before: the store's average COG %
+      </p>
+    </section>
+
+    <section id="productsView" hidden>
+      <div class="cog-filters">
+        <select id="productStore" class="control"></select>
+        <input id="search" class="control" type="search" placeholder="Search products">
+      </div>
+      <section class="panel">
+        <div class="panel-head"><h2>Product costs</h2><span class="hint" id="productCount"></span></div>
+        <div class="table-wrap"><table class="table" id="products"></table></div>
+      </section>
+    </section>
+  </main>
+</div>
+<div id="toast" class="toast" hidden></div>
+<script src="/static/nav.js"></script>
+<script src="/static/cog.js"></script>
+</body>
+</html>

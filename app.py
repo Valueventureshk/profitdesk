@@ -11,6 +11,7 @@ import os
 import re
 import secrets
 import time
+from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import date, datetime, time as clock, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -29,6 +30,7 @@ import auth
 import cashflow
 import statement
 import adbills
+import cog
 import db
 import demo
 import fx
@@ -61,8 +63,10 @@ CACHE_TTL = 60  # seconds; the Refresh button bypasses it
 async def lifespan(app):
     db.init()
     saver = asyncio.create_task(_save_all_history())
+    coster = asyncio.create_task(_cog_loop())
     yield
     saver.cancel()
+    coster.cancel()
 
 
 app = FastAPI(title="ProfitDesk", docs_url=None, redoc_url=None, lifespan=lifespan)
@@ -361,16 +365,105 @@ def _page(filename: str, assets) -> HTMLResponse:
 
 # ---------------------------------------------------------------- setup state
 
-@app.get("/api/cog/sheet-peek")
-async def api_cog_sheet_peek(sid: str, rows: int = 8):
-    # TEMPORARY: the layout of the orders/COG sheet (tabs, headers, a few rows, sizes).
-    auth = db.get_google_auth()
-    if not auth:
-        raise HTTPException(400, "Google isn't signed in.")
-    head = await gsheet.read_tabs(auth["refresh_token"], sid, rows=rows)
-    full = await gsheet.read_tabs(auth["refresh_token"], sid)
-    return {t: {"rows": len(full[t]), "first": head[t][:rows],
-                "last": full[t][-3:] if full[t] else []} for t in head}
+@app.get("/cog", response_class=HTMLResponse)
+def cog_page():
+    return _page("cog.html", ("cog.js", "nav.js", "styles.css"))
+
+
+@app.put("/api/cog/sheet")
+async def api_cog_sheet(payload: dict):
+    m = re.search(r"/spreadsheets/d/([A-Za-z0-9_-]{20,})", payload.get("url") or "")
+    sid = m.group(1) if m else (payload.get("url") or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{20,}", sid):
+        raise HTTPException(400, "Paste the orders sheet's link from the browser's address bar.")
+    db.set_setting("cog_sheet_id", sid)
+    rows = await _cog_rows(force=True)
+    asyncio.create_task(_cog_sync())
+    return {"ok": True, "rows": len(rows)}
+
+
+@app.post("/api/cog/sync")
+async def api_cog_sync(days: int = None):
+    """Re-read the sheet and re-cost orders now (days=None: the whole window)."""
+    await _cog_rows(force=True)
+    if days is None:
+        asyncio.create_task(_cog_sync())
+        return {"ok": True, "started": True}
+    return {"ok": True, "report": await _cog_sync(days_back=days)}
+
+
+@app.get("/api/cog/status")
+def api_cog_status():
+    stores = {x["id"]: x["name"].strip() for x in db.list_stores()}
+    tags = _cog.get("tags") or {}
+    rows = (_cog.get("rows") or (0, []))[1]
+    catalog = _cog.get("catalog")
+    synced = _cog.get("synced")
+    real = [x for x in db.list_stores() if not demo.is_demo(x)]
+    return {
+        "today": max((_store_today(x) for x in real), default=date.today()).isoformat(),
+        "stores": [{"id": x["id"], "name": x["name"].strip()} for x in real],
+        "sheet": bool(db.get_setting("cog_sheet_id")),
+        "sheet_rows": len(rows),
+        "tags": sorted([{"tag": (p or "") + "…" + (q or "") if q else (p or "") + "…",
+                         "store": stores.get(sid, "?")} for (p, q), sid in tags.items()],
+                       key=lambda t: t["store"]),
+        "not_connected": dict(catalog.unmatched_tags) if catalog else {},
+        "synced_at": synced[0] if synced else None,
+        "report": synced[1] if synced else None,
+    }
+
+
+@app.get("/api/cog/day")
+async def api_cog_day(start: str, end: str = None, store: str = "all", currency: str = None):
+    """Every order in a day (or range) in time order, each product line with its COG."""
+    end = end or start
+    stores = [x for x in db.list_stores() if not demo.is_demo(x)
+              and (store == "all" or str(x["id"]) == str(store))]
+    base = (currency or _display_currency()).upper()
+    table = await fx.table(base)
+    f = lambda code: fx.factor(table, code, base) if table else 1.0
+    names = {x["id"]: (x["name"].strip(), x["currency"]) for x in stores}
+    orders = {}
+    for r in db.cog_lines(list(names), start, end):
+        name, cur = names[r["store_id"]]
+        o = orders.setdefault((r["store_id"], r["order_name"]), {
+            "store": name, "order": r["order_name"], "created": r["created"], "day": r["day"],
+            "cancelled": bool(r["cancelled"]), "fulfillment": r["fulfillment"], "lines": [],
+            "sales": 0.0, "cog": 0.0, "estimated": False})
+        cost = (r["cost_usd"] or 0.0) * f("USD")
+        sales = 0.0 if r["cancelled"] else r["subtotal"] * f(cur)
+        o["lines"].append({"product": r["product"], "quantity": r["quantity"], "sku": r["sku"],
+                           "sales": sales, "cog": cost, "cog_usd": r["cost_usd"],
+                           "source": r["source"], "supplier": r["supplier"], "note": r["note"]})
+        o["sales"] += sales
+        o["cog"] += cost
+        o["estimated"] = o["estimated"] or r["source"] == "estimate"
+    out = sorted(orders.values(), key=lambda o: o["created"])
+    for o in out:
+        o["cog_pct"] = (o["cog"] / o["sales"]) if o["sales"] else None
+    sales = sum(o["sales"] for o in out)
+    cogs = sum(o["cog"] for o in out)
+    est = [l for o in out for l in o["lines"] if l["source"] == "estimate"]
+    return {
+        "currency": base, "start": start, "end": end, "orders": out,
+        "summary": {"orders": len(out), "sales": sales, "cog": cogs,
+                    "cog_pct": (cogs / sales) if sales else None,
+                    "estimated_lines": len(est), "estimated_cog": sum(l["cog"] for l in est),
+                    "from_history": sum(1 for o in out for l in o["lines"] if l["source"] == "catalog"),
+                    "from_invoice": sum(1 for o in out for l in o["lines"] if l["source"] == "invoice")},
+        "synced_at": (_cog.get("synced") or (None,))[0],
+    }
+
+
+@app.get("/api/cog/products")
+async def api_cog_products(store: int):
+    rows = await _cog_rows()
+    if not _cog.get("catalog"):
+        raise HTTPException(400, "Product costs are still loading. Try again in a minute.")
+    items = _cog["catalog"].products(store)
+    items.sort(key=lambda p: (not p["changed"], -(p["times"])))
+    return {"products": items}
 
 
 @app.get("/api/history")
@@ -987,7 +1080,8 @@ def _in_currency(rows, store, fx_table, base):
     return [
         metrics.day(r["date"], r["sales"] * f_sales, r["orders"],
                     r["google_spend"] * f_google, r["meta_spend"] * f_meta,
-                    store["cost_pct"], r["payment_fee"] * f_sales, r["shopify_fee"] * f_sales)
+                    r["cogs"] * f_sales, r["payment_fee"] * f_sales, r["shopify_fee"] * f_sales,
+                    r["cogs_estimated"] * f_sales)
         for r in rows
     ]
 
@@ -1286,7 +1380,7 @@ async def api_dashboard(scope: str = "all", start: str = None, end: str = None,
 
 async def _store_window(store, start, end, auth, meta_auth):
     """Live sales and spend for one store, as daily rows. Never raises."""
-    key = (store["id"], start, end, store["cost_pct"], store["google_tax_pct"])
+    key = (store["id"], start, end, store["google_tax_pct"])
     hit = _cache.get(key)
     if hit and time.time() - hit[0] < CACHE_TTL:
         return hit[1]
@@ -1297,7 +1391,8 @@ async def _store_window(store, start, end, auth, meta_auth):
         got_sales, got_spend = demo.series(store, start, end)
         rows = [
             metrics.day(d, got_sales[d]["sales"], got_sales[d]["orders"],
-                        got_spend[d]["google"], got_spend[d]["meta"], store["cost_pct"])
+                        got_spend[d]["google"], got_spend[d]["meta"],
+                        got_sales[d]["sales"] * (store["cost_pct"] or 0) / 100.0)
             for d in _dates(start, end)
         ]
         return rows, ["These are demo stores with invented figures. "
@@ -1306,7 +1401,7 @@ async def _store_window(store, start, end, auth, meta_auth):
     # Days that haven't begun on this store's clock have nothing to fetch.
     store_today = _store_today(store).isoformat()
     if start > store_today:
-        rows = [metrics.day(d, 0.0, 0, 0.0, 0.0, store["cost_pct"]) for d in _dates(start, end)]
+        rows = [metrics.day(d, 0.0, 0, 0.0, 0.0, 0.0) for d in _dates(start, end)]
         _cache[key] = (time.time(), (rows, notes))
         return rows, notes
     end_for_api = min(end, store_today)
@@ -1377,13 +1472,16 @@ async def _store_window(store, start, end, auth, meta_auth):
         notes.append(f"{store['name']}: no ad accounts linked yet, so ad spend shows as zero.")
 
     ctx = await _fee_context(store, notes)
+    cogs = await _cog_for(store, start, end,
+                          {d: got_sales.get(d, {}).get("sales", 0.0) for d in _dates(start, end)})
     rows = []
     for d in _dates(start, end):
         s = got_sales.get(d, {"sales": 0.0, "orders": 0, "payments": {}})
         pay_fee, shop_fee = _fees_for(store, s["payments"], ctx, notes)
+        c, est = cogs.get(d, (0.0, 0.0))
         rows.append(metrics.day(d, s["sales"], s["orders"],
                                 got_spend.get(d, 0.0), got_meta.get(d, 0.0),
-                                store["cost_pct"], pay_fee, shop_fee))
+                                c, pay_fee, shop_fee, est))
 
     _cache[key] = (time.time(), (rows, notes))
     return rows, notes
@@ -1426,6 +1524,144 @@ async def _save_all_history():
             except Exception as e:
                 print(f"Saving Shopify history for {x['name']} failed: {e}", flush=True)
         await asyncio.sleep(6 * 3600)
+
+
+# ---------------------------------------------------------------- COG (see cog.py)
+
+_cog: dict = {}          # "rows": (time, parsed sheet rows)
+_cog_lock = asyncio.Lock()
+
+
+async def _cog_rows(force: bool = False) -> list:
+    """The orders sheet, parsed. Re-read at most every 30 minutes."""
+    sid = db.get_setting("cog_sheet_id")
+    auth = db.get_google_auth()
+    if not sid or not auth:
+        return []
+    hit = _cog.get("rows")
+    if hit and not force and time.time() - hit[0] < 1800:
+        return hit[1]
+    rows = cog.parse_sheet(await gsheet.read_tabs(auth["refresh_token"], sid))
+    _cog["rows"] = (time.time(), rows)
+    return rows
+
+
+async def _usd_to(currency: str) -> float:
+    table = await fx.table(currency)
+    return fx.factor(table, "USD", currency) if table else 1.0
+
+
+async def _cog_sync(days_back: int = None, store_ids: list = None) -> dict:
+    """Fetch each store's orders with their products for a window, cost every line
+    (cog.cost_order) and save them. days_back=None means as far as Shopify allows
+    (60 days, or back to the sheet's first day for stores with full history)."""
+    async with _cog_lock:
+        rows = await _cog_rows()
+        stores = [x for x in db.list_stores() if not demo.is_demo(x) and x.get("access_token")
+                  and (not store_ids or x["id"] in store_ids)]
+        first_day = min((r["day"] for r in rows if r["day"]), default=None)
+        fetched, report = {}, {}
+        for x in stores:
+            today = _store_today(x)
+            start = (today - timedelta(days=days_back)).isoformat() if days_back is not None \
+                else _shopify_cutoff(x)
+            if days_back is None and first_day and "read_all_orders" in await _granted(x):
+                start = min(start, first_day)
+            try:
+                orders = await ShopifyClient(x["shop_domain"], x["access_token"]).order_lines(
+                    start, today.isoformat(), x["timezone"])
+                fetched[x["id"]] = (start, today.isoformat(), orders)
+            except Exception as e:
+                report[x["name"].strip()] = f"error: {e}"
+        # Each store's tag (AS…, …CH) from its own order names, then its cost history.
+        known = {sid: [o["name"] for o in v[2]] for sid, v in fetched.items()}
+        saved = _cog.get("tags") or {}
+        tags = {**saved, **cog.store_tags(known)}
+        _cog["tags"] = tags
+        catalog = cog.Catalog(rows, tags)
+        _cog["catalog"] = catalog
+        for x in stores:
+            if x["id"] not in fetched:
+                continue
+            start, end, orders = fetched[x["id"]]
+            rate = await _usd_to(x["currency"])
+            out = []
+            for o in orders:
+                for n, line in enumerate(cog.cost_order(o, x["id"], catalog, rate)):
+                    out.append({**line, "order": o["name"], "line_no": n, "day": o["day"],
+                                "created": o["created"], "cancelled": o["cancelled"],
+                                "fulfillment": o["fulfillment"]})
+            db.replace_cog_lines(x["id"], start, end, out)
+            src = defaultdict(int)
+            for r in out:
+                src[r["source"]] += 1
+            report[x["name"].strip()] = {"from": start, "orders": len(orders), **src}
+        _cache.clear()
+        _cog["synced"] = (time.time(), report)
+        return report
+
+
+async def _cog_loop():
+    """Keep COG current: recent days every 20 minutes, the whole window every 6 hours."""
+    await asyncio.sleep(60)
+    n = 0
+    while True:
+        try:
+            if db.get_setting("cog_sheet_id"):
+                if n % 18 == 0:
+                    await _cog_rows(force=True)
+                    await _cog_sync()
+                else:
+                    await _cog_sync(days_back=2)
+        except Exception as e:
+            print(f"COG sync failed: {e}", flush=True)
+        n += 1
+        await asyncio.sleep(20 * 60)
+
+
+async def _cog_for(store, start: str, end: str, sales: dict, until: datetime = None) -> dict:
+    """{day: (cog, estimated part)} in the store's currency for its dashboard rows.
+    Days with sales not (yet) covered by costed order lines use the store's average
+    COG %, so the figure is never missing, and that part counts as estimated."""
+    if demo.is_demo(store):
+        return {d: (v * (store["cost_pct"] or 0) / 100.0, 0.0) for d, v in sales.items()}
+    rate = await _usd_to(store["currency"])
+    if until is None:
+        days = db.cog_days(store["id"], start, end)
+    else:   # part of a day: only orders placed by `until`
+        days = {}
+        for r in db.cog_lines([store["id"]], start, end):
+            if datetime.fromisoformat(r["created"]) > until:
+                continue
+            d = days.setdefault(r["day"], {"cost_usd": 0.0, "estimated_usd": 0.0, "subtotal": 0.0})
+            d["cost_usd"] += r["cost_usd"] or 0.0
+            if r["source"] == "estimate":
+                d["estimated_usd"] += r["cost_usd"] or 0.0
+            if not r["cancelled"]:
+                d["subtotal"] += r["subtotal"]
+    catalog = _cog.get("catalog")
+    pct = catalog.cog_pct(store["id"], rate) if catalog else None
+    if pct is None:
+        pct = _store_cog_pct(store["id"], rate)
+    out = {}
+    for d, sale in sales.items():
+        got = days.get(d)
+        cost = (got["cost_usd"] * rate) if got else 0.0
+        est = (got["estimated_usd"] * rate) if got else 0.0
+        uncovered = max(0.0, sale - (got["subtotal"] if got else 0.0))
+        if uncovered > 0.01 and pct:
+            cost += uncovered * pct
+            est += uncovered * pct
+        out[d] = (cost, est)
+    return out
+
+
+def _store_cog_pct(store_id: int, rate: float):
+    """Average COG % from the store's saved order lines (when the sheet isn't loaded yet)."""
+    with db._conn() as con:
+        r = con.execute("SELECT SUM(cost_usd) c, SUM(subtotal) s FROM cog_lines WHERE store_id = ?"
+                        " AND source IN ('invoice', 'catalog') AND cancelled = 0", (store_id,)).fetchone()
+    return (r["c"] * rate / r["s"]) if r and r["s"] else None
 
 
 _scopes: dict = {}
@@ -1484,7 +1720,7 @@ async def _same_time_yesterday(store, day, auth, meta_auth):
     viewed = date.fromisoformat(day) + timedelta(days=1)
     elapsed = _now_in(store) - datetime.combine(viewed, clock.min, tz)
     if elapsed <= timedelta(0):
-        return [metrics.day(day, 0.0, 0, 0.0, 0.0, store["cost_pct"])], notes
+        return [metrics.day(day, 0.0, 0, 0.0, 0.0, 0.0)], notes
     cut = datetime.combine(date.fromisoformat(day), clock.min, tz) + min(
         elapsed, timedelta(hours=24) - timedelta(seconds=1))
     until = cut.time()
@@ -1494,7 +1730,7 @@ async def _same_time_yesterday(store, day, auth, meta_auth):
         seconds = until.hour * 3600 + until.minute * 60 + until.second
         s, p = demo.day_share(store, day, seconds / 86400)
         return [metrics.day(day, s["sales"], s["orders"], p["google"], p["meta"],
-                            store["cost_pct"])], notes
+                            s["sales"] * (store["cost_pct"] or 0) / 100.0)], notes
 
     async def sales():
         client = ShopifyClient(store["shop_domain"], store["access_token"])
@@ -1535,8 +1771,9 @@ async def _same_time_yesterday(store, day, auth, meta_auth):
 
     pay_fee, shop_fee = _fees_for(store, got_sales["payments"],
                                   await _fee_context(store, notes), notes)
+    c, est = (await _cog_for(store, day, day, {day: got_sales["sales"]}, until=cut)).get(day, (0.0, 0.0))
     return [metrics.day(day, got_sales["sales"], got_sales["orders"],
-                        got_google, got_meta, store["cost_pct"], pay_fee, shop_fee)], notes
+                        got_google, got_meta, c, pay_fee, shop_fee, est)], notes
 
 
 def _dates(start: str, end: str):

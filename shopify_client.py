@@ -43,6 +43,35 @@ query Orders($cursor: String, $q: String!) {
 """
 
 
+# Every order with its products, for the COG monitor. Smaller pages because each
+# order carries its line items (Shopify limits how much one query may ask for).
+ORDER_LINES_QUERY = """
+query OrderLines($cursor: String, $q: String!) {
+  orders(first: 40, after: $cursor, query: $q, sortKey: CREATED_AT) {
+    pageInfo { hasNextPage endCursor }
+    nodes {
+      name
+      createdAt
+      cancelledAt
+      test
+      displayFulfillmentStatus
+      lineItems(first: 20) {
+        nodes {
+          title
+          variantTitle
+          quantity
+          sku
+          variant { id }
+          product { id }
+          discountedTotalSet { shopMoney { amount } }
+        }
+      }
+    }
+  }
+}
+"""
+
+
 class ShopifyError(RuntimeError):
     pass
 
@@ -214,6 +243,52 @@ class ShopifyClient:
         if r.status_code >= 400:
             raise ShopifyError(f"Shopify error {r.status_code} reading the app's permissions.")
         return {x.get("handle") for x in r.json().get("access_scopes", [])}
+
+    async def order_lines(self, start: str, end: str, tz_name: str = "UTC") -> list:
+        """Every order created between two dates (store clock), with its products.
+        [{name, created, day, cancelled, fulfillment, lines: [{title, variant, quantity,
+          sku, variant_id, product_id, subtotal}]}]"""
+        import asyncio as _aio
+        tz = _zone(tz_name)
+        lo = datetime.combine(datetime.fromisoformat(start).date(), time.min, tz)
+        hi = datetime.combine(datetime.fromisoformat(end).date(), time.max, tz)
+        q = (f"created_at:>='{lo.astimezone(timezone.utc):%Y-%m-%dT%H:%M:%SZ}' "
+             f"created_at:<='{hi.astimezone(timezone.utc):%Y-%m-%dT%H:%M:%SZ}'")
+        out, cursor = [], None
+        async with httpx.AsyncClient(timeout=90) as client:
+            while True:
+                for attempt in range(5):
+                    try:
+                        data = await self._post(client, ORDER_LINES_QUERY, {"cursor": cursor, "q": q})
+                        break
+                    except ShopifyError as e:
+                        if "throttl" not in str(e).lower() and "rate" not in str(e).lower():
+                            raise
+                        await _aio.sleep(2 + attempt * 3)
+                else:
+                    raise ShopifyError(f"{self.domain} kept rate limiting us; try again shortly.")
+                conn = data["orders"]
+                for o in conn["nodes"]:
+                    if o.get("test"):
+                        continue
+                    created = datetime.fromisoformat(o["createdAt"].replace("Z", "+00:00")).astimezone(tz)
+                    out.append({
+                        "name": o["name"], "created": created.isoformat(),
+                        "day": created.date().isoformat(),
+                        "cancelled": bool(o.get("cancelledAt")),
+                        "fulfillment": o.get("displayFulfillmentStatus") or "",
+                        "lines": [{
+                            "title": li.get("title") or "", "variant": li.get("variantTitle") or "",
+                            "quantity": int(li.get("quantity") or 0), "sku": li.get("sku") or "",
+                            "variant_id": (li.get("variant") or {}).get("id"),
+                            "product_id": (li.get("product") or {}).get("id"),
+                            "subtotal": float(((li.get("discountedTotalSet") or {}).get("shopMoney") or {}).get("amount") or 0),
+                        } for li in o["lineItems"]["nodes"]],
+                    })
+                if not conn["pageInfo"]["hasNextPage"]:
+                    break
+                cursor = conn["pageInfo"]["endCursor"]
+        return out
 
     async def shop_info(self):
         async with httpx.AsyncClient(timeout=30) as client:

@@ -119,6 +119,29 @@ CREATE TABLE IF NOT EXISTS shopify_days (
     PRIMARY KEY (store_id, date)
 );
 
+-- Every Shopify order line with what it cost from the supplier (see cog.py).
+-- Kept, like shopify_days, so costs stay known after Shopify's 60-day window.
+CREATE TABLE IF NOT EXISTS cog_lines (
+    store_id   INTEGER NOT NULL,
+    order_name TEXT    NOT NULL,
+    line_no    INTEGER NOT NULL,
+    day        TEXT    NOT NULL,      -- store's own clock
+    created    TEXT    NOT NULL,
+    cancelled  INTEGER NOT NULL DEFAULT 0,
+    fulfillment TEXT,
+    product    TEXT    NOT NULL,
+    sku        TEXT,
+    variant_id TEXT,
+    quantity   INTEGER NOT NULL,
+    subtotal   REAL    NOT NULL,      -- what the customer paid, store currency
+    cost_usd   REAL,                  -- supplier cost incl. shipping, USD
+    source     TEXT,                  -- invoice | catalog | estimate | cancelled
+    supplier   TEXT,
+    note       TEXT,
+    PRIMARY KEY (store_id, order_name, line_no)
+);
+CREATE INDEX IF NOT EXISTS cog_lines_day ON cog_lines (store_id, day);
+
 -- Small app-wide preferences, e.g. the currency the dashboard shows.
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
@@ -318,10 +341,49 @@ def first_saved_shopify_day(store_id: int):
     return r["d"] if r else None
 
 
+def replace_cog_lines(store_id: int, start: str, end: str, rows: list):
+    """Replace a store's costed order lines for days start..end (store clock)."""
+    with _conn() as con:
+        con.execute("DELETE FROM cog_lines WHERE store_id = ? AND day BETWEEN ? AND ?",
+                    (store_id, start, end))
+        con.executemany(
+            "INSERT OR REPLACE INTO cog_lines (store_id, order_name, line_no, day, created, cancelled,"
+            " fulfillment, product, sku, variant_id, quantity, subtotal, cost_usd, source, supplier, note)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [(store_id, r["order"], r["line_no"], r["day"], r["created"], int(r["cancelled"]),
+              r.get("fulfillment"), r["product"], r.get("sku"), r.get("variant_id"), r["quantity"],
+              r["subtotal"], r.get("cost"), r.get("source"), r.get("supplier"), r.get("note"))
+             for r in rows])
+
+
+def cog_lines(store_ids: list, start: str, end: str) -> list:
+    if not store_ids:
+        return []
+    marks = ",".join("?" * len(store_ids))
+    with _conn() as con:
+        return [dict(r) for r in con.execute(
+            f"SELECT * FROM cog_lines WHERE store_id IN ({marks}) AND day BETWEEN ? AND ?"
+            " ORDER BY created, order_name, line_no", (*store_ids, start, end))]
+
+
+def cog_days(store_id: int, start: str, end: str) -> dict:
+    """{day: {"cost_usd", "estimated_usd", "subtotal", "lines"}} for one store."""
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT day, SUM(COALESCE(cost_usd, 0)) c,"
+            " SUM(CASE WHEN source = 'estimate' THEN COALESCE(cost_usd, 0) ELSE 0 END) e,"
+            " SUM(CASE WHEN cancelled = 0 THEN subtotal ELSE 0 END) s, COUNT(*) n"
+            " FROM cog_lines WHERE store_id = ? AND day BETWEEN ? AND ? GROUP BY day",
+            (store_id, start, end)).fetchall()
+    return {r["day"]: {"cost_usd": r["c"], "estimated_usd": r["e"], "subtotal": r["s"],
+                       "lines": r["n"]} for r in rows}
+
+
 def delete_store(store_id: int):
     with _conn() as con:
         con.execute("DELETE FROM stores WHERE id = ?", (store_id,))
         con.execute("DELETE FROM shopify_days WHERE store_id = ?", (store_id,))
+        con.execute("DELETE FROM cog_lines WHERE store_id = ?", (store_id,))
         con.execute("DELETE FROM store_group_members WHERE store_id = ?", (store_id,))
 
 

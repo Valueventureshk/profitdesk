@@ -4,7 +4,10 @@ Every number the dashboard shows is defined here and nowhere else.
 
     Total sales        what Shopify reports as total sales
   - Processing fees    payment provider fees + Shopify's third-party fee
-  - Other costs        your cost % applied to total sales
+  - COG                what the supplier charged for the goods (incl. shipping),
+                       per order from the orders sheet / product costs (cog.py);
+                       never-bought products use the store's average COG %
+                       and that part is reported as "cogs_estimated"
   - Ad spend           Google Ads + Meta Ads, account level
   = Net profit
 
@@ -14,13 +17,12 @@ Every number the dashboard shows is defined here and nowhere else.
 
 Processing fees are estimated per order from how it was paid, using the rate
 card below (editable in Settings) until exact fees are pulled from PayPal and
-Airwallex. Other costs are a single percentage you set per store, so they are
-only as honest as the percentage you put in.
+Airwallex.
 """
 
 SUMMABLE = ("sales", "orders", "google_spend", "meta_spend", "ad_spend",
             "payment_fee", "shopify_fee", "processing_fee",
-            "other_costs", "net_profit")
+            "cogs", "cogs_estimated", "net_profit")
 
 
 # ---------------------------------------------------------------- processing fees
@@ -113,15 +115,16 @@ def with_google_tax(spend: float, tax_pct) -> float:
 
 
 def day(date: str, sales: float, orders: int, google_spend: float,
-        meta_spend: float, cost_pct: float, payment_fee: float = 0.0,
-        shopify_fee: float = 0.0):
-    """One store, one day. Cost % is applied per store before anything is blended.
+        meta_spend: float, cogs: float, payment_fee: float = 0.0,
+        shopify_fee: float = 0.0, cogs_estimated: float = 0.0):
+    """One store, one day, all in one currency.
 
     Ad spend is the sum of every platform, and processing fees the sum of the
-    payment provider's fee and Shopify's. Each part is kept as well, so the
-    dashboard can show the split without working anything out itself.
+    payment provider's fee and Shopify's. cogs_estimated is the part of cogs
+    that came from the store's average rather than known product costs. Each
+    part is kept as well, so the dashboard can show the split without working
+    anything out itself.
     """
-    other_costs = sales * (cost_pct / 100.0)
     ad_spend = google_spend + meta_spend
     processing_fee = payment_fee + shopify_fee
     return {
@@ -134,8 +137,9 @@ def day(date: str, sales: float, orders: int, google_spend: float,
         "payment_fee": payment_fee,
         "shopify_fee": shopify_fee,
         "processing_fee": processing_fee,
-        "other_costs": other_costs,
-        "net_profit": sales - processing_fee - other_costs - ad_spend,
+        "cogs": cogs,
+        "cogs_estimated": cogs_estimated,
+        "net_profit": sales - processing_fee - cogs - ad_spend,
     }
 
 
@@ -171,8 +175,8 @@ def summarize(days):
     totals["roas"] = _div(totals["sales"], totals["ad_spend"])
     totals["net_margin"] = _div(totals["net_profit"], totals["sales"])
     totals["aov"] = _div(totals["sales"], totals["orders"])
-    # Other costs as a share of sales: each store's own % blended by its sales.
-    totals["cost_share"] = _div(totals["other_costs"], totals["sales"])
+    # COG as a share of sales.
+    totals["cogs_share"] = _div(totals["cogs"], totals["sales"])
     return totals
 
 

@@ -4,8 +4,8 @@
   const SECTIONS = [
     { href: "/", label: "Profit dashboard", note: "Sales, ad spend, fees and profit" },
     { href: "/cash", label: "Cash flow", note: "Balances and money arriving" },
-    { label: "Product profitability", note: "Coming soon", soon: true },
-    { label: "Accounting & COGS", note: "Coming soon", soon: true },
+    { href: "/cog", label: "COG + Products Monitor", note: "What every order cost, product costs" },
+    { label: "Accounting", note: "Coming soon", soon: true },
   ];
 
   function build() {
