@@ -57,6 +57,8 @@ file and have it work.
 | `cashflow.py` | **Cash flow engine**: available, receivable, arriving by day N |
 | `statement.py` | The statement pop-up: opening → movements → closing, sales check |
 | `adbills.py` | Ads payable: Meta balance, Google spend since its last card charge |
+| `cog.py` | **COG engine**: orders sheet → per-store product costs → cost of every order line |
+| `static/cog.html` `cog.js` | COG + Products Monitor page (Check COG, Products) |
 | `static/cash.html` `cash.js` `nav.js` | Cash flow page, section menu |
 | `static/index.html` `styles.css` `app.js` | The dashboard |
 | `seed_demo.py` | Generates fake data for testing |
@@ -92,6 +94,20 @@ Cash flow rules learned the hard way:
   A retried charge covers spend up to its first attempt. Per-store "Google tax"
   (ZAVA = 10% GST; Google's balance includes it).
 
+COG rules (replaced the old per-store "Other costs %", which is no longer used):
+
+- Source of truth is the owner's orders sheet (setting `cog_sheet_id`; weekly tabs +
+  APRIL; one row per item; COG in USD incl. shipping). Read via the Google sign-in.
+- Every Shopify order line is costed and saved in `cog_lines`: `invoice` (its own
+  sheet row), `catalog` (product's latest cost in that store, then same product
+  other variant), `estimate` (store's average COG %, shown orange), `cancelled` (0).
+- Store ↔ order tag (AS…, …CH) is learned from each store's Shopify order names.
+- Background job: last 2 days every 20 min, full window every 6 h. Dashboard COG
+  per day = saved lines + store average for any sales not yet covered.
+- Next steps planned: invoice upload (AI reading) with price-change flags and
+  approval, supplier payments ledger from Airwallex payouts, write cost to Shopify
+  "Cost per item" (needs read_products, read_inventory, write_inventory).
+
 ## Invariants — do not break these
 
 `metrics.py` is the single source of truth for every number. If a metric appears
@@ -101,10 +117,9 @@ in the UI, it is computed there and nowhere else. Never calculate a figure in
 These identities must hold exactly. Verify after any change to `metrics.py`:
 
 ```
-total_revenue - cogs - shipping_cost - handling - payment_fees == gross_profit
-gross_profit - ad_spend - fixed_costs                          == net_profit
-waterfall[-1]["running"]                                       == net_profit
-gross_profit - (total_revenue / breakeven_roas)                == 0
+sales - processing_fee - cogs - ad_spend == net_profit      (metrics.day)
+ad_spend == google_spend + meta_spend
+processing_fee == payment_fee + shopify_fee
 ```
 
 Other rules:
