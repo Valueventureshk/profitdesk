@@ -135,10 +135,20 @@ def google_row(store: dict, tab: dict, charges: list, now: datetime) -> dict:
                     and abs(c["amount"] - last["amount"]) < 0.01
                     and timedelta(0) < last["time"] - c["time"] < timedelta(days=3)):
                 billed = min(billed, c["time"])
+        # Google's monthly charge (early in the month, for an uneven amount) pays
+        # for last month's spend only, up to midnight on the account's clock;
+        # a threshold charge (a round amount) pays for spend up to the charge.
+        tz = _zone(tab["meta"]["timezone"])
+        local = billed.astimezone(tz)
+        monthly = local.day <= 3 and abs(last["amount"] - round(last["amount"], -1)) > 0.001
+        if monthly:
+            billed = datetime(local.year, local.month, 1, tzinfo=tz)
         row["last_charge"] = {"time": last["time"].isoformat(), "amount": last["amount"],
                               "currency": last["currency"], "card": last["card"],
-                              "first_try": billed.isoformat() if billed != last["time"] else None}
-        row["owed"] = spend_since(tab["rows"], tab["meta"]["timezone"], billed, now)
+                              "monthly": monthly, "covers_until": billed.isoformat()}
+        tax = float(store.get("google_tax_pct") or 0)
+        row["tax_pct"] = tax
+        row["owed"] = spend_since(tab["rows"], tab["meta"]["timezone"], billed, now) * (1 + tax / 100)
     else:
         row["note"] = ("No Google charge for this account on your Airwallex cards in the last "
                        "60 days, so ProfitDesk can't tell what's been paid. It may be paid "

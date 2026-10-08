@@ -164,7 +164,9 @@ function renderAdBills(ads) {
     const id = a.platform === "Google"
       ? String(a.account_id).replace(/(\d{3})(\d{3})(\d{4})/, "$1-$2-$3") : a.account_id;
     const last = a.last_charge
-      ? `Last charged ${when(a.last_charge.time)} · ${a.last_charge.currency || ""} ${Number(a.last_charge.amount).toLocaleString(undefined, { maximumFractionDigits: 2 })} · card ${esc(a.last_charge.card)}`
+      ? `Last charged ${when(a.last_charge.time)} · ${a.last_charge.currency || ""} ${Number(a.last_charge.amount).toLocaleString(undefined, { maximumFractionDigits: 2 })} · card ${esc(a.last_charge.card)}` +
+        (a.last_charge.monthly ? " · monthly bill, so counting from the 1st" : "") +
+        (a.tax_pct ? ` · includes ${a.tax_pct}% tax` : "")
       : (a.platform === "Meta" ? "Amount owed, from Meta" : "");
     const fails = a.failed.map((f) => `<span class="ads-fail">Declined ${when(f.time)}: ${money(f.amount_display)} on ${esc(f.card)}${f.reason ? ` (${esc(f.reason)})` : ""}</span>`).join("");
     const note = a.note ? `<span class="sub">${esc(a.note)}</span>` : "";

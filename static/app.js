@@ -996,6 +996,12 @@ function renderStoreSettings() {
       </label>
 
       <label class="inline-field">
+        <span>Google tax</span>
+        <input type="number" class="gtax" min="0" max="50" step="0.1" value="${s.google_tax_pct || 0}">
+        <span class="suffix">% Google adds when it charges (e.g. 10 for GST)</span>
+      </label>
+
+      <label class="inline-field">
         <span>Meta Ads</span>
         ${metaSelect(s)}
       </label>
@@ -1011,6 +1017,13 @@ function renderStoreSettings() {
     row.querySelector(".cost").onchange = async (e) => {
       await jsonPost(`/api/stores/${id}`, { cost_pct: parseFloat(e.target.value) || 0 }, "PUT");
       toast("Cost percentage saved.");
+      state.setup = await api("/api/setup");
+      load(true);
+    };
+
+    row.querySelector(".gtax").onchange = async (e) => {
+      await jsonPost(`/api/stores/${id}`, { google_tax_pct: parseFloat(e.target.value) || 0 }, "PUT");
+      toast("Google tax saved.");
       state.setup = await api("/api/setup");
       load(true);
     };

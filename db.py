@@ -145,6 +145,7 @@ _ADDED_COLUMNS = {
         ("shopify_plan", "TEXT"),
         ("google_source", "TEXT"),      # "sheet" when spend comes from the script's Sheet
         ("google_timezone", "TEXT"),
+        ("google_tax_pct", "REAL"),     # tax Google adds when it charges (e.g. 10% GST)
     ],
     "cash_connections": [
         ("account_id", "TEXT"),          # Airwallex sub-account (x-login-as), if any
@@ -273,6 +274,12 @@ def delete_store(store_id: int):
 def rename_store(store_id: int, name: str):
     with _conn() as con:
         con.execute("UPDATE stores SET name = ? WHERE id = ?", (name, store_id))
+
+
+def set_google_tax(store_id: int, pct: float):
+    pct = max(0.0, min(50.0, float(pct or 0)))
+    with _conn() as con:
+        con.execute("UPDATE stores SET google_tax_pct = ? WHERE id = ?", (pct, store_id))
 
 
 def set_cost_pct(store_id: int, pct: float):

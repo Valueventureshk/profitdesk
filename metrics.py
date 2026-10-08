@@ -106,6 +106,12 @@ def _div(a, b):
     return a / b if b else None
 
 
+def with_google_tax(spend: float, tax_pct) -> float:
+    """What Google actually charges for `spend`: some accounts pay tax on top
+    (e.g. 10% GST on an Australian account), set per store."""
+    return spend * (1 + (tax_pct or 0) / 100.0)
+
+
 def day(date: str, sales: float, orders: int, google_spend: float,
         meta_spend: float, cost_pct: float, payment_fee: float = 0.0,
         shopify_fee: float = 0.0):

@@ -371,6 +371,7 @@ def api_setup():
         "timezone": s["timezone"],
         "shopify_plan": s["shopify_plan"],
         "cost_pct": s["cost_pct"],
+        "google_tax_pct": s["google_tax_pct"] or 0,
         "google_customer_id": s["google_customer_id"],
         "google_account_name": s["google_account_name"],
         "meta_account_id": s["meta_account_id"],
@@ -501,6 +502,9 @@ def api_delete_store(store_id: int):
 def api_update_store(store_id: int, payload: dict):
     if "cost_pct" in payload:
         db.set_cost_pct(store_id, payload["cost_pct"])
+    if "google_tax_pct" in payload:
+        db.set_google_tax(store_id, payload["google_tax_pct"])
+        _ads_cache.clear()
     if payload.get("name"):
         db.rename_store(store_id, payload["name"].strip())
     _cache.clear()
@@ -1237,7 +1241,7 @@ async def api_dashboard(scope: str = "all", start: str = None, end: str = None,
 
 async def _store_window(store, start, end, auth, meta_auth):
     """Live sales and spend for one store, as daily rows. Never raises."""
-    key = (store["id"], start, end, store["cost_pct"])
+    key = (store["id"], start, end, store["cost_pct"], store["google_tax_pct"])
     hit = _cache.get(key)
     if hit and time.time() - hit[0] < CACHE_TTL:
         return hit[1]
@@ -1273,12 +1277,14 @@ async def _store_window(store, start, end, auth, meta_auth):
             notes.append(f"{store['name']}: Google is not connected, so ad spend shows as zero.")
             return {}
         if store["google_source"] == "sheet":
-            return await gsheet.daily_spend(auth["refresh_token"], store["google_customer_id"],
-                                            start, end_for_api, store["timezone"])
-        return await gads.daily_spend(
-            auth["refresh_token"], store["google_customer_id"],
-            store["google_login_cid"], start, end_for_api,
-        )
+            got = await gsheet.daily_spend(auth["refresh_token"], store["google_customer_id"],
+                                           start, end_for_api, store["timezone"])
+        else:
+            got = await gads.daily_spend(
+                auth["refresh_token"], store["google_customer_id"],
+                store["google_login_cid"], start, end_for_api,
+            )
+        return {d: metrics.with_google_tax(v, store["google_tax_pct"]) for d, v in got.items()}
 
     async def meta_spend():
         if not store["meta_account_id"]:
@@ -1377,10 +1383,12 @@ async def _same_time_yesterday(store, day, auth, meta_auth):
         if not (store["google_customer_id"] and auth):
             return 0.0
         if store["google_source"] == "sheet":
-            return await gsheet.spend_until_hour(auth["refresh_token"], store["google_customer_id"],
-                                                 day, now.hour, store["timezone"])
-        return await gads.spend_until_hour(auth["refresh_token"], store["google_customer_id"],
-                                           store["google_login_cid"], day, now.hour)
+            got = await gsheet.spend_until_hour(auth["refresh_token"], store["google_customer_id"],
+                                                day, now.hour, store["timezone"])
+        else:
+            got = await gads.spend_until_hour(auth["refresh_token"], store["google_customer_id"],
+                                              store["google_login_cid"], day, now.hour)
+        return metrics.with_google_tax(got, store["google_tax_pct"])
 
     async def meta_spend():
         if not (store["meta_account_id"] and meta_auth):
