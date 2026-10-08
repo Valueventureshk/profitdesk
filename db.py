@@ -142,6 +142,37 @@ CREATE TABLE IF NOT EXISTS cog_lines (
 );
 CREATE INDEX IF NOT EXISTS cog_lines_day ON cog_lines (store_id, day);
 
+-- Supplier invoices and their lines (see invoices.py). Invoice lines are the
+-- real COG of the order items they name.
+CREATE TABLE IF NOT EXISTS invoices (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    supplier    TEXT,
+    number      TEXT,
+    date        TEXT,
+    store_id    INTEGER,
+    total       REAL,
+    filename    TEXT,
+    uploaded_by TEXT,
+    uploaded_at TEXT NOT NULL DEFAULT (datetime('now')),
+    missing     TEXT NOT NULL DEFAULT '[]'      -- fulfilled orders in range but not invoiced
+);
+CREATE TABLE IF NOT EXISTS invoice_lines (
+    invoice_id INTEGER NOT NULL,
+    line_no    INTEGER NOT NULL,
+    order_key  TEXT    NOT NULL,
+    order_name TEXT,
+    store_id   INTEGER,
+    title      TEXT,
+    product    TEXT,                 -- the Shopify product line it matched
+    amount     REAL    NOT NULL,     -- USD
+    status     TEXT    NOT NULL,     -- ok | changed | new | duplicate | unmatched
+    previous   REAL,
+    note       TEXT,
+    approved_by TEXT,
+    approved_at TEXT,
+    PRIMARY KEY (invoice_id, line_no)
+);
+
 -- Small app-wide preferences, e.g. the currency the dashboard shows.
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
@@ -377,6 +408,83 @@ def cog_days(store_id: int, start: str, end: str) -> dict:
             (store_id, start, end)).fetchall()
     return {r["day"]: {"cost_usd": r["c"], "estimated_usd": r["e"], "subtotal": r["s"],
                        "lines": r["n"]} for r in rows}
+
+
+def update_cog_costs(store_id: int, rows: list):
+    """rows: [{order_name, line_no, cost, source, supplier, note}]"""
+    with _conn() as con:
+        con.executemany(
+            "UPDATE cog_lines SET cost_usd = ?, source = ?, supplier = ?, note = ?"
+            " WHERE store_id = ? AND order_name = ? AND line_no = ?",
+            [(r["cost"], r["source"], r["supplier"], r["note"], store_id, r["order_name"], r["line_no"])
+             for r in rows])
+
+
+def store_order_names() -> dict:
+    """{store_id: [recent order names]} from saved order lines (to learn order tags)."""
+    with _conn() as con:
+        rows = con.execute("SELECT store_id, order_name FROM cog_lines"
+                           " GROUP BY store_id, order_name ORDER BY MAX(created) DESC").fetchall()
+    out = {}
+    for r in rows:
+        if len(out.setdefault(r["store_id"], [])) < 200:
+            out[r["store_id"]].append(r["order_name"])
+    return out
+
+
+def save_invoice(inv: dict, checked: dict, filename: str, user: str) -> int:
+    import json
+    with _conn() as con:
+        iid = con.execute(
+            "INSERT INTO invoices (supplier, number, date, store_id, total, filename, uploaded_by, missing)"
+            " VALUES (?,?,?,?,?,?,?,?)",
+            (inv["supplier"], inv["number"], inv["date"], checked["store_id"], inv["total"],
+             filename, user, json.dumps(checked["missing"]))).lastrowid
+        con.executemany(
+            "INSERT INTO invoice_lines (invoice_id, line_no, order_key, order_name, store_id, title,"
+            " product, amount, status, previous, note) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            [(iid, l["line_no"], l["order"], l.get("order_name"), l["store_id"], l["title"],
+              l["product"], l["amount"], l["status"], l["previous"], l["note"])
+             for l in checked["lines"]])
+    return iid
+
+
+def list_invoices() -> list:
+    with _conn() as con:
+        return [dict(r) for r in con.execute(
+            "SELECT i.*, COUNT(l.line_no) lines,"
+            " SUM(CASE WHEN l.status = 'changed' AND l.approved_at IS NULL THEN 1 ELSE 0 END) to_check,"
+            " SUM(CASE WHEN l.status IN ('unmatched', 'duplicate') THEN 1 ELSE 0 END) problems"
+            " FROM invoices i LEFT JOIN invoice_lines l ON l.invoice_id = i.id"
+            " GROUP BY i.id ORDER BY i.date DESC, i.id DESC")]
+
+
+def invoice_lines(invoice_id: int = None) -> list:
+    with _conn() as con:
+        if invoice_id is None:
+            return [dict(r) for r in con.execute(
+                "SELECT l.*, i.number, i.date, i.supplier FROM invoice_lines l"
+                " JOIN invoices i ON i.id = l.invoice_id")]
+        return [dict(r) for r in con.execute(
+            "SELECT * FROM invoice_lines WHERE invoice_id = ? ORDER BY line_no", (invoice_id,))]
+
+
+def get_invoice(invoice_id: int):
+    with _conn() as con:
+        r = con.execute("SELECT * FROM invoices WHERE id = ?", (invoice_id,)).fetchone()
+    return dict(r) if r else None
+
+
+def approve_invoice_line(invoice_id: int, line_no: int, user: str):
+    with _conn() as con:
+        con.execute("UPDATE invoice_lines SET approved_by = ?, approved_at = datetime('now')"
+                    " WHERE invoice_id = ? AND line_no = ?", (user, invoice_id, line_no))
+
+
+def delete_invoice(invoice_id: int):
+    with _conn() as con:
+        con.execute("DELETE FROM invoice_lines WHERE invoice_id = ?", (invoice_id,))
+        con.execute("DELETE FROM invoices WHERE id = ?", (invoice_id,))
 
 
 def delete_store(store_id: int):

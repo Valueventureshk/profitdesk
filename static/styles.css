@@ -580,3 +580,23 @@ a.section-item:hover { background: var(--line-soft); }
 .sub.flag { color: #B45309; }
 .cog-legend { font-size: 12px; margin: 10px 0 0; line-height: 1.9; }
 #estNote .warn { margin-bottom: 12px; }
+
+.tab-badge { display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 4px; border-radius: 999px;
+  background: #B45309; color: #fff; font-size: 11px; line-height: 18px; text-align: center; }
+.drop { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 26px 16px;
+  border: 2px dashed var(--line); border-radius: var(--radius); background: var(--panel);
+  cursor: pointer; margin-bottom: 12px; text-align: center; }
+.drop span { color: var(--muted); font-size: 12.5px; }
+.drop.over { border-color: var(--sales); background: #EFF6FF; }
+#invResult .notice, #invResult .warn { margin-bottom: 12px; }
+.src.ok { background: #ECFDF5; color: #047857; }
+.src.new { background: #EFF6FF; color: #1D4ED8; }
+.src.changed { background: #FFF7ED; color: #B45309; }
+.src.bad { background: #FEF2F2; color: #B91C1C; }
+tr.clickable { cursor: pointer; }
+tr.clickable:hover td { background: var(--line-soft); }
+td.inv-status { text-align: left; white-space: normal; }
+td.inv-status .btn { margin-top: 4px; }
+.inv-missing { margin: 0 16px 12px; padding: 10px 12px; border-radius: 10px; background: #EFF6FF; font-size: 12.5px; }
+.inv-missing div { padding: 2px 0; }
+#invDetail .panel-head span { display: flex; gap: 6px; }

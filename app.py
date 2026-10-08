@@ -31,6 +31,7 @@ import cashflow
 import statement
 import adbills
 import cog
+import invoices
 import db
 import demo
 import fx
@@ -454,6 +455,89 @@ async def api_cog_day(start: str, end: str = None, store: str = "all", currency:
                     "from_invoice": sum(1 for o in out for l in o["lines"] if l["source"] == "invoice")},
         "synced_at": (_cog.get("synced") or (None,))[0],
     }
+
+
+@app.post("/api/invoices")
+async def api_invoice_upload(request: Request, filename: str = "invoice"):
+    """Upload one supplier invoice (PDF, or text/CSV with one line per item)."""
+    data = await request.body()
+    if not data:
+        raise HTTPException(400, "That file is empty.")
+    if len(data) > 15 * 1024 * 1024:
+        raise HTTPException(400, "That file is too big (15 MB max).")
+    try:
+        text = invoices.pdf_text(data) if data[:4] == b"%PDF" else data.decode("utf-8", "ignore")
+        inv = invoices.parse(text)
+    except invoices.InvoiceError as e:
+        raise HTTPException(400, str(e))
+    for old in db.list_invoices():
+        if old["number"] and old["number"] == inv["number"] and old["supplier"] == inv["supplier"] \
+                and abs((old["total"] or 0) - inv["total"]) < 0.01:
+            raise HTTPException(400, f"Invoice {inv['number']} from {inv['supplier']} is already uploaded.")
+    catalog = await _catalog()
+    tags = _cog.get("tags") or {}
+    store_of = lambda key: tags.get(cog.tag_of(key)) if cog.tag_of(key) else None
+    sids = {store_of(l["order"]) for l in inv["lines"]} - {None}
+    order_lines = {}
+    if sids:
+        start = (date.today() - timedelta(days=150)).isoformat()
+        for r in db.cog_lines(list(sids), start, date.today().isoformat()):
+            order_lines.setdefault((r["store_id"], cog.order_key(r["order_name"])), []).append(r)
+    invoiced = {(l["store_id"], l["order_key"], cog.norm(l["product"] or "")): l["number"]
+                for l in db.invoice_lines() if l["status"] not in ("unmatched", "duplicate")}
+    checked = invoices.check(inv, store_of, order_lines, catalog, invoiced)
+    user = (getattr(request.state, "user", None) or {}).get("email", "")
+    iid = db.save_invoice(inv, checked, filename[:120], user)
+    for sid in sids:
+        names = {l["order_name"] for l in checked["lines"] if l.get("order_name") and l["store_id"] == sid}
+        await _recost(sid, names)
+    return {"ok": True, "id": iid, "supplier": inv["supplier"], "number": inv["number"],
+            "lines": len(inv["lines"]), "total": inv["total"], "sum": checked["sum"],
+            "counts": checked["counts"], "missing": len(checked["missing"])}
+
+
+@app.get("/api/invoices")
+def api_invoices():
+    stores = {x["id"]: x["name"].strip() for x in db.list_stores()}
+    out = []
+    for i in db.list_invoices():
+        i["store"] = stores.get(i["store_id"], "Several / unknown")
+        i["missing"] = len(json.loads(i["missing"] or "[]"))
+        out.append(i)
+    return {"invoices": out, "to_check": sum(i["to_check"] or 0 for i in out)}
+
+
+@app.get("/api/invoices/{invoice_id}")
+def api_invoice(invoice_id: int):
+    inv = db.get_invoice(invoice_id)
+    if not inv:
+        raise HTTPException(404, "That invoice no longer exists.")
+    inv["missing"] = json.loads(inv["missing"] or "[]")
+    stores = {x["id"]: x["name"].strip() for x in db.list_stores()}
+    inv["store"] = stores.get(inv["store_id"], "Several / unknown")
+    return {"invoice": inv, "lines": db.invoice_lines(invoice_id)}
+
+
+@app.post("/api/invoices/{invoice_id}/approve/{line_no}")
+async def api_invoice_approve(request: Request, invoice_id: int, line_no: int):
+    """A changed price was checked with the supplier: it becomes the product's cost."""
+    user = (getattr(request.state, "user", None) or {}).get("email", "")
+    db.approve_invoice_line(invoice_id, line_no, user)
+    inv = db.get_invoice(invoice_id)
+    if inv and inv["store_id"]:
+        names = {l["order_name"] for l in db.invoice_lines(invoice_id) if l["order_name"]}
+        await _recost(inv["store_id"], names)
+    return {"ok": True}
+
+
+@app.delete("/api/invoices/{invoice_id}")
+async def api_invoice_delete(invoice_id: int):
+    inv = db.get_invoice(invoice_id)
+    names = {l["order_name"] for l in db.invoice_lines(invoice_id) if l["order_name"]}
+    db.delete_invoice(invoice_id)
+    if inv and inv["store_id"]:
+        await _recost(inv["store_id"], names)
+    return {"ok": True}
 
 
 @app.get("/api/cog/products")
@@ -1579,6 +1663,7 @@ async def _cog_sync(days_back: int = None, store_ids: list = None) -> dict:
         tags = {**saved, **cog.store_tags(known)}
         _cog["tags"] = tags
         catalog = cog.Catalog(rows, tags)
+        catalog.add_invoices(db.invoice_lines())
         _cog["catalog"] = catalog
         for x in stores:
             if x["id"] not in fetched:
@@ -1617,6 +1702,47 @@ async def _cog_loop():
             print(f"COG sync failed: {e}", flush=True)
         n += 1
         await asyncio.sleep(20 * 60)
+
+
+async def _catalog() -> "cog.Catalog":
+    """The current product cost history (sheet + approved invoices), rebuilt if needed."""
+    if not _cog.get("tags"):
+        _cog["tags"] = cog.store_tags(db.store_order_names())
+    if not _cog.get("catalog"):
+        catalog = cog.Catalog(await _cog_rows(), _cog["tags"])
+        catalog.add_invoices(db.invoice_lines())
+        _cog["catalog"] = catalog
+    return _cog["catalog"]
+
+
+async def _recost(store_id: int, order_names: set):
+    """Re-cost saved order lines (no Shopify call), e.g. after an invoice upload."""
+    store = next((x for x in db.list_stores() if x["id"] == store_id), None)
+    if not store or not order_names:
+        return
+    catalog = cog.Catalog(await _cog_rows(), _cog.get("tags") or cog.store_tags(db.store_order_names()))
+    catalog.add_invoices(db.invoice_lines())
+    _cog["catalog"] = catalog
+    rate = await _usd_to(store["currency"])
+    with db._conn() as con:
+        marks = ",".join("?" * len(order_names))
+        rows = [dict(r) for r in con.execute(
+            f"SELECT * FROM cog_lines WHERE store_id = ? AND order_name IN ({marks})"
+            " ORDER BY order_name, line_no", (store_id, *order_names))]
+    orders = {}
+    for r in rows:
+        o = orders.setdefault(r["order_name"], {"name": r["order_name"], "cancelled": bool(r["cancelled"]),
+                                                "lines": [], "nos": []})
+        o["lines"].append({"title": r["product"], "variant": "", "quantity": r["quantity"],
+                           "subtotal": r["subtotal"], "sku": r["sku"]})
+        o["nos"].append(r["line_no"])
+    updates = []
+    for o in orders.values():
+        for no, line in zip(o["nos"], cog.cost_order(o, store_id, catalog, rate)):
+            updates.append({"order_name": o["name"], "line_no": no, "cost": line["cost"],
+                            "source": line["source"], "supplier": line["supplier"], "note": line["note"]})
+    db.update_cog_costs(store_id, updates)
+    _cache.clear()
 
 
 async def _cog_for(store, start: str, end: str, sales: dict, until: datetime = None) -> dict:

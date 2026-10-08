@@ -43,8 +43,25 @@ def norm(name: str) -> str:
 
 
 def base_name(name: str) -> str:
-    """The product without its variant: "Kaia sneakers - White / 9" -> "Kaia sneakers"."""
-    return norm((name or "").split(" - ")[0])
+    """The product without its variant: "Kaia sneakers - White / 9" -> "Kaia sneakers".
+    Titles can contain " - " themselves ("Beth - Orthopedic Sandals - 9 / White"), so
+    only the last part is dropped, and only when it looks like a variant (has a "/"
+    or is short, like "Black" or "XL")."""
+    parts = (name or "").rsplit(" - ", 1)
+    if len(parts) == 2 and ("/" in parts[1] or len(parts[1].strip()) <= 20):
+        return norm(parts[0])
+    return norm(name)
+
+
+def title_match(title: str, product: str) -> float:
+    """How well an invoice title (no variant) matches a product line ("title - variant")."""
+    t, p = norm(title), norm(product)
+    if not t or not p:
+        return 0.0
+    if p.startswith(t):
+        return 1.0
+    return max(SequenceMatcher(None, t, p[:len(t) + 2]).ratio(),
+               SequenceMatcher(None, t, base_name(product)).ratio())
 
 
 def _num(v):
@@ -142,6 +159,7 @@ class Catalog:
         self.store_cog = defaultdict(float)
         self.store_sales = defaultdict(float)
         self.unmatched_tags = defaultdict(int)
+        self.inv_by_order = defaultdict(list)        # (store, order) -> uploaded invoice lines
         for r in rows:
             t = tag_of(r["order"])
             sid = tags.get(t) if t else None
@@ -157,6 +175,23 @@ class Catalog:
                 if r["subtotal"] and r["subtotal"] > 0:
                     self.store_cog[sid] += r["cog"]
                     self.store_sales[sid] += r["subtotal"]
+
+    def add_invoices(self, lines: list):
+        """Uploaded invoice lines (db.invoice_lines with number/date/supplier).
+        They are this order's real cost, ahead of the sheet. A changed price only
+        becomes the product's cost for other orders once someone approves it."""
+        for l in lines:
+            if not l.get("store_id") or not l.get("product") or l["status"] in ("unmatched", "duplicate"):
+                continue
+            entry = {"order": l["order_key"], "product": l["product"], "cog": l["amount"],
+                     "supplier": l.get("supplier") or "", "day": l.get("date"),
+                     "invoice": l.get("number") or "invoice"}
+            self.inv_by_order[(l["store_id"], l["order_key"])].append(entry)
+            if l["status"] != "changed" or l.get("approved_at"):
+                hist = (10 ** 9 + int(l["invoice_id"]) * 1000 + int(l["line_no"]),
+                        l["amount"], entry["supplier"], entry["day"])
+                self.exact[(l["store_id"], norm(l["product"]))].append(hist)
+                self.base[(l["store_id"], base_name(l["product"]))].append(hist)
 
     def latest(self, store, product):
         hist = self.exact.get((store, norm(product)))
@@ -193,8 +228,10 @@ def _similar(a, b) -> float:
 def cost_order(order: dict, store, catalog: Catalog, usd_to_store: float) -> list:
     """Cost every product line of one Shopify order. Costs in USD.
     Returns the order's lines with cost, source and supplier added."""
-    rows = [r for r in catalog.by_order.get((store, order_key(order["name"])), [])]
+    key = order_key(order["name"])
+    rows = [r for r in catalog.by_order.get((store, key), [])]
     free = list(rows)
+    inv_free = list(catalog.inv_by_order.get((store, key), []))
     pct = catalog.cog_pct(store, usd_to_store)
     out = []
     for li in order["lines"]:
@@ -203,6 +240,15 @@ def cost_order(order: dict, store, catalog: Catalog, usd_to_store: float) -> lis
         line = {**li, "product": name, "cost": None, "source": None, "supplier": "", "note": ""}
         if order["cancelled"]:
             line.update(cost=0.0, source="cancelled", note="Order cancelled")
+            out.append(line)
+            continue
+        # 0. uploaded supplier invoice lines for this exact product, up to the quantity
+        got = [e for e in inv_free if norm(e["product"]) == norm(name)][:qty]
+        if got:
+            for e in got:
+                inv_free.remove(e)
+            line.update(cost=sum(e["cog"] for e in got), source="invoice", supplier=got[0]["supplier"],
+                        note=f"Invoice {got[0]['invoice']}" + (f" ({len(got)} of {qty} items)" if len(got) < qty else ""))
             out.append(line)
             continue
         # 1. this order's own sheet rows (best name match first), up to the quantity

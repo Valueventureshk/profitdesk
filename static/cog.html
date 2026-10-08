@@ -28,6 +28,7 @@
 
     <div class="cog-tabs" role="tablist">
       <button class="cog-tab on" data-tab="check" role="tab">Check COG</button>
+      <button class="cog-tab" data-tab="invoices" role="tab">Invoices <span id="invBadge" class="tab-badge" hidden></span></button>
       <button class="cog-tab" data-tab="products" role="tab">Products</button>
     </div>
 
@@ -56,6 +57,20 @@
         <span class="src catalog">History</span> not invoiced yet: the product's last cost ·
         <span class="src estimate">Estimate</span> never bought before: the store's average COG %
       </p>
+    </section>
+
+    <section id="invoicesView" hidden>
+      <label class="drop" id="drop">
+        <input type="file" id="invFile" accept=".pdf,.csv,.txt" multiple hidden>
+        <strong>Drop supplier invoices here</strong>
+        <span>or click to choose · PDF (Dayone) · one store per invoice</span>
+      </label>
+      <div id="invResult"></div>
+      <section class="panel" id="invDetail" hidden></section>
+      <section class="panel">
+        <div class="panel-head"><h2>Uploaded invoices</h2><span class="hint" id="invCount"></span></div>
+        <div class="table-wrap"><table class="table" id="invList"></table></div>
+      </section>
     </section>
 
     <section id="productsView" hidden>

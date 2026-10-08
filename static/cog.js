@@ -143,6 +143,110 @@ async function loadProducts() {
       <td>${p.times}×</td><td>${p.last_day ? niceDate(p.last_day) : "—"}</td></tr>`).join("")}</tbody>`;
 }
 
+/* ------------------------------------------------ invoices */
+
+const STATUS = {
+  ok: ["ok", "Matches"], new: ["new", "First invoice"], changed: ["changed", "Price changed"],
+  duplicate: ["bad", "Already invoiced"], unmatched: ["bad", "No matching order"],
+};
+
+async function loadInvoices() {
+  let d;
+  try { d = await api("/api/invoices"); } catch (e) { toast(e.message, true); return; }
+  $("invBadge").hidden = !d.to_check;
+  $("invBadge").textContent = d.to_check;
+  $("invCount").textContent = `${d.invoices.length} invoices`;
+  $("invList").innerHTML = d.invoices.length ? `<thead><tr><th>Date</th><th>Invoice</th><th>Store</th>
+      <th>Lines</th><th>Total</th><th>To check</th></tr></thead><tbody>${d.invoices.map((i) => `
+    <tr class="clickable" data-inv="${i.id}"><td>${i.date ? niceDate(i.date) : "—"}</td>
+      <td class="name">${esc(i.supplier || "?")} #${esc(i.number || "—")}<span class="sub">${esc(i.filename || "")}</span></td>
+      <td>${esc(i.store)}</td><td>${i.lines}</td><td>${money(i.total, "USD")}</td>
+      <td>${[i.to_check ? `<span class="src changed">${i.to_check} price change${i.to_check === 1 ? "" : "s"}</span>` : "",
+             i.problems ? `<span class="src bad">${i.problems} unmatched</span>` : "",
+             i.missing ? `<span class="src catalog">${i.missing} missing</span>` : ""].join(" ") || "✓"}</td></tr>`).join("")}</tbody>`
+    : `<tbody><tr><td class="hint">No invoices uploaded yet.</td></tr></tbody>`;
+  for (const tr of $("invList").querySelectorAll("[data-inv]")) tr.onclick = () => showInvoice(tr.dataset.inv);
+}
+
+async function showInvoice(id) {
+  let d;
+  try { d = await api(`/api/invoices/${id}`); } catch (e) { toast(e.message, true); return; }
+  const i = d.invoice;
+  const rows = d.lines.map((l) => {
+    const [cls, label] = STATUS[l.status] || ["bad", l.status];
+    const approve = l.status === "changed" && !l.approved_at
+      ? `<button class="btn btn-sm btn-primary" data-approve="${l.line_no}">Checked with supplier — use new price</button>`
+      : (l.approved_at ? `<span class="hint">Approved${l.approved_by ? " by " + esc(l.approved_by) : ""}</span>` : "");
+    return `<tr><td class="name">${esc(l.order_name || l.order_key)}<span class="sub">${esc(l.title)}</span>
+        ${l.product && l.product !== l.title ? `<span class="sub">→ ${esc(l.product)}</span>` : ""}</td>
+      <td>${money(l.amount, "USD")}</td>
+      <td>${l.previous !== null && l.previous !== undefined ? money(l.previous, "USD") : "—"}</td>
+      <td class="inv-status"><span class="src ${cls}">${label}</span>${l.note ? `<span class="sub">${esc(l.note)}</span>` : ""}${approve}</td></tr>`;
+  }).join("");
+  const missing = i.missing.length ? `<div class="inv-missing"><strong>Fulfilled but not on this invoice (${i.missing.length})</strong>
+      ${i.missing.map((m) => `<div>${esc(m.order)} <span class="hint">${esc(m.products.join(" · "))}</span></div>`).join("")}
+      <p class="hint">These were marked fulfilled in Shopify within this invoice's order range. Ask the supplier if they'll be on a later invoice.</p></div>` : "";
+  $("invDetail").hidden = false;
+  $("invDetail").innerHTML = `<div class="panel-head"><h2>${esc(i.supplier || "?")} invoice #${esc(i.number || "—")}
+      · ${esc(i.store)} · ${i.date ? niceDate(i.date) : ""}</h2>
+      <span><button class="btn btn-sm btn-ghost" id="invClose">Close</button>
+      <button class="btn btn-sm btn-danger" id="invDelete">Delete</button></span></div>
+    ${missing}
+    <div class="table-wrap"><table class="table"><thead><tr><th>Order / product</th><th>Invoice</th><th>Before</th><th>Check</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>`;
+  $("invClose").onclick = () => { $("invDetail").hidden = true; };
+  $("invDelete").onclick = async () => {
+    if (!confirm(`Delete invoice #${i.number}? Its orders go back to their previous costs.`)) return;
+    await api(`/api/invoices/${id}`, { method: "DELETE" });
+    $("invDetail").hidden = true;
+    toast("Invoice deleted.");
+    loadInvoices();
+  };
+  for (const b of $("invDetail").querySelectorAll("[data-approve]")) {
+    b.onclick = async () => {
+      b.disabled = true;
+      try {
+        await api(`/api/invoices/${id}/approve/${b.dataset.approve}`, { method: "POST" });
+        toast("New price saved for this product.");
+        productsCache = {};
+        showInvoice(id);
+        loadInvoices();
+      } catch (e) { toast(e.message, true); b.disabled = false; }
+    };
+  }
+  $("invDetail").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+async function uploadInvoices(files) {
+  for (const f of files) {
+    $("invResult").innerHTML = `<div class="hint">Reading ${esc(f.name)}…</div>`;
+    try {
+      const r = await api(`/api/invoices?filename=${encodeURIComponent(f.name)}`,
+                          { method: "POST", body: await f.arrayBuffer() });
+      const c = r.counts;
+      const off = Math.abs(r.sum - r.total) >= 0.01
+        ? ` <span class="est">Lines add up to ${money(r.sum, "USD")}, not the invoice total ${money(r.total, "USD")}.</span>` : "";
+      $("invResult").innerHTML = `<div class="notice ok">${esc(r.supplier)} #${esc(r.number)}: ${r.lines} lines,
+        ${money(r.total, "USD")}. ${c.ok || 0} match · ${c.new || 0} first time · ${c.changed || 0} price changes ·
+        ${(c.unmatched || 0) + (c.duplicate || 0)} problems · ${r.missing} fulfilled orders missing.${off}</div>`;
+      await loadInvoices();
+      showInvoice(r.id);
+    } catch (e) {
+      $("invResult").innerHTML = `<div class="warn">${esc(f.name)}: ${esc(e.message)}</div>`;
+    }
+  }
+}
+
+$("invFile").onchange = (e) => { uploadInvoices([...e.target.files]); e.target.value = ""; };
+const drop = $("drop");
+drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
+drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+drop.addEventListener("drop", (e) => {
+  e.preventDefault();
+  drop.classList.remove("over");
+  uploadInvoices([...e.dataTransfer.files]);
+});
+
 /* ------------------------------------------------ wiring */
 
 for (const b of document.querySelectorAll(".cog-tab")) {
@@ -150,7 +254,9 @@ for (const b of document.querySelectorAll(".cog-tab")) {
     for (const x of document.querySelectorAll(".cog-tab")) x.classList.toggle("on", x === b);
     $("checkView").hidden = b.dataset.tab !== "check";
     $("productsView").hidden = b.dataset.tab !== "products";
+    $("invoicesView").hidden = b.dataset.tab !== "invoices";
     if (b.dataset.tab === "products") loadProducts();
+    if (b.dataset.tab === "invoices") loadInvoices();
   };
 }
 $("range").onchange = () => {
@@ -189,4 +295,5 @@ $("refresh").onclick = async () => {
     }
   } catch (e) { toast(e.message, true); }
   loadDay();
+  loadInvoices();
 })();
