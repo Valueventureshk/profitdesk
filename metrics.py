@@ -26,7 +26,8 @@ Airwallex.
 
 SUMMABLE = ("sales", "orders", "google_spend", "meta_spend", "ad_spend",
             "payment_fee", "shopify_fee", "processing_fee",
-            "cogs", "cogs_estimated", "net_profit", "reserve_held", "net_available")
+            "cogs", "cogs_estimated", "net_profit", "reserve_held", "net_available",
+            "paypal_sales")
 
 
 # ---------------------------------------------------------------- processing fees
@@ -113,6 +114,35 @@ def processing_fees(payments: dict, rates: dict, plan: str, currency: str,
 RESERVE_PCT = {"paypal": 21.0, "airwallex_card": 10.0, "airwallex_afterpay": 10.0}
 
 
+# PayPal also holds, for 21 days, everything above this much in PayPal sales per
+# calendar month (all stores share one PayPal account). Set on the account by
+# PayPal; "request an increase" in PayPal raises it.
+PAYPAL_MONTHLY_LIMIT_AUD = 35160.0
+
+
+def paypal_sales(payments: dict) -> float:
+    return sum(amount for g, (orders, amount) in payments.items() if payment_method(g) == "paypal")
+
+
+def over_limit_share(day_total: float, before: float, limit: float = PAYPAL_MONTHLY_LIMIT_AUD) -> float:
+    """Share of one day's PayPal sales that falls above the monthly limit, given
+    the month's PayPal sales before that day (both in AUD)."""
+    if day_total <= 0:
+        return 0.0
+    over = max(0.0, before + day_total - limit) - max(0.0, before - limit)
+    return min(1.0, over / day_total)
+
+
+def with_monthly_hold(row: dict, share: float) -> dict:
+    """Add PayPal's monthly-limit hold to a day: the part of its PayPal sales above
+    the limit is held in full (the 21% reserve is already counted)."""
+    extra = row["paypal_sales"] * share * (1 - RESERVE_PCT["paypal"] / 100.0)
+    if extra:
+        row = {**row, "reserve_held": row["reserve_held"] + extra,
+               "net_available": row["net_available"] - extra}
+    return row
+
+
 def reserve_held(payments: dict) -> float:
     """Money held back as reserve from one store-day's payments
     ({gateway names: [orders, amount paid]}, store currency)."""
@@ -133,7 +163,8 @@ def with_google_tax(spend: float, tax_pct) -> float:
 
 def day(date: str, sales: float, orders: int, google_spend: float,
         meta_spend: float, cogs: float, payment_fee: float = 0.0,
-        shopify_fee: float = 0.0, cogs_estimated: float = 0.0, reserve: float = 0.0):
+        shopify_fee: float = 0.0, cogs_estimated: float = 0.0, reserve: float = 0.0,
+        paypal: float = 0.0):
     """One store, one day, all in one currency.
 
     Ad spend is the sum of every platform, and processing fees the sum of the
@@ -159,6 +190,7 @@ def day(date: str, sales: float, orders: int, google_spend: float,
         "net_profit": sales - processing_fee - cogs - ad_spend,
         "reserve_held": reserve,
         "net_available": sales - processing_fee - cogs - ad_spend - reserve,
+        "paypal_sales": paypal,
     }
 
 

@@ -1165,7 +1165,8 @@ def _in_currency(rows, store, fx_table, base):
         metrics.day(r["date"], r["sales"] * f_sales, r["orders"],
                     r["google_spend"] * f_google, r["meta_spend"] * f_meta,
                     r["cogs"] * f_sales, r["payment_fee"] * f_sales, r["shopify_fee"] * f_sales,
-                    r["cogs_estimated"] * f_sales, r["reserve_held"] * f_sales)
+                    r["cogs_estimated"] * f_sales, r["reserve_held"] * f_sales,
+                    r["paypal_sales"] * f_sales)
         for r in rows
     ]
 
@@ -1392,13 +1393,16 @@ async def api_dashboard(scope: str = "all", start: str = None, end: str = None,
             for c in (s["currency"], s["meta_currency"], s["google_currency"]) if c}
     fx_table = await fx.table(base) if used - {base} else None
 
+    over = await _paypal_over_limit(min(prev_start, start), end)
     warnings, current, previous, per_store = [], [], [], []
     for store, (rows, notes), cut in zip(stores, results, earlier):
         warnings.extend(notes)
+        rows = [metrics.with_monthly_hold(r, over.get(r["date"], 0.0)) for r in rows]
         rows = _in_currency(rows, store, fx_table, base)
         cur = [r for r in rows if r["date"] >= start]
         if cut:
             pre, cut_notes = cut
+            pre = [metrics.with_monthly_hold(r, over.get(r["date"], 0.0)) for r in pre]
             pre = _in_currency(pre, store, fx_table, base)
             warnings.extend(cut_notes)
         else:
@@ -1565,7 +1569,8 @@ async def _store_window(store, start, end, auth, meta_auth):
         c, est = cogs.get(d, (0.0, 0.0))
         rows.append(metrics.day(d, s["sales"], s["orders"],
                                 got_spend.get(d, 0.0), got_meta.get(d, 0.0),
-                                c, pay_fee, shop_fee, est, metrics.reserve_held(s["payments"])))
+                                c, pay_fee, shop_fee, est, metrics.reserve_held(s["payments"]),
+                                metrics.paypal_sales(s["payments"])))
 
     _cache[key] = (time.time(), (rows, notes))
     return rows, notes
@@ -1790,6 +1795,28 @@ def _store_cog_pct(store_id: int, rate: float):
     return (r["c"] * rate / r["s"]) if r and r["s"] else None
 
 
+async def _paypal_over_limit(start: str, end: str) -> dict:
+    """{day: share of that day's PayPal sales above PayPal's monthly limit}.
+    The month's PayPal sales come from every store's saved daily totals (one
+    PayPal account takes them all), converted to AUD."""
+    first = date.fromisoformat(start).replace(day=1).isoformat()
+    table = await fx.table("AUD")
+    per_day = defaultdict(float)
+    for x in db.list_stores():
+        if demo.is_demo(x):
+            continue
+        f = fx.factor(table, x["currency"], "AUD") if table else 1.0
+        for d, v in db.saved_shopify_days(x["id"], first, end).items():
+            per_day[d] += metrics.paypal_sales(v["payments"]) * f
+    out, month, before = {}, None, 0.0
+    for d in sorted(per_day):
+        if d[:7] != month:
+            month, before = d[:7], 0.0
+        out[d] = metrics.over_limit_share(per_day[d], before)
+        before += per_day[d]
+    return out
+
+
 _scopes: dict = {}
 
 
@@ -1900,7 +1927,8 @@ async def _same_time_yesterday(store, day, auth, meta_auth):
     c, est = (await _cog_for(store, day, day, {day: got_sales["sales"]}, until=cut)).get(day, (0.0, 0.0))
     return [metrics.day(day, got_sales["sales"], got_sales["orders"],
                         got_google, got_meta, c, pay_fee, shop_fee, est,
-                        metrics.reserve_held(got_sales["payments"]))], notes
+                        metrics.reserve_held(got_sales["payments"]),
+                        metrics.paypal_sales(got_sales["payments"]))], notes
 
 
 def _dates(start: str, end: str):

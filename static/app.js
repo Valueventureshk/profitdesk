@@ -409,7 +409,7 @@ function availableCard(d) {
         ${step("Sales", t.sales)}<i>−</i>${step("Fees", t.processing_fee)}<i>−</i>${step("COG", t.cogs)}<i>−</i>${step("Ads", t.ad_spend)}<i>−</i>${step("Held in reserve", t.reserve_held)}
       </div>
       <div class="card-note">What's yours to use now from these sales. ${fmt(t.reserve_held, "money")} is held back
-        (PayPal 21% for 60 days, Airwallex 10% for ~90 days) and comes back later. This card doesn't change any other figure.</div>
+        (PayPal 21% for 60 days, plus all PayPal sales over A$35,160 in a month for 21 days; Airwallex 10% for ~90 days) and comes back later. This card doesn't change any other figure.</div>
     </div>`;
 }
 
