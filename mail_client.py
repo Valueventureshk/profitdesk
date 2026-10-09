@@ -162,3 +162,41 @@ def fetch_new(address: str, password: str, last_uid: int = 0, provider: str = "g
     except Exception as e:
         raise _explain(e, "read new emails")
     return count, top
+
+
+def fetch_history(address: str, password: str, days: int, folder: str = "INBOX",
+                  provider: str = "google", save=None) -> int:
+    """Every message of the last `days` days in a folder (INBOX or SENT), for
+    teaching the AI. Saved in batches of 50; already-copied ones are skipped by
+    the database. Doesn't touch the mailbox or the incremental position."""
+    imap_host, imap_port, _, _ = PROVIDERS[provider]
+    count = 0
+    try:
+        with imaplib.IMAP4_SSL(imap_host, imap_port, ssl_context=ssl.create_default_context(),
+                               timeout=120) as m:
+            m.login(address, password)
+            box = _sent_folder(m) if folder == "SENT" else "INBOX"
+            typ, _ = m.select(box, readonly=True)
+            if typ != "OK":
+                return 0
+            since = (datetime.now() - timedelta(days=days)).strftime("%d-%b-%Y")
+            typ, data = m.uid("search", None, f"SINCE {since}")
+            uids = sorted(int(u) for u in (data[0] or b"").split())[-6000:]
+            for i in range(0, len(uids), 50):
+                chunk = uids[i:i + 50]
+                typ, got = m.uid("fetch", ",".join(map(str, chunk)), "(UID BODY.PEEK[])")
+                batch = []
+                for part in got:
+                    if isinstance(part, tuple):
+                        hit = re.search(rb"UID (\d+)", part[0])
+                        if hit:
+                            try:
+                                batch.append({"uid": int(hit.group(1)), **parse(part[1])})
+                            except Exception:
+                                continue
+                count += len(batch)
+                if save:
+                    save(batch)
+    except Exception as e:
+        raise _explain(e, "read past emails")
+    return count

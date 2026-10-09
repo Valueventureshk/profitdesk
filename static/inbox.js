@@ -39,6 +39,19 @@ function when(iso) {
     ? d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
     : d.toLocaleDateString(undefined, { day: "numeric", month: "short" });
 }
+// Long links in emails (Gmail, tracking, Shopify) shown short but still clickable.
+function body(text) {
+  return esc(text || "(empty)").replace(/https?:\/\/[^\s<>"]+/g, (url) => {
+    let label = url;
+    try {
+      const u = new URL(url.replace(/&amp;/g, "&"));
+      const path = u.pathname.length > 18 ? u.pathname.slice(0, 18) + "…" : u.pathname;
+      label = u.hostname.replace(/^www\./, "") + (path === "/" ? "" : path);
+    } catch { label = url.slice(0, 40) + "…"; }
+    return `<a href="${url}" target="_blank" rel="noopener noreferrer" title="${url}">${label}</a>`;
+  });
+}
+
 const full = (iso) => new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 
 const LABEL = { scm: "SCM", cs: "CS" };
@@ -117,7 +130,7 @@ async function openMail(id) {
       <button class="btn btn-sm btn-ghost" data-make="legal">Legal</button>
     </div>
     ${m.attachments.length ? `<div class="mail-att">${m.attachments.map((a) => `📎 ${esc(a.name)}`).join(" · ")}</div>` : ""}
-    <div class="mail-body">${esc(m.text || "(empty)")}</div>`;
+    <div class="mail-body">${body(m.text)}</div>`;
   for (const b of $("read").querySelectorAll("[data-make]")) {
     b.onclick = async () => {
       try {
@@ -142,11 +155,12 @@ async function openTicket(id) {
     <div class="msg ${m.direction === "out" ? "out" : ""}">
       <div class="msg-head"><strong>${m.direction === "out" ? "You" : esc(m.from_name || m.from_addr)}</strong>
         <span>${full(m.date)}</span></div>
-      <div class="mail-body">${esc(m.text || "(empty)")}</div>
+      <div class="mail-body">${body(m.text)}</div>
       ${m.attachments.length ? `<div class="mail-att">${m.attachments.map((a) => `📎 ${esc(a.name)}`).join(" · ")}</div>` : ""}
     </div>`).join("");
   $("read").innerHTML = `
     <div class="tk-layout">
+      <aside class="tk-orders" id="tkOrders"><div class="tk-side-label">Orders</div><p class="hint">Looking up…</p></aside>
       <div class="tk-main">
         <h2 class="mail-h">${esc(t.subject || "(no subject)")}</h2>
         <div class="mail-meta"><strong>${esc(t.customer_name || "")}</strong> &lt;${esc(t.customer_email)}&gt;
@@ -154,9 +168,17 @@ async function openTicket(id) {
         ${t.summary ? `<div class="tk-summary"><b>AI summary</b> ${esc(t.summary)}${t.orders ? ` · orders ${esc(t.orders)}` : ""}</div>` : ""}
         ${thread}
         <div class="reply-box">
-          <p class="hint">Replying from ProfitDesk comes next. For now reply in Gmail; your reply shows up here
-            within 2 minutes and the ticket switches to "We replied last".</p>
-          ${t.gmail_link ? `<a class="btn btn-ghost" href="${esc(t.gmail_link)}" target="_blank" rel="noopener">Open in Gmail ↗</a>` : ""}
+          <div class="reply-actions">
+            <button class="btn btn-primary" id="tkDraft" data-write-only>Draft reply with AI</button>
+            ${t.gmail_link ? `<a class="btn btn-ghost" href="${esc(t.gmail_link)}" target="_blank" rel="noopener">Open in Gmail ↗</a>` : ""}
+          </div>
+          <div id="tkDraftBox" hidden>
+            <textarea id="tkDraftText" class="control draft-text" rows="12"></textarea>
+            <div class="reply-actions">
+              <button class="btn btn-ghost" id="tkCopy">Copy</button>
+              <span class="hint">Check it, copy it, and send it from Gmail. Sending from ProfitDesk comes next.</span>
+            </div>
+          </div>
         </div>
       </div>
       <aside class="tk-side">
@@ -186,6 +208,23 @@ async function openTicket(id) {
         ${t.gmail_link ? `<div class="tk-side-label">Email thread</div><a href="${esc(t.gmail_link)}" target="_blank" rel="noopener">Open in Gmail ↗</a>` : ""}
       </aside>
     </div>`;
+  loadOrders(id);
+  if ($("tkDraft")) $("tkDraft").onclick = async () => {
+    const b = $("tkDraft");
+    b.disabled = true;
+    b.textContent = "Writing…";
+    try {
+      const r = await post(`/api/inbox/tickets/${id}/draft`, {});
+      $("tkDraftText").value = r.draft;
+      $("tkDraftBox").hidden = false;
+      $("tkDraftText").focus();
+    } catch (e) { toast(e.message, true); }
+    finally { b.disabled = false; b.textContent = "Draft again"; }
+  };
+  if ($("tkCopy")) $("tkCopy").onclick = async () => {
+    try { await navigator.clipboard.writeText($("tkDraftText").value); toast("Copied."); }
+    catch { $("tkDraftText").select(); document.execCommand("copy"); toast("Copied."); }
+  };
   const act = async (payload, msg) => {
     try { await post(`/api/inbox/tickets/${id}`, payload); toast(msg); refresh(); openTicket(id); }
     catch (e) { toast(e.message, true); }
@@ -217,12 +256,156 @@ async function openTicket(id) {
     $("tkEsc").checked ? "Escalated." : "No longer escalated.");
 }
 
-function refresh() { loadCounts(); loadList(); }
+async function loadOrders(id) {
+  let d;
+  try { d = await api(`/api/inbox/tickets/${id}/orders`); }
+  catch (e) { if ($("tkOrders")) $("tkOrders").innerHTML = `<div class="tk-side-label">Orders</div><p class="hint">${esc(e.message)}</p>`; return; }
+  if (!current || current.id !== id || !$("tkOrders")) return;
+  const money = (v, c) => { try { return new Intl.NumberFormat(undefined, { style: "currency", currency: c }).format(v); } catch { return v.toFixed(2); } };
+  $("tkOrders").innerHTML = `<div class="tk-side-label">Orders</div>` + (d.orders.length ? d.orders.map((o) => `
+    <div class="ord">
+      <div class="ord-head"><a href="${esc(o.admin_url)}" target="_blank" rel="noopener">${esc(o.name)} ↗</a>
+        <span>${new Date(o.created).toLocaleDateString(undefined, { day: "numeric", month: "short" })}</span></div>
+      <div class="ord-row"><b>${money(o.total, o.currency)}</b>${o.refunded ? ` · refunded ${money(o.refunded, o.currency)}` : ""}</div>
+      <div class="ord-tags">
+        <span class="tk ${o.cancelled ? "tk-esc" : "tk-done"}">${o.cancelled ? "Cancelled" : esc((o.financial || "").toLowerCase().replace(/_/g, " "))}</span>
+        <span class="tk ${o.fulfillment === "FULFILLED" ? "tk-them" : "tk-us"}">${esc((o.fulfillment || "").toLowerCase().replace(/_/g, " "))}</span>
+      </div>
+      ${o.items.map((i) => `<div class="ord-item">${i.quantity}× ${esc(i.title)}${i.variant ? `<small>${esc(i.variant)}</small>` : ""}</div>`).join("")}
+      ${o.tracking.length ? o.tracking.map((t) => `<div class="ord-track">${esc(t.company || "Tracking")}:
+        ${t.url ? `<a href="${esc(t.url)}" target="_blank" rel="noopener">${esc(t.number || "track")} ↗</a>` : esc(t.number || "")}</div>`).join("")
+        : `<div class="ord-track hint">No tracking yet</div>`}
+      ${o.ship_to ? `<div class="ord-ship hint">Ships to ${esc(o.ship_to)}</div>` : ""}
+    </div>`).join("") : `<p class="hint">${d.error ? esc(d.error) : "No Shopify order found for this customer."}</p>`);
+}
+
+/* ------------------------------------------------ AI training (owners) */
+
+async function loadTraining() {
+  let d;
+  try { d = await api("/api/ai-training"); } catch (e) { $("read").innerHTML = `<p class="hint inbox-empty">${esc(e.message)}</p>`; return; }
+  const j = d.job || {};
+  const learned = d.learned ? `Last learned ${new Date(d.learned.at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}
+    from ${d.learned.conversations} conversations.` : "Not learned yet.";
+  const open = d.questions.filter((q) => !q.answer);
+  $("read").innerHTML = `<div class="train">
+    <section class="train-sec">
+      <h2>Teach the AI how you handle customers</h2>
+      <p class="hint">The AI reads your SOPs and your team's past replies (up to 500 conversations), writes a playbook,
+        and asks you about anything unclear. Drafts then follow your SOPs, your answers and the playbook.</p>
+      <div class="train-status"><b>${learned}</b> ${d.examples ? `${d.examples} past conversations kept as examples.` : ""}
+        <span class="hint">${d.emails} emails copied so far${d.emails_from ? `, back to ${new Date(d.emails_from).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })}` : ""}.</span></div>
+      ${j.running ? `<div class="notice">${esc(j.step || "Working…")} ${j.total ? `(${j.done}/${j.total})` : ""}</div>`
+        : j.error ? `<div class="warn">${esc(j.error)}</div>` : j.step ? `<div class="notice ok">${esc(j.step)}</div>` : ""}
+      <div class="train-run">
+        <label>Copy older emails first
+          <select id="trDays" class="control"><option value="0">No, use what's copied</option>
+            <option value="90">Last 3 months</option><option value="180" selected>Last 6 months</option>
+            <option value="365">Last 12 months</option></select></label>
+        <label>Conversations to learn from
+          <select id="trLimit" class="control"><option>100</option><option>250</option><option selected>500</option></select></label>
+        <button class="btn btn-primary" id="trLearn" ${j.running ? "disabled" : ""}>${d.learned ? "Learn again" : "Start learning"}</button>
+      </div>
+      <p class="hint">Uses Claude Sonnet 5.5. Learning from 500 conversations costs roughly US$2–4 of your API credit and takes a few minutes.</p>
+    </section>
+
+    <section class="train-sec">
+      <h3>Questions from the AI ${open.length ? `<span class="tab-badge">${open.length}</span>` : ""}</h3>
+      ${d.questions.length ? d.questions.map((q) => `
+        <div class="qa ${q.answer ? "done" : ""}">
+          <div class="qa-q">${esc(q.question)}</div>
+          <textarea class="control" rows="2" data-q="${q.id}" placeholder="Your answer (this becomes a rule for the AI)">${esc(q.answer || "")}</textarea>
+          <div class="qa-actions"><button class="btn btn-sm btn-primary" data-save-q="${q.id}">${q.answer ? "Update answer" : "Save answer"}</button>
+            <button class="btn btn-sm btn-ghost" data-dismiss-q="${q.id}">Not relevant</button>
+            ${q.answer ? `<span class="hint">Answered${q.answered_by ? " by " + esc(q.answered_by) : ""}</span>` : ""}</div>
+        </div>`).join("") : `<p class="hint">Questions appear here after learning.</p>`}
+    </section>
+
+    <section class="train-sec">
+      <h3>SOPs</h3>
+      ${d.sops.map((x) => `<details class="sop"><summary>${esc(x.title)}</summary>
+          <input class="control" data-sop-title="${x.id}" value="${esc(x.title)}">
+          <textarea class="control" rows="10" data-sop-body="${x.id}">${esc(x.body)}</textarea>
+          <div class="qa-actions"><button class="btn btn-sm btn-primary" data-sop-save="${x.id}">Save</button>
+          <button class="btn btn-sm btn-danger" data-sop-del="${x.id}">Delete</button></div></details>`).join("")}
+      <details class="advanced"${d.sops.length ? "" : " open"}><summary>Add an SOP</summary>
+        <label class="field"><span>Title</span><input id="sopTitle" class="control" placeholder="Refunds and returns"></label>
+        <label class="field"><span>Text</span><textarea id="sopBody" class="control" rows="8" placeholder="Paste the SOP here"></textarea></label>
+        <button class="btn btn-primary" id="sopAdd">Add SOP</button>
+        <label class="btn btn-ghost">Upload a PDF or text file<input type="file" id="sopFile" accept=".pdf,.txt,.md" hidden></label>
+      </details>
+    </section>
+
+    <section class="train-sec">
+      <h3>Playbook ${d.playbook ? "" : `<span class="hint">(written after learning)</span>`}</h3>
+      ${d.playbook ? `<p class="hint">Written by the AI from your past conversations. You can correct it; your SOPs and answers always win.</p>
+        <textarea id="playbook" class="control playbook" rows="22">${esc(d.playbook)}</textarea>
+        <button class="btn btn-primary" id="pbSave">Save playbook</button>` : ""}
+    </section>
+  </div>`;
+
+  const send = (path, data, method = "POST") => api(path, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+  $("trLearn").onclick = async () => {
+    try { await send("/api/ai-training/learn", { days: +$("trDays").value, limit: +$("trLimit").value }); toast("Learning started."); pollTraining(); }
+    catch (e) { toast(e.message, true); }
+  };
+  for (const b of $("read").querySelectorAll("[data-save-q]")) b.onclick = async () => {
+    const id = b.dataset.saveQ;
+    try { await send(`/api/ai-training/questions/${id}`, { answer: $("read").querySelector(`[data-q="${id}"]`).value }); toast("Saved. The AI will follow this."); loadTraining(); loadCounts(); }
+    catch (e) { toast(e.message, true); }
+  };
+  for (const b of $("read").querySelectorAll("[data-dismiss-q]")) b.onclick = async () => {
+    await send(`/api/ai-training/questions/${b.dataset.dismissQ}`, { dismiss: true }); loadTraining(); loadCounts();
+  };
+  for (const b of $("read").querySelectorAll("[data-sop-save]")) b.onclick = async () => {
+    const id = b.dataset.sopSave;
+    await send(`/api/ai-training/sops/${id}`, { title: $("read").querySelector(`[data-sop-title="${id}"]`).value,
+      body: $("read").querySelector(`[data-sop-body="${id}"]`).value }, "PUT");
+    toast("SOP saved."); loadTraining();
+  };
+  for (const b of $("read").querySelectorAll("[data-sop-del]")) b.onclick = async () => {
+    if (!confirm("Delete this SOP?")) return;
+    await api(`/api/ai-training/sops/${b.dataset.sopDel}`, { method: "DELETE" }); loadTraining();
+  };
+  $("sopAdd").onclick = async () => {
+    try { await send("/api/ai-training/sops", { title: $("sopTitle").value, body: $("sopBody").value }); toast("SOP added."); loadTraining(); }
+    catch (e) { toast(e.message, true); }
+  };
+  $("sopFile").onchange = async (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    try { await api(`/api/ai-training/sops?filename=${encodeURIComponent(f.name)}`, { method: "POST", body: await f.arrayBuffer() }); toast("SOP added from file."); loadTraining(); }
+    catch (err) { toast(err.message, true); }
+  };
+  if ($("pbSave")) $("pbSave").onclick = async () => {
+    await send("/api/ai-training/playbook", { playbook: $("playbook").value }, "PUT"); toast("Playbook saved.");
+  };
+  if (j.running) pollTraining();
+}
+
+let pollTimer;
+function pollTraining() {
+  clearTimeout(pollTimer);
+  pollTimer = setTimeout(async () => {
+    if (view !== "training") return;
+    const d = await api("/api/ai-training").catch(() => null);
+    if (!d) return;
+    if (d.job.running) {
+      const box = $("read").querySelector(".notice");
+      if (box) box.textContent = `${d.job.step || "Working…"} ${d.job.total ? `(${d.job.done}/${d.job.total})` : ""}`;
+      pollTraining();
+    } else { loadTraining(); loadCounts(); }
+  }, 4000);
+}
+
+function refresh() { loadCounts(); if (view !== "training") loadList(); }
 
 for (const b of $("nav").querySelectorAll("[data-view]")) {
   b.onclick = () => {
     view = b.dataset.view;
     for (const x of $("nav").querySelectorAll("[data-view]")) x.classList.toggle("on", x === b);
+    document.querySelector(".inbox3").classList.toggle("training", view === "training");
+    if (view === "training") { current = null; loadTraining(); return; }
     loadList();
   };
 }

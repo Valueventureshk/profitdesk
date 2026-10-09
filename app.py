@@ -35,6 +35,7 @@ import invoices
 import mail_client
 import tickets
 import ai_brain
+import ai_coach
 import db
 import demo
 import fx
@@ -796,6 +797,7 @@ def api_inbox_counts():
             "escalated": one("SELECT COUNT(*) FROM tickets WHERE status = 'open' AND escalated = 1"),
             "records": one("SELECT COUNT(*) FROM tickets WHERE kind = 'support' AND status = 'closed'"),
             "ai_error": _ai_state.get("error"),
+            "questions": one("SELECT COUNT(*) FROM ai_questions WHERE answer IS NULL OR answer = ''"),
         }
 
 
@@ -951,6 +953,234 @@ def api_inbox_make_ticket(message_id: int, payload: dict):
         con.execute("UPDATE mail_messages SET ticket_id = ?, category = ?, processed = 1 WHERE id = ?",
                     (tid, cat, message_id))
     return {"ok": True, "ticket_id": tid}
+
+
+# ---------------------------------------------------------------- order panel + AI drafts
+
+async def _ticket_orders(t: dict) -> tuple:
+    """(orders, store) for a ticket: by the order numbers it mentions, else by email."""
+    store = next((x for x in db.list_stores() if x["id"] == t["store_id"]), None)
+    if not store or demo.is_demo(store) or not store.get("access_token"):
+        return [], store
+    names = [n.strip() for n in (t.get("orders") or "").split(",") if n.strip()]
+    client = ShopifyClient(store["shop_domain"], store["access_token"])
+    got = await client.lookup_orders(names=names) if names else []
+    if not got and t.get("customer_email"):
+        got = await client.lookup_orders(email=t["customer_email"])
+    handle = store["shop_domain"].split(".")[0]
+    for o in got:
+        o["admin_url"] = f"https://admin.shopify.com/store/{handle}/orders/{o['id']}"
+    return got, store
+
+
+@app.get("/api/inbox/tickets/{ticket_id}/orders")
+async def api_ticket_orders(ticket_id: int):
+    with db._conn() as con:
+        t = con.execute("SELECT * FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
+    if not t:
+        raise HTTPException(404, "That ticket no longer exists.")
+    try:
+        orders, _ = await _ticket_orders(dict(t))
+    except ShopifyError as e:
+        return {"orders": [], "error": str(e)}
+    return {"orders": orders}
+
+
+def _orders_text(orders: list) -> str:
+    lines = []
+    for o in orders:
+        items = "; ".join(f"{i['quantity']}× {i['title']}{(' - ' + i['variant']) if i['variant'] else ''}"
+                          for i in o["items"])
+        track = "; ".join(f"{t['company'] or ''} {t['number'] or ''} {t['url'] or ''}".strip()
+                          for t in o["tracking"]) or "no tracking yet"
+        refund = f", refunded {o['refunded']:.2f}" if o["refunded"] else ""
+        lines.append(f"{o['name']} placed {o['created'][:10]}, {o['total']:.2f} {o['currency']}, payment "
+                     f"{o['financial']}, fulfilment {o['fulfillment']}"
+                     f"{', CANCELLED' if o['cancelled'] else ''}{refund}"
+                     f", ships to {o['ship_to'] or '?'}. Items: {items}. Tracking: {track}.")
+    return "\n".join(lines)
+
+
+def _knowledge() -> str:
+    with db._conn() as con:
+        sops = [dict(r) for r in con.execute("SELECT title, body FROM ai_sops ORDER BY id")]
+        qa = [dict(r) for r in con.execute("SELECT question, answer FROM ai_questions WHERE answer IS NOT NULL"
+                                           " AND answer != '' ORDER BY id")]
+    parts = []
+    if sops:
+        parts.append("## SOPs (always follow)\n" + "\n\n".join(f"### {x['title']}\n{x['body']}" for x in sops))
+    if qa:
+        parts.append("## Owner's answers (always follow)\n" + "\n".join(f"Q: {x['question']}\nA: {x['answer']}" for x in qa))
+    book = db.get_setting("ai_playbook")
+    if book:
+        parts.append("## Playbook (learned from past conversations)\n" + book)
+    return "\n\n".join(parts) or "(No SOPs or playbook yet: follow the past replies and be careful.)"
+
+
+@app.post("/api/inbox/tickets/{ticket_id}/draft")
+async def api_ticket_draft(ticket_id: int):
+    key = db.get_setting("anthropic_api_key")
+    if not key:
+        raise HTTPException(400, "Add the Anthropic API key in Settings → AI first.")
+    with db._conn() as con:
+        t = con.execute("SELECT * FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
+        if not t:
+            raise HTTPException(404, "That ticket no longer exists.")
+        t = dict(t)
+        msgs = [dict(r) for r in con.execute(
+            "SELECT direction, from_name, date, text FROM mail_messages WHERE ticket_id = ? ORDER BY date",
+            (ticket_id,))]
+    thread = "\n\n".join(f"{'CUSTOMER' if m['direction'] == 'in' else 'US'} ({m['date'][:16]}):\n"
+                          f"{ai_coach.clean_text(m['text'], 3000)}" for m in msgs)
+    try:
+        orders, store = await _ticket_orders(t)
+    except ShopifyError:
+        orders, store = [], None
+    examples = json.loads(db.get_setting("ai_examples") or "[]")
+    last_in = next((m["text"] for m in reversed(msgs) if m["direction"] == "in"), "")
+    try:
+        text = await ai_coach.draft(key, _knowledge(), thread, _orders_text(orders),
+                                    (store or {}).get("name", "").strip(), ai_coach.similar(examples, last_in))
+    except ai_coach.CoachError as e:
+        raise HTTPException(400, str(e))
+    return {"draft": text}
+
+
+# ---------------------------------------------------------------- AI training (owner)
+
+_learn: dict = {"running": False}
+
+
+@app.get("/api/ai-training")
+def api_training():
+    with db._conn() as con:
+        sops = [dict(r) for r in con.execute("SELECT * FROM ai_sops ORDER BY id")]
+        qs = [dict(r) for r in con.execute("SELECT * FROM ai_questions ORDER BY (answer IS NULL OR answer = '') DESC, id DESC")]
+        mail = con.execute("SELECT COUNT(*) n, MIN(date) first FROM mail_messages").fetchone()
+    examples = json.loads(db.get_setting("ai_examples") or "[]")
+    return {"sops": sops, "questions": qs, "playbook": db.get_setting("ai_playbook") or "",
+            "learned": json.loads(db.get_setting("ai_learned") or "null"), "examples": len(examples),
+            "emails": mail["n"], "emails_from": mail["first"], "job": _learn}
+
+
+@app.post("/api/ai-training/sops")
+async def api_add_sop(request: Request, filename: str = None):
+    """Add an SOP: JSON {title, body}, or a raw PDF / text file with ?filename=."""
+    user = (getattr(request.state, "user", None) or {}).get("email", "")
+    if filename:
+        data = await request.body()
+        try:
+            body = invoices.pdf_text(data) if data[:4] == b"%PDF" else data.decode("utf-8", "ignore")
+        except invoices.InvoiceError as e:
+            raise HTTPException(400, str(e))
+        title = re.sub(r"\.[a-z0-9]+$", "", filename)[:120]
+    else:
+        payload = await request.json()
+        title, body = (payload.get("title") or "").strip(), (payload.get("body") or "").strip()
+    if not title or not body.strip():
+        raise HTTPException(400, "Give the SOP a title and some text.")
+    with db._conn() as con:
+        con.execute("INSERT INTO ai_sops (title, body, created_by) VALUES (?, ?, ?)", (title, body[:60000], user))
+    return {"ok": True}
+
+
+@app.put("/api/ai-training/sops/{sop_id}")
+def api_edit_sop(sop_id: int, payload: dict):
+    with db._conn() as con:
+        con.execute("UPDATE ai_sops SET title = ?, body = ?, updated_at = datetime('now') WHERE id = ?",
+                    ((payload.get("title") or "").strip()[:120], (payload.get("body") or "")[:60000], sop_id))
+    return {"ok": True}
+
+
+@app.delete("/api/ai-training/sops/{sop_id}")
+def api_delete_sop(sop_id: int):
+    with db._conn() as con:
+        con.execute("DELETE FROM ai_sops WHERE id = ?", (sop_id,))
+    return {"ok": True}
+
+
+@app.post("/api/ai-training/questions/{qid}")
+def api_answer_question(qid: int, payload: dict, request: Request):
+    user = (getattr(request.state, "user", None) or {}).get("email", "")
+    with db._conn() as con:
+        if payload.get("dismiss"):
+            con.execute("DELETE FROM ai_questions WHERE id = ?", (qid,))
+        else:
+            con.execute("UPDATE ai_questions SET answer = ?, answered_by = ?, answered_at = datetime('now')"
+                        " WHERE id = ?", ((payload.get("answer") or "").strip()[:4000], user, qid))
+    return {"ok": True}
+
+
+@app.put("/api/ai-training/playbook")
+def api_save_playbook(payload: dict):
+    db.set_setting("ai_playbook", (payload.get("playbook") or "")[:200000])
+    return {"ok": True}
+
+
+async def _import_history(days: int):
+    for acct in db.list_mail_accounts():
+        for folder, direction in (("INBOX", "in"), ("SENT", "out")):
+            _learn["step"] = f"Copying {days} days of {'sent' if direction == 'out' else 'received'} emails from {acct['address']}…"
+            await asyncio.to_thread(mail_client.fetch_history, acct["address"], acct["password"], days, folder,
+                                    acct["provider"], lambda b, d=direction, a=acct["id"]: db.save_mail(a, b, d))
+
+
+async def _learn_job(days: int, limit: int):
+    key = db.get_setting("anthropic_api_key")
+    _learn.update(running=True, error=None, step="Starting…", done=0, total=0, started=time.time())
+    try:
+        if days:
+            await _import_history(days)
+        _learn["step"] = "Finding past conversations where the team replied…"
+        with db._conn() as con:
+            msgs = [dict(r) for r in con.execute(
+                "SELECT account_id, direction, from_addr, to_addr, subject, date, text, category FROM mail_messages")]
+            sops = "\n\n".join(f"### {r['title']}\n{r['body']}" for r in con.execute("SELECT * FROM ai_sops"))
+            answers = "\n".join(f"Q: {r['question']}\nA: {r['answer']}" for r in con.execute(
+                "SELECT * FROM ai_questions WHERE answer IS NOT NULL AND answer != ''"))
+        convos = ai_coach.threads(msgs, limit)
+        if not convos:
+            raise ai_coach.CoachError("No past conversations with a reply from the team were found. "
+                                      "Copy more email history first.")
+        db.set_setting("ai_examples", json.dumps(convos, ensure_ascii=False))
+        batches = [convos[i:i + 20] for i in range(0, len(convos), 20)]
+        _learn.update(total=len(batches) + 1, step=f"Reading {len(convos)} conversations…")
+        lessons, questions = [], []
+        for b in batches:
+            got = await ai_coach.learn_batch(key, b, sops[:30000])
+            lessons += got.get("lessons", [])
+            questions += got.get("questions", [])
+            _learn["done"] += 1
+        _learn["step"] = "Writing the playbook…"
+        book, top = await ai_coach.write_playbook(key, lessons, sops[:60000], answers)
+        db.set_setting("ai_playbook", book)
+        with db._conn() as con:
+            have = {r["question"].lower() for r in con.execute("SELECT question FROM ai_questions")}
+            for q in top:
+                if q.lower() not in have:
+                    con.execute("INSERT INTO ai_questions (question) VALUES (?)", (q,))
+        db.set_setting("ai_learned", json.dumps({"at": datetime.now(timezone.utc).isoformat(),
+                                                 "conversations": len(convos), "lessons": len(lessons)}))
+        _learn.update(done=_learn["total"], step=f"Done: learned from {len(convos)} conversations.")
+    except (ai_coach.CoachError, mail_client.MailError) as e:
+        _learn["error"] = str(e)
+    except Exception as e:
+        _learn["error"] = f"Learning stopped ({type(e).__name__}: {str(e)[:150]})"
+        print(f"AI learning failed: {e}", flush=True)
+    finally:
+        _learn["running"] = False
+
+
+@app.post("/api/ai-training/learn")
+async def api_learn(payload: dict):
+    if not db.get_setting("anthropic_api_key"):
+        raise HTTPException(400, "Add the Anthropic API key in Settings → AI first.")
+    if _learn.get("running"):
+        raise HTTPException(400, "Already learning. Wait for it to finish.")
+    days = max(0, min(int(payload.get("days") or 0), 365))
+    limit = max(20, min(int(payload.get("limit") or 500), 500))
+    asyncio.create_task(_learn_job(days, limit))
+    return {"ok": True}
 
 
 @app.get("/api/ai")

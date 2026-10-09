@@ -84,6 +84,27 @@ ORDER_LINES_QUERY_LITE = ORDER_LINES_QUERY.replace(
     "          variant { id }\n          product { id }\n", "")
 
 
+# One customer's orders, for the ticket side panel and AI drafts.
+ORDER_LOOKUP_QUERY = """
+query Lookup($q: String!) {
+  orders(first: 6, query: $q, sortKey: CREATED_AT, reverse: true) {
+    nodes {
+      id name createdAt cancelledAt
+      displayFinancialStatus displayFulfillmentStatus
+      totalPriceSet { shopMoney { amount currencyCode } }
+      totalRefundedSet { shopMoney { amount } }
+      email
+      shippingAddress { city province country }
+      lineItems(first: 15) { nodes { title variantTitle quantity } }
+      fulfillments(first: 5) { status createdAt trackingInfo { number url company } }
+    }
+  }
+}
+"""
+ORDER_LOOKUP_LITE = ORDER_LOOKUP_QUERY.replace(
+    "      fulfillments(first: 5) { status createdAt trackingInfo { number url company } }\n", "")
+
+
 class ShopifyError(RuntimeError):
     pass
 
@@ -312,6 +333,42 @@ class ShopifyClient:
                 if not conn["pageInfo"]["hasNextPage"]:
                     break
                 cursor = conn["pageInfo"]["endCursor"]
+        return out
+
+    async def lookup_orders(self, names: list = None, email: str = None) -> list:
+        """Orders by their numbers (e.g. "#BR5728"), else the customer's latest by email."""
+        names = [n if n.startswith("#") else f"#{n}" for n in (names or []) if n]
+        if names:
+            q = " OR ".join(f"name:{n}" for n in names[:5])
+        elif email:
+            q = f"email:{email}"
+        else:
+            return []
+        async with httpx.AsyncClient(timeout=30) as client:
+            try:
+                data = await self._post(client, ORDER_LOOKUP_QUERY, {"q": q})
+            except ShopifyError as e:
+                if "access" not in str(e).lower() and "fulfill" not in str(e).lower():
+                    raise
+                data = await self._post(client, ORDER_LOOKUP_LITE, {"q": q})
+        out = []
+        for o in data["orders"]["nodes"]:
+            money = (o.get("totalPriceSet") or {}).get("shopMoney") or {}
+            addr = o.get("shippingAddress") or {}
+            out.append({
+                "id": o["id"].rsplit("/", 1)[-1], "name": o["name"], "created": o["createdAt"],
+                "cancelled": o.get("cancelledAt"),
+                "financial": o.get("displayFinancialStatus") or "",
+                "fulfillment": o.get("displayFulfillmentStatus") or "",
+                "total": float(money.get("amount") or 0), "currency": money.get("currencyCode") or "",
+                "refunded": float((((o.get("totalRefundedSet") or {}).get("shopMoney")) or {}).get("amount") or 0),
+                "ship_to": ", ".join(x for x in (addr.get("city"), addr.get("province"), addr.get("country")) if x),
+                "items": [{"title": li.get("title"), "variant": li.get("variantTitle") or "",
+                           "quantity": li.get("quantity")} for li in o["lineItems"]["nodes"]],
+                "tracking": [{"number": t.get("number"), "url": t.get("url"), "company": t.get("company"),
+                              "status": f.get("status"), "date": f.get("createdAt")}
+                             for f in (o.get("fulfillments") or []) for t in (f.get("trackingInfo") or [])],
+            })
         return out
 
     async def shop_info(self):

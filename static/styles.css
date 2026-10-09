@@ -686,3 +686,39 @@ body.read-only [data-write-only] { display: none !important; }
 .tk-snooze .control { width: auto; flex: 1; min-width: 0; }
 .tk-notcust { margin-top: 14px; color: var(--muted); }
 .mail-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 12px; }
+
+/* Ticket: order panel on the left, links kept short */
+.tk-layout { grid-template-columns: 210px minmax(0, 1fr) 210px; gap: 18px; }
+.tk-orders { border-right: 1px solid var(--line); padding-right: 14px; font-size: 12.5px; min-width: 0; }
+.ord { border-bottom: 1px solid var(--line-soft); padding: 8px 0 10px; }
+.ord-head { display: flex; justify-content: space-between; gap: 6px; font-weight: 600; }
+.ord-head span { color: var(--faint); font-weight: 400; }
+.ord-row { margin: 3px 0; }
+.ord-tags { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0 6px; }
+.ord-item { margin: 2px 0; overflow-wrap: anywhere; }
+.ord-item small { display: block; color: var(--faint); }
+.ord-track { margin-top: 5px; overflow-wrap: anywhere; }
+.ord-ship { margin-top: 4px; font-size: 11.5px; }
+.mail-body a, .ord a, .tk-side a { overflow-wrap: anywhere; word-break: break-word; }
+.mail-body { overflow-wrap: anywhere; }
+.reply-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.draft-text { width: 100%; margin: 10px 0 8px; font: inherit; font-size: 13.5px; line-height: 1.5; resize: vertical; }
+/* AI training page: uses the list + reading columns */
+.inbox3.training { grid-template-columns: 200px 1fr; }
+.inbox3.training .inbox-list { display: none; }
+.train { max-width: 860px; }
+.train h2 { font-size: 18px; margin-bottom: 4px; }
+.train h3 { font-size: 15px; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+.train-sec { padding: 4px 0 22px; border-bottom: 1px solid var(--line); margin-bottom: 18px; }
+.train-status { margin: 10px 0; font-size: 13px; }
+.train-run { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; margin: 10px 0 6px; }
+.train-run label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+.train-run .control { width: auto; }
+.qa { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; }
+.qa.done { background: #F8FAFC; }
+.qa-q { font-weight: 600; font-size: 13.5px; margin-bottom: 6px; }
+.qa textarea, .sop textarea, .sop input { width: 100%; margin-bottom: 6px; }
+.qa-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.sop { border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; margin-bottom: 8px; }
+.sop summary { cursor: pointer; font-weight: 600; font-size: 13.5px; }
+.playbook { width: 100%; font-family: ui-monospace, monospace; font-size: 12.5px; line-height: 1.5; margin-bottom: 8px; }
