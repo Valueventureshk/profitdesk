@@ -550,6 +550,35 @@ async def api_cog_products(store: int):
     return {"products": items}
 
 
+@app.get("/api/fees/debug")
+async def api_fees_debug(store: int, n: int = 6):
+    # TEMPORARY: how Shopify records each order's PayPal / Airwallex payment (ids only).
+    x = next(s for s in db.list_stores() if s["id"] == store)
+    q = """query($n:Int!){ orders(first:$n, reverse:true, sortKey:CREATED_AT){ nodes { name createdAt
+      paymentGatewayNames transactions(first:5){ kind status gateway authorizationCode paymentId
+      amountSet{shopMoney{amount currencyCode}} receiptJson } } } }"""
+    c = ShopifyClient(x["shop_domain"], x["access_token"])
+    async with httpx.AsyncClient(timeout=60) as client:
+        data = await c._post(client, q, {"n": n})
+    out = []
+    for o in data["orders"]["nodes"]:
+        txs = []
+        for t in o["transactions"]:
+            try:
+                r = json.loads(t.get("receiptJson") or "{}")
+            except ValueError:
+                r = {}
+            flat = {k: v for k, v in (r.items() if isinstance(r, dict) else [])
+                    if isinstance(v, (str, int, float)) and not any(w in k.lower() for w in
+                       ("email", "name", "address", "payer", "phone", "card", "first", "last"))}
+            txs.append({"kind": t["kind"], "status": t["status"], "gateway": t["gateway"],
+                        "auth": t["authorizationCode"], "paymentId": t["paymentId"],
+                        "amount": t["amountSet"]["shopMoney"], "receipt_keys": sorted(r.keys()) if isinstance(r, dict) else [],
+                        "receipt_ids": flat})
+        out.append({"name": o["name"], "created": o["createdAt"], "gw": o["paymentGatewayNames"], "tx": txs})
+    return out
+
+
 @app.get("/api/history")
 async def api_history(fresh: int = 0):
     """How far back each store's sales go: Shopify's window, whether the store has
