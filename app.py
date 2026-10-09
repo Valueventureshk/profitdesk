@@ -550,6 +550,42 @@ async def api_cog_products(store: int):
     return {"products": items}
 
 
+@app.get("/api/fees/awx-debug")
+async def api_fees_awx_debug(label: str = "Cutehome"):
+    # TEMPORARY: can the Airwallex key read the payment behind a financial transaction?
+    import httpx as _hx
+    c = next(c for c in db.list_cash_connections() if c["provider"] == "airwallex" and label.lower() in c["label"].lower())
+    now = datetime.now(timezone.utc)
+    rows = await awx.transactions(c["client_id"], c["secret"], now - timedelta(days=1), now, c["account_id"])
+    pays = [t for t in rows if awx._f(t, "transaction_type") == "PAYMENT"][:3]
+    out = {"payments": [{k: v for k, v in t.items() if k not in ("id",)} for t in pays], "lookups": {}}
+    async with _hx.AsyncClient(timeout=60) as client:
+        token = await awx._token(client, c["client_id"], c["secret"], c["account_id"])
+        for t in pays[:2]:
+            sid = awx._f(t, "source_id")
+            for path in (f"/api/v1/pa/payment_attempts/{sid}", f"/api/v1/pa/payment_intents/{sid}"):
+                r = await client.get(f"{awx.API}{path}", headers={"Authorization": f"Bearer {token}"})
+                try:
+                    body = r.json()
+                except ValueError:
+                    body = r.text[:200]
+                if isinstance(body, dict):
+                    body = {k: v for k, v in body.items() if k in ("id", "payment_intent_id", "merchant_order_id",
+                            "amount", "currency", "status", "created_at", "metadata", "merchant_reference",
+                            "code", "message", "descriptor", "request_id")}
+                out["lookups"][path.split("/")[-2] + ":" + sid[:8]] = {"status": r.status_code, "body": body}
+        r = await client.get(f"{awx.API}/api/v1/pa/payment_intents", params={"page_size": 3},
+                             headers={"Authorization": f"Bearer {token}"})
+        try:
+            b = r.json()
+        except ValueError:
+            b = r.text[:200]
+        out["intents_list"] = {"status": r.status_code, "body": [{k: v for k, v in i.items() if k in
+            ("id", "merchant_order_id", "amount", "currency", "metadata", "created_at", "status", "descriptor")}
+            for i in b.get("items", [])] if isinstance(b, dict) and "items" in b else b}
+    return out
+
+
 @app.get("/api/fees/debug")
 async def api_fees_debug(store: int, n: int = 6):
     # TEMPORARY: how Shopify records each order's PayPal / Airwallex payment (ids only).
