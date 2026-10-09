@@ -33,6 +33,8 @@ import adbills
 import cog
 import invoices
 import mail_client
+import tickets
+import ai_brain
 import db
 import demo
 import fx
@@ -100,7 +102,7 @@ _DESK_HOME = {"profit": "/", "cash": "/cash", "cog": "/cog", "inbox": "/inbox"}
 _EVERYONE = {"/api/me", "/api/me/password", "/api/logout", "/change-password",
              "/api/setup"}
 # What "read & write" people may change (owners may change anything).
-_WRITE_OK = ("/api/invoices", "/api/cog/sync")
+_WRITE_OK = ("/api/invoices", "/api/cog/sync", "/api/inbox")
 
 
 def _desk_of(path: str):
@@ -665,19 +667,27 @@ _reading: set = set()
 
 
 async def _read_mailbox(acct: dict) -> int:
-    """Copy a mailbox's new emails in, saving after every batch of 50."""
+    """Copy a mailbox's new emails in (Inbox, then Sent for our own replies),
+    saving after every batch of 50."""
     if acct["id"] in _reading:          # already being read (e.g. right after connecting)
         return 0
     _reading.add(acct["id"])
 
-    def save(batch, top):
-        db.save_mail(acct["id"], batch)
+    def save_in(batch, top):
+        db.save_mail(acct["id"], batch, "in")
         db.mail_checked(acct["id"], last_uid=top)
+
+    def save_out(batch, top):
+        db.save_mail(acct["id"], batch, "out")
+        db.mail_checked(acct["id"], last_uid_sent=top)
     try:
         count, last = await asyncio.to_thread(mail_client.fetch_new, acct["address"], acct["password"],
-                                              acct["last_uid"], acct["provider"], save)
-        db.mail_checked(acct["id"], last_uid=last)
-        return count
+                                              acct["last_uid"], acct["provider"], save_in, "INBOX")
+        sent, last_sent = await asyncio.to_thread(mail_client.fetch_new, acct["address"], acct["password"],
+                                                  acct.get("last_uid_sent") or 0, acct["provider"],
+                                                  save_out, "SENT")
+        db.mail_checked(acct["id"], last_uid=last, last_uid_sent=last_sent)
+        return count + sent
     except Exception as e:
         db.mail_checked(acct["id"], error=str(e)[:300])
         return 0
@@ -685,8 +695,30 @@ async def _read_mailbox(acct: dict) -> int:
         _reading.discard(acct["id"])
 
 
+_ai_state: dict = {}
+
+
+async def _sort_mail():
+    """Let the AI sort new emails into tickets (needs the Anthropic key)."""
+    key = db.get_setting("anthropic_api_key")
+    if not key:
+        _ai_state["error"] = "Add the Anthropic API key in Settings → AI to start sorting emails."
+        return
+    try:
+        got = await tickets.process(key)
+        _ai_state.update(error=None, last=got, at=time.time())
+        tot = _ai_state.setdefault("total", {"in": 0, "out": 0})
+        tot["in"] += got["tokens_in"]
+        tot["out"] += got["tokens_out"]
+    except ai_brain.AIError as e:
+        _ai_state["error"] = str(e)
+    except Exception as e:
+        _ai_state["error"] = f"Sorting failed ({type(e).__name__}: {str(e)[:120]})"
+        print(f"Sorting emails failed: {e}", flush=True)
+
+
 async def _mail_loop():
-    """Copy new emails from every connected mailbox every 2 minutes."""
+    """Copy new emails from every connected mailbox every 2 minutes, then sort them."""
     await asyncio.sleep(20)
     while True:
         for acct in db.list_mail_accounts():
@@ -694,6 +726,7 @@ async def _mail_loop():
                 await _read_mailbox(acct)   # fresh row each time: last_uid moves on
             except Exception as e:
                 print(f"Reading {acct['address']} failed: {e}", flush=True)
+        await _sort_mail()
         await asyncio.sleep(120)
 
 
@@ -740,10 +773,37 @@ def api_remove_mail_account(account_id: int):
     return {"ok": True}
 
 
+def _store_names() -> dict:
+    return {x["id"]: x["name"].strip() for x in db.list_stores()}
+
+
+@app.get("/api/inbox/counts")
+def api_inbox_counts():
+    now = datetime.now(timezone.utc).isoformat()
+    with db._conn() as con:
+        one = lambda q, *a: con.execute(q, a).fetchone()[0]
+        awake = "(snoozed_until IS NULL OR snoozed_until <= ?)"
+        return {
+            "all": one("SELECT COUNT(*) FROM mail_messages WHERE direction = 'in'"),
+            "customer": one("SELECT COUNT(*) FROM mail_messages WHERE direction = 'in' AND category = 'customer'"),
+            "inquiry": one(f"SELECT COUNT(*) FROM tickets WHERE kind IN ('inquiry','legal') AND status = 'open' AND {awake}", now),
+            "inquiry_done": one("SELECT COUNT(*) FROM tickets WHERE kind IN ('inquiry','legal') AND status = 'closed'"),
+            "scm": one(f"SELECT COUNT(*) FROM tickets WHERE kind = 'support' AND status = 'open' AND ',' || labels || ',' LIKE '%,scm,%' AND {awake}", now),
+            "cs": one(f"SELECT COUNT(*) FROM tickets WHERE kind = 'support' AND status = 'open' AND ',' || labels || ',' LIKE '%,cs,%' AND {awake}", now),
+            "unlabelled": one(f"SELECT COUNT(*) FROM tickets WHERE kind = 'support' AND status = 'open' AND labels = '' AND {awake}", now),
+            "waiting_us": one(f"SELECT COUNT(*) FROM tickets WHERE status = 'open' AND waiting = 'us' AND {awake}", now),
+            "snoozed": one("SELECT COUNT(*) FROM tickets WHERE status = 'open' AND snoozed_until > ?", now),
+            "escalated": one("SELECT COUNT(*) FROM tickets WHERE status = 'open' AND escalated = 1"),
+            "records": one("SELECT COUNT(*) FROM tickets WHERE kind = 'support' AND status = 'closed'"),
+            "ai_error": _ai_state.get("error"),
+        }
+
+
 @app.get("/api/inbox/messages")
-def api_inbox_messages(account: int = None):
-    stores = {x["id"]: x["name"].strip() for x in db.list_stores()}
-    rows = db.mail_list([account] if account else None)
+def api_inbox_messages(account: int = None, view: str = "all"):
+    stores = _store_names()
+    cat = {"customer": "customer", "all": None}.get(view)
+    rows = db.mail_list([account] if account else None, category=cat)
     for r in rows:
         r["store"] = stores.get(r["store_id"], "")
         r["attachments"] = len(json.loads(r["attachments"] or "[]"))
@@ -755,11 +815,161 @@ def api_inbox_message(message_id: int):
     m = db.mail_get(message_id)
     if not m:
         raise HTTPException(404, "That email no longer exists.")
-    stores = {x["id"]: x["name"].strip() for x in db.list_stores()}
-    m["store"] = stores.get(m["store_id"], "")
+    m["store"] = _store_names().get(m["store_id"], "")
     m["attachments"] = json.loads(m["attachments"] or "[]")
-    m.pop("html", None)          # shown as plain text for now (safe)
+    m.pop("html", None)          # shown as plain text (safe)
+    m.pop("ai", None)
     return m
+
+
+_TICKET_VIEWS = {
+    "scm": "kind = 'support' AND status = 'open' AND ',' || labels || ',' LIKE '%,scm,%' AND {awake}",
+    "cs": "kind = 'support' AND status = 'open' AND ',' || labels || ',' LIKE '%,cs,%' AND {awake}",
+    "unlabelled": "kind = 'support' AND status = 'open' AND labels = '' AND {awake}",
+    "inquiry": "kind IN ('inquiry','legal') AND status = 'open' AND {awake}",
+    "inquiry_done": "kind IN ('inquiry','legal') AND status = 'closed'",
+    "records": "kind = 'support' AND status = 'closed'",
+    "snoozed": "status = 'open' AND snoozed_until > :now",
+    "escalated": "status = 'open' AND escalated = 1",
+}
+
+
+@app.get("/api/inbox/tickets")
+def api_inbox_tickets(view: str = "scm", account: int = None):
+    where = _TICKET_VIEWS.get(view)
+    if not where:
+        raise HTTPException(400, "Unknown list.")
+    where = where.replace("{awake}", "(snoozed_until IS NULL OR snoozed_until <= :now)")
+    args = {"now": datetime.now(timezone.utc).isoformat()}
+    if account:
+        where += " AND account_id = :acct"
+        args["acct"] = account
+    order = "closed_at DESC" if "closed" in where else "(waiting = 'us') DESC, last_message_at DESC"
+    stores = _store_names()
+    with db._conn() as con:
+        rows = [dict(r) for r in con.execute(
+            f"SELECT t.*, (SELECT COUNT(*) FROM mail_messages m WHERE m.ticket_id = t.id) emails"
+            f" FROM tickets t WHERE {where} ORDER BY {order} LIMIT 300", args)]
+    for r in rows:
+        r["store"] = stores.get(r["store_id"], "")
+    return {"tickets": rows}
+
+
+def _gmail_link(address: str, message_id: str) -> str:
+    from urllib.parse import quote
+    mid = (message_id or "").strip("<>")
+    return f"https://mail.google.com/mail/u/{quote(address)}/#search/rfc822msgid%3A{quote(mid)}" if mid else ""
+
+
+@app.get("/api/inbox/tickets/{ticket_id}")
+def api_inbox_ticket(ticket_id: int):
+    with db._conn() as con:
+        t = con.execute("SELECT * FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
+        if not t:
+            raise HTTPException(404, "That ticket no longer exists.")
+        t = dict(t)
+        msgs = [dict(r) for r in con.execute(
+            "SELECT id, direction, from_name, from_addr, to_addr, subject, date, text, attachments, message_id"
+            " FROM mail_messages WHERE ticket_id = ? ORDER BY date", (ticket_id,))]
+        acct = con.execute("SELECT address FROM mail_accounts WHERE id = ?", (t["account_id"],)).fetchone()
+    for m in msgs:
+        m["attachments"] = json.loads(m["attachments"] or "[]")
+    t["store"] = _store_names().get(t["store_id"], "")
+    t["mailbox"] = acct["address"] if acct else ""
+    t["gmail_link"] = _gmail_link(t["mailbox"], msgs[-1]["message_id"]) if msgs else ""
+    return {"ticket": t, "messages": msgs}
+
+
+@app.post("/api/inbox/tickets/{ticket_id}")
+def api_inbox_ticket_action(ticket_id: int, payload: dict, request: Request):
+    """Team actions: close (override), reopen, snooze, wake, escalate, labels, kind."""
+    user = (getattr(request.state, "user", None) or {}).get("email", "team")
+    act = payload.get("action")
+    now = datetime.now(timezone.utc).isoformat()
+    with db._conn() as con:
+        if not con.execute("SELECT 1 FROM tickets WHERE id = ?", (ticket_id,)).fetchone():
+            raise HTTPException(404, "That ticket no longer exists.")
+        if act == "close":
+            con.execute("UPDATE tickets SET status = 'closed', closed_at = ?, closed_by = ?, close_note = ?,"
+                        " snoozed_until = NULL WHERE id = ?",
+                        (now, user, (payload.get("note") or "Closed by the team")[:300], ticket_id))
+        elif act == "reopen":
+            con.execute("UPDATE tickets SET status = 'open', closed_at = NULL, closed_by = NULL,"
+                        " close_note = NULL, waiting = 'us' WHERE id = ?", (ticket_id,))
+        elif act == "snooze":
+            until = payload.get("until") or ""
+            try:
+                when = datetime.fromisoformat(until).replace(tzinfo=CASH_TZ) if len(until) == 10 \
+                    else datetime.fromisoformat(until)
+            except ValueError:
+                raise HTTPException(400, "Pick a date to snooze until.")
+            con.execute("UPDATE tickets SET snoozed_until = ? WHERE id = ?",
+                        (when.astimezone(timezone.utc).isoformat(), ticket_id))
+        elif act == "wake":
+            con.execute("UPDATE tickets SET snoozed_until = NULL WHERE id = ?", (ticket_id,))
+        elif act == "escalate":
+            con.execute("UPDATE tickets SET escalated = ? WHERE id = ?",
+                        (1 if payload.get("on", True) else 0, ticket_id))
+        elif act == "labels":
+            labels = [x for x in ("scm", "cs") if x in (payload.get("labels") or [])]
+            con.execute("UPDATE tickets SET labels = ?, kind = 'support' WHERE id = ?",
+                        (",".join(labels), ticket_id))
+        elif act == "kind":
+            kind = payload.get("kind")
+            if kind not in ("support", "inquiry", "legal"):
+                raise HTTPException(400, "Unknown ticket type.")
+            con.execute("UPDATE tickets SET kind = ? WHERE id = ?", (kind, ticket_id))
+        elif act == "not_customer":
+            con.execute("UPDATE mail_messages SET category = 'other', ticket_id = NULL WHERE ticket_id = ?",
+                        (ticket_id,))
+            con.execute("DELETE FROM tickets WHERE id = ?", (ticket_id,))
+        else:
+            raise HTTPException(400, "Unknown action.")
+    return {"ok": True}
+
+
+@app.post("/api/inbox/messages/{message_id}/ticket")
+def api_inbox_make_ticket(message_id: int, payload: dict):
+    """Turn an email the AI marked "other" into a ticket (one-click correction)."""
+    kind = payload.get("kind") or "support"
+    if kind not in ("support", "inquiry", "legal"):
+        raise HTTPException(400, "Unknown ticket type.")
+    with db._conn() as con:
+        m = con.execute("SELECT * FROM mail_messages WHERE id = ?", (message_id,)).fetchone()
+        if not m:
+            raise HTTPException(404, "That email no longer exists.")
+        if m["ticket_id"]:
+            return {"ok": True, "ticket_id": m["ticket_id"]}
+        acct = con.execute("SELECT store_id FROM mail_accounts WHERE id = ?", (m["account_id"],)).fetchone()
+        tid = con.execute(
+            "INSERT INTO tickets (account_id, store_id, kind, labels, customer_email, customer_name, subject,"
+            " summary, status, waiting, last_message_at, created_at) VALUES (?,?,?,?,?,?,?,?, 'open','us',?,?)",
+            (m["account_id"], acct["store_id"] if acct else None, kind, payload.get("labels") or "",
+             (m["from_addr"] or "").lower(), m["from_name"], m["subject"], m["subject"],
+             m["date"], m["date"])).lastrowid
+        cat = {"support": "customer"}.get(kind, kind)
+        con.execute("UPDATE mail_messages SET ticket_id = ?, category = ?, processed = 1 WHERE id = ?",
+                    (tid, cat, message_id))
+    return {"ok": True, "ticket_id": tid}
+
+
+@app.get("/api/ai")
+def api_ai_status():
+    return {"has_key": bool(db.get_setting("anthropic_api_key")), "model": ai_brain.MODEL,
+            "error": _ai_state.get("error"), "last": _ai_state.get("last"),
+            "tokens": _ai_state.get("total"),
+            "tickets_from": db.get_setting("tickets_from") or "2026-10-07T16:00:00+00:00"}
+
+
+@app.put("/api/ai")
+async def api_ai_save(payload: dict):
+    key = (payload.get("api_key") or "").strip()
+    if not key.startswith("sk-ant-"):
+        raise HTTPException(400, "That doesn't look like an Anthropic API key (it starts with sk-ant-).")
+    db.set_setting("anthropic_api_key", key)
+    _ai_state.pop("error", None)
+    asyncio.create_task(_sort_mail())
+    return {"ok": True}
 
 
 @app.get("/api/history")

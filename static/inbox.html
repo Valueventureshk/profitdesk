@@ -22,10 +22,26 @@
       <button id="refresh" class="btn btn-ghost">Refresh</button>
     </div>
   </header>
-  <main class="inbox">
+  <div id="aiWarn" class="warnings"></div>
+  <main class="inbox inbox3">
+    <nav class="inbox-nav" id="nav">
+      <div class="inav-label">Mail</div>
+      <button data-view="all"><i>✉</i>All mail<b data-count="all"></b></button>
+      <button data-view="customer"><i>☺</i>Customer<b data-count="customer"></b></button>
+      <button data-view="inquiry"><i>?</i>Inquiry + legal<b data-count="inquiry"></b></button>
+      <button data-view="inquiry_done" class="sub"><i>✓</i>Done<b data-count="inquiry_done"></b></button>
+      <div class="inav-label">Tickets</div>
+      <button data-view="scm" class="on"><i>⇄</i>SCM · order<b data-count="scm"></b></button>
+      <button data-view="cs"><i>♥</i>CS · product<b data-count="cs"></b></button>
+      <button data-view="unlabelled"><i>•</i>Not labelled<b data-count="unlabelled"></b></button>
+      <button data-view="escalated"><i>!</i>Escalated<b data-count="escalated"></b></button>
+      <button data-view="snoozed"><i>☾</i>Snoozed<b data-count="snoozed"></b></button>
+      <div class="inav-label">Done</div>
+      <button data-view="records"><i>▤</i>Records<b data-count="records"></b></button>
+    </nav>
     <aside class="inbox-list" id="list"></aside>
     <section class="inbox-read" id="read">
-      <p class="hint inbox-empty">Pick an email on the left.</p>
+      <p class="hint inbox-empty">Pick a ticket or email.</p>
     </section>
   </main>
 </div>

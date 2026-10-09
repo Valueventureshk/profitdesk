@@ -59,6 +59,10 @@ file and have it work.
 | `adbills.py` | Ads payable: Meta balance, Google spend since its last card charge |
 | `cog.py` | **COG engine**: orders sheet → per-store product costs → cost of every order line |
 | `static/cog.html` `cog.js` | COG + Products Monitor page (Check COG, Products) |
+| `mail_client.py` | Store support mailboxes over IMAP (app password): Inbox + Sent, read-only |
+| `ai_brain.py` | Claude Haiku 5.5 sorts each email (customer/inquiry/legal/other, SCM/CS, thread) |
+| `tickets.py` | Turns sorted emails into tickets; our Gmail replies set "we replied last" |
+| `static/inbox.html` `inbox.js` | Inbox desk: mail views, SCM/CS tickets, records |
 | `static/cash.html` `cash.js` `nav.js` | Cash flow page, section menu |
 | `static/index.html` `styles.css` `app.js` | The dashboard |
 | `seed_demo.py` | Generates fake data for testing |
@@ -82,6 +86,11 @@ file and have it work.
   the login middleware (`_denied`, `_DESK_PATHS`, `_WRITE_OK`); pages hide
   `data-owner-only` / `data-write-only` elements to match. New people get a temporary
   password and must choose their own at first login (`/change-password`).
+- Inbox: mailboxes are read every 2 min (Railway Hobby blocks outgoing SMTP, so replies
+  are made in Gmail for now and picked up from the Sent folder). AI key = setting
+  `anthropic_api_key` (owner pastes it in Settings → AI). Tickets only for emails from
+  setting `tickets_from` (default 8 Oct 2026 HK). Team can override: close, reopen,
+  snooze, escalate, relabel, "not a customer email".
 - Business clock is Hong Kong (`CASH_TIMEZONE`). Each store has its own clock;
   "today" is the furthest-ahead store's date.
 

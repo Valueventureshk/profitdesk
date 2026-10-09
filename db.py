@@ -221,6 +221,31 @@ CREATE TABLE IF NOT EXISTS mail_messages (
 );
 CREATE INDEX IF NOT EXISTS mail_messages_date ON mail_messages (date);
 
+-- Tickets: one customer problem, made of the emails (in and out) about it.
+-- kind: support (SCM/CS labels) | inquiry | legal. Solved ones stay as records.
+CREATE TABLE IF NOT EXISTS tickets (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id      INTEGER NOT NULL,
+    store_id        INTEGER,
+    kind            TEXT    NOT NULL DEFAULT 'support',
+    labels          TEXT    NOT NULL DEFAULT '',
+    customer_email  TEXT,
+    customer_name   TEXT,
+    subject         TEXT,
+    summary         TEXT,
+    orders          TEXT    NOT NULL DEFAULT '',
+    status          TEXT    NOT NULL DEFAULT 'open',      -- open | closed
+    waiting         TEXT    NOT NULL DEFAULT 'us',        -- us | customer
+    snoozed_until   TEXT,
+    escalated       INTEGER NOT NULL DEFAULT 0,
+    last_message_at TEXT,
+    created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+    closed_at       TEXT,
+    closed_by       TEXT,
+    close_note      TEXT
+);
+CREATE INDEX IF NOT EXISTS tickets_customer ON tickets (account_id, customer_email);
+
 -- Small app-wide preferences, e.g. the currency the dashboard shows.
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
@@ -266,6 +291,17 @@ _ADDED_COLUMNS = {
     ],
     "cash_connections": [
         ("account_id", "TEXT"),          # Airwallex sub-account (x-login-as), if any
+    ],
+    "mail_accounts": [
+        ("last_uid_sent", "INTEGER NOT NULL DEFAULT 0"),   # Sent folder, read for our replies
+    ],
+    "mail_messages": [
+        ("direction", "TEXT NOT NULL DEFAULT 'in'"),       # in = from a customer, out = our reply
+        ("category", "TEXT"),        # customer | inquiry | legal | other (AI); NULL = not sorted
+        ("labels", "TEXT"),          # scm,cs
+        ("ticket_id", "INTEGER"),
+        ("ai", "TEXT"),              # the AI's full answer, for reference
+        ("processed", "INTEGER NOT NULL DEFAULT 0"),
     ],
     "users": [
         ("role", "TEXT NOT NULL DEFAULT 'owner'"),   # owner | write | read
@@ -580,33 +616,42 @@ def delete_mail_account(account_id: int):
         con.execute("DELETE FROM mail_accounts WHERE id = ?", (account_id,))
 
 
-def mail_checked(account_id: int, last_uid: int = None, error: str = None):
+def mail_checked(account_id: int, last_uid: int = None, error: str = None, last_uid_sent: int = None):
     with _conn() as con:
         con.execute("UPDATE mail_accounts SET last_checked = datetime('now'), last_error = ?,"
-                    " last_uid = COALESCE(?, last_uid) WHERE id = ?", (error, last_uid, account_id))
+                    " last_uid = COALESCE(?, last_uid), last_uid_sent = COALESCE(?, last_uid_sent)"
+                    " WHERE id = ?", (error, last_uid, last_uid_sent, account_id))
 
 
-def save_mail(account_id: int, messages: list):
+def save_mail(account_id: int, messages: list, direction: str = "in"):
+    """Sent-folder messages are stored with a negative uid (IMAP numbers each folder
+    separately, and uid is unique per mailbox here)."""
     import json
+    sign = -1 if direction == "out" else 1
     with _conn() as con:
         con.executemany(
             "INSERT OR IGNORE INTO mail_messages (account_id, uid, message_id, in_reply_to, refs,"
-            " from_name, from_addr, to_addr, subject, date, text, html, attachments)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            [(account_id, m["uid"], m["message_id"], m["in_reply_to"], m["references"],
+            " from_name, from_addr, to_addr, subject, date, text, html, attachments, direction)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [(account_id, sign * m["uid"], m["message_id"], m["in_reply_to"], m["references"],
               m["from_name"], m["from_addr"], m["to_addr"], m["subject"], m["date"],
-              m["text"], m["html"], json.dumps(m["attachments"])) for m in messages])
+              m["text"], m["html"], json.dumps(m["attachments"]), direction) for m in messages])
 
 
-def mail_list(account_ids: list = None, limit: int = 200) -> list:
+def mail_list(account_ids: list = None, limit: int = 200, category: str = None) -> list:
     with _conn() as con:
         q = ("SELECT m.id, m.account_id, m.from_name, m.from_addr, m.subject, m.date,"
-             " substr(m.text, 1, 160) snippet, m.attachments, a.address, a.store_id"
-             " FROM mail_messages m JOIN mail_accounts a ON a.id = m.account_id")
+             " substr(m.text, 1, 160) snippet, m.attachments, m.category, m.labels, m.ticket_id,"
+             " a.address, a.store_id"
+             " FROM mail_messages m JOIN mail_accounts a ON a.id = m.account_id WHERE m.direction = 'in'")
         args = []
         if account_ids:
-            q += f" WHERE m.account_id IN ({','.join('?' * len(account_ids))})"
+            q += f" AND m.account_id IN ({','.join('?' * len(account_ids))})"
             args = list(account_ids)
+        if category:
+            cats = category.split(",")
+            q += f" AND m.category IN ({','.join('?' * len(cats))})"
+            args += cats
         q += " ORDER BY m.date DESC LIMIT ?"
         return [dict(r) for r in con.execute(q, (*args, limit))]
 

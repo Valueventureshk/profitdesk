@@ -107,8 +107,20 @@ def parse(raw: bytes) -> dict:
     }
 
 
+def _sent_folder(m) -> str:
+    """The mailbox's Sent folder ("[Gmail]/Sent Mail" in English Gmail, localised
+    elsewhere), found by its \\Sent flag."""
+    typ, rows = m.list()
+    for raw in rows or []:
+        line = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
+        if "\\Sent" in line:
+            name = line.rsplit(' "/" ', 1)[-1].strip()
+            return name if name.startswith('"') else f'"{name}"'
+    return '"[Gmail]/Sent Mail"'
+
+
 def fetch_new(address: str, password: str, last_uid: int = 0, provider: str = "google",
-              save=None) -> tuple:
+              save=None, folder: str = "INBOX") -> tuple:
     """New INBOX messages since last_uid (or the last DAYS_BACK days on the first run),
     fetched 50 at a time. save(batch, highest uid) is called after each batch so
     progress is kept even if a later batch fails. Nothing is marked read.
@@ -119,7 +131,10 @@ def fetch_new(address: str, password: str, last_uid: int = 0, provider: str = "g
         with imaplib.IMAP4_SSL(imap_host, imap_port, ssl_context=ssl.create_default_context(),
                                timeout=120) as m:
             m.login(address, password)
-            m.select("INBOX", readonly=True)
+            box = _sent_folder(m) if folder == "SENT" else "INBOX"
+            typ, _ = m.select(box, readonly=True)
+            if typ != "OK":
+                return 0, last_uid
             if last_uid:
                 typ, data = m.uid("search", None, f"UID {last_uid + 1}:*")
             else:

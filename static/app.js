@@ -635,6 +635,7 @@ async function openSettings() {
   renderFeeSettings();
   renderPeople();
   renderMailboxes();
+  renderAI();
   renderStoreSettings();
   await Promise.all([loadAccounts(), loadMetaAccounts()]);
 }
@@ -752,6 +753,34 @@ async function renderPeople() {
       renderPeople();
     };
   }
+}
+
+/* ------------------------------------------------ AI */
+
+async function renderAI() {
+  let r;
+  try { r = await api("/api/ai"); } catch { $("aiBox").innerHTML = ""; return; }
+  const last = r.last ? `Last run: ${r.last.sorted} emails sorted, ${r.last.tickets} new tickets,
+    ${r.last.replies} replies matched.` : "";
+  $("aiBox").innerHTML = `
+    <div class="group-row"><div class="group-name"><strong>${r.has_key ? "Connected" : "Not connected yet"}</strong>
+      <span>Model ${esc(r.model)} · tickets from ${new Date(r.tickets_from).toLocaleDateString(undefined,
+        { day: "numeric", month: "short", year: "numeric" })} on · ${last}</span>
+      ${r.error ? `<span class="neg">${esc(r.error)}</span>` : ""}</div></div>
+    <details class="advanced"${r.has_key ? "" : " open"}><summary>${r.has_key ? "Replace the API key" : "Add the API key"}</summary>
+      <label class="field"><span>Anthropic API key (starts with sk-ant-)</span>
+        <input id="aiKey" type="password" autocomplete="off"></label>
+      <p class="hint">console.anthropic.com → API keys → Create key. Add a little credit under Billing
+        (US$5 lasts months at your volume).</p>
+      <button id="aiSave" class="btn btn-primary btn-block">Save key</button>
+    </details>`;
+  $("aiSave").onclick = async () => {
+    try {
+      await jsonPost("/api/ai", { api_key: $("aiKey").value }, "PUT");
+      toast("Saved. Sorting starts now; tickets appear in the Inbox within a few minutes.");
+      renderAI();
+    } catch (e) { toast(e.message, true); }
+  };
 }
 
 /* ------------------------------------------------ support mailboxes */

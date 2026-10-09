@@ -640,3 +640,49 @@ body.read-only [data-write-only] { display: none !important; }
 .mail-meta span { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
 .mail-att { font-size: 12.5px; color: var(--muted); margin-bottom: 12px; }
 .mail-body { white-space: pre-wrap; font-size: 14px; line-height: 1.55; max-width: 760px; }
+
+/* Inbox: three columns, tickets */
+.inbox3 { grid-template-columns: 200px 340px 1fr; }
+.inbox-nav { background: var(--bg); border-right: 1px solid var(--line); padding: 10px 8px; overflow-y: auto; }
+.inav-label { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--faint); padding: 12px 8px 4px; }
+.inbox-nav button { display: flex; align-items: center; gap: 8px; width: 100%; border: 0; background: none;
+  padding: 7px 8px; border-radius: 8px; font: inherit; font-size: 13px; color: var(--ink); cursor: pointer; text-align: left; }
+.inbox-nav button:hover { background: var(--line-soft); }
+.inbox-nav button.on { background: #EFF6FF; color: #1D4ED8; font-weight: 600; }
+.inbox-nav button.sub { padding-left: 24px; }
+.inbox-nav button i { font-style: normal; width: 16px; text-align: center; color: var(--muted); }
+.inbox-nav button b { margin-left: auto; font-weight: 500; color: var(--faint); font-size: 12px; }
+.mail-tags { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-top: 3px; }
+.mail-tags .mail-store { margin-left: 2px; }
+.tk { font-size: 10.5px; font-weight: 600; border-radius: 999px; padding: 1px 7px; white-space: nowrap; }
+.tk-scm { background: #EFF6FF; color: #1D4ED8; }
+.tk-cs { background: #F5F3FF; color: #6D28D9; }
+.tk-inquiry { background: #ECFEFF; color: #0E7490; }
+.tk-legal { background: #FEF2F2; color: #B91C1C; }
+.tk-us { background: #FFF7ED; color: #B45309; }
+.tk-them { background: #ECFDF5; color: #047857; }
+.tk-done { background: var(--line-soft); color: var(--muted); }
+.tk-esc { background: #FEF2F2; color: #B91C1C; }
+.tk-layout { display: grid; grid-template-columns: minmax(0, 1fr) 220px; gap: 22px; }
+.tk-summary { background: #F8FAFC; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
+  font-size: 13px; margin-bottom: 14px; }
+.msg { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; }
+.msg.out { background: #F8FAFC; margin-left: 36px; }
+.msg-head { display: flex; justify-content: space-between; gap: 10px; font-size: 12.5px; margin-bottom: 6px; }
+.msg-head span { color: var(--faint); }
+.msg .mail-body { font-size: 13.5px; }
+.reply-box { border: 1px dashed var(--line); border-radius: 10px; padding: 12px; margin-top: 6px; }
+.reply-box .hint { margin: 0 0 8px; }
+.tk-side { border-left: 1px solid var(--line); padding-left: 16px; font-size: 13px; }
+.tk-side-label { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--faint); margin: 14px 0 6px; }
+.tk-side-label:first-child { margin-top: 0; }
+.tk-check { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+.tk-side .btn-block { margin-top: 10px; }
+.tk-toggles { display: grid; gap: 4px; margin-bottom: 6px; }
+.tk-toggles label { display: flex; gap: 8px; align-items: center; }
+.tk-snooze { display: flex; gap: 6px; }
+.tk-snooze .control { width: auto; flex: 1; min-width: 0; }
+.tk-notcust { margin-top: 14px; color: var(--muted); }
+.mail-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 12px; }
