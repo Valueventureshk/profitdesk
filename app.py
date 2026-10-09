@@ -1333,6 +1333,7 @@ async def _chat_tool(name: str, args: dict, user: dict) -> dict:
         return _round({"currency": st["base"], "available_now": sm.get("available"), "held": sm.get("reserved"),
                        "receivable": sm.get("receivable"), "available_plus_receivable": sm.get("position"),
                        "ads_payable": sm.get("ads_payable"), "after_ad_bills": sm.get("after_ads"),
+                       "note": "available_by in horizons does NOT deduct ads_payable; subtract it for after-ad-bills",
                        "horizons": [{"label": h["label"], "until": h["until"], "available_by": h["available_by"],
                                      "arriving": h["incoming"]} for h in sm.get("horizons", [])],
                        "accounts": [{"name": a["label"], "available": a["available"], "held": a["reserved"]}
