@@ -412,7 +412,22 @@ def api_cog_status():
         "not_connected": dict(catalog.unmatched_tags) if catalog else {},
         "synced_at": synced[0] if synced else None,
         "report": synced[1] if synced else None,
+        "fees_last_14_days": _fee_coverage(),
     }
+
+
+def _fee_coverage() -> dict:
+    """Per store and payment method: how many recent payments have their actual fee."""
+    start = (date.today() - timedelta(days=14)).isoformat()
+    names = {x["id"]: x["name"].strip() for x in db.list_stores()}
+    with db._conn() as con:
+        rows = con.execute(
+            "SELECT store_id, gateway, COUNT(*) n, SUM(fee_actual IS NOT NULL) a,"
+            " SUM(COALESCE(fee_actual, 0)) fa, SUM(CASE WHEN fee_actual IS NOT NULL THEN fee_est ELSE 0 END) fe"
+            " FROM order_fees WHERE day >= ? GROUP BY store_id, gateway", (start,)).fetchall()
+    return [{"store": names.get(r["store_id"], "?"), "gateway": r["gateway"], "payments": r["n"],
+             "actual": r["a"], "actual_fees": round(r["fa"], 2), "estimate_for_same": round(r["fe"], 2)}
+            for r in rows]
 
 
 @app.get("/api/cog/day")
