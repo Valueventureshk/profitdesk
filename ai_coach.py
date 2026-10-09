@@ -60,7 +60,7 @@ def clean_text(text: str, limit: int = 1800) -> str:
     body = (text or "").strip()
     for marker in ("\nOn ", "\n-----Original Message", "\nLe ", "\nEl ", "\nAm ", "\nOp ", "\n> "):
         cut = body.find(marker)
-        if cut > 80:
+        if cut > 15:
             body = body[:cut]
             break
     body = re.sub(r"https?://\S{60,}", "[link]", body)
