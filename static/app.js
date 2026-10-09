@@ -765,7 +765,7 @@ async function renderAI() {
   $("aiBox").innerHTML = `
     <div class="group-row"><div class="group-name"><strong>${r.has_key ? "Connected" : "Not connected yet"}</strong>
       <span>Model ${esc(r.model)} · tickets from ${new Date(r.tickets_from).toLocaleDateString(undefined,
-        { day: "numeric", month: "short", year: "numeric" })} on · ${last}</span>
+        { day: "numeric", month: "short", year: "numeric", timeZone: "Asia/Hong_Kong" })} (Hong Kong time) on · ${last}</span>
       ${r.error ? `<span class="neg">${esc(r.error)}</span>` : ""}</div></div>
     <details class="advanced"${r.has_key ? "" : " open"}><summary>${r.has_key ? "Replace the API key" : "Add the API key"}</summary>
       <label class="field"><span>Anthropic API key (starts with sk-ant-)</span>
