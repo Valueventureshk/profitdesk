@@ -107,14 +107,17 @@ def parse(raw: bytes) -> dict:
     }
 
 
-def fetch_new(address: str, password: str, last_uid: int = 0, provider: str = "google") -> tuple:
-    """New INBOX messages since last_uid (or the last DAYS_BACK days on the first run).
-    Returns (messages with their uid, highest uid seen). Nothing is marked read."""
+def fetch_new(address: str, password: str, last_uid: int = 0, provider: str = "google",
+              save=None) -> tuple:
+    """New INBOX messages since last_uid (or the last DAYS_BACK days on the first run),
+    fetched 50 at a time. save(batch, highest uid) is called after each batch so
+    progress is kept even if a later batch fails. Nothing is marked read.
+    Returns (number of messages, highest uid seen)."""
     imap_host, imap_port, _, _ = PROVIDERS[provider]
-    out = []
+    count, top = 0, last_uid
     try:
         with imaplib.IMAP4_SSL(imap_host, imap_port, ssl_context=ssl.create_default_context(),
-                               timeout=60) as m:
+                               timeout=120) as m:
             m.login(address, password)
             m.select("INBOX", readonly=True)
             if last_uid:
@@ -122,12 +125,25 @@ def fetch_new(address: str, password: str, last_uid: int = 0, provider: str = "g
             else:
                 since = (datetime.now() - timedelta(days=DAYS_BACK)).strftime("%d-%b-%Y")
                 typ, data = m.uid("search", None, f"SINCE {since}")
-            uids = [int(u) for u in (data[0] or b"").split() if int(u) > last_uid]
-            for uid in uids[-500:]:
-                typ, got = m.uid("fetch", str(uid), "(BODY.PEEK[])")
-                raw = next((g[1] for g in got if isinstance(g, tuple)), None)
-                if raw:
-                    out.append({"uid": uid, **parse(raw)})
+            uids = sorted(int(u) for u in (data[0] or b"").split() if int(u) > last_uid)[-2000:]
+            for i in range(0, len(uids), 50):
+                chunk = uids[i:i + 50]
+                typ, got = m.uid("fetch", ",".join(map(str, chunk)), "(UID BODY.PEEK[])")
+                batch = []
+                for part in got:
+                    if not isinstance(part, tuple):
+                        continue
+                    hit = re.search(rb"UID (\d+)", part[0])
+                    if not hit:
+                        continue
+                    try:
+                        batch.append({"uid": int(hit.group(1)), **parse(part[1])})
+                    except Exception:
+                        continue          # one unreadable email never stops the rest
+                count += len(batch)
+                top = max([top] + chunk)
+                if save:
+                    save(batch, top)
     except Exception as e:
         raise _explain(e, "read new emails")
-    return out, max([last_uid] + [m["uid"] for m in out])
+    return count, top

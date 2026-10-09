@@ -787,7 +787,7 @@ async function renderMailboxes() {
     try {
       const res = await jsonPost("/api/mail-accounts", { store_id: $("mbStore").value,
         address: $("mbAddress").value, password: $("mbPass").value });
-      toast(`Connected · ${res.emails} emails from the last 30 days copied in.`);
+      toast("Connected. The last 30 days of emails are being copied in; open the Inbox in a minute.");
       renderMailboxes();
     } catch (e) { toast(e.message, true); }
     finally { b.disabled = false; b.textContent = "Connect mailbox"; }

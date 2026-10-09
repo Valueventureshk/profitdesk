@@ -661,16 +661,28 @@ async def api_cog_products(store: int):
 
 # ---------------------------------------------------------------- inbox (see mail_client.py)
 
+_reading: set = set()
+
+
 async def _read_mailbox(acct: dict) -> int:
-    try:
-        msgs, last = await asyncio.to_thread(mail_client.fetch_new, acct["address"], acct["password"],
-                                             acct["last_uid"], acct["provider"])
-    except mail_client.MailError as e:
-        db.mail_checked(acct["id"], error=str(e))
+    """Copy a mailbox's new emails in, saving after every batch of 50."""
+    if acct["id"] in _reading:          # already being read (e.g. right after connecting)
         return 0
-    db.save_mail(acct["id"], msgs)
-    db.mail_checked(acct["id"], last_uid=last)
-    return len(msgs)
+    _reading.add(acct["id"])
+
+    def save(batch, top):
+        db.save_mail(acct["id"], batch)
+        db.mail_checked(acct["id"], last_uid=top)
+    try:
+        count, last = await asyncio.to_thread(mail_client.fetch_new, acct["address"], acct["password"],
+                                              acct["last_uid"], acct["provider"], save)
+        db.mail_checked(acct["id"], last_uid=last)
+        return count
+    except Exception as e:
+        db.mail_checked(acct["id"], error=str(e)[:300])
+        return 0
+    finally:
+        _reading.discard(acct["id"])
 
 
 async def _mail_loop():
@@ -679,7 +691,7 @@ async def _mail_loop():
     while True:
         for acct in db.list_mail_accounts():
             try:
-                await _read_mailbox(acct)
+                await _read_mailbox(acct)   # fresh row each time: last_uid moves on
             except Exception as e:
                 print(f"Reading {acct['address']} failed: {e}", flush=True)
         await asyncio.sleep(120)
@@ -718,8 +730,8 @@ async def api_add_mail_account(payload: dict):
     store_id = payload.get("store_id") or None
     aid = db.add_mail_account(int(store_id) if store_id else None, address, password)
     acct = next(a for a in db.list_mail_accounts() if a["id"] == aid)
-    got = await _read_mailbox(acct)
-    return {"ok": True, "id": aid, "emails": got}
+    asyncio.create_task(_read_mailbox(acct))       # big mailboxes take a minute or two
+    return {"ok": True, "id": aid}
 
 
 @app.delete("/api/mail-accounts/{account_id}")
