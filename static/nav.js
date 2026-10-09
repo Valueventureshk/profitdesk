@@ -30,10 +30,25 @@
     menu.hidden = true;
     const allowed = SECTIONS.filter((s) => !s.desk || !me || (me.desks || []).includes(s.desk))
       .filter((s) => !s.soon || !me || me.role === "owner");
+    const dark = () => document.documentElement.dataset.theme === "dark";
+    const themeItem = () => `<button class="section-item theme-toggle" data-theme-toggle>
+        <strong>${dark() ? "☀ Day mode" : "☾ Night mode"}</strong><span>Switch the colours on this device</span></button>`;
     menu.innerHTML = allowed.map((s) => s.soon
       ? `<div class="section-item soon"><strong>${s.label}</strong><span>${s.note}</span></div>`
       : `<a class="section-item${location.pathname === s.href ? " on" : ""}" href="${s.href}">
-           <strong>${s.label}</strong><span>${s.note}</span></a>`).join("");
+           <strong>${s.label}</strong><span>${s.note}</span></a>`).join("") + themeItem();
+    const wireTheme = () => {
+      menu.querySelector("[data-theme-toggle]").onclick = (e) => {
+        e.stopPropagation();
+        const next = dark() ? "light" : "dark";
+        document.documentElement.dataset.theme = next;
+        try { localStorage.setItem("pdTheme", next); } catch { /* private mode */ }
+        menu.querySelector("[data-theme-toggle]").outerHTML = themeItem();
+        wireTheme();
+        window.dispatchEvent(new Event("pd-theme"));
+      };
+    };
+    wireTheme();
     document.body.appendChild(menu);
 
     const place = () => {

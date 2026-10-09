@@ -627,7 +627,74 @@ async function connectWithToken(domain, token) {
 
 /* ------------------------------------------------ settings drawer */
 
+// Settings as tidy groups of expandable items, each with its logo.
+const SET_ICONS = {
+  shopify: LOGO.shopify, google: LOGO.google, meta: LOGO.meta,
+  gmail: `<svg class="logo" viewBox="0 0 24 24"><path fill="#4285F4" d="M2 6.5V18a1.5 1.5 0 0 0 1.5 1.5H6V10l6 4.5 6-4.5v9.5h2.5A1.5 1.5 0 0 0 22 18V6.5l-2.4-1.8L12 10.4 4.4 4.7z"/><path fill="#EA4335" d="M6 10v9.5h0V10l6 4.5 6-4.5L12 10.4 4.4 4.7 2 6.5z" opacity=".9"/><path fill="#34A853" d="M18 10v9.5h2.5A1.5 1.5 0 0 0 22 18V6.5z"/><path fill="#FBBC05" d="M2 6.5V18a1.5 1.5 0 0 0 1.5 1.5H6V10z"/></svg>`,
+  ai: `<svg class="logo" viewBox="0 0 24 24"><path fill="#D97757" d="M12 2l1.9 6.1L20 10l-6.1 1.9L12 18l-1.9-6.1L4 10l6.1-1.9z"/><path fill="#D97757" d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z" opacity=".7"/></svg>`,
+  people: `<svg class="logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.5 3.4-5.5 6.5-5.5s5.7 2 6.5 5.5"/><circle cx="17.5" cy="9" r="2.6"/><path d="M16 14.6c2.6-.2 4.9 1.4 5.5 4.4"/></svg>`,
+  fees: `<svg class="logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2.5" y="5.5" width="19" height="13" rx="2.5"/><path d="M2.5 10h19M6.5 15h4"/></svg>`,
+  groups: `<svg class="logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="3" width="8" height="8" rx="2"/><rect x="3" y="13" width="8" height="8" rx="2"/><rect x="13" y="13" width="8" height="8" rx="2"/></svg>`,
+  backup: `<svg class="logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M7 18.5h10.5a4 4 0 0 0 .6-7.95A6 6 0 0 0 6.5 9.5 4.5 4.5 0 0 0 7 18.5z"/><path d="M12 10v6m-2.5-2.5L12 16l2.5-2.5"/></svg>`,
+  stores: `<svg class="logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 9.5V20h16V9.5"/><path d="M3 9.5 5 4h14l2 5.5a3 3 0 0 1-6 0 3 3 0 0 1-6 0 3 3 0 0 1-6 0z"/><path d="M10 20v-5h4v5"/></svg>`,
+};
+const SET_META = {
+  "Your stores": ["Connections", "stores", "Each store's Google tax, linked Google and Meta ad accounts"],
+  "Add a Shopify store": ["Connections", "shopify", "Connect another Shopify store with its own app"],
+  "Google Ads": ["Connections", "google", "Sign in with Google for ad spend and the spend sheet"],
+  "Meta Ads": ["Connections", "meta", "Meta business access tokens for ad spend"],
+  "Support mailboxes": ["Connections", "gmail", "Each store's support inbox for the Inbox desk"],
+  "AI": ["Connections", "ai", "Claude: sorts emails, drafts replies, answers the chat"],
+  "Processing fees": ["Money", "fees", "PayPal, Airwallex and Afterpay rates used for estimates"],
+  "Store groups": ["Money", "groups", "Group stores to see them together on the dashboard"],
+  "People": ["Team", "people", "Who can log in, their access level and desks"],
+  "Backup": ["Data", "backup", "Download or restore everything in one file"],
+};
+let settingsOrganised = false;
+
+function organiseSettings() {
+  if (settingsOrganised) return;
+  settingsOrganised = true;
+  const body = document.querySelector("#drawer .drawer-body");
+  const groups = {};
+  for (const sec of [...body.querySelectorAll(":scope > section.block")]) {
+    const h = sec.querySelector(":scope > h3");
+    const name = h ? h.textContent.trim() : "";
+    const [group, icon, sub] = SET_META[name] || ["Other", "stores", ""];
+    const inner = document.createElement("div");
+    inner.className = "set-inner";
+    while (h.nextSibling) inner.appendChild(h.nextSibling);
+    const wrap = document.createElement("div");
+    wrap.className = "set-body";
+    wrap.appendChild(inner);
+    const head = document.createElement("button");
+    head.type = "button";
+    head.className = "set-head";
+    head.innerHTML = `<span class="set-ico">${SET_ICONS[icon] || ""}</span>
+      <span class="set-txt"><strong>${esc(name)}</strong><small>${esc(sub)}</small></span><span class="set-chev">›</span>`;
+    head.onclick = () => sec.classList.toggle("open");
+    h.replaceWith(head);
+    sec.appendChild(wrap);
+    sec.classList.add("set-item");
+    (groups[group] = groups[group] || []).push(sec);
+  }
+  for (const g of ["Connections", "Money", "Team", "Data", "Other"]) {
+    if (!groups[g]) continue;
+    const label = document.createElement("div");
+    label.className = "set-group";
+    label.textContent = g;
+    body.appendChild(label);
+    for (const sec of groups[g]) body.appendChild(sec);
+  }
+}
+
+function openSettingsItem(id) {
+  const sec = document.getElementById(id);
+  if (sec) { sec.classList.add("open"); sec.scrollIntoView({ block: "start", behavior: "smooth" }); }
+}
+
 async function openSettings() {
+  organiseSettings();
   $("drawer").hidden = false;
   renderGoogleBox();
   renderMetaBox();
@@ -644,7 +711,7 @@ function closeSettings() { $("drawer").hidden = true; }
 
 async function openGroupSettings() {
   const pending = openSettings();
-  $("groupsBlock").scrollIntoView({ block: "start" });
+  openSettingsItem("groupsBlock");
   await pending;
 }
 
