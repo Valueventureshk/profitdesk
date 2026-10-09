@@ -609,3 +609,12 @@ td.inv-status .btn { margin-top: 4px; }
 .avail-flow i { font-style: normal; color: var(--faint); }
 .avail-step { display: inline-flex; gap: 5px; align-items: baseline; }
 .avail-step b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* Access levels: hidden for people without that access (the server enforces it too). */
+body.not-owner [data-owner-only] { display: none !important; }
+body.read-only [data-write-only] { display: none !important; }
+
+.person { border-bottom: 1px solid var(--line-soft); }
+.person-edit { padding: 4px 0 12px; }
+.desk-picks { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 4px; }
+.desk-picks label { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }

@@ -76,6 +76,12 @@ file and have it work.
   `.env` (Shopify/Google client ids and secrets, API versions). Values never in chat.
 - To check the live app, use a browser where the owner is logged in and call the
   app's own `/api/...` routes. Don't use the owner's personal Chrome without asking.
+- People and access (`users.role`, `users.desks`): owner (everything, incl. Settings,
+  connections, people, backups), write (work in their desks: upload invoices,
+  approve prices, refresh COG), read (view only). Desks: profit, cash, cog. Enforced in
+  the login middleware (`_denied`, `_DESK_PATHS`, `_WRITE_OK`); pages hide
+  `data-owner-only` / `data-write-only` elements to match. New people get a temporary
+  password and must choose their own at first login (`/change-password`).
 - Business clock is Hong Kong (`CASH_TIMEZONE`). Each store has its own clock;
   "today" is the furthest-ahead store's date.
 

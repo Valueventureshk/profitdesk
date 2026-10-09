@@ -84,13 +84,63 @@ _OPEN = {"/login", "/api/login", "/api/logout", "/api/first-user", "/api/first-r
          "/healthz", "/about", "/privacy", "/terms"}
 
 
+# Each desk's pages and data. Anything not listed (Settings, connections, people,
+# backups, store setup) is for owners only.
+_DESK_PATHS = {
+    "profit": ("/", "/api/dashboard", "/api/history"),
+    "cash": ("/cash", "/api/cash"),
+    "cog": ("/cog", "/api/cog", "/api/invoices"),
+}
+_DESK_HOME = {"profit": "/", "cash": "/cash", "cog": "/cog"}
+# Shared by every desk's pages: the user's own details and the dropdown lists.
+_EVERYONE = {"/api/me", "/api/me/password", "/api/logout", "/change-password",
+             "/api/setup"}
+# What "read & write" people may change (owners may change anything).
+_WRITE_OK = ("/api/invoices", "/api/cog/sync")
+
+
+def _desk_of(path: str):
+    for desk, prefixes in _DESK_PATHS.items():
+        for p in prefixes:
+            if path == p or (p != "/" and path.startswith(p + "/")) or (p != "/" and path == p):
+                return desk
+    return None
+
+
+def _denied(request: Request, user: dict):
+    """None if this user may make this request, else the response to send."""
+    path, method = request.url.path, request.method
+    is_api = path.startswith("/api/")
+    if user.get("must_change") and path not in _EVERYONE:
+        if is_api:
+            return JSONResponse({"error": "Choose your own password first.", "change_password": True},
+                                status_code=403)
+        return RedirectResponse("/change-password", status_code=303)
+    if user.get("role", "owner") == "owner" or path in _EVERYONE:
+        return None
+    desks = [d for d in (user.get("desks") or "").split(",") if d]
+    desk = _desk_of(path)
+    if desk is None or desk not in desks:
+        if is_api:
+            return JSONResponse({"error": "You don't have access to that."}, status_code=403)
+        return RedirectResponse(_DESK_HOME.get(desks[0] if desks else "", "/change-password"),
+                                status_code=303)
+    if method not in ("GET", "HEAD") and not (
+            user.get("role") == "write" and any(path.startswith(p) for p in _WRITE_OK)):
+        return JSONResponse({"error": "Your access is view-only for this."}, status_code=403)
+    return None
+
+
 @app.middleware("http")
 async def _require_login(request: Request, call_next):
     path = request.url.path
     user = auth.user_for(request.cookies.get(auth.SESSION_COOKIE))
     request.state.user = user
-    if user or path in _OPEN or path.startswith("/static/"):
+    if path in _OPEN or path.startswith("/static/"):
         return await call_next(request)
+    if user:
+        blocked = _denied(request, user)
+        return blocked or await call_next(request)
     if path.startswith("/api/"):
         return JSONResponse({"error": "Please log in again.", "login": True}, status_code=401)
     target = path + (f"?{request.url.query}" if request.url.query else "")
@@ -244,18 +294,53 @@ def api_logout(request: Request):
     return resp
 
 
+@app.get("/api/me")
+def api_me(request: Request):
+    """Who's logged in and what they may use (to show only their desks)."""
+    me = dict(request.state.user)
+    me["desks"] = [d for d in (me.get("desks") or "").split(",") if d] \
+        if me.get("role") != "owner" else list(auth.DESKS)
+    return me
+
+
 @app.get("/api/users")
 def api_users(request: Request):
-    return {"me": request.state.user, "users": db.list_users()}
+    users = db.list_users()
+    for u in users:
+        u["desks"] = [d for d in (u.get("desks") or "").split(",") if d]
+    return {"me": request.state.user, "users": users}
 
 
 @app.post("/api/users")
 def api_add_user(payload: dict):
+    """Add a person with a temporary password they must change at first login."""
     try:
-        uid = auth.create_user(payload.get("email"), payload.get("name"), payload.get("password"))
+        uid = auth.create_user(payload.get("email"), payload.get("name"), payload.get("password"),
+                               payload.get("role"), payload.get("desks"), temporary=True)
     except auth.AuthError as e:
         raise HTTPException(400, str(e))
     return {"id": uid}
+
+
+@app.put("/api/users/{user_id}")
+def api_update_user(user_id: int, payload: dict, request: Request):
+    user = db.get_user(user_id)
+    if not user:
+        raise HTTPException(404, "That person no longer exists.")
+    try:
+        role, desks = auth.clean_access(payload.get("role", user["role"]),
+                                        payload.get("desks", (user["desks"] or "").split(",")))
+        if user_id == request.state.user["id"] and role != "owner":
+            raise auth.AuthError("You can't take owner access away from yourself.")
+        if user["role"] == "owner" and role != "owner" and \
+                sum(1 for u in db.list_users() if u["role"] == "owner") <= 1:
+            raise auth.AuthError("ProfitDesk needs at least one owner.")
+        db.set_user_access(user_id, role, desks, (payload.get("name") or "").strip() or None)
+        if payload.get("password"):
+            auth.reset_password(user_id, payload["password"])
+    except auth.AuthError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True}
 
 
 @app.delete("/api/users/{user_id}")
@@ -264,6 +349,11 @@ def api_remove_user(user_id: int, request: Request):
         raise HTTPException(400, "You can't remove your own account while logged in with it.")
     db.delete_user(user_id)
     return {"ok": True}
+
+
+@app.get("/change-password", response_class=HTMLResponse)
+def change_password_page():
+    return _page("change.html", ("styles.css",))
 
 
 @app.post("/api/me/password")

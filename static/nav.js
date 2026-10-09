@@ -2,19 +2,33 @@
    Phones and desktop both open it by tapping/clicking the logo. */
 (function () {
   const SECTIONS = [
-    { href: "/", label: "Profit dashboard", note: "Sales, ad spend, fees and profit" },
-    { href: "/cash", label: "Cash flow", note: "Balances and money arriving" },
-    { href: "/cog", label: "COG + Products Monitor", note: "What every order cost, product costs" },
+    { href: "/", desk: "profit", label: "Profit dashboard", note: "Sales, ad spend, fees and profit" },
+    { href: "/cash", desk: "cash", label: "Cash flow", note: "Balances and money arriving" },
+    { href: "/cog", desk: "cog", label: "COG + Products Monitor", note: "What every order cost, product costs" },
     { label: "Accounting", note: "Coming soon", soon: true },
   ];
 
-  function build() {
+  // Who's logged in: only their desks show in the menu; owner-only and
+  // change buttons hide for people without that access (the server enforces it too).
+  let me = null;
+  const ready = fetch("/api/me").then((r) => (r.ok ? r.json() : null)).then((m) => {
+    me = m;
+    if (!m) return;
+    document.body.classList.toggle("not-owner", m.role !== "owner");
+    document.body.classList.toggle("read-only", m.role === "read");
+  }).catch(() => {});
+  window.pdMe = () => ready.then(() => me);
+
+  async function build() {
     const trigger = document.querySelector("[data-section-menu]");
     if (!trigger) return;
+    await ready;
     const menu = document.createElement("div");
     menu.className = "section-menu";
     menu.hidden = true;
-    menu.innerHTML = SECTIONS.map((s) => s.soon
+    const allowed = SECTIONS.filter((s) => !s.desk || !me || (me.desks || []).includes(s.desk))
+      .filter((s) => !s.soon || !me || me.role === "owner");
+    menu.innerHTML = allowed.map((s) => s.soon
       ? `<div class="section-item soon"><strong>${s.label}</strong><span>${s.note}</span></div>`
       : `<a class="section-item${location.pathname === s.href ? " on" : ""}" href="${s.href}">
            <strong>${s.label}</strong><span>${s.note}</span></a>`).join("");

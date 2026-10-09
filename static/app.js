@@ -256,7 +256,7 @@ function renderNav() {
     parts.push(navItem("all", "All stores", "&#9638;"));
     for (const g of groups) parts.push(navItem(`g${g.id}`, g.name, "&#9707;"));
     parts.push(`<button class="nav-item nav-sub" data-manage-groups>
-                  <span class="ico">+</span><span class="txt">New group</span></button>`);
+                  <span class="ico">+</span><span class="txt">New group</span></button>`.replace("<button ", "<button data-owner-only "));
     parts.push(`<div class="nav-label">Stores</div>`);
   } else {
     parts.push(`<div class="nav-label">Store</div>`);
@@ -648,24 +648,53 @@ async function openGroupSettings() {
 
 /* ------------------------------------------------ people */
 
+const LEVELS = { owner: "Owner (everything, incl. Settings)", write: "Read & write", read: "Read only" };
+const DESK_NAMES = { profit: "Profit dashboard", cash: "Cash flow", cog: "COG + Products" };
+
+function accessFields(prefix, role = "read", desks = ["profit"]) {
+  return `<label class="field"><span>Access level</span>
+      <select id="${prefix}Role" class="control">${Object.entries(LEVELS).map(([k, v]) =>
+        `<option value="${k}"${k === role ? " selected" : ""}>${v}</option>`).join("")}</select></label>
+    <div class="field" id="${prefix}DeskBox"${role === "owner" ? " hidden" : ""}><span>Desks they can open</span>
+      <div class="desk-picks">${Object.entries(DESK_NAMES).map(([k, v]) => `
+        <label><input type="checkbox" data-desk="${k}"${desks.includes(k) ? " checked" : ""}> ${v}</label>`).join("")}</div></div>`;
+}
+
+function readAccess(prefix) {
+  const role = $(prefix + "Role").value;
+  const desks = [...document.querySelectorAll(`#${prefix}DeskBox [data-desk]`)]
+    .filter((c) => c.checked).map((c) => c.dataset.desk);
+  return { role, desks };
+}
+
+function wireAccess(prefix) {
+  $(prefix + "Role").onchange = () => { $(prefix + "DeskBox").hidden = $(prefix + "Role").value === "owner"; };
+}
+
 async function renderPeople() {
   let r;
   try { r = await api("/api/users"); } catch (e) { toast(e.message, true); return; }
   const rows = r.users.map((u) => `
-    <div class="group-row">
-      <div class="group-name"><strong>${esc(u.name || u.email)}${u.id === r.me.id ? " (you)" : ""}</strong>
-        <span>${esc(u.email)}</span></div>
-      ${u.id === r.me.id ? "" : `<button class="btn btn-sm btn-danger" data-remove-user="${u.id}">Remove</button>`}
+    <div class="person">
+      <div class="group-row">
+        <div class="group-name"><strong>${esc(u.name || u.email)}${u.id === r.me.id ? " (you)" : ""}</strong>
+          <span>${esc(u.email)} · ${esc((LEVELS[u.role] || u.role).split(" (")[0])}${u.role === "owner" ? ""
+            : " · " + u.desks.map((d) => DESK_NAMES[d] || d).join(", ")}${u.must_change ? " · hasn't logged in yet" : ""}</span></div>
+        <button class="btn btn-sm btn-ghost" data-edit-user="${u.id}">Edit</button>
+        ${u.id === r.me.id ? "" : `<button class="btn btn-sm btn-danger" data-remove-user="${u.id}">Remove</button>`}
+      </div>
+      <div class="person-edit" id="edit${u.id}" hidden></div>
     </div>`).join("");
 
   $("peopleBox").innerHTML = `${rows}
     <details class="advanced"><summary>Add a person</summary>
       <label class="field"><span>Name</span><input id="puName" type="text"></label>
-      <label class="field"><span>Email</span><input id="puEmail" type="email" autocomplete="off"></label>
-      <label class="field"><span>Starting password (10+ characters)</span>
-        <input id="puPass" type="password" autocomplete="new-password"></label>
-      <p class="hint">Send them the email and password yourself. They can change the
-        password after logging in.</p>
+      <label class="field"><span>Email (they log in with this)</span><input id="puEmail" type="email" autocomplete="off"></label>
+      <label class="field"><span>Temporary password (10+ characters)</span>
+        <input id="puPass" type="text" autocomplete="off"></label>
+      ${accessFields("pu")}
+      <p class="hint">Send them the email and temporary password yourself. At their first login
+        they have to choose their own password before they can see anything.</p>
       <button id="puAdd" class="btn btn-primary btn-block">Add person</button>
     </details>
     <details class="advanced"><summary>Change my password</summary>
@@ -675,12 +704,13 @@ async function renderPeople() {
         <input id="pwNew" type="password" autocomplete="new-password"></label>
       <button id="pwSave" class="btn btn-ghost btn-block">Change password</button>
     </details>`;
+  wireAccess("pu");
 
   $("puAdd").onclick = async () => {
     try {
       await jsonPost("/api/users", { name: $("puName").value, email: $("puEmail").value,
-                                     password: $("puPass").value });
-      toast("Added. Share their email and password with them.");
+                                     password: $("puPass").value, ...readAccess("pu") });
+      toast("Added. Send them their email and temporary password.");
       renderPeople();
     } catch (e) { toast(e.message, true); }
   };
@@ -691,6 +721,27 @@ async function renderPeople() {
       renderPeople();
     } catch (e) { toast(e.message, true); }
   };
+  for (const b of $("peopleBox").querySelectorAll("[data-edit-user]")) {
+    b.onclick = () => {
+      const u = r.users.find((x) => String(x.id) === b.dataset.editUser);
+      const box = $("edit" + u.id);
+      if (!box.hidden) { box.hidden = true; return; }
+      const p = "ed" + u.id;
+      box.innerHTML = `${accessFields(p, u.role, u.desks)}
+        <label class="field"><span>New temporary password (only to reset it)</span>
+          <input id="${p}Pass" type="text" autocomplete="off" placeholder="Leave empty to keep their password"></label>
+        <button class="btn btn-primary btn-block" id="${p}Save">Save</button>`;
+      box.hidden = false;
+      wireAccess(p);
+      $(p + "Save").onclick = async () => {
+        try {
+          await jsonPost(`/api/users/${u.id}`, { ...readAccess(p), password: $(p + "Pass").value || undefined }, "PUT");
+          toast($(p + "Pass").value ? "Saved. They'll choose a new password at next login." : "Access saved.");
+          renderPeople();
+        } catch (e) { toast(e.message, true); }
+      };
+    };
+  }
   for (const b of $("peopleBox").querySelectorAll("[data-remove-user]")) {
     b.onclick = async () => {
       const u = r.users.find((x) => String(x.id) === b.dataset.removeUser);

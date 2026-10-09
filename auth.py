@@ -63,21 +63,50 @@ def has_users() -> bool:
     return bool(db.list_users())
 
 
-def create_user(email: str, name: str, password: str) -> int:
+ROLES = ("owner", "write", "read")
+DESKS = ("profit", "cash", "cog")
+
+
+def clean_access(role: str, desks) -> tuple:
+    role = (role or "read").strip().lower()
+    if role not in ROLES:
+        raise AuthError("Pick an access level.")
+    picked = [d for d in DESKS if d in (desks or [])] if role != "owner" else list(DESKS)
+    if not picked:
+        raise AuthError("Give them at least one desk.")
+    return role, ",".join(picked)
+
+
+def create_user(email: str, name: str, password: str, role: str = "owner",
+                desks=DESKS, temporary: bool = False) -> int:
     email = _clean_email(email)
     _check_new_password(password)
     if db.get_user_by_email(email):
         raise AuthError("Someone with that email already has an account.")
+    role, desk_list = clean_access(role, desks)
     return db.create_user(email, (name or "").strip() or email.split("@")[0],
-                          hash_password(password))
+                          hash_password(password), role, desk_list, temporary)
 
 
 def change_password(user_id: int, current: str, new: str):
+    """Change your own password. Someone still on a temporary password doesn't
+    need to type it again: they've just logged in with it."""
     user = db.get_user(user_id)
-    if not user or not check_password(current or "", user["password_hash"]):
+    if not user:
+        raise AuthError("Your account no longer exists.")
+    if not user.get("must_change") and not check_password(current or "", user["password_hash"]):
         raise AuthError("Your current password isn't right.")
     _check_new_password(new)
+    if check_password(new, user["password_hash"]):
+        raise AuthError("Choose a different password from the temporary one.")
     db.set_user_password(user_id, hash_password(new))
+    db.delete_sessions_for(user_id, keep=None)
+
+
+def reset_password(user_id: int, temporary: str):
+    """An owner sets a new temporary password; it must be changed at next login."""
+    _check_new_password(temporary)
+    db.set_user_password(user_id, hash_password(temporary), must_change=True)
     db.delete_sessions_for(user_id, keep=None)
 
 

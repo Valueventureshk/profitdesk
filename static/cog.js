@@ -175,7 +175,7 @@ async function showInvoice(id) {
   const rows = d.lines.map((l) => {
     const [cls, label] = STATUS[l.status] || ["bad", l.status];
     const approve = l.status === "changed" && !l.approved_at
-      ? `<button class="btn btn-sm btn-primary" data-approve="${l.line_no}">Checked with supplier — use new price</button>`
+      ? `<button class="btn btn-sm btn-primary" data-write-only data-approve="${l.line_no}">Checked with supplier — use new price</button>`
       : (l.approved_at ? `<span class="hint">Approved${l.approved_by ? " by " + esc(l.approved_by) : ""}</span>` : "");
     return `<tr><td class="name">${esc(l.order_name || l.order_key)}<span class="sub">${esc(l.title)}</span>
         ${l.product && l.product !== l.title ? `<span class="sub">→ ${esc(l.product)}</span>` : ""}</td>
@@ -190,7 +190,7 @@ async function showInvoice(id) {
   $("invDetail").innerHTML = `<div class="panel-head"><h2>${esc(i.supplier || "?")} invoice #${esc(i.number || "—")}
       · ${esc(i.store)} · ${i.date ? niceDate(i.date) : ""}</h2>
       <span><button class="btn btn-sm btn-ghost" id="invClose">Close</button>
-      <button class="btn btn-sm btn-danger" id="invDelete">Delete</button></span></div>
+      <button class="btn btn-sm btn-danger" id="invDelete" data-write-only>Delete</button></span></div>
     ${missing}
     <div class="table-wrap"><table class="table"><thead><tr><th>Order / product</th><th>Invoice</th><th>Before</th><th>Check</th></tr></thead>
       <tbody>${rows}</tbody></table></div>`;

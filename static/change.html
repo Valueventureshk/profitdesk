@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ProfitDesk · Choose your password</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<div class="setup">
+  <form class="setup-card" id="form" autocomplete="on">
+    <div class="setup-mark">PD</div>
+    <h1>Choose your password</h1>
+    <p class="setup-sub" id="sub">You logged in with a temporary password. Pick your own to continue.</p>
+    <input type="email" id="email" autocomplete="username" hidden>
+    <label class="field">
+      <span>New password (10+ characters)</span>
+      <input id="password" type="password" autocomplete="new-password" required>
+    </label>
+    <label class="field">
+      <span>New password again</span>
+      <input id="confirm" type="password" autocomplete="new-password" required>
+    </label>
+    <button class="btn btn-primary btn-block" id="go" type="submit">Save and continue</button>
+    <p class="notice" id="notice" hidden></p>
+  </form>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+const HOME = { profit: "/", cash: "/cash", cog: "/cog" };
+let me = null;
+fetch("/api/me").then((r) => r.json()).then((m) => {
+  me = m;
+  if (m.email) $("email").value = m.email;
+  if (m.login) location.href = "/login";
+  if (m.email && !m.must_change) location.href = HOME[(m.desks || [])[0]] || "/";
+});
+$("form").onsubmit = async (e) => {
+  e.preventDefault();
+  const show = (msg) => { $("notice").textContent = msg; $("notice").hidden = false; };
+  if ($("password").value !== $("confirm").value) return show("The two passwords don't match.");
+  $("go").disabled = true;
+  const r = await fetch("/api/me/password", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ current: "", new: $("password").value }) });
+  const body = await r.json().catch(() => ({}));
+  $("go").disabled = false;
+  if (!r.ok) return show(body.error || "Couldn't save that password.");
+  location.href = HOME[(me && me.desks || [])[0]] || "/";
+};
+</script>
+</body>
+</html>

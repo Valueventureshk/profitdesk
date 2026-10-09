@@ -19,7 +19,7 @@
     </div>
     <div class="controls">
       <select id="currencySelect" class="control" title="Show every figure in this currency"></select>
-      <button id="refresh" class="btn btn-ghost" title="Re-read the orders sheet and re-cost recent orders">Refresh</button>
+      <button id="refresh" data-write-only class="btn btn-ghost" title="Re-read the orders sheet and re-cost recent orders">Refresh</button>
     </div>
   </header>
 
@@ -60,7 +60,7 @@
     </section>
 
     <section id="invoicesView" hidden>
-      <label class="drop" id="drop">
+      <label class="drop" id="drop" data-write-only>
         <input type="file" id="invFile" accept=".pdf,.csv,.txt" multiple hidden>
         <strong>Drop supplier invoices here</strong>
         <span>or click to choose · PDF (Dayone) · one store per invoice</span>
