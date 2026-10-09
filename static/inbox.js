@@ -160,7 +160,6 @@ async function openTicket(id) {
     </div>`).join("");
   $("read").innerHTML = `
     <div class="tk-layout">
-      <aside class="tk-orders" id="tkOrders"><div class="tk-side-label">Orders</div><p class="hint">Looking up…</p></aside>
       <div class="tk-main">
         <h2 class="mail-h">${esc(t.subject || "(no subject)")}</h2>
         <div class="mail-meta"><strong>${esc(t.customer_name || "")}</strong> &lt;${esc(t.customer_email)}&gt;
@@ -182,6 +181,7 @@ async function openTicket(id) {
         </div>
       </div>
       <aside class="tk-side">
+        <div class="tk-orders" id="tkOrders"><div class="tk-side-label">Orders</div><p class="hint">Looking up…</p></div>
         <div class="tk-side-label">Status</div>
         <label class="tk-check"><input type="checkbox" disabled ${t.status === "open" && t.waiting === "customer" ? "checked" : ""}> We replied last</label>
         <label class="tk-check"><input type="checkbox" disabled ${t.status === "open" && t.waiting === "us" ? "checked" : ""}> Waiting on us</label>
@@ -256,17 +256,28 @@ async function openTicket(id) {
     $("tkEsc").checked ? "Escalated." : "No longer escalated.");
 }
 
+// How the order was paid, as a small badge (from Shopify's gateway names).
+function payIcon(gateways) {
+  const g = (gateways || []).join(" ").toLowerCase();
+  if (!g) return "";
+  if (g.includes("afterpay")) return `<span class="pay pay-afterpay" title="Afterpay (via Airwallex)">afterpay</span>`;
+  if (g.includes("paypal")) return `<span class="pay pay-paypal" title="PayPal"><b>Pay</b>Pal</span>`;
+  if (g.includes("airwallex")) return `<span class="pay pay-card" title="Card via Airwallex">▭ Card</span>`;
+  if (g.includes("shopify_payments")) return `<span class="pay pay-card" title="Shopify Payments">▭ Card</span>`;
+  return `<span class="pay" title="${esc(gateways.join(", "))}">${esc(gateways[0])}</span>`;
+}
+
 async function loadOrders(id) {
   let d;
   try { d = await api(`/api/inbox/tickets/${id}/orders`); }
   catch (e) { if ($("tkOrders")) $("tkOrders").innerHTML = `<div class="tk-side-label">Orders</div><p class="hint">${esc(e.message)}</p>`; return; }
   if (!current || current.id !== id || !$("tkOrders")) return;
   const money = (v, c) => { try { return new Intl.NumberFormat(undefined, { style: "currency", currency: c }).format(v); } catch { return v.toFixed(2); } };
-  $("tkOrders").innerHTML = `<div class="tk-side-label">Orders</div>` + (d.orders.length ? d.orders.map((o) => `
+  $("tkOrders").innerHTML = `<div class="tk-side-label">Order${d.orders.length === 1 ? "" : "s"}</div>` + (d.orders.length ? d.orders.map((o) => `
     <div class="ord">
       <div class="ord-head"><a href="${esc(o.admin_url)}" target="_blank" rel="noopener">${esc(o.name)} ↗</a>
         <span>${new Date(o.created).toLocaleDateString(undefined, { day: "numeric", month: "short" })}</span></div>
-      <div class="ord-row"><b>${money(o.total, o.currency)}</b>${o.refunded ? ` · refunded ${money(o.refunded, o.currency)}` : ""}</div>
+      <div class="ord-row"><b>${money(o.total, o.currency)}</b> ${payIcon(o.gateways)}${o.refunded ? `<div class="hint">refunded ${money(o.refunded, o.currency)}</div>` : ""}</div>
       <div class="ord-tags">
         <span class="tk ${o.cancelled ? "tk-esc" : "tk-done"}">${o.cancelled ? "Cancelled" : esc((o.financial || "").toLowerCase().replace(/_/g, " "))}</span>
         <span class="tk ${o.fulfillment === "FULFILLED" ? "tk-them" : "tk-us"}">${esc((o.fulfillment || "").toLowerCase().replace(/_/g, " "))}</span>

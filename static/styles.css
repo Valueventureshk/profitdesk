@@ -688,8 +688,15 @@ body.read-only [data-write-only] { display: none !important; }
 .mail-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 12px; }
 
 /* Ticket: order panel on the left, links kept short */
-.tk-layout { grid-template-columns: 210px minmax(0, 1fr) 210px; gap: 18px; }
-.tk-orders { border-right: 1px solid var(--line); padding-right: 14px; font-size: 12.5px; min-width: 0; }
+.tk-layout { grid-template-columns: minmax(0, 1fr) 250px; gap: 20px; }
+.tk-orders { font-size: 12.5px; min-width: 0; padding-bottom: 6px; margin-bottom: 4px; border-bottom: 1px solid var(--line); }
+.tk-orders .ord:last-child { border-bottom: 0; }
+.pay { display: inline-flex; align-items: center; gap: 2px; font-size: 10.5px; font-weight: 700; border-radius: 4px;
+  padding: 1px 6px; vertical-align: 1px; background: var(--line-soft); color: var(--muted); }
+.pay-paypal { background: #FFC439; color: #003087; font-style: italic; }
+.pay-paypal b { color: #009CDE; font-weight: 800; }
+.pay-afterpay { background: #B2FCE4; color: #000; letter-spacing: -.2px; }
+.pay-card { background: #EEF2FF; color: #3730A3; }
 .ord { border-bottom: 1px solid var(--line-soft); padding: 8px 0 10px; }
 .ord-head { display: flex; justify-content: space-between; gap: 6px; font-weight: 600; }
 .ord-head span { color: var(--faint); font-weight: 400; }

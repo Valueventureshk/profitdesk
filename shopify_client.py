@@ -89,7 +89,7 @@ ORDER_LOOKUP_QUERY = """
 query Lookup($q: String!) {
   orders(first: 6, query: $q, sortKey: CREATED_AT, reverse: true) {
     nodes {
-      id name createdAt cancelledAt
+      id name createdAt cancelledAt paymentGatewayNames
       displayFinancialStatus displayFulfillmentStatus
       totalPriceSet { shopMoney { amount currencyCode } }
       totalRefundedSet { shopMoney { amount } }
@@ -359,6 +359,7 @@ class ShopifyClient:
                 "id": o["id"].rsplit("/", 1)[-1], "name": o["name"], "created": o["createdAt"],
                 "cancelled": o.get("cancelledAt"),
                 "financial": o.get("displayFinancialStatus") or "",
+                "gateways": o.get("paymentGatewayNames") or [],
                 "fulfillment": o.get("displayFulfillmentStatus") or "",
                 "total": float(money.get("amount") or 0), "currency": money.get("currencyCode") or "",
                 "refunded": float((((o.get("totalRefundedSet") or {}).get("shopMoney")) or {}).get("amount") or 0),
