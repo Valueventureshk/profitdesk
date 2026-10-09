@@ -55,6 +55,14 @@ query OrderLines($cursor: String, $q: String!) {
       cancelledAt
       test
       displayFulfillmentStatus
+      totalPriceSet { shopMoney { amount } }
+      transactions(first: 6) {
+        kind
+        status
+        gateway
+        paymentId
+        amountSet { shopMoney { amount } }
+      }
       lineItems(first: 20) {
         nodes {
           title
@@ -286,6 +294,13 @@ class ShopifyClient:
                         "day": created.date().isoformat(),
                         "cancelled": bool(o.get("cancelledAt")),
                         "fulfillment": o.get("displayFulfillmentStatus") or "",
+                        "total": float(((o.get("totalPriceSet") or {}).get("shopMoney") or {}).get("amount") or 0),
+                        # The money taken for the order: a sale, or an authorisation captured later.
+                        "payments": [{
+                            "gateway": t.get("gateway") or "", "payment_id": t.get("paymentId") or "",
+                            "amount": float(((t.get("amountSet") or {}).get("shopMoney") or {}).get("amount") or 0),
+                        } for t in (o.get("transactions") or [])
+                            if t.get("status") == "SUCCESS" and t.get("kind") in ("SALE", "CAPTURE")],
                         "lines": [{
                             "title": li.get("title") or "", "variant": li.get("variantTitle") or "",
                             "quantity": int(li.get("quantity") or 0), "sku": li.get("sku") or "",

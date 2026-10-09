@@ -79,15 +79,17 @@ def payment_method(gateways: str) -> str:
 
 
 def processing_fees(payments: dict, rates: dict, plan: str, currency: str,
-                    hkd_to_store: float):
+                    hkd_to_store: float, include_fx: bool = False):
     """Estimated (payment provider fee, Shopify third-party fee) for one store-day.
 
     payments     {gateway names: [orders, amount paid]} in the store's currency
     hkd_to_store how many units of the store's currency one HKD is worth, for
                  Airwallex's HK$ fixed fees
-    Currency conversion is charged when the store sells in anything but HKD.
+    include_fx   add the provider's currency conversion % (off by default: PayPal and
+                 Airwallex charge conversion when money is converted, not on each sale,
+                 and the actual per-sale fees they report don't include it)
     """
-    converting = currency != "HKD"
+    converting = include_fx and currency != "HKD"
     shopify_pct = SHOPIFY_THIRD_PARTY_PCT.get(plan, 0.0)
     provider = shopify = 0.0
     for gateways, (orders, amount) in payments.items():
@@ -148,6 +150,16 @@ def reserve_held(payments: dict) -> float:
     ({gateway names: [orders, amount paid]}, store currency)."""
     return sum(amount * RESERVE_PCT.get(payment_method(g), 0.0) / 100.0
                for g, (orders, amount) in payments.items())
+
+
+def provider_fee_day(known: float, covered: float, paid: float, estimate_all: float) -> float:
+    """A store-day's payment provider fees: the fees of the orders already tracked
+    (actual where PayPal / Airwallex have posted them, estimated otherwise), plus
+    the rate-card estimate for any of the day's payments not tracked yet."""
+    if paid <= 0:
+        return known
+    untracked = max(0.0, 1.0 - covered / paid)
+    return known + estimate_all * untracked
 
 
 def _div(a, b):

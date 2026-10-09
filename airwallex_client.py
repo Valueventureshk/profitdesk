@@ -178,3 +178,53 @@ async def card_transactions(client_id: str, api_key: str, since: datetime,
             seen.add(k)
             unique.append(i)
     return unique
+
+
+async def payment_fees(client_id: str, api_key: str, since: datetime, account_id: str = None) -> dict:
+    """{Shopify payment id: {"fee", "currency", "amount"}} for card / Afterpay
+    payments since `since`. Each payment's fee is on its financial transaction;
+    the payment attempt it comes from carries Shopify's payment id as
+    merchant_order_id, which is what links it to the order."""
+    now = datetime.now(timezone.utc)
+    fin = await transactions(client_id, api_key, since, now, account_id)
+    by_attempt = {}
+    for t in fin:
+        if (_f(t, "transaction_type") or "") != "PAYMENT":
+            continue
+        sid = _f(t, "source_id")
+        if sid:
+            by_attempt[sid] = {"fee": abs(float(t.get("fee") or 0)), "currency": t.get("currency"),
+                               "amount": float(t.get("amount") or 0)}
+    if not by_attempt:
+        return {}
+    order_of = {}
+    fmt = "%Y-%m-%dT%H:%M:%S+0000"
+    async with httpx.AsyncClient(timeout=60) as client:
+        token = await _token(client, client_id, api_key, account_id)
+        start = (since - timedelta(days=1)).astimezone(timezone.utc)
+        try:
+            while start < now:
+                stop = min(start + timedelta(days=25), now)
+                page = 0
+                while page < 100:
+                    body = await _get(client, "/api/v1/pa/payment_attempts", token, {
+                        "from_created_at": start.strftime(fmt), "to_created_at": stop.strftime(fmt),
+                        "page_num": page, "page_size": 200}, what="payments")
+                    for a in body.get("items", []):
+                        if a.get("merchant_order_id"):
+                            order_of[a["id"]] = a["merchant_order_id"]
+                    if not _f(body, "has_more"):
+                        break
+                    page += 1
+                start = stop
+        except AirwallexError:
+            pass
+        # Anything the list missed, one by one (a handful at most).
+        for sid in [s for s in by_attempt if s not in order_of][:150]:
+            try:
+                a = await _get(client, f"/api/v1/pa/payment_attempts/{sid}", token, what="a payment")
+                if a.get("merchant_order_id"):
+                    order_of[sid] = a["merchant_order_id"]
+            except AirwallexError:
+                continue
+    return {order_of[s]: v for s, v in by_attempt.items() if s in order_of}

@@ -550,72 +550,6 @@ async def api_cog_products(store: int):
     return {"products": items}
 
 
-@app.get("/api/fees/awx-debug")
-async def api_fees_awx_debug(label: str = "Cutehome"):
-    # TEMPORARY: can the Airwallex key read the payment behind a financial transaction?
-    import httpx as _hx
-    c = next(c for c in db.list_cash_connections() if c["provider"] == "airwallex" and label.lower() in c["label"].lower())
-    now = datetime.now(timezone.utc)
-    rows = await awx.transactions(c["client_id"], c["secret"], now - timedelta(days=1), now, c["account_id"])
-    pays = [t for t in rows if awx._f(t, "transaction_type") == "PAYMENT"][:3]
-    out = {"payments": [{k: v for k, v in t.items() if k not in ("id",)} for t in pays], "lookups": {}}
-    async with _hx.AsyncClient(timeout=60) as client:
-        token = await awx._token(client, c["client_id"], c["secret"], c["account_id"])
-        for t in pays[:2]:
-            sid = awx._f(t, "source_id")
-            for path in (f"/api/v1/pa/payment_attempts/{sid}", f"/api/v1/pa/payment_intents/{sid}"):
-                r = await client.get(f"{awx.API}{path}", headers={"Authorization": f"Bearer {token}"})
-                try:
-                    body = r.json()
-                except ValueError:
-                    body = r.text[:200]
-                if isinstance(body, dict):
-                    body = {k: v for k, v in body.items() if k in ("id", "payment_intent_id", "merchant_order_id",
-                            "amount", "currency", "status", "created_at", "metadata", "merchant_reference",
-                            "code", "message", "descriptor", "request_id")}
-                out["lookups"][path.split("/")[-2] + ":" + sid[:8]] = {"status": r.status_code, "body": body}
-        r = await client.get(f"{awx.API}/api/v1/pa/payment_intents", params={"page_size": 3},
-                             headers={"Authorization": f"Bearer {token}"})
-        try:
-            b = r.json()
-        except ValueError:
-            b = r.text[:200]
-        out["intents_list"] = {"status": r.status_code, "body": [{k: v for k, v in i.items() if k in
-            ("id", "merchant_order_id", "amount", "currency", "metadata", "created_at", "status", "descriptor")}
-            for i in b.get("items", [])] if isinstance(b, dict) and "items" in b else b}
-    return out
-
-
-@app.get("/api/fees/debug")
-async def api_fees_debug(store: int, n: int = 6):
-    # TEMPORARY: how Shopify records each order's PayPal / Airwallex payment (ids only).
-    x = next(s for s in db.list_stores() if s["id"] == store)
-    q = """query($n:Int!){ orders(first:$n, reverse:true, sortKey:CREATED_AT){ nodes { name createdAt
-      paymentGatewayNames transactions(first:5){ kind status gateway authorizationCode paymentId
-      amountSet{shopMoney{amount currencyCode}} receiptJson } } } }"""
-    import httpx as _hx
-    c = ShopifyClient(x["shop_domain"], x["access_token"])
-    async with _hx.AsyncClient(timeout=60) as client:
-        data = await c._post(client, q, {"n": n})
-    out = []
-    for o in data["orders"]["nodes"]:
-        txs = []
-        for t in o["transactions"]:
-            try:
-                r = json.loads(t.get("receiptJson") or "{}")
-            except ValueError:
-                r = {}
-            flat = {k: v for k, v in (r.items() if isinstance(r, dict) else [])
-                    if isinstance(v, (str, int, float)) and not any(w in k.lower() for w in
-                       ("email", "name", "address", "payer", "phone", "card", "first", "last"))}
-            txs.append({"kind": t["kind"], "status": t["status"], "gateway": t["gateway"],
-                        "auth": t["authorizationCode"], "paymentId": t["paymentId"],
-                        "amount": t["amountSet"]["shopMoney"], "receipt_keys": sorted(r.keys()) if isinstance(r, dict) else [],
-                        "receipt_ids": flat})
-        out.append({"name": o["name"], "created": o["createdAt"], "gw": o["paymentGatewayNames"], "tx": txs})
-    return out
-
-
 @app.get("/api/history")
 async def api_history(fresh: int = 0):
     """How far back each store's sales go: Shopify's window, whether the store has
@@ -1628,10 +1562,14 @@ async def _store_window(store, start, end, auth, meta_auth):
     ctx = await _fee_context(store, notes)
     cogs = await _cog_for(store, start, end,
                           {d: got_sales.get(d, {}).get("sales", 0.0) for d in _dates(start, end)})
+    tracked = _tracked_fees(store, start, end)
     rows = []
     for d in _dates(start, end):
         s = got_sales.get(d, {"sales": 0.0, "orders": 0, "payments": {}})
         pay_fee, shop_fee = _fees_for(store, s["payments"], ctx, notes)
+        known, covered = tracked.get(d, (0.0, 0.0))
+        pay_fee = metrics.provider_fee_day(known, covered,
+                                           sum(v[1] for v in s["payments"].values()), pay_fee)
         c, est = cogs.get(d, (0.0, 0.0))
         rows.append(metrics.day(d, s["sales"], s["orders"],
                                 got_spend.get(d, 0.0), got_meta.get(d, 0.0),
@@ -1728,6 +1666,7 @@ async def _cog_sync(days_back: int = None, store_ids: list = None) -> dict:
                 fetched[x["id"]] = (start, today.isoformat(), orders)
             except Exception as e:
                 report[x["name"].strip()] = f"error: {e}"
+        fee_map = await _actual_fees(fetched)
         # Each store's tag (AS…, …CH) from its own order names, then its cost history.
         known = {sid: [o["name"] for o in v[2]] for sid, v in fetched.items()}
         saved = _cog.get("tags") or {}
@@ -1748,6 +1687,7 @@ async def _cog_sync(days_back: int = None, store_ids: list = None) -> dict:
                                 "created": o["created"], "cancelled": o["cancelled"],
                                 "fulfillment": o["fulfillment"]})
             db.replace_cog_lines(x["id"], start, end, out)
+            db.replace_order_fees(x["id"], start, end, await _order_fee_rows(x, orders, fee_map))
             src = defaultdict(int)
             for r in out:
                 src[r["source"]] += 1
@@ -1755,6 +1695,54 @@ async def _cog_sync(days_back: int = None, store_ids: list = None) -> dict:
         _cache.clear()
         _cog["synced"] = (time.time(), report)
         return report
+
+
+async def _actual_fees(fetched: dict) -> dict:
+    """{Shopify payment id: {fee, currency}} from every PayPal and Airwallex account,
+    for the last 75 days at most (older orders keep their estimate)."""
+    if not fetched:
+        return {}
+    oldest = min(v[0] for v in fetched.values())
+    since = max(datetime.fromisoformat(oldest).replace(tzinfo=timezone.utc),
+                datetime.now(timezone.utc) - timedelta(days=75))
+    days = (datetime.now(timezone.utc) - since).days + 2
+
+    async def one(c):
+        if c["provider"] == "paypal":
+            return paypal.payment_fees(await paypal.transactions(c["client_id"], c["secret"], days=days))
+        return await awx.payment_fees(c["client_id"], c["secret"], since, c["account_id"])
+
+    conns = db.list_cash_connections()
+    got = await asyncio.gather(*[one(c) for c in conns], return_exceptions=True)
+    out = {}
+    for c, g in zip(conns, got):
+        if isinstance(g, Exception):
+            print(f"Fees from {c['label']} failed: {g}", flush=True)
+        else:
+            out.update(g)
+    return out
+
+
+async def _order_fee_rows(store, orders: list, fee_map: dict) -> list:
+    """Each order payment with its rate-card estimate and, when posted, the actual fee."""
+    rates, plan, hkd = await _fee_context(store, [])
+    cur = store["currency"]
+    table = None
+    rows = []
+    for o in orders:
+        for p in o.get("payments") or []:
+            est = metrics.processing_fees({p["gateway"]: [1, p["amount"]]}, rates, plan, cur, hkd)[0]
+            hit = fee_map.get(p["payment_id"])
+            actual = None
+            if hit:
+                actual = hit["fee"]
+                if hit["currency"] and hit["currency"] != cur:
+                    table = table or await fx.table(cur)
+                    actual *= fx.factor(table, hit["currency"], cur) if table else 1.0
+            rows.append({"order": o["name"], "payment_id": p["payment_id"], "day": o["day"],
+                         "created": o["created"], "gateway": p["gateway"], "amount": p["amount"],
+                         "fee_est": est, "fee_actual": actual})
+    return rows
 
 
 async def _cog_loop():
@@ -1814,6 +1802,21 @@ async def _recost(store_id: int, order_names: set):
                             "source": line["source"], "supplier": line["supplier"], "note": line["note"]})
     db.update_cog_costs(store_id, updates)
     _cache.clear()
+
+
+def _tracked_fees(store, start: str, end: str, until: datetime = None) -> dict:
+    """{day: (provider fees of tracked orders, amount those payments cover)}:
+    actual fee where posted, estimate otherwise."""
+    out = {}
+    if demo.is_demo(store):
+        return out
+    for r in db.order_fees(store["id"], start, end):
+        if until is not None and datetime.fromisoformat(r["created"]) > until:
+            continue
+        fee = r["fee_actual"] if r["fee_actual"] is not None else (r["fee_est"] or 0.0)
+        k, c = out.get(r["day"], (0.0, 0.0))
+        out[r["day"]] = (k + fee, c + r["amount"])
+    return out
 
 
 async def _cog_for(store, start: str, end: str, sales: dict, until: datetime = None) -> dict:
@@ -1990,6 +1993,9 @@ async def _same_time_yesterday(store, day, auth, meta_auth):
 
     pay_fee, shop_fee = _fees_for(store, got_sales["payments"],
                                   await _fee_context(store, notes), notes)
+    known, covered = _tracked_fees(store, day, day, until=cut).get(day, (0.0, 0.0))
+    pay_fee = metrics.provider_fee_day(known, covered,
+                                       sum(v[1] for v in got_sales["payments"].values()), pay_fee)
     c, est = (await _cog_for(store, day, day, {day: got_sales["sales"]}, until=cut)).get(day, (0.0, 0.0))
     return [metrics.day(day, got_sales["sales"], got_sales["orders"],
                         got_google, got_meta, c, pay_fee, shop_fee, est,

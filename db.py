@@ -142,6 +142,22 @@ CREATE TABLE IF NOT EXISTS cog_lines (
 );
 CREATE INDEX IF NOT EXISTS cog_lines_day ON cog_lines (store_id, day);
 
+-- Each order's payment and the provider's fee on it: the actual fee from
+-- PayPal / Airwallex once they've posted it, otherwise the rate-card estimate.
+CREATE TABLE IF NOT EXISTS order_fees (
+    store_id   INTEGER NOT NULL,
+    order_name TEXT    NOT NULL,
+    payment_id TEXT    NOT NULL,
+    day        TEXT    NOT NULL,
+    created    TEXT    NOT NULL,
+    gateway    TEXT,
+    amount     REAL    NOT NULL,      -- store currency
+    fee_est    REAL,                  -- store currency
+    fee_actual REAL,                  -- store currency, NULL until the provider posts it
+    PRIMARY KEY (store_id, order_name, payment_id)
+);
+CREATE INDEX IF NOT EXISTS order_fees_day ON order_fees (store_id, day);
+
 -- Supplier invoices and their lines (see invoices.py). Invoice lines are the
 -- real COG of the order items they name.
 CREATE TABLE IF NOT EXISTS invoices (
@@ -387,6 +403,24 @@ def replace_cog_lines(store_id: int, start: str, end: str, rows: list):
              for r in rows])
 
 
+def replace_order_fees(store_id: int, start: str, end: str, rows: list):
+    with _conn() as con:
+        con.execute("DELETE FROM order_fees WHERE store_id = ? AND day BETWEEN ? AND ?",
+                    (store_id, start, end))
+        con.executemany(
+            "INSERT OR REPLACE INTO order_fees (store_id, order_name, payment_id, day, created, gateway,"
+            " amount, fee_est, fee_actual) VALUES (?,?,?,?,?,?,?,?,?)",
+            [(store_id, r["order"], r["payment_id"] or f"{r['order']}#{n}", r["day"], r["created"],
+              r["gateway"], r["amount"], r["fee_est"], r["fee_actual"]) for n, r in enumerate(rows)])
+
+
+def order_fees(store_id: int, start: str, end: str) -> list:
+    with _conn() as con:
+        return [dict(r) for r in con.execute(
+            "SELECT * FROM order_fees WHERE store_id = ? AND day BETWEEN ? AND ?",
+            (store_id, start, end))]
+
+
 def cog_lines(store_ids: list, start: str, end: str) -> list:
     if not store_ids:
         return []
@@ -492,6 +526,7 @@ def delete_store(store_id: int):
         con.execute("DELETE FROM stores WHERE id = ?", (store_id,))
         con.execute("DELETE FROM shopify_days WHERE store_id = ?", (store_id,))
         con.execute("DELETE FROM cog_lines WHERE store_id = ?", (store_id,))
+        con.execute("DELETE FROM order_fees WHERE store_id = ?", (store_id,))
         con.execute("DELETE FROM store_group_members WHERE store_id = ?", (store_id,))
 
 

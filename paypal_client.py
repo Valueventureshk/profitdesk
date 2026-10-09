@@ -190,3 +190,17 @@ async def transactions(client_id: str, secret: str, days: int = 75, fields: str 
     if days == 75 and not full:
         _feed[client_id] = (time.time() + 300, out)
     return out
+
+
+def payment_fees(rows: list) -> dict:
+    """{Shopify payment id: {"fee", "currency", "amount"}} from the transaction feed:
+    Shopify passes its payment id to PayPal as the invoice id."""
+    out = {}
+    for t in rows:
+        code = t.get("transaction_event_code") or ""
+        amt = t.get("transaction_amount") or {}
+        if not code.startswith("T00") or _amount(amt) <= 0 or not t.get("invoice_id"):
+            continue
+        out[t["invoice_id"]] = {"fee": abs(_amount(t.get("fee_amount"))),
+                                "currency": amt.get("currency_code"), "amount": _amount(amt)}
+    return out
