@@ -634,6 +634,7 @@ async function openSettings() {
   renderGroupSettings();
   renderFeeSettings();
   renderPeople();
+  renderMailboxes();
   renderStoreSettings();
   await Promise.all([loadAccounts(), loadMetaAccounts()]);
 }
@@ -649,7 +650,7 @@ async function openGroupSettings() {
 /* ------------------------------------------------ people */
 
 const LEVELS = { owner: "Owner (everything, incl. Settings)", write: "Read & write", read: "Read only" };
-const DESK_NAMES = { profit: "Profit dashboard", cash: "Cash flow", cog: "COG + Products" };
+const DESK_NAMES = { profit: "Profit dashboard", cash: "Cash flow", cog: "COG + Products", inbox: "Inbox" };
 
 function accessFields(prefix, role = "read", desks = ["profit"]) {
   return `<label class="field"><span>Access level</span>
@@ -749,6 +750,53 @@ async function renderPeople() {
       await api(`/api/users/${u.id}`, { method: "DELETE" });
       toast(`${u.email} removed.`);
       renderPeople();
+    };
+  }
+}
+
+/* ------------------------------------------------ support mailboxes */
+
+async function renderMailboxes() {
+  let r;
+  try { r = await api("/api/mail-accounts"); } catch (e) { $("mailBox").innerHTML = ""; return; }
+  const when = (t) => (t ? new Date(t.replace(" ", "T") + "Z").toLocaleString(undefined,
+    { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }) : "not yet");
+  const rows = r.accounts.map((a) => `
+    <div class="group-row">
+      <div class="group-name"><strong>${esc(a.address)}</strong>
+        <span>${esc(a.store || "No store")} · ${a.emails} emails · checked ${when(a.last_checked)}</span>
+        ${a.error ? `<span class="neg">${esc(a.error)}</span>` : ""}</div>
+      <button class="btn btn-sm btn-danger" data-remove-mail="${a.id}">Remove</button>
+    </div>`).join("");
+  const stores = (state.setup?.stores || []).map((x) => `<option value="${x.id}">${esc(x.name)}</option>`).join("");
+  $("mailBox").innerHTML = `${rows || `<p class="hint">No mailboxes connected yet.</p>`}
+    <details class="advanced"${r.accounts.length ? "" : " open"}><summary>Connect a mailbox</summary>
+      <label class="field"><span>Store</span><select id="mbStore" class="control">${stores}</select></label>
+      <label class="field"><span>Mailbox email</span><input id="mbAddress" type="email" autocomplete="off"
+        placeholder="support@yourstore.com"></label>
+      <label class="field"><span>App password (16 letters from Google)</span>
+        <input id="mbPass" type="password" autocomplete="off"></label>
+      <p class="hint">Google Workspace / Gmail: sign in to the mailbox → myaccount.google.com/apppasswords →
+        name it "ProfitDesk" → Create, and paste the 16 letters here.</p>
+      <button id="mbAdd" class="btn btn-primary btn-block">Connect mailbox</button>
+    </details>`;
+  $("mbAdd").onclick = async () => {
+    const b = $("mbAdd");
+    b.disabled = true;
+    b.textContent = "Checking the mailbox…";
+    try {
+      const res = await jsonPost("/api/mail-accounts", { store_id: $("mbStore").value,
+        address: $("mbAddress").value, password: $("mbPass").value });
+      toast(`Connected · ${res.emails} emails from the last 30 days copied in.`);
+      renderMailboxes();
+    } catch (e) { toast(e.message, true); }
+    finally { b.disabled = false; b.textContent = "Connect mailbox"; }
+  };
+  for (const b of $("mailBox").querySelectorAll("[data-remove-mail]")) {
+    b.onclick = async () => {
+      if (!confirm("Disconnect this mailbox? Its emails are removed from ProfitDesk (the mailbox itself isn't touched).")) return;
+      await api(`/api/mail-accounts/${b.dataset.removeMail}`, { method: "DELETE" });
+      renderMailboxes();
     };
   }
 }

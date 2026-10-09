@@ -32,6 +32,7 @@ import statement
 import adbills
 import cog
 import invoices
+import mail_client
 import db
 import demo
 import fx
@@ -65,9 +66,11 @@ async def lifespan(app):
     db.init()
     saver = asyncio.create_task(_save_all_history())
     coster = asyncio.create_task(_cog_loop())
+    reader = asyncio.create_task(_mail_loop())
     yield
     saver.cancel()
     coster.cancel()
+    reader.cancel()
 
 
 app = FastAPI(title="ProfitDesk", docs_url=None, redoc_url=None, lifespan=lifespan)
@@ -90,8 +93,9 @@ _DESK_PATHS = {
     "profit": ("/", "/api/dashboard", "/api/history"),
     "cash": ("/cash", "/api/cash"),
     "cog": ("/cog", "/api/cog", "/api/invoices"),
+    "inbox": ("/inbox", "/api/inbox"),
 }
-_DESK_HOME = {"profit": "/", "cash": "/cash", "cog": "/cog"}
+_DESK_HOME = {"profit": "/", "cash": "/cash", "cog": "/cog", "inbox": "/inbox"}
 # Shared by every desk's pages: the user's own details and the dropdown lists.
 _EVERYONE = {"/api/me", "/api/me/password", "/api/logout", "/change-password",
              "/api/setup"}
@@ -653,6 +657,97 @@ async def api_cog_products(store: int):
     items = _cog["catalog"].products(store)
     items.sort(key=lambda p: (not p["changed"], -(p["times"])))
     return {"products": items}
+
+
+# ---------------------------------------------------------------- inbox (see mail_client.py)
+
+async def _read_mailbox(acct: dict) -> int:
+    try:
+        msgs, last = await asyncio.to_thread(mail_client.fetch_new, acct["address"], acct["password"],
+                                             acct["last_uid"], acct["provider"])
+    except mail_client.MailError as e:
+        db.mail_checked(acct["id"], error=str(e))
+        return 0
+    db.save_mail(acct["id"], msgs)
+    db.mail_checked(acct["id"], last_uid=last)
+    return len(msgs)
+
+
+async def _mail_loop():
+    """Copy new emails from every connected mailbox every 2 minutes."""
+    await asyncio.sleep(20)
+    while True:
+        for acct in db.list_mail_accounts():
+            try:
+                await _read_mailbox(acct)
+            except Exception as e:
+                print(f"Reading {acct['address']} failed: {e}", flush=True)
+        await asyncio.sleep(120)
+
+
+@app.get("/inbox", response_class=HTMLResponse)
+def inbox_page():
+    return _page("inbox.html", ("inbox.js", "nav.js", "styles.css"))
+
+
+@app.get("/api/mail-accounts")
+def api_mail_accounts():
+    stores = {x["id"]: x["name"].strip() for x in db.list_stores()}
+    with db._conn() as con:
+        counts = {r["account_id"]: r["n"] for r in con.execute(
+            "SELECT account_id, COUNT(*) n FROM mail_messages GROUP BY account_id")}
+    return {"accounts": [{"id": a["id"], "address": a["address"], "store": stores.get(a["store_id"], ""),
+                          "store_id": a["store_id"], "last_checked": a["last_checked"],
+                          "error": a["last_error"], "emails": counts.get(a["id"], 0)}
+                         for a in db.list_mail_accounts()]}
+
+
+@app.post("/api/mail-accounts")
+async def api_add_mail_account(payload: dict):
+    """Connect a store's support mailbox with an app password (tested before saving)."""
+    address = (payload.get("address") or "").strip().lower()
+    password = re.sub(r"\s+", "", payload.get("password") or "")
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", address):
+        raise HTTPException(400, "Type the mailbox's full email address.")
+    if not password:
+        raise HTTPException(400, "Paste the mailbox's App password.")
+    try:
+        await asyncio.to_thread(mail_client.check, address, password)
+    except mail_client.MailError as e:
+        raise HTTPException(400, str(e))
+    store_id = payload.get("store_id") or None
+    aid = db.add_mail_account(int(store_id) if store_id else None, address, password)
+    acct = next(a for a in db.list_mail_accounts() if a["id"] == aid)
+    got = await _read_mailbox(acct)
+    return {"ok": True, "id": aid, "emails": got}
+
+
+@app.delete("/api/mail-accounts/{account_id}")
+def api_remove_mail_account(account_id: int):
+    db.delete_mail_account(account_id)
+    return {"ok": True}
+
+
+@app.get("/api/inbox/messages")
+def api_inbox_messages(account: int = None):
+    stores = {x["id"]: x["name"].strip() for x in db.list_stores()}
+    rows = db.mail_list([account] if account else None)
+    for r in rows:
+        r["store"] = stores.get(r["store_id"], "")
+        r["attachments"] = len(json.loads(r["attachments"] or "[]"))
+    return {"messages": rows}
+
+
+@app.get("/api/inbox/messages/{message_id}")
+def api_inbox_message(message_id: int):
+    m = db.mail_get(message_id)
+    if not m:
+        raise HTTPException(404, "That email no longer exists.")
+    stores = {x["id"]: x["name"].strip() for x in db.list_stores()}
+    m["store"] = stores.get(m["store_id"], "")
+    m["attachments"] = json.loads(m["attachments"] or "[]")
+    m.pop("html", None)          # shown as plain text for now (safe)
+    return m
 
 
 @app.get("/api/history")

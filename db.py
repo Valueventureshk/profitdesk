@@ -189,6 +189,38 @@ CREATE TABLE IF NOT EXISTS invoice_lines (
     PRIMARY KEY (invoice_id, line_no)
 );
 
+-- Store support mailboxes (read over IMAP with an app password) and the emails
+-- copied from them. Nothing in the mailbox itself is changed.
+CREATE TABLE IF NOT EXISTS mail_accounts (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    store_id     INTEGER,
+    address      TEXT    NOT NULL UNIQUE,
+    password     TEXT    NOT NULL,
+    provider     TEXT    NOT NULL DEFAULT 'google',
+    last_uid     INTEGER NOT NULL DEFAULT 0,
+    last_checked TEXT,
+    last_error   TEXT,
+    created_at   TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS mail_messages (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id  INTEGER NOT NULL,
+    uid         INTEGER NOT NULL,
+    message_id  TEXT,
+    in_reply_to TEXT,
+    refs        TEXT,
+    from_name   TEXT,
+    from_addr   TEXT,
+    to_addr     TEXT,
+    subject     TEXT,
+    date        TEXT,
+    text        TEXT,
+    html        TEXT,
+    attachments TEXT NOT NULL DEFAULT '[]',
+    UNIQUE (account_id, uid)
+);
+CREATE INDEX IF NOT EXISTS mail_messages_date ON mail_messages (date);
+
 -- Small app-wide preferences, e.g. the currency the dashboard shows.
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
@@ -524,6 +556,67 @@ def delete_invoice(invoice_id: int):
     with _conn() as con:
         con.execute("DELETE FROM invoice_lines WHERE invoice_id = ?", (invoice_id,))
         con.execute("DELETE FROM invoices WHERE id = ?", (invoice_id,))
+
+
+def list_mail_accounts() -> list:
+    with _conn() as con:
+        return [dict(r) for r in con.execute("SELECT * FROM mail_accounts ORDER BY id")]
+
+
+def add_mail_account(store_id, address: str, password: str, provider: str = "google") -> int:
+    with _conn() as con:
+        existing = con.execute("SELECT id FROM mail_accounts WHERE address = ?", (address,)).fetchone()
+        if existing:
+            con.execute("UPDATE mail_accounts SET password = ?, store_id = ?, last_error = NULL WHERE id = ?",
+                        (password, store_id, existing["id"]))
+            return existing["id"]
+        return con.execute("INSERT INTO mail_accounts (store_id, address, password, provider)"
+                           " VALUES (?, ?, ?, ?)", (store_id, address, password, provider)).lastrowid
+
+
+def delete_mail_account(account_id: int):
+    with _conn() as con:
+        con.execute("DELETE FROM mail_messages WHERE account_id = ?", (account_id,))
+        con.execute("DELETE FROM mail_accounts WHERE id = ?", (account_id,))
+
+
+def mail_checked(account_id: int, last_uid: int = None, error: str = None):
+    with _conn() as con:
+        con.execute("UPDATE mail_accounts SET last_checked = datetime('now'), last_error = ?,"
+                    " last_uid = COALESCE(?, last_uid) WHERE id = ?", (error, last_uid, account_id))
+
+
+def save_mail(account_id: int, messages: list):
+    import json
+    with _conn() as con:
+        con.executemany(
+            "INSERT OR IGNORE INTO mail_messages (account_id, uid, message_id, in_reply_to, refs,"
+            " from_name, from_addr, to_addr, subject, date, text, html, attachments)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [(account_id, m["uid"], m["message_id"], m["in_reply_to"], m["references"],
+              m["from_name"], m["from_addr"], m["to_addr"], m["subject"], m["date"],
+              m["text"], m["html"], json.dumps(m["attachments"])) for m in messages])
+
+
+def mail_list(account_ids: list = None, limit: int = 200) -> list:
+    with _conn() as con:
+        q = ("SELECT m.id, m.account_id, m.from_name, m.from_addr, m.subject, m.date,"
+             " substr(m.text, 1, 160) snippet, m.attachments, a.address, a.store_id"
+             " FROM mail_messages m JOIN mail_accounts a ON a.id = m.account_id")
+        args = []
+        if account_ids:
+            q += f" WHERE m.account_id IN ({','.join('?' * len(account_ids))})"
+            args = list(account_ids)
+        q += " ORDER BY m.date DESC LIMIT ?"
+        return [dict(r) for r in con.execute(q, (*args, limit))]
+
+
+def mail_get(message_id: int):
+    with _conn() as con:
+        r = con.execute("SELECT m.*, a.address, a.store_id FROM mail_messages m"
+                        " JOIN mail_accounts a ON a.id = m.account_id WHERE m.id = ?",
+                        (message_id,)).fetchone()
+    return dict(r) if r else None
 
 
 def delete_store(store_id: int):

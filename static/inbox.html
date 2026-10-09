@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ProfitDesk · Inbox</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<div class="cash-page inbox-page">
+  <header class="cash-top">
+    <div class="brand" data-section-menu title="Switch section">
+      <span class="brand-mark">PD</span>
+      <span class="brand-name">ProfitDesk</span>
+    </div>
+    <div class="crumb">
+      <h1>Inbox</h1>
+      <p id="sub">Loading…</p>
+    </div>
+    <div class="controls">
+      <select id="mailboxSelect" class="control"></select>
+      <button id="refresh" class="btn btn-ghost">Refresh</button>
+    </div>
+  </header>
+  <main class="inbox">
+    <aside class="inbox-list" id="list"></aside>
+    <section class="inbox-read" id="read">
+      <p class="hint inbox-empty">Pick an email on the left.</p>
+    </section>
+  </main>
+</div>
+<div id="toast" class="toast" hidden></div>
+<script src="/static/nav.js"></script>
+<script src="/static/inbox.js"></script>
+</body>
+</html>
