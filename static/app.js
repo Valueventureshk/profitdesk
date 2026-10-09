@@ -676,6 +676,7 @@ function organiseSettings() {
     h.replaceWith(head);
     sec.appendChild(wrap);
     sec.classList.add("set-item");
+    sec.dataset.name = name;
     (groups[group] = groups[group] || []).push(sec);
   }
   for (const g of ["Connections", "Money", "Team", "Data", "Other"]) {
@@ -684,6 +685,8 @@ function organiseSettings() {
     label.className = "set-group";
     label.textContent = g;
     body.appendChild(label);
+    const order = Object.keys(SET_META);
+    groups[g].sort((a, b) => order.indexOf(a.dataset.name) - order.indexOf(b.dataset.name));
     for (const sec of groups[g]) body.appendChild(sec);
   }
 }
