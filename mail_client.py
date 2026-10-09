@@ -39,8 +39,11 @@ def _explain(e: Exception, what: str) -> MailError:
 
 
 def check(address: str, password: str, provider: str = "google"):
-    """Log in to IMAP and SMTP once, to prove the details work."""
-    imap_host, imap_port, smtp_host, smtp_port = PROVIDERS[provider]
+    """Log in to IMAP once, to prove the details work.
+
+    Sending isn't checked: the server (Railway Hobby plan) blocks outgoing SMTP,
+    so replies will go out another way when the Inbox can reply."""
+    imap_host, imap_port, _, _ = PROVIDERS[provider]
     try:
         with imaplib.IMAP4_SSL(imap_host, imap_port, ssl_context=ssl.create_default_context(),
                                timeout=30) as m:
@@ -48,12 +51,6 @@ def check(address: str, password: str, provider: str = "google"):
             m.select("INBOX", readonly=True)
     except Exception as e:
         raise _explain(e, "read the mailbox")
-    try:
-        with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as s:
-            s.starttls(context=ssl.create_default_context())
-            s.login(address, password)
-    except Exception as e:
-        raise _explain(e, "log in to send email")
 
 
 def _text(msg) -> tuple:
