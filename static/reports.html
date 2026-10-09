@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ProfitDesk · Reports</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<div class="cash-page">
+  <header class="cash-top">
+    <div class="brand" data-section-menu title="Switch section">
+      <span class="brand-mark">PD</span>
+      <span class="brand-name">ProfitDesk</span>
+    </div>
+    <div class="crumb">
+      <h1>Reports</h1>
+      <p id="sub">Spreadsheet files (.csv) that open in Excel or Google Sheets</p>
+    </div>
+  </header>
+  <main class="content">
+    <section class="panel rep-make">
+      <div class="panel-head"><h2>Create a report</h2></div>
+      <div class="rep-form">
+        <label>Report<select id="type" class="control"></select></label>
+        <label>From<input type="date" id="from" class="control"></label>
+        <label>To<input type="date" id="to" class="control"></label>
+        <label id="scopeBox">Stores<select id="scope" class="control"></select></label>
+        <label>Currency<select id="currency" class="control"></select></label>
+        <button class="btn btn-primary" id="make">Create report</button>
+      </div>
+      <p class="hint rep-help" id="help"></p>
+    </section>
+    <section class="panel">
+      <div class="panel-head"><h2>Your reports</h2><span class="hint" id="count"></span></div>
+      <div class="table-wrap"><table class="table" id="list"></table></div>
+    </section>
+  </main>
+</div>
+<div id="toast" class="toast" hidden></div>
+<script src="/static/nav.js"></script>
+<script src="/static/chat.js"></script>
+<script src="/static/reports.js"></script>
+</body>
+</html>

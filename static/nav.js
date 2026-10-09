@@ -6,6 +6,7 @@
     { href: "/cash", desk: "cash", label: "Cash flow", note: "Balances and money arriving" },
     { href: "/cog", desk: "cog", label: "COG + Products Monitor", note: "What every order cost, product costs" },
     { href: "/inbox", desk: "inbox", label: "Inbox", note: "Customer emails from every store" },
+    { href: "/reports", desk: "reports", label: "Reports", note: "Download spreadsheets of any figures" },
     { label: "Accounting", note: "Coming soon", soon: true },
   ];
 

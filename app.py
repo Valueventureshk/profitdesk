@@ -36,6 +36,8 @@ import mail_client
 import tickets
 import ai_brain
 import ai_coach
+import reports
+import ai_chat
 import db
 import demo
 import fx
@@ -97,13 +99,16 @@ _DESK_PATHS = {
     "cash": ("/cash", "/api/cash"),
     "cog": ("/cog", "/api/cog", "/api/invoices"),
     "inbox": ("/inbox", "/api/inbox"),
+    "reports": ("/reports", "/api/reports"),
 }
-_DESK_HOME = {"profit": "/", "cash": "/cash", "cog": "/cog", "inbox": "/inbox"}
+_DESK_HOME = {"profit": "/", "cash": "/cash", "cog": "/cog", "inbox": "/inbox", "reports": "/reports"}
 # Shared by every desk's pages: the user's own details and the dropdown lists.
 _EVERYONE = {"/api/me", "/api/me/password", "/api/logout", "/change-password",
-             "/api/setup"}
+             "/api/setup", "/api/chat"}
 # What "read & write" people may change (owners may change anything).
 _WRITE_OK = ("/api/invoices", "/api/cog/sync", "/api/inbox")
+# What anyone with the desk may do, read-only people included (it changes nothing).
+_ANY_OK = ("/api/reports",)
 
 
 def _desk_of(path: str):
@@ -132,7 +137,7 @@ def _denied(request: Request, user: dict):
             return JSONResponse({"error": "You don't have access to that."}, status_code=403)
         return RedirectResponse(_DESK_HOME.get(desks[0] if desks else "", "/change-password"),
                                 status_code=303)
-    if method not in ("GET", "HEAD") and not (
+    if method not in ("GET", "HEAD") and not any(path.startswith(p) for p in _ANY_OK) and not (
             user.get("role") == "write" and any(path.startswith(p) for p in _WRITE_OK)):
         return JSONResponse({"error": "Your access is view-only for this."}, status_code=403)
     return None
@@ -447,7 +452,7 @@ def index(request: Request):
         if domain and shop.verify_hmac(params, _shopify_app(domain)):
             return RedirectResponse(f"/auth/shopify/start?shop_domain={domain}")
 
-    return _page("index.html", ("app.js", "nav.js", "styles.css"))
+    return _page("index.html", ("app.js", "nav.js", "styles.css", "chat.js"))
 
 
 def _page(filename: str, assets) -> HTMLResponse:
@@ -465,7 +470,7 @@ def _page(filename: str, assets) -> HTMLResponse:
 
 @app.get("/cog", response_class=HTMLResponse)
 def cog_page():
-    return _page("cog.html", ("cog.js", "nav.js", "styles.css"))
+    return _page("cog.html", ("cog.js", "nav.js", "styles.css", "chat.js"))
 
 
 @app.put("/api/cog/sheet")
@@ -733,7 +738,7 @@ async def _mail_loop():
 
 @app.get("/inbox", response_class=HTMLResponse)
 def inbox_page():
-    return _page("inbox.html", ("inbox.js", "nav.js", "styles.css"))
+    return _page("inbox.html", ("inbox.js", "nav.js", "styles.css", "chat.js"))
 
 
 @app.get("/api/mail-accounts")
@@ -1183,6 +1188,214 @@ async def api_learn(payload: dict):
     return {"ok": True}
 
 
+# ---------------------------------------------------------------- reports desk
+
+def _user_desks(user: dict) -> list:
+    if not user or user.get("role", "owner") == "owner":
+        return list(auth.DESKS)
+    return [d for d in (user.get("desks") or "").split(",") if d]
+
+
+async def _make_report(kind: str, start: str = None, end: str = None, scope: str = "all",
+                       currency: str = None, user: dict = None) -> dict:
+    """Build a report with the app's own figures and save it. Returns its id, title, rows."""
+    if kind not in reports.TYPES:
+        raise HTTPException(400, f"Unknown report. Choose one of: {', '.join(reports.TYPES)}.")
+    title, desk = reports.TYPES[kind]
+    if desk not in _user_desks(user):
+        raise HTTPException(403, f"You don't have access to the {desk} desk for this report.")
+    today = datetime.now(CASH_TZ).date()
+    end = end or today.isoformat()
+    start = start or (date.fromisoformat(end) - timedelta(days=6)).isoformat()
+    if start > end:
+        start, end = end, start
+    stores = _store_names()
+    cur = (currency or _display_currency()).upper()
+    if kind in ("profit_daily", "profit_stores"):
+        dash = await api_dashboard(scope=scope or "all", start=start, end=end, currency=cur)
+        cols, rows = (reports.profit_daily if kind == "profit_daily" else reports.profit_stores)(dash)
+        if kind == "profit_stores" and not dash.get("stores"):
+            cols, rows = reports.profit_daily(dash)
+        title += f" · {dash['title']} · {cur}"
+    elif kind == "cog_orders":
+        ids = list(stores) if scope in (None, "", "all") else [int(scope)] if str(scope).isdigit() else list(stores)
+        cols, rows = reports.cog_orders(db.cog_lines(ids, start, end), stores)
+    elif kind == "invoices":
+        lines = [l for l in db.invoice_lines() if start <= (l["date"] or "") <= end]
+        cols, rows = reports.invoices(lines, stores)
+    elif kind == "cash_statement":
+        st = await api_cash_statement(start=start, end=end, currency=cur)
+        cols, rows = reports.cash_statement(st)
+        title += f" · {cur}"
+    elif kind == "tickets":
+        with db._conn() as con:
+            rows_in = [dict(r) for r in con.execute(
+                "SELECT t.*, (SELECT COUNT(*) FROM mail_messages m WHERE m.ticket_id = t.id) emails FROM tickets t"
+                " WHERE substr(t.created_at, 1, 10) BETWEEN ? AND ? ORDER BY t.created_at", (start, end))]
+        cols, rows = reports.tickets(rows_in, stores)
+    else:  # ad_bills (now)
+        st = await _cash_state(cur, with_ads=True)
+        cols, rows = reports.ad_bills((st["summary"] or {}).get("ads") or {})
+        start = end = today.isoformat()
+        title += f" · {cur}"
+    title += f" · {start}" + (f" to {end}" if end != start else "")
+    with db._conn() as con:
+        rid = con.execute("INSERT INTO reports (type, title, params, rows, content, created_by) VALUES (?,?,?,?,?,?)",
+                          (kind, title, json.dumps({"start": start, "end": end, "scope": scope, "currency": cur}),
+                           len(rows), reports.to_csv(cols, rows), (user or {}).get("email", ""))).lastrowid
+    return {"id": rid, "title": title, "rows": len(rows), "download": f"/api/reports/{rid}/download"}
+
+
+@app.get("/reports", response_class=HTMLResponse)
+def reports_page():
+    return _page("reports.html", ("reports.js", "nav.js", "styles.css", "chat.js"))
+
+
+@app.get("/api/reports")
+def api_reports(request: Request):
+    desks = _user_desks(getattr(request.state, "user", None))
+    with db._conn() as con:
+        rows = [dict(r) for r in con.execute(
+            "SELECT id, type, title, params, rows, created_by, created_at FROM reports ORDER BY id DESC LIMIT 200")]
+    allowed = [r for r in rows if reports.TYPES.get(r["type"], ("", ""))[1] in desks]
+    return {"reports": allowed,
+            "types": [{"type": k, "title": v[0]} for k, v in reports.TYPES.items() if v[1] in desks]}
+
+
+@app.post("/api/reports")
+async def api_create_report(payload: dict, request: Request):
+    return await _make_report(payload.get("type"), payload.get("start"), payload.get("end"),
+                              payload.get("scope") or "all", payload.get("currency"),
+                              getattr(request.state, "user", None))
+
+
+@app.get("/api/reports/{report_id}/download")
+def api_download_report(report_id: int, request: Request):
+    from fastapi.responses import Response
+    with db._conn() as con:
+        r = con.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone()
+    if not r:
+        raise HTTPException(404, "That report no longer exists.")
+    if reports.TYPES.get(r["type"], ("", ""))[1] not in _user_desks(getattr(request.state, "user", None)):
+        raise HTTPException(403, "You don't have access to this report.")
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", r["title"]).strip("-")[:90] + ".csv"
+    return Response(r["content"], media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"})
+
+
+@app.delete("/api/reports/{report_id}")
+def api_delete_report(report_id: int):
+    with db._conn() as con:
+        con.execute("DELETE FROM reports WHERE id = ?", (report_id,))
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------- chat button
+
+def _need(user, desk):
+    if desk not in _user_desks(user):
+        raise HTTPException(403, f"No access to the {desk} desk.")
+
+
+def _round(o):
+    if isinstance(o, float):
+        return round(o, 2)
+    if isinstance(o, dict):
+        return {k: _round(v) for k, v in o.items()}
+    if isinstance(o, list):
+        return [_round(v) for v in o]
+    return o
+
+
+async def _chat_tool(name: str, args: dict, user: dict) -> dict:
+    cur = _display_currency()
+    if name == "list_stores":
+        return {"stores": [{"id": x["id"], "name": x["name"].strip(), "currency": x["currency"]}
+                           for x in db.list_stores() if not demo.is_demo(x)],
+                "groups": [{"id": f"g{g['id']}", "name": g["name"]} for g in db.list_groups()]}
+    if name == "get_profit":
+        _need(user, "profit")
+        d = await api_dashboard(scope=args.get("scope") or "all", start=args["start"], end=args["end"], currency=cur)
+        keep = ("sales", "orders", "aov", "ad_spend", "google_spend", "meta_spend", "roas", "processing_fee",
+                "cogs", "cogs_estimated", "cogs_share", "net_profit", "net_margin", "reserve_held", "net_available")
+        return _round({"title": d["title"], "currency": d["currency"], "range": d["range"],
+                       "totals": {k: d["totals"].get(k) for k in keep},
+                       "change_vs_previous_pct": {k: d["delta"].get(k) for k in ("sales", "ad_spend", "net_profit", "roas")},
+                       "platform_roas": d.get("platform_roas"),
+                       "stores": [{"name": x["name"].strip(), **{k: x["totals"].get(k) for k in
+                                   ("sales", "orders", "ad_spend", "roas", "cogs_share", "net_profit", "net_margin")}}
+                                  for x in d.get("stores") or []],
+                       "warnings": d.get("warnings", [])[:5]})
+    if name == "get_cash":
+        _need(user, "cash")
+        st = await _cash_state(cur, with_ads=True)
+        sm = st["summary"] or {}
+        return _round({"currency": st["base"], "available_now": sm.get("available"), "held": sm.get("reserved"),
+                       "receivable": sm.get("receivable"), "available_plus_receivable": sm.get("position"),
+                       "ads_payable": sm.get("ads_payable"), "after_ad_bills": sm.get("after_ads"),
+                       "horizons": [{"label": h["label"], "until": h["until"], "available_by": h["available_by"],
+                                     "arriving": h["incoming"]} for h in sm.get("horizons", [])],
+                       "accounts": [{"name": a["label"], "available": a["available"], "held": a["reserved"]}
+                                    for a in sm.get("accounts", [])]})
+    if name == "get_cog":
+        _need(user, "cog")
+        stores = {x["id"]: x for x in db.list_stores() if not demo.is_demo(x)}
+        ids = list(stores) if (args.get("store") or "all") == "all" else [int(args["store"])]
+        table = await fx.table(cur)
+        f = lambda c: fx.factor(table, c, cur) if table else 1.0
+        sales = cog_total = est = 0.0
+        src, prods = {}, {}
+        for l in db.cog_lines(ids, args["start"], args["end"]):
+            if l["cancelled"]:
+                continue
+            sv = l["subtotal"] * f(stores[l["store_id"]]["currency"])
+            cv = (l["cost_usd"] or 0) * f("USD")
+            sales += sv
+            cog_total += cv
+            est += cv if l["source"] == "estimate" else 0
+            src[l["source"]] = src.get(l["source"], 0) + 1
+            p = prods.setdefault(l["product"].split(" - ")[0], [0, 0.0, 0.0])
+            p[0] += l["quantity"]
+            p[1] += sv
+            p[2] += cv
+        top = sorted(((k, v) for k, v in prods.items() if v[0] >= 2 and v[1] > 0),
+                     key=lambda kv: -kv[1][2] / kv[1][1])[:8]
+        return _round({"currency": cur, "sales": sales, "cog": cog_total,
+                       "cog_pct": (cog_total / sales * 100) if sales else None, "estimated_cog": est,
+                       "lines_by_source": src,
+                       "highest_cog_share_products": [{"product": k, "units": v[0], "sales": v[1], "cog": v[2],
+                                                       "cog_pct": v[2] / v[1] * 100} for k, v in top]})
+    if name == "get_inbox":
+        _need(user, "inbox")
+        counts = api_inbox_counts()
+        with db._conn() as con:
+            waiting = [dict(r) for r in con.execute(
+                "SELECT id, kind, labels, customer_email, summary, last_message_at, escalated FROM tickets"
+                " WHERE status = 'open' AND waiting = 'us' ORDER BY last_message_at LIMIT 10")]
+        return {"counts": {k: v for k, v in counts.items() if k != "ai_error"}, "oldest_waiting_on_us": waiting}
+    if name == "create_report":
+        return await _make_report(args["type"], args.get("start"), args.get("end"),
+                                  args.get("scope") or "all", cur, user)
+    raise HTTPException(400, "Unknown tool.")
+
+
+@app.post("/api/chat")
+async def api_chat(payload: dict, request: Request):
+    key = db.get_setting("anthropic_api_key")
+    if not key:
+        raise HTTPException(400, "The assistant needs the Anthropic API key (Settings → AI).")
+    user = getattr(request.state, "user", None)
+    history = payload.get("messages") or []
+    if not history or history[-1].get("role") != "user":
+        raise HTTPException(400, "Ask something first.")
+    today = max((_store_today(x) for x in db.list_stores() if not demo.is_demo(x)),
+                default=datetime.now(CASH_TZ).date()).isoformat()
+    try:
+        return await ai_chat.reply(key, history, lambda n, a: _chat_tool(n, a, user), today, _display_currency())
+    except ai_chat.ChatError as e:
+        raise HTTPException(400, str(e))
+
+
 @app.get("/api/ai")
 def api_ai_status():
     return {"has_key": bool(db.get_setting("anthropic_api_key")), "model": ai_brain.MODEL,
@@ -1468,7 +1681,7 @@ CASH_TZ = ZoneInfo(os.getenv("CASH_TIMEZONE", "Asia/Hong_Kong"))  # the business
 
 @app.get("/cash", response_class=HTMLResponse)
 def cash_page():
-    return _page("cash.html", ("cash.js", "nav.js", "styles.css"))
+    return _page("cash.html", ("cash.js", "nav.js", "styles.css", "chat.js"))
 
 
 _ads_cache: dict = {}

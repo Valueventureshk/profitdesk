@@ -62,7 +62,10 @@ file and have it work.
 | `mail_client.py` | Store support mailboxes over IMAP (app password): Inbox + Sent, read-only |
 | `ai_brain.py` | Claude Haiku 5.5 sorts each email (customer/inquiry/legal/other, SCM/CS, thread) |
 | `tickets.py` | Turns sorted emails into tickets; our Gmail replies set "we replied last" |
-| `static/inbox.html` `inbox.js` | Inbox desk: mail views, SCM/CS tickets, records |
+| `static/inbox.html` `inbox.js` | Inbox desk: mail views, SCM/CS tickets, records, AI training |
+| `ai_coach.py` | Learns a playbook from past replies + SOPs; drafts replies (Claude Sonnet 5.5) |
+| `reports.py` `static/reports.*` | Reports desk: CSV downloads built from the desks' own figures (no AI) |
+| `ai_chat.py` `static/chat.js` | Chat button on every desk: Sonnet 5.5 calls the app's tools, never invents figures |
 | `static/cash.html` `cash.js` `nav.js` | Cash flow page, section menu |
 | `static/index.html` `styles.css` `app.js` | The dashboard |
 | `seed_demo.py` | Generates fake data for testing |

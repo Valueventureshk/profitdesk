@@ -263,6 +263,18 @@ CREATE TABLE IF NOT EXISTS ai_questions (
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Reports desk: downloadable CSV files (see reports.py).
+CREATE TABLE IF NOT EXISTS reports (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    type       TEXT NOT NULL,
+    title      TEXT NOT NULL,
+    params     TEXT NOT NULL DEFAULT '{}',
+    rows       INTEGER NOT NULL DEFAULT 0,
+    content    TEXT NOT NULL,
+    created_by TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- Small app-wide preferences, e.g. the currency the dashboard shows.
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
