@@ -557,8 +557,9 @@ async def api_fees_debug(store: int, n: int = 6):
     q = """query($n:Int!){ orders(first:$n, reverse:true, sortKey:CREATED_AT){ nodes { name createdAt
       paymentGatewayNames transactions(first:5){ kind status gateway authorizationCode paymentId
       amountSet{shopMoney{amount currencyCode}} receiptJson } } } }"""
+    import httpx as _hx
     c = ShopifyClient(x["shop_domain"], x["access_token"])
-    async with httpx.AsyncClient(timeout=60) as client:
+    async with _hx.AsyncClient(timeout=60) as client:
         data = await c._post(client, q, {"n": n})
     out = []
     for o in data["orders"]["nodes"]:
