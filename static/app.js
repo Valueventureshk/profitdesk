@@ -389,7 +389,28 @@ function renderCards(d) {
         · Shopify ${fmt(d.totals.shopify_fee, "money")}</div>` : ""}
       ${sparkline(d.series, c.key, dot)}
     </div>`;
-  }).join("");
+  }).join("") + availableCard(d);
+}
+
+// What's yours to use now from these sales: net profit minus what PayPal and
+// Airwallex hold back as reserve. Figures come from the server (metrics.py).
+function availableCard(d) {
+  const t = d.totals;
+  if (t.net_available === undefined) return "";
+  const delta = d.delta.net_available;
+  const chip = delta === null || delta === undefined ? `<span class="chip flat">—</span>`
+    : `<span class="chip ${delta >= 0 ? "up" : "down"}">${delta >= 0 ? "&#9650;" : "&#9660;"} ${Math.abs(delta).toFixed(1)}%</span>`;
+  const loss = t.net_available < 0;
+  const step = (label, v) => `<span class="avail-step"><span>${label}</span><b>${fmt(v, "money")}</b></span>`;
+  return `<div class="card available${loss ? " loss" : ""}">
+      <div class="card-label"><span class="dot" style="background:${loss ? "var(--down)" : "var(--up)"}"></span>Net available${chip}</div>
+      <div class="card-value">${fmt(t.net_available, "money")}</div>
+      <div class="avail-flow">
+        ${step("Sales", t.sales)}<i>−</i>${step("Fees", t.processing_fee)}<i>−</i>${step("COG", t.cogs)}<i>−</i>${step("Ads", t.ad_spend)}<i>−</i>${step("Held in reserve", t.reserve_held)}
+      </div>
+      <div class="card-note">What's yours to use now from these sales. ${fmt(t.reserve_held, "money")} is held back
+        (PayPal 21% for 60 days, Airwallex 10% for ~90 days) and comes back later. This card doesn't change any other figure.</div>
+    </div>`;
 }
 
 // ROAS per platform, by store (each store counted under the one platform it uses).

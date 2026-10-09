@@ -11,6 +11,10 @@ Every number the dashboard shows is defined here and nowhere else.
   - Ad spend           Google Ads + Meta Ads, account level
   = Net profit
 
+    Net available      net profit - reserve held back by the payment providers:
+                       what's yours to use now from these sales (the held part
+                       comes back weeks later). Shown on the dashboard only.
+
     ROAS               total sales / ad spend
     Net margin         net profit / total sales
     AOV                total sales / orders
@@ -22,7 +26,7 @@ Airwallex.
 
 SUMMABLE = ("sales", "orders", "google_spend", "meta_spend", "ad_spend",
             "payment_fee", "shopify_fee", "processing_fee",
-            "cogs", "cogs_estimated", "net_profit")
+            "cogs", "cogs_estimated", "net_profit", "reserve_held", "net_available")
 
 
 # ---------------------------------------------------------------- processing fees
@@ -103,6 +107,19 @@ def processing_fees(payments: dict, rates: dict, plan: str, currency: str,
     return provider, shopify
 
 
+# Share of each sale the payment provider holds back as a rolling reserve, from
+# the accounts' own data: PayPal holds 21% for 60 days on every sale; Airwallex
+# holds 10% (cards and Afterpay alike, e.g. US$3.50 of US$34.95) for ~90 days.
+RESERVE_PCT = {"paypal": 21.0, "airwallex_card": 10.0, "airwallex_afterpay": 10.0}
+
+
+def reserve_held(payments: dict) -> float:
+    """Money held back as reserve from one store-day's payments
+    ({gateway names: [orders, amount paid]}, store currency)."""
+    return sum(amount * RESERVE_PCT.get(payment_method(g), 0.0) / 100.0
+               for g, (orders, amount) in payments.items())
+
+
 def _div(a, b):
     """Ratios are None rather than 0 when undefined, so the UI can show a dash."""
     return a / b if b else None
@@ -116,7 +133,7 @@ def with_google_tax(spend: float, tax_pct) -> float:
 
 def day(date: str, sales: float, orders: int, google_spend: float,
         meta_spend: float, cogs: float, payment_fee: float = 0.0,
-        shopify_fee: float = 0.0, cogs_estimated: float = 0.0):
+        shopify_fee: float = 0.0, cogs_estimated: float = 0.0, reserve: float = 0.0):
     """One store, one day, all in one currency.
 
     Ad spend is the sum of every platform, and processing fees the sum of the
@@ -140,6 +157,8 @@ def day(date: str, sales: float, orders: int, google_spend: float,
         "cogs": cogs,
         "cogs_estimated": cogs_estimated,
         "net_profit": sales - processing_fee - cogs - ad_spend,
+        "reserve_held": reserve,
+        "net_available": sales - processing_fee - cogs - ad_spend - reserve,
     }
 
 

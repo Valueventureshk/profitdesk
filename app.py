@@ -1165,7 +1165,7 @@ def _in_currency(rows, store, fx_table, base):
         metrics.day(r["date"], r["sales"] * f_sales, r["orders"],
                     r["google_spend"] * f_google, r["meta_spend"] * f_meta,
                     r["cogs"] * f_sales, r["payment_fee"] * f_sales, r["shopify_fee"] * f_sales,
-                    r["cogs_estimated"] * f_sales)
+                    r["cogs_estimated"] * f_sales, r["reserve_held"] * f_sales)
         for r in rows
     ]
 
@@ -1565,7 +1565,7 @@ async def _store_window(store, start, end, auth, meta_auth):
         c, est = cogs.get(d, (0.0, 0.0))
         rows.append(metrics.day(d, s["sales"], s["orders"],
                                 got_spend.get(d, 0.0), got_meta.get(d, 0.0),
-                                c, pay_fee, shop_fee, est))
+                                c, pay_fee, shop_fee, est, metrics.reserve_held(s["payments"])))
 
     _cache[key] = (time.time(), (rows, notes))
     return rows, notes
@@ -1899,7 +1899,8 @@ async def _same_time_yesterday(store, day, auth, meta_auth):
                                   await _fee_context(store, notes), notes)
     c, est = (await _cog_for(store, day, day, {day: got_sales["sales"]}, until=cut)).get(day, (0.0, 0.0))
     return [metrics.day(day, got_sales["sales"], got_sales["orders"],
-                        got_google, got_meta, c, pay_fee, shop_fee, est)], notes
+                        got_google, got_meta, c, pay_fee, shop_fee, est,
+                        metrics.reserve_held(got_sales["payments"]))], notes
 
 
 def _dates(start: str, end: str):
