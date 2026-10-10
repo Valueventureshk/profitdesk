@@ -187,3 +187,16 @@ def new_part(text: str) -> str:
         if l.startswith(">") and sum(1 for x in lines[i:i + 3] if x.strip().startswith(">")) >= 2:
             return "\n".join(lines[:i]).rstrip()
     return (text or "").rstrip()
+
+
+def quoted_part(text: str) -> str:
+    """The earlier conversation an email quotes, without the ">" marks (the opposite of new_part)."""
+    full = (text or "").replace("﻿", "")
+    main = new_part(full)
+    rest = full[len(main):].strip("\n").splitlines()
+    if rest and (_ATTRIB.search(rest[0]) or _LEAD.match(rest[0].strip())):
+        rest = rest[1:]
+        if rest and re.search(r"(wrote|a écrit|escribió)\s*:\s*$", rest[0], re.I):
+            rest = rest[1:]
+    out = "\n".join(re.sub(r"^(\s*>)+\s?", "", l) for l in rest)
+    return re.sub(r"\n{3,}", "\n\n", out).strip()

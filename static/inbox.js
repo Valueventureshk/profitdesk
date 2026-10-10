@@ -64,15 +64,17 @@ async function translateMsgs(ids, quiet) {
   for (const id of ids) { const b = document.querySelector(`[data-tr="${id}"]`); if (b) b.textContent = "Translating…"; }
   if ($("trAll")) $("trAll").textContent = "Translating…";
   try {
-    const d = await api(`/api/inbox/translate?ids=${ids.join(",")}&lang=${encodeURIComponent(lang)}`);
+    const q = ids.filter((id) => String(id) === String(trMeta.first) && splitQuote(trOriginal.get(String(id)) || "").quote);
+    const d = await api(`/api/inbox/translate?ids=${ids.join(",")}&lang=${encodeURIComponent(lang)}&quotes=${q.join(",")}`);
     for (const id of ids) {
       const box = document.querySelector(`[data-mid="${id}"]`), t = d.translations[String(id)];
       if (!box || t === undefined) continue;
       // translated new part + the original quoted history (its own email above gets translated too)
       const orig = splitQuote(trOriginal.get(String(id)) || "");
-      box.querySelector(".msg-text").innerHTML = `<div class="mail-body">${body(splitQuote(t).main)}</div>` + (orig.quote ? `
-        <div class="mail-quote"><div class="mail-quote-head">↩ ${esc(orig.head || "Earlier message")}</div>
-        <div class="mail-body">${body(orig.quote)}</div></div>` : "");
+      const qt = (d.quotes || {})[String(id)];
+      box.dataset.qdone = qt ? "1" : "";
+      box.querySelector(".msg-text").innerHTML = `<div class="mail-body">${body(splitQuote(t).main)}</div>` +
+        (orig.quote ? quoteBox(orig.head, qt || orig.quote, !!qt) : "");
       box.classList.add("translated");
       box.dataset.lang = lang;
       const b = box.querySelector("[data-tr]");
@@ -130,16 +132,37 @@ function splitQuote(text) {
   const quote = rest.map((l) => l.replace(/^(\s*>)+\s?/, "")).join("\n").replace(/\n{3,}/g, "\n\n").trim();
   return { main: main || "(no new text)", quote, head: head.replace(/\s*<[^>]*$/, "").replace(/\s*(wrote|a écrit|escribió)\s*:?\s*$/i, "") };
 }
+let trMeta = { mailbox: "", store: "", first: null };   // the open conversation: our address, store, oldest email
+function quoteWho(head) {
+  const h = (head || "").toLowerCase();
+  const ours = (trMeta.mailbox && h.includes(trMeta.mailbox.toLowerCase())) ||
+    (trMeta.store && h.includes(trMeta.store.toLowerCase().slice(0, 12)));
+  return ours ? "Your team's earlier reply" : head ? "Customer's earlier email" : "Earlier message";
+}
+function quoteBox(head, quote, translated) {
+  return `<div class="mail-quote${translated ? " tr" : ""}" title="Click to show or hide the earlier message">
+      <div class="mail-quote-head">↩ <b>${quoteWho(head)}</b>${head ? ` · ${esc(head)}` : ""}${translated ? ` <span class="tr-tag">translated</span>` : ""}</div>
+      <div class="mail-body">${body(quote)}</div></div>`;
+}
 function mailText(text) {
   const { main, quote, head } = splitQuote(text);
-  return `<div class="mail-body">${body(main)}</div>` + (quote ? `
-    <div class="mail-quote" title="Click to show or hide the earlier message">
-      <div class="mail-quote-head">↩ ${esc(head || "Earlier message")}</div>
-      <div class="mail-body">${body(quote)}</div></div>` : "");
+  return `<div class="mail-body">${body(main)}</div>` + (quote ? quoteBox(head, quote) : "");
 }
-document.addEventListener("click", (e) => {
+document.addEventListener("click", async (e) => {
   const q = e.target.closest(".mail-quote");
-  if (q && !e.target.closest("a")) q.classList.toggle("open");
+  if (!q || e.target.closest("a")) return;
+  q.classList.toggle("open");
+  const box = q.closest("[data-mid]");
+  if (!q.classList.contains("open") || !box || !box.classList.contains("translated") || box.dataset.qdone) return;
+  const id = box.dataset.mid, lang = box.dataset.lang || "English";
+  box.dataset.qdone = "1";
+  q.querySelector(".mail-quote-head").insertAdjacentHTML("beforeend", ` <span class="tr-tag">translating…</span>`);
+  try {
+    const d = await api(`/api/inbox/translate?quotes=${id}&lang=${encodeURIComponent(lang)}`);
+    const t = (d.quotes || {})[id], orig = splitQuote(trOriginal.get(String(id)) || "");
+    if (t) { const fresh = document.createElement("div"); fresh.innerHTML = quoteBox(orig.head, t, true); fresh.firstElementChild.classList.add("open"); q.replaceWith(fresh.firstElementChild); }
+    else q.querySelector(".tr-tag")?.remove();
+  } catch (err) { box.dataset.qdone = ""; q.querySelector(".tr-tag")?.remove(); toast(err.message, true); }
 });
 
 function body(text) {
@@ -222,6 +245,7 @@ async function openMail(id) {
   let m;
   try { m = await api(`/api/inbox/messages/${id}`); } catch (e) { $("read").innerHTML = esc(e.message); return; }
   if (m.ticket_id) return openTicket(m.ticket_id);
+  trMeta = { mailbox: m.address || m.to_addr || "", store: m.store || "", first: m.id };
   $("read").innerHTML = `
     <h2 class="mail-h">${esc(m.subject || "(no subject)")}</h2>
     <div class="mail-meta"><strong>${esc(m.from_name || m.from_addr)}</strong> &lt;${esc(m.from_addr)}&gt;
@@ -259,6 +283,7 @@ async function openTicket(id) {
   const t = d.ticket;
   const labels = (t.labels || "").split(",").filter(Boolean);
   const snoozed = t.snoozed_until && new Date(t.snoozed_until) > new Date();
+  trMeta = { mailbox: t.mailbox || "", store: t.store || "", first: d.messages[0]?.id };
   const thread = d.messages.map((m) => `
     <div class="msg ${m.direction === "out" ? "out" : "in"}" data-mid="${m.id}">
       <div class="msg-head"><strong>${m.direction === "out" ? "You" : esc(m.from_name || m.from_addr)}</strong>

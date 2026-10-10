@@ -899,13 +899,16 @@ TRANSLATE_LANGS = ("English", "French", "Spanish", "German", "Italian", "Portugu
 
 
 @app.get("/api/inbox/translate")
-async def api_inbox_translate(ids: str, lang: str = "English"):
-    """Translations of these emails (saved, so each email is only translated once per language)."""
+async def api_inbox_translate(ids: str = "", lang: str = "English", quotes: str = ""):
+    """Translations of these emails (saved, so each email is only translated once per language).
+    quotes: emails whose quoted earlier conversation should be translated too."""
     if lang not in TRANSLATE_LANGS:
         raise HTTPException(400, "Pick a language from the list.")
     wanted = [int(x) for x in ids.split(",") if x.strip().isdigit()][:60]
+    qwanted = [int(x) for x in quotes.split(",") if x.strip().isdigit()][:20]
+    out_quotes = await _translate_quotes(qwanted, lang) if qwanted else {}
     if not wanted:
-        return {"translations": {}}
+        return {"translations": {}, "quotes": out_quotes}
     marks = ",".join("?" * len(wanted))
     with db._conn() as con:
         done = {r[0]: r[1] for r in con.execute(
@@ -937,7 +940,33 @@ async def api_inbox_translate(ids: str, lang: str = "English"):
         errs = [e for _, t, e in results if e]
         if errs and not done:
             raise HTTPException(400, errs[0])
-    return {"translations": {str(k): v for k, v in done.items()}}
+    return {"translations": {str(k): v for k, v in done.items()}, "quotes": out_quotes}
+
+
+async def _translate_quotes(ids: list, lang: str) -> dict:
+    """The quoted part of these emails, translated (saved under '<language>|quote')."""
+    key_lang = f"{lang}|quote"
+    marks = ",".join("?" * len(ids))
+    with db._conn() as con:
+        done = {r[0]: r[1] for r in con.execute(
+            f"SELECT message_id, text FROM mail_translations WHERE lang = ? AND message_id IN ({marks})", (key_lang, *ids))}
+        todo = [{"id": r[0], "text": ai_brain.quoted_part(r[1])} for r in con.execute(
+            f"SELECT id, text FROM mail_messages WHERE id IN ({marks})", ids) if r[0] not in done]
+    todo = [m for m in todo if m["text"].strip()]
+    key = db.get_setting("anthropic_api_key")
+    if todo and key:
+        async def one(m):
+            try:
+                return m, (await ai_brain.translate(key, [m["text"]], lang))[0]
+            except (anthropic.APIError, ValueError):
+                return m, None
+        with db._conn() as con:
+            for m, t in await asyncio.gather(*[one(m) for m in todo]):
+                if t is not None:
+                    con.execute("INSERT OR REPLACE INTO mail_translations (message_id, lang, text) VALUES (?, ?, ?)",
+                                (m["id"], key_lang, t))
+                    done[m["id"]] = t
+    return {str(k): v for k, v in done.items()}
 
 
 _TICKET_VIEWS = {
