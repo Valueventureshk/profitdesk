@@ -69,7 +69,19 @@ function query(extra = {}) {
     date_by: $("dateBy").value, ...extra });
 }
 
+const DEFAULTS = { store: "", carrier: "", country: "", range: "60", dateBy: "order", sort: "order_desc" };
+function markFilters() {
+  let any = false;
+  for (const [id, def] of Object.entries(DEFAULTS)) {
+    const on = $(id).value !== def;
+    $(id).classList.toggle("on", on);
+    if (on && !["sort"].includes(id)) any = true;
+  }
+  $("reset").hidden = !any && !$("q").value;
+}
+
 async function load() {
+  markFilters();
   try { data = await api(`/api/scm/shipments?${query()}`); }
   catch (e) { toast(e.message, true); return; }
   render();
@@ -238,6 +250,13 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape") $("drawer"
 let typing;
 $("q").oninput = () => { clearTimeout(typing); typing = setTimeout(() => { state.page = 1; load(); }, 300); };
 for (const id of ["store", "carrier", "country", "from", "to", "sort", "dateBy"]) $(id).onchange = () => { state.page = 1; load(); };
+$("reset").onclick = () => {
+  for (const [id, def] of Object.entries(DEFAULTS)) $(id).value = def;
+  $("q").value = "";
+  $("customDates").hidden = true;
+  state.page = 1;
+  load();
+};
 $("range").onchange = () => { $("customDates").hidden = $("range").value !== "custom"; state.page = 1; load(); };
 $("sync").onclick = async () => {
   try { await post("/api/scm/sync"); toast("Syncing. New orders show up in a minute or two."); }

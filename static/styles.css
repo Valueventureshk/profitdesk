@@ -903,6 +903,30 @@ body.read-only [data-write-only] { display: none !important; }
 .scm-body .scm-tabs button.on { font-weight: 600; }
 .scm-body .scm-chip { font-weight: 500; }
 
+/* SCM filters: compact dropdown chips (like Parcel Panel's Status / Carrier / Destination buttons) */
+.scm-filters { flex-wrap: wrap; gap: 8px; align-items: center; padding: 12px 14px; }
+.scm-filters .scm-searchbox { flex: 1 1 100%; }
+.scm-filters select.control {
+  width: auto !important; max-width: 100%; flex: 0 0 auto; min-height: 0; height: 32px;
+  -webkit-appearance: none; appearance: none; cursor: pointer;
+  padding: 0 30px 0 12px; border-radius: 999px; border: 1px solid var(--line);
+  font-size: 13px; font-weight: 500; color: var(--ink);
+  background: var(--panel) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%2364748B' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E") no-repeat right 12px center;
+  box-shadow: 0 1px 0 rgba(15,23,42,.04); transition: background-color .15s ease, border-color .15s ease;
+}
+.scm-filters select.control:hover { border-color: var(--faint); }
+.scm-filters select.control.on {
+  background-color: var(--ink); color: var(--panel); border-color: var(--ink);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='white' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E");
+}
+.scm-filters .scm-dates { flex: 1 1 100%; }
+.scm-filters .scm-dates input { height: 32px; border-radius: 8px; font-size: 13px; }
+.scm-filters .scm-reset { font: inherit; font-size: 12.5px; border: 0; background: none; color: var(--muted); cursor: pointer; text-decoration: underline; padding: 0 4px; }
+@media (max-width: 700px) {
+  .scm-filters { gap: 6px; }
+  .scm-filters select.control { font-size: 12.5px; height: 30px; padding: 0 26px 0 10px; background-position: right 10px center; }
+}
+
 :root[data-theme="dark"] {
   --bg: #0E1116; --panel: #161B22; --ink: #E6EDF3; --muted: #9BA5B4; --faint: #6E7A8A;
   --line: #2A3140; --line-soft: #1C222B; --up: #34D399; --down: #F87171; --accent: #10B981;
