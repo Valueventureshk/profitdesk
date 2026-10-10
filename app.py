@@ -2418,7 +2418,7 @@ async def proxy_track(request: Request, order: str = None, email: str = None, nu
     parcels, message = _find_parcels(store["id"], order, email, nums)
     dropship = (db.get_setting(f"track_dropship:{store['id']}") or "1") == "1"
     body = trackpage.page(store["name"].strip(), parcels, {"order": order, "email": email}, message, dropship,
-                          "/apps/track" if signed else "/proxy/track")
+                          (query.get("path_prefix") or "/apps/track") if signed else "/proxy/track")
     if signed:
         return Response(body, media_type="application/liquid")
     # Owner preview, outside the store's theme.
