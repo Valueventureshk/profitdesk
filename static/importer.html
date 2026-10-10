@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ProfitDesk · Product Importer</title>
+<script>try{var t=localStorage.getItem("pdTheme")||(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");document.documentElement.dataset.theme=t;}catch(e){}</script>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;650;700&display=swap">
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body class="scm-body">
+<div class="cash-page imp-page">
+  <header class="cash-top">
+    <div class="brand" data-section-menu title="Switch section">
+      <span class="brand-mark">PD</span>
+      <span class="brand-name">ProfitDesk</span>
+    </div>
+    <div class="crumb">
+      <h1>Product Importer</h1>
+      <p>Copy products from any Shopify store into yours</p>
+    </div>
+    <nav class="scm-pages" id="pages">
+      <button data-page="one" class="on">One product</button>
+      <button data-page="multi">Multi products</button>
+      <button data-page="history">History</button>
+      <button data-page="settings" data-write-only>Settings</button>
+    </nav>
+  </header>
+
+  <main class="content">
+    <!-- one product -->
+    <section class="panel imp-card" id="page-one">
+      <div class="imp-head"><h2>Copy one product</h2><p class="hint">Paste a product link from any Shopify store.</p></div>
+      <div class="imp-row">
+        <input id="oneUrl" class="control imp-url" placeholder="https://store.com/products/product-name">
+        <div class="imp-stores" data-stores></div>
+      </div>
+      <button class="btn btn-primary imp-go" id="oneLoad">Load product</button>
+      <div id="onePreview"></div>
+    </section>
+
+    <!-- multi products -->
+    <section class="panel imp-card" id="page-multi" hidden>
+      <div class="imp-head"><h2>Copy multiple products</h2><p class="hint">Paste a collection link or a whole store's address.</p></div>
+      <div class="imp-row">
+        <input id="multiUrl" class="control imp-url" placeholder="https://store.com/collections/dresses  or  https://store.com">
+        <div class="imp-stores" data-stores></div>
+      </div>
+      <button class="btn btn-primary imp-go" id="multiLoad">Load products</button>
+      <div id="multiList"></div>
+    </section>
+
+    <!-- progress of the current import -->
+    <section class="panel imp-card" id="progress" hidden>
+      <div class="imp-head"><h2 id="progTitle">Importing…</h2><p class="hint" id="progNote"></p></div>
+      <div class="imp-bar"><i id="progBar"></i></div>
+      <div class="table-wrap"><table class="table imp-table" id="progTable"></table></div>
+    </section>
+
+    <!-- history -->
+    <section class="panel imp-card" id="page-history" hidden>
+      <div class="imp-head"><h2>History</h2><p class="hint" id="histNote"></p></div>
+      <div class="table-wrap"><table class="table imp-table" id="histTable"></table></div>
+      <div class="scm-pager" id="histPager"></div>
+    </section>
+
+    <!-- settings -->
+    <section class="panel imp-card" id="page-settings" hidden>
+      <div class="imp-head"><h2>Settings</h2><p class="hint">Applied to every product you import.</p></div>
+      <div class="imp-settings" id="settingsForm"></div>
+      <div class="imp-save"><button class="btn btn-primary" id="saveSettings">Save settings</button></div>
+    </section>
+  </main>
+</div>
+<div id="toast" class="toast" hidden></div>
+<script src="/static/nav.js"></script>
+<script src="/static/chat.js"></script>
+<script src="/static/importer.js"></script>
+</body>
+</html>

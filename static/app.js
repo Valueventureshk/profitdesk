@@ -721,7 +721,7 @@ async function openGroupSettings() {
 /* ------------------------------------------------ people */
 
 const LEVELS = { owner: "Owner (everything, incl. Settings)", write: "Read & write", read: "Read only" };
-const DESK_NAMES = { profit: "Profit dashboard", cash: "Cash flow", cog: "COG + Products", inbox: "Inbox", reports: "Reports", expenses: "Expenses", scm: "SCM" };
+const DESK_NAMES = { profit: "Profit dashboard", cash: "Cash flow", cog: "COG + Products", inbox: "Inbox", reports: "Reports", expenses: "Expenses", scm: "SCM", importer: "Product Importer" };
 
 function accessFields(prefix, role = "read", desks = ["profit"]) {
   return `<label class="field"><span>Access level</span>

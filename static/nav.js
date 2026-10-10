@@ -8,6 +8,7 @@
     { href: "/inbox", desk: "inbox", label: "Inbox", note: "Customer emails from every store" },
     { href: "/reports", desk: "reports", label: "Reports", note: "Download spreadsheets of any figures" },
     { href: "/scm", desk: "scm", label: "SCM", note: "Every order's shipping and tracking" },
+    { href: "/importer", desk: "importer", label: "Product Importer", note: "Copy products from any Shopify store" },
     { href: "/expenses", desk: "expenses", label: "Expenses", note: "Every payment out, by category" },
   ];
 
@@ -80,6 +81,7 @@
     "/scm": '<path d="M2 7h11v9H2zM13 10h4l4 3v3h-8z"/><circle cx="6" cy="17.5" r="1.8"/><circle cx="17" cy="17.5" r="1.8"/>',
     "/expenses": '<path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9 8h6M9 12h6M9 16h3"/>',
     "/reports": '<path d="M5 3h10l4 4v14H5z"/><path d="M14 3v5h5M9 13h6M9 17h6"/>',
+    "/importer": '<path d="M12 3v12M7 10l5 5 5-5"/><path d="M4 17v3h16v-3"/>',
     settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>',
     theme: '<path d="M20 14.5A8 8 0 019.5 4a8 8 0 1010.5 10.5z"/>',
     logout: '<path d="M14 4h5v16h-5M10 8l-4 4 4 4M6 12h10"/>',

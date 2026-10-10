@@ -365,6 +365,24 @@ CREATE TABLE IF NOT EXISTS scm_flags (
 );
 CREATE INDEX IF NOT EXISTS shipments_order_at ON shipments(order_at);
 
+-- Product Importer: one row per product per target store.
+CREATE TABLE IF NOT EXISTS import_items (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id      TEXT NOT NULL,
+    source_url  TEXT,
+    title       TEXT,
+    image       TEXT,
+    store_id    INTEGER,
+    status      TEXT NOT NULL DEFAULT 'queued',   -- queued | done | skipped | failed
+    product_id  TEXT,
+    admin_url   TEXT,
+    error       TEXT,
+    created_by  TEXT,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    done_at     TEXT
+);
+CREATE INDEX IF NOT EXISTS import_items_job ON import_items(job_id);
+
 -- Small app-wide preferences, e.g. the currency the dashboard shows.
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,

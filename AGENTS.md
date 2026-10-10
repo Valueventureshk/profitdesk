@@ -68,6 +68,7 @@ file and have it work.
 | `ai_chat.py` `static/chat.js` | Chat button on every desk: Sonnet 5.5 calls the app's tools, never invents figures |
 | `expenses.py` `static/expenses.*` | Expenses desk: actual payments out of Airwallex + PayPal by category; owner's picks in `expense_rules`, AI suggestions (Haiku) |
 | `track17.py` `static/scm.*` | SCM desk: every order's parcels (Shopify) + where they are (17TRACK API, webhook `/api/scm/webhook`) |
+| `importer.py` `static/importer.*` | Product Importer desk (like Poky): load any Shopify store's products.json, apply price/currency/tag rules, create in our stores with productSet (Draft by default) |
 | `static/cash.html` `cash.js` `nav.js` | Cash flow page, section menu |
 | `static/index.html` `styles.css` `app.js` | The dashboard |
 | `seed_demo.py` | Generates fake data for testing |

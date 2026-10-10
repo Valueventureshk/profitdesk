@@ -31,6 +31,7 @@ import auth
 import cashflow
 import statement
 import adbills
+import importer
 import trackpage
 import track17
 import expenses
@@ -111,14 +112,15 @@ _DESK_PATHS = {
     "reports": ("/reports", "/api/reports"),
     "expenses": ("/expenses", "/api/expenses"),
     "scm": ("/scm", "/api/scm"),
+    "importer": ("/importer", "/api/importer"),
 }
 _DESK_HOME = {"profit": "/", "cash": "/cash", "cog": "/cog", "inbox": "/inbox", "reports": "/reports",
-             "expenses": "/expenses", "scm": "/scm"}
+             "expenses": "/expenses", "scm": "/scm", "importer": "/importer"}
 # Shared by every desk's pages: the user's own details and the dropdown lists.
 _EVERYONE = {"/api/me", "/api/me/password", "/api/logout", "/change-password",
              "/api/setup", "/api/chat"}
 # What "read & write" people may change (owners may change anything).
-_WRITE_OK = ("/api/invoices", "/api/cog/sync", "/api/inbox", "/api/expenses", "/api/scm")
+_WRITE_OK = ("/api/invoices", "/api/cog/sync", "/api/inbox", "/api/expenses", "/api/scm", "/api/importer")
 # What anyone with the desk may do, read-only people included (it changes nothing).
 _ANY_OK = ("/api/reports",)
 
@@ -2909,6 +2911,161 @@ async def api_tracking_save(payload: dict):
     if not _scm_running.locked():
         asyncio.create_task(_scm_run())
     return {"ok": True}
+
+
+# ---------------------------------------------------------------- Product Importer desk
+
+@app.get("/importer", response_class=HTMLResponse)
+def importer_page():
+    return _page("importer.html", ("importer.js", "nav.js", "styles.css", "chat.js"))
+
+
+def _importer_cfg() -> dict:
+    try:
+        saved = json.loads(db.get_setting("importer_cfg") or "{}")
+    except ValueError:
+        saved = {}
+    return {**importer.DEFAULTS, **saved}
+
+
+@app.get("/api/importer/settings")
+def api_importer_settings():
+    return {"settings": _importer_cfg(),
+            "stores": [{"id": x["id"], "name": x["name"].strip(), "currency": x["currency"], "domain": x["shop_domain"]}
+                       for x in db.list_stores() if not demo.is_demo(x) and x.get("access_token")]}
+
+
+@app.put("/api/importer/settings")
+def api_importer_settings_save(payload: dict):
+    cfg = _importer_cfg()
+    for k, v in (payload or {}).items():
+        if k in importer.DEFAULTS:
+            cfg[k] = v
+    db.set_setting("importer_cfg", json.dumps(cfg))
+    return {"ok": True, "settings": cfg}
+
+
+_loaded: dict = {}      # token -> (time, {host, currency, raw: {id: product}})
+
+
+@app.post("/api/importer/load")
+async def api_importer_load(payload: dict):
+    try:
+        got = await importer.load(payload.get("url"), max_products=int(payload.get("max") or 2000))
+    except importer.ImportError_ as e:
+        raise HTTPException(400, str(e))
+    token = secrets.token_urlsafe(10)
+    for k in [k for k, v in _loaded.items() if time.time() - v[0] > 3 * 3600]:
+        _loaded.pop(k, None)
+    _loaded[token] = (time.time(), {"host": got["host"], "currency": got["currency"],
+                                    "raw": {str(p["id"]): p for p in got["raw"]}})
+    return {"token": token, "host": got["host"], "kind": got["kind"], "currency": got["currency"],
+            "products": got["products"]}
+
+
+_import_running: set = set()
+
+
+async def _run_import(job_id: str, token_data: dict, ids: list, store_ids: list, user: str):
+    cfg = _importer_cfg()
+    stores = {x["id"]: x for x in db.list_stores()}
+    src_cur = token_data.get("currency")
+    tables = {}
+    try:
+        for sid in store_ids:
+            store = stores.get(sid)
+            if not store:
+                continue
+            client = ShopifyClient(store["shop_domain"], store["access_token"])
+            factor = 1.0
+            if cfg.get("convert_currency") and src_cur and src_cur != store["currency"]:
+                if store["currency"] not in tables:
+                    tables[store["currency"]] = await fx.table(store["currency"])
+                factor = fx.factor(tables[store["currency"]], src_cur, store["currency"])
+            for pid in ids:
+                p = token_data["raw"].get(str(pid))
+                if not p:
+                    continue
+                src_url = f"https://{token_data['host']}/products/{p.get('handle')}"
+                with db._conn() as con:
+                    row = con.execute("SELECT id FROM import_items WHERE job_id = ? AND store_id = ? AND source_url = ?",
+                                      (job_id, sid, src_url)).fetchone()
+                status, err, gid, admin = "failed", None, None, None
+                try:
+                    if cfg.get("unique") and p.get("handle"):
+                        ex = await client.gql(importer.HANDLE_EXISTS, {"q": f"handle:{p['handle']}"})
+                        if ex["products"]["nodes"]:
+                            status, err = "skipped", "Already in this store (same handle)"
+                            gid = ex["products"]["nodes"][0]["id"]
+                    if status != "skipped":
+                        inp = importer.build_input(p, cfg, factor, src_url)
+                        r = await client.gql(importer.PRODUCT_SET, {"input": inp})
+                        errs = r["productSet"]["userErrors"]
+                        if errs:
+                            err = "; ".join(f"{e.get('message')}" for e in errs)[:500]
+                        else:
+                            gid, status = r["productSet"]["product"]["id"], "done"
+                except Exception as e:
+                    err = str(e)[:500]
+                if gid:
+                    admin = (f"https://admin.shopify.com/store/{store['shop_domain'].removesuffix('.myshopify.com')}"
+                             f"/products/{gid.rsplit('/', 1)[-1]}")
+                with db._conn() as con:
+                    con.execute("UPDATE import_items SET status = ?, error = ?, product_id = ?, admin_url = ?,"
+                                " done_at = datetime('now') WHERE id = ?", (status, err, gid, admin, row["id"]))
+                await asyncio.sleep(0.4)
+    finally:
+        _import_running.discard(job_id)
+
+
+@app.post("/api/importer/import")
+async def api_importer_import(payload: dict, request: Request):
+    hit = _loaded.get(payload.get("token") or "")
+    if not hit:
+        raise HTTPException(400, "Load the products again (the list expired).")
+    data = hit[1]
+    ids = [str(i) for i in payload.get("ids") or [] if str(i) in data["raw"]]
+    store_ids = [int(x) for x in payload.get("stores") or []]
+    if not ids:
+        raise HTTPException(400, "Pick at least one product.")
+    if not store_ids:
+        raise HTTPException(400, "Pick at least one store to import into.")
+    user = (getattr(request.state, "user", None) or {}).get("email", "")
+    job_id = secrets.token_hex(6)
+    with db._conn() as con:
+        for sid in store_ids:
+            for pid in ids:
+                p = data["raw"][pid]
+                imgs = p.get("images") or []
+                con.execute("INSERT INTO import_items (job_id, source_url, title, image, store_id, created_by)"
+                            " VALUES (?, ?, ?, ?, ?, ?)",
+                            (job_id, f"https://{data['host']}/products/{p.get('handle')}", p.get("title"),
+                             imgs[0].get("src") if imgs else None, sid, user))
+    _import_running.add(job_id)
+    asyncio.create_task(_run_import(job_id, data, ids, store_ids, user))
+    return {"job": job_id, "items": len(ids) * len(store_ids)}
+
+
+@app.get("/api/importer/jobs/{job_id}")
+def api_importer_job(job_id: str):
+    names = _store_names()
+    with db._conn() as con:
+        rows = [dict(r) for r in con.execute("SELECT * FROM import_items WHERE job_id = ? ORDER BY id", (job_id,))]
+    for r in rows:
+        r["store"] = names.get(r["store_id"], "")
+    return {"items": rows, "running": job_id in _import_running}
+
+
+@app.get("/api/importer/history")
+def api_importer_history(page: int = 1):
+    names = _store_names()
+    with db._conn() as con:
+        total = con.execute("SELECT COUNT(*) FROM import_items").fetchone()[0]
+        rows = [dict(r) for r in con.execute(
+            "SELECT * FROM import_items ORDER BY id DESC LIMIT 100 OFFSET ?", ((max(1, page) - 1) * 100,))]
+    for r in rows:
+        r["store"] = names.get(r["store_id"], "")
+    return {"items": rows, "total": total, "page": page, "pages": max(1, -(-total // 100))}
 
 
 @app.post("/api/cash/airwallex")
