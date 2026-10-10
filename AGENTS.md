@@ -67,6 +67,7 @@ file and have it work.
 | `reports.py` `static/reports.*` | Reports desk: CSV downloads built from the desks' own figures (no AI) |
 | `ai_chat.py` `static/chat.js` | Chat button on every desk: Sonnet 5.5 calls the app's tools, never invents figures |
 | `expenses.py` `static/expenses.*` | Expenses desk: actual payments out of Airwallex + PayPal by category; owner's picks in `expense_rules`, AI suggestions (Haiku) |
+| `track17.py` `static/scm.*` | SCM desk: every order's parcels (Shopify) + where they are (17TRACK API, webhook `/api/scm/webhook`) |
 | `static/cash.html` `cash.js` `nav.js` | Cash flow page, section menu |
 | `static/index.html` `styles.css` `app.js` | The dashboard |
 | `seed_demo.py` | Generates fake data for testing |
@@ -103,6 +104,14 @@ file and have it work.
   card transaction, skips moves between own accounts. Unknown payees go to "To sort";
   the owner's pick is saved per payee key and applies to past and future payments.
   Conversion cost is the only computed line (legs at today's rate).
+- SCM desk (desk `scm`, replacing Parcel Panel): `_scm_loop` every 10 min reads each store's
+  orders changed since the last run (first run: 60 days) into `shipments` (one row per
+  tracking number; number '' = waiting for tracking). Parcels from the stores ticked in
+  SCM → Tracking connection, fulfilled on/after `track_from`, are registered with 17TRACK
+  (1 quota each, once). Updates arrive by webhook (signed sha256(body/key)); a daily
+  `gettrackinfo` catches up. Key = setting `track17_key` (owner pastes it on the SCM page).
+  Planned next: customer tracking page per store (Shopify app proxy, dropship mode),
+  Shopify fulfillment events so Shopify sends the shipping update emails.
 - Business clock is Hong Kong (`CASH_TIMEZONE`). Each store has its own clock;
   "today" is the furthest-ahead store's date.
 

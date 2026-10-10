@@ -105,6 +105,21 @@ ORDER_LOOKUP_LITE = ORDER_LOOKUP_QUERY.replace(
     "      fulfillments(first: 5) { status createdAt trackingInfo { number url company } }\n", "")
 
 
+SHIPMENTS_QUERY = """
+query Shipments($cursor: String, $q: String!) {
+  orders(first: 100, after: $cursor, query: $q, sortKey: UPDATED_AT) {
+    pageInfo { hasNextPage endCursor }
+    nodes {
+      legacyResourceId name createdAt updatedAt cancelledAt test
+      displayFulfillmentStatus email currentSubtotalLineItemsQuantity
+      shippingAddress { name city province countryCodeV2 }
+      fulfillments(first: 10) { status createdAt trackingInfo { number url company } }
+    }
+  }
+}
+"""
+
+
 class ShopifyError(RuntimeError):
     pass
 
@@ -370,6 +385,51 @@ class ShopifyClient:
                               "status": f.get("status"), "date": f.get("createdAt")}
                              for f in (o.get("fulfillments") or []) for t in (f.get("trackingInfo") or [])],
             })
+        return out
+
+    async def shipments(self, since: str, field: str = "updated_at") -> list:
+        """Orders created or changed since `since` (UTC ISO) with their tracking numbers.
+        [{order_id, name, created, cancelled, fulfillment, email, customer, city, country,
+          items, parcels: [{number, company, url, fulfilled}]}]"""
+        import asyncio as _aio
+        q = f"{field}:>='{since}'"
+        out, cursor = [], None
+        async with httpx.AsyncClient(timeout=90) as client:
+            while True:
+                for attempt in range(6):
+                    try:
+                        data = await self._post(client, SHIPMENTS_QUERY, {"cursor": cursor, "q": q})
+                        break
+                    except ShopifyError as e:
+                        if "rate limit" in str(e).lower() or "throttled" in str(e).lower():
+                            await _aio.sleep(2 + attempt * 2)
+                            continue
+                        raise
+                conn = data["orders"]
+                for o in conn["nodes"]:
+                    if o.get("test"):
+                        continue
+                    a = o.get("shippingAddress") or {}
+                    parcels, seen = [], set()
+                    for f in o.get("fulfillments") or []:
+                        if f.get("status") in ("CANCELLED", "ERROR", "FAILURE"):
+                            continue
+                        for t in f.get("trackingInfo") or []:
+                            n = (t.get("number") or "").strip().replace(" ", "")
+                            if n and n not in seen:
+                                seen.add(n)
+                                parcels.append({"number": n, "company": t.get("company") or "",
+                                                "url": t.get("url") or "", "fulfilled": f.get("createdAt")})
+                    out.append({"order_id": o["legacyResourceId"], "name": o["name"],
+                                "created": o["createdAt"], "cancelled": bool(o.get("cancelledAt")),
+                                "fulfillment": o.get("displayFulfillmentStatus") or "",
+                                "email": o.get("email") or "", "customer": a.get("name") or "",
+                                "city": a.get("city") or "", "country": a.get("countryCodeV2") or "",
+                                "items": o.get("currentSubtotalLineItemsQuantity") or 0,
+                                "parcels": parcels})
+                if not conn["pageInfo"]["hasNextPage"]:
+                    break
+                cursor = conn["pageInfo"]["endCursor"]
         return out
 
     async def shop_info(self):

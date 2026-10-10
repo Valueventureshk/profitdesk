@@ -30,6 +30,7 @@ import auth
 import cashflow
 import statement
 import adbills
+import track17
 import expenses
 import cog
 import invoices
@@ -74,7 +75,9 @@ async def lifespan(app):
     coster = asyncio.create_task(_cog_loop())
     reader = asyncio.create_task(_mail_loop())
     snapper = asyncio.create_task(_snapshot_loop())
+    tracker = asyncio.create_task(_scm_loop())
     yield
+    tracker.cancel()
     saver.cancel()
     coster.cancel()
     reader.cancel()
@@ -92,6 +95,7 @@ _cache: dict[tuple, tuple[float, dict]] = {}
 
 # Reachable without logging in: the login page itself and what it needs.
 _OPEN = {"/login", "/api/login", "/api/logout", "/api/first-user", "/api/first-restore",
+         "/api/scm/webhook",
          "/healthz", "/about", "/privacy", "/terms"}
 
 
@@ -104,14 +108,15 @@ _DESK_PATHS = {
     "inbox": ("/inbox", "/api/inbox"),
     "reports": ("/reports", "/api/reports"),
     "expenses": ("/expenses", "/api/expenses"),
+    "scm": ("/scm", "/api/scm"),
 }
 _DESK_HOME = {"profit": "/", "cash": "/cash", "cog": "/cog", "inbox": "/inbox", "reports": "/reports",
-             "expenses": "/expenses"}
+             "expenses": "/expenses", "scm": "/scm"}
 # Shared by every desk's pages: the user's own details and the dropdown lists.
 _EVERYONE = {"/api/me", "/api/me/password", "/api/logout", "/change-password",
              "/api/setup", "/api/chat"}
 # What "read & write" people may change (owners may change anything).
-_WRITE_OK = ("/api/invoices", "/api/cog/sync", "/api/inbox", "/api/expenses")
+_WRITE_OK = ("/api/invoices", "/api/cog/sync", "/api/inbox", "/api/expenses", "/api/scm")
 # What anyone with the desk may do, read-only people included (it changes nothing).
 _ANY_OK = ("/api/reports",)
 
@@ -2124,6 +2129,284 @@ def api_expense_sort(payload: dict, request: Request):
 @app.get("/api/expenses/rules")
 def api_expense_rules():
     return {"rules": db.expense_rules(), "categories": [{"key": k, "name": n} for k, n in expenses.CATEGORIES]}
+
+
+# ---------------------------------------------------------------- SCM desk
+
+@app.get("/scm", response_class=HTMLResponse)
+def scm_page():
+    return _page("scm.html", ("scm.js", "nav.js", "styles.css", "chat.js"))
+
+
+SCM_VIEWS = {
+    "all": None,
+    "awaiting": "s.status = 'awaiting'",
+    "pending": "s.status = 'pending'",
+    "info_received": "s.status = 'info_received'",
+    "in_transit": "s.status = 'in_transit'",
+    "out_for_delivery": "s.status = 'out_for_delivery'",
+    "pickup": "s.status = 'pickup'",
+    "delivered": "s.status = 'delivered'",
+    "exception": "s.status IN ('exception', 'failed_attempt', 'expired')",
+    # Moving nowhere: no carrier update for 7 days, or no tracking 5 days after the order.
+    "stuck": "((s.status IN ('info_received', 'in_transit', 'pending') AND s.number != ''"
+             " AND COALESCE(s.last_event_at, s.fulfilled_at) < :stuck_since)"
+             " OR (s.status = 'awaiting' AND s.order_at < :late_since))",
+}
+
+
+def _scm_where(view, q, store, carrier, country, start, end) -> tuple:
+    now = datetime.now(timezone.utc)
+    params = {"stuck_since": (now - timedelta(days=7)).isoformat(),
+              "late_since": (now - timedelta(days=5)).isoformat(),
+              "start": start or (now - timedelta(days=60)).date().isoformat(),
+              "end": (date.fromisoformat(end) + timedelta(days=1)).isoformat() if end else "9999"}
+    where = ["s.order_at >= :start", "s.order_at < :end"]
+    where.append("s.cancelled = 1" if view == "cancelled" else "s.cancelled = 0")
+    if SCM_VIEWS.get(view):
+        where.append(SCM_VIEWS[view])
+    if q:
+        params["q"] = f"%{q.strip().lstrip('#').lower()}%"
+        where.append("(lower(s.order_name) LIKE :q OR lower(s.number) LIKE :q OR lower(s.email) LIKE :q"
+                     " OR lower(s.customer) LIKE :q OR lower(COALESCE(s.last_mile_number, '')) LIKE :q)")
+    if store:
+        params["store"] = int(store)
+        where.append("s.store_id = :store")
+    if carrier:
+        params["carrier"] = carrier
+        where.append("COALESCE(NULLIF(s.carrier_name, ''), s.company) = :carrier")
+    if country:
+        params["country"] = country
+        where.append("s.country = :country")
+    return " AND ".join(where), params
+
+
+_SCM_COLS = ("id, store_id, order_id, order_name, order_at, customer, email, country, city, items, number,"
+             " company, tracking_url, fulfilled_at, status, sub_status, last_event, last_event_at, last_location,"
+             " carrier_name, last_mile, last_mile_number, transit_days, eta_from, eta_to, delivered_at,"
+             " registered, register_error, cancelled, fulfillment")
+
+
+@app.get("/api/scm/shipments")
+def api_scm_shipments(view: str = "all", q: str = None, store: str = None, carrier: str = None,
+                      country: str = None, start: str = None, end: str = None, page: int = 1):
+    where, params = _scm_where(view, q, store, carrier, country, start, end)
+    base_where, base_params = _scm_where("all", q, store, carrier, country, start, end)
+    with db._conn() as con:
+        total = con.execute(f"SELECT COUNT(*) FROM shipments s WHERE {where}", params).fetchone()[0]
+        rows = [dict(r) for r in con.execute(
+            f"SELECT {_SCM_COLS} FROM shipments s WHERE {where} ORDER BY s.order_at DESC LIMIT 50 OFFSET :off",
+            {**params, "off": max(0, page - 1) * 50})]
+        counts = {}
+        for v in SCM_VIEWS:
+            w, p = _scm_where(v, q, store, carrier, country, start, end)
+            counts[v] = con.execute(f"SELECT COUNT(*) FROM shipments s WHERE {w}", p).fetchone()[0]
+        w, p = _scm_where("cancelled", q, store, carrier, country, start, end)
+        counts["cancelled"] = con.execute(f"SELECT COUNT(*) FROM shipments s WHERE {w}", p).fetchone()[0]
+        carriers = [r[0] for r in con.execute(
+            f"SELECT COALESCE(NULLIF(s.carrier_name, ''), s.company) c FROM shipments s WHERE {base_where}"
+            " AND COALESCE(NULLIF(s.carrier_name, ''), s.company, '') != '' GROUP BY c ORDER BY COUNT(*) DESC",
+            base_params)]
+        countries = [r[0] for r in con.execute(
+            f"SELECT s.country FROM shipments s WHERE {base_where} AND s.country != '' GROUP BY s.country"
+            " ORDER BY COUNT(*) DESC", base_params)]
+    now = datetime.now(timezone.utc)
+    names = _store_names()
+    for r in rows:
+        r["store"] = names.get(r["store_id"], "")
+        since = r["fulfilled_at"] if r["number"] else r["order_at"]
+        r["age_days"] = (now - datetime.fromisoformat(since.replace("Z", "+00:00"))).days if since else None
+        end_at = r["delivered_at"] or now.isoformat()
+        if r["fulfilled_at"] and r["transit_days"] is None:
+            r["transit_days"] = (datetime.fromisoformat(end_at.replace("Z", "+00:00"))
+                                 - datetime.fromisoformat(r["fulfilled_at"].replace("Z", "+00:00"))).days
+    return {"rows": rows, "total": total, "page": page, "pages": max(1, -(-total // 50)),
+            "counts": counts, "carriers": carriers, "countries": countries,
+            "stores": [{"id": k, "name": v} for k, v in names.items()],
+            "status": _scm_status()}
+
+
+@app.get("/api/scm/shipments/{shipment_id}")
+def api_scm_shipment(shipment_id: int):
+    with db._conn() as con:
+        r = con.execute("SELECT * FROM shipments WHERE id = ?", (shipment_id,)).fetchone()
+        if not r:
+            raise HTTPException(404, "That shipment no longer exists.")
+        r = dict(r)
+        others = [dict(x) for x in con.execute(
+            "SELECT id, number, status, company FROM shipments WHERE store_id = ? AND order_id = ? AND id != ?",
+            (r["store_id"], r["order_id"], r["id"]))]
+        key = (r["order_name"] or "").lstrip("#")
+        tickets = [dict(t) for t in con.execute(
+            "SELECT id, subject, status, kind, labels, created_at FROM tickets WHERE store_id = ?"
+            " AND (orders LIKE ? OR customer_email = ?) ORDER BY created_at DESC LIMIT 10",
+            (r["store_id"], f"%{key}%", r["email"] or "-"))] if key else []
+    store = next((x for x in db.list_stores() if x["id"] == r["store_id"]), None)
+    r["events"] = json.loads(r["events"] or "[]")
+    r["store"] = (store or {}).get("name", "").strip()
+    r["shopify_url"] = (f"https://admin.shopify.com/store/{store['shop_domain'].removesuffix('.myshopify.com')}"
+                        f"/orders/{r['order_id']}") if store else None
+    return {"shipment": r, "other_parcels": others, "tickets": tickets}
+
+
+def _scm_status() -> dict:
+    try:
+        return json.loads(db.get_setting("scm_status") or "{}")
+    except ValueError:
+        return {}
+
+
+def _scm_set_status(**kw):
+    st = _scm_status()
+    st.update(kw)
+    db.set_setting("scm_status", json.dumps(st))
+
+
+def _tracking_config() -> dict:
+    try:
+        stores = [int(x) for x in json.loads(db.get_setting("track_stores") or "[]")]
+    except ValueError:
+        stores = []
+    return {"key": db.get_setting("track17_key") or "", "stores": stores,
+            "from": db.get_setting("track_from") or datetime.now(timezone.utc).date().isoformat()}
+
+
+_scm_running = asyncio.Lock()
+
+
+async def _scm_sync_orders():
+    """Every store's orders and tracking numbers from Shopify (changes since the last run)."""
+    for store in db.list_stores():
+        if demo.is_demo(store) or not store.get("access_token"):
+            continue
+        key = f"scm_sync:{store['id']}"
+        last = db.get_setting(key)
+        started = datetime.now(timezone.utc) - timedelta(minutes=5)
+        try:
+            client = ShopifyClient(store["shop_domain"], store["access_token"])
+            if last:
+                orders = await client.shipments(last, "updated_at")
+            else:
+                since = (datetime.now(timezone.utc) - timedelta(days=60)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                orders = await client.shipments(since, "created_at")
+            for o in orders:
+                db.save_order_shipments(store["id"], o)
+            db.set_setting(key, started.strftime("%Y-%m-%dT%H:%M:%SZ"))
+        except Exception as e:
+            _scm_set_status(**{f"shopify_error_{store['id']}": f"{store['name'].strip()}: {e}"})
+            continue
+        _scm_set_status(**{f"shopify_error_{store['id']}": None})
+
+
+async def _scm_track():
+    """Register new parcels with 17TRACK and pick up anything the webhook missed."""
+    cfg = _tracking_config()
+    if not cfg["key"]:
+        return
+    todo = db.shipments_to_register(cfg["stores"], cfg["from"])
+    registered = 0
+    try:
+        for i in range(0, len(todo), 40):
+            batch = todo[i:i + 40]
+            ok, bad = await track17.register(cfg["key"], [{
+                "number": t["number"], "order_no": t["order_name"], "order_time": (t["order_at"] or "")[:10],
+                "destination_country": t["country"], "tag": f"{t['store_id']}:{t['order_id']}"} for t in batch])
+            db.mark_registered(ok, bad)
+            registered += len(ok)
+            await asyncio.sleep(0.5)
+        # The webhook brings updates as they happen; this catches up once a day.
+        stale = db.shipments_to_refresh()
+        for i in range(0, len(stale), 40):
+            for item in await track17.track_info(cfg["key"], stale[i:i + 40]):
+                if item.get("track_info"):
+                    db.save_tracking(item["number"], track17.summarize(item))
+            await asyncio.sleep(0.5)
+        _scm_set_status(track_error=None, last_track=datetime.now(timezone.utc).isoformat(),
+                        last_registered=registered)
+    except track17.TrackError as e:
+        _scm_set_status(track_error=str(e))
+
+
+async def _scm_run():
+    async with _scm_running:
+        await _scm_sync_orders()
+        await _scm_track()
+        _scm_set_status(last_sync=datetime.now(timezone.utc).isoformat())
+
+
+async def _scm_loop():
+    await asyncio.sleep(90)
+    while True:
+        try:
+            await _scm_run()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"SCM sync failed: {e}")
+        await asyncio.sleep(600)
+
+
+@app.post("/api/scm/sync")
+async def api_scm_sync():
+    if _scm_running.locked():
+        return {"ok": True, "running": True}
+    asyncio.create_task(_scm_run())
+    return {"ok": True}
+
+
+@app.post("/api/scm/webhook")
+async def api_scm_webhook(request: Request):
+    """17TRACK pushes every tracking update here (set this URL in the 17TRACK dashboard)."""
+    body = await request.body()
+    key = _tracking_config()["key"]
+    if not key or not track17.verify(body, request.headers.get("sign", ""), key):
+        return JSONResponse({"error": "bad signature"}, status_code=401)
+    try:
+        push = json.loads(body)
+    except ValueError:
+        return JSONResponse({"error": "bad body"}, status_code=400)
+    data = push.get("data") or {}
+    if push.get("event") == "TRACKING_UPDATED" and data.get("number") and data.get("track_info"):
+        db.save_tracking(data["number"], track17.summarize(data))
+    _scm_set_status(last_webhook=datetime.now(timezone.utc).isoformat())
+    return {"ok": True}
+
+
+@app.get("/api/tracking")
+async def api_tracking():
+    cfg = _tracking_config()
+    out = {"connected": bool(cfg["key"]), "stores": cfg["stores"], "from": cfg["from"],
+           "webhook": f"{BASE_URL}/api/scm/webhook", "status": _scm_status(),
+           "store_list": [{"id": k, "name": v} for k, v in _store_names().items()]}
+    if cfg["key"]:
+        try:
+            out["quota"] = await track17.quota(cfg["key"])
+        except track17.TrackError as e:
+            out["quota_error"] = str(e)
+    return out
+
+
+@app.put("/api/tracking")
+async def api_tracking_save(payload: dict):
+    if "key" in payload and payload["key"] is not None:
+        key = payload["key"].strip()
+        if key:
+            try:
+                await track17.quota(key)
+            except track17.TrackError as e:
+                raise HTTPException(400, str(e))
+        db.set_setting("track17_key", key)
+    if "stores" in payload:
+        db.set_setting("track_stores", json.dumps([int(x) for x in payload["stores"] or []]))
+    if payload.get("from"):
+        try:
+            date.fromisoformat(payload["from"])
+        except ValueError:
+            raise HTTPException(400, "Pick a start date.")
+        db.set_setting("track_from", payload["from"])
+    if not _scm_running.locked():
+        asyncio.create_task(_scm_run())
+    return {"ok": True}
 
 
 @app.post("/api/cash/airwallex")

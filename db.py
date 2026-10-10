@@ -302,6 +302,50 @@ CREATE TABLE IF NOT EXISTS expense_suggestions (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- SCM desk: one row per parcel (tracking number) of every order, plus one row
+-- with number '' for orders still waiting for tracking. Tracking fields come
+-- from 17TRACK (track17.py); order fields from Shopify.
+CREATE TABLE IF NOT EXISTS shipments (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    store_id      INTEGER NOT NULL,
+    order_id      TEXT NOT NULL,
+    order_name    TEXT,
+    order_at      TEXT,
+    email         TEXT,
+    customer      TEXT,
+    city          TEXT,
+    country       TEXT,
+    items         INTEGER,
+    cancelled     INTEGER NOT NULL DEFAULT 0,
+    fulfillment   TEXT,
+    number        TEXT NOT NULL DEFAULT '',
+    company       TEXT,
+    tracking_url  TEXT,
+    fulfilled_at  TEXT,
+    status        TEXT NOT NULL DEFAULT 'pending',
+    sub_status    TEXT,
+    last_event    TEXT,
+    last_event_at TEXT,
+    last_location TEXT,
+    carrier_name  TEXT,
+    last_mile     TEXT,
+    last_mile_number TEXT,
+    origin        TEXT,
+    destination   TEXT,
+    transit_days  REAL,
+    eta_from      TEXT,
+    eta_to        TEXT,
+    delivered_at  TEXT,
+    events        TEXT,
+    registered    INTEGER NOT NULL DEFAULT 0,
+    register_error TEXT,
+    tracked_at    TEXT,
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (store_id, order_id, number)
+);
+CREATE INDEX IF NOT EXISTS shipments_number ON shipments(number);
+CREATE INDEX IF NOT EXISTS shipments_order_at ON shipments(order_at);
+
 -- Small app-wide preferences, e.g. the currency the dashboard shows.
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
@@ -989,6 +1033,76 @@ def save_expense_suggestions(picks: list):
     with _conn() as con:
         con.executemany("INSERT OR REPLACE INTO expense_suggestions (key, category, reason) VALUES (?, ?, ?)",
                         [(p["key"], p["category"], p.get("reason", "")) for p in picks])
+
+
+# ---------------------------------------------------------------- shipments
+
+_SHIP_ORDER = ("order_name", "order_at", "email", "customer", "city", "country", "items",
+               "cancelled", "fulfillment")
+TRACK_FIELDS = ("status", "sub_status", "last_event", "last_event_at", "last_location", "carrier_name",
+                "last_mile", "last_mile_number", "origin", "destination", "transit_days", "eta_from",
+                "eta_to", "delivered_at", "events")
+
+
+def save_order_shipments(store_id: int, o: dict):
+    """One Shopify order: its parcels, or one 'waiting for tracking' row."""
+    base = {"order_name": o["name"], "order_at": o["created"], "email": o["email"],
+            "customer": o["customer"], "city": o["city"], "country": o["country"],
+            "items": o["items"], "cancelled": int(o["cancelled"]), "fulfillment": o["fulfillment"]}
+    numbers = [p["number"] for p in o["parcels"]]
+    with _conn() as con:
+        if numbers:
+            con.execute(f"DELETE FROM shipments WHERE store_id = ? AND order_id = ? AND number NOT IN "
+                        f"({','.join('?' * len(numbers))})", (store_id, o["order_id"], *numbers))
+        else:
+            con.execute("DELETE FROM shipments WHERE store_id = ? AND order_id = ? AND number != ''",
+                        (store_id, o["order_id"]))
+        rows = o["parcels"] or [{"number": "", "company": "", "url": "", "fulfilled": None}]
+        for p in rows:
+            vals = {**base, "company": p["company"], "tracking_url": p["url"], "fulfilled_at": p["fulfilled"]}
+            cols = list(vals)
+            con.execute(
+                f"INSERT INTO shipments (store_id, order_id, number, {', '.join(cols)}, status)"
+                f" VALUES (?, ?, ?, {', '.join('?' * len(cols))}, ?)"
+                f" ON CONFLICT(store_id, order_id, number) DO UPDATE SET "
+                + ", ".join(f"{c} = excluded.{c}" for c in cols) + ", updated_at = datetime('now')",
+                (store_id, o["order_id"], p["number"], *vals.values(), "awaiting" if not p["number"] else "pending"))
+
+
+def save_tracking(number: str, info: dict):
+    cols = [c for c in TRACK_FIELDS if c in info]
+    with _conn() as con:
+        con.execute(f"UPDATE shipments SET {', '.join(f'{c} = ?' for c in cols)}, registered = 1,"
+                    f" tracked_at = datetime('now') WHERE number = ?", (*[info[c] for c in cols], number))
+
+
+def shipments_to_register(store_ids: list, since: str, limit: int = 400) -> list:
+    if not store_ids:
+        return []
+    with _conn() as con:
+        return [dict(r) for r in con.execute(
+            f"SELECT number, MIN(order_name) order_name, MIN(order_at) order_at, MIN(country) country,"
+            f" MIN(store_id) store_id, MIN(order_id) order_id FROM shipments"
+            f" WHERE number != '' AND registered = 0 AND cancelled = 0 AND register_error IS NULL"
+            f" AND store_id IN ({','.join('?' * len(store_ids))}) AND COALESCE(fulfilled_at, order_at) >= ?"
+            f" GROUP BY number ORDER BY MIN(fulfilled_at) DESC LIMIT ?", (*store_ids, since, limit))]
+
+
+def mark_registered(numbers: list, errors: dict):
+    with _conn() as con:
+        con.executemany("UPDATE shipments SET registered = 1 WHERE number = ?", [(n,) for n in numbers])
+        con.executemany("UPDATE shipments SET register_error = ? WHERE number = ?",
+                        [(e[:200], n) for n, e in errors.items()])
+
+
+def shipments_to_refresh(limit: int = 400) -> list:
+    """Registered parcels not finished and not updated for a day."""
+    with _conn() as con:
+        return [r["number"] for r in con.execute(
+            "SELECT DISTINCT number FROM shipments WHERE registered = 1 AND number != '' AND cancelled = 0"
+            " AND status NOT IN ('delivered', 'expired')"
+            " AND (tracked_at IS NULL OR tracked_at < datetime('now', '-1 day'))"
+            " ORDER BY tracked_at LIMIT ?", (limit,))]
 
 
 # ---------------------------------------------------------------- settings

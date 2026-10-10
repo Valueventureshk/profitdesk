@@ -7,6 +7,7 @@
     { href: "/cog", desk: "cog", label: "COG + Products Monitor", note: "What every order cost, product costs" },
     { href: "/inbox", desk: "inbox", label: "Inbox", note: "Customer emails from every store" },
     { href: "/reports", desk: "reports", label: "Reports", note: "Download spreadsheets of any figures" },
+    { href: "/scm", desk: "scm", label: "SCM", note: "Every order's shipping and tracking" },
     { href: "/expenses", desk: "expenses", label: "Expenses", note: "Every payment out, by category" },
   ];
 

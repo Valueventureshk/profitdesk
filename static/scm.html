@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ProfitDesk · SCM</title>
+<script>try{var t=localStorage.getItem("pdTheme")||(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");document.documentElement.dataset.theme=t;}catch(e){}</script>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<div class="cash-page scm-page">
+  <header class="cash-top">
+    <div class="brand" data-section-menu title="Switch section">
+      <span class="brand-mark">PD</span>
+      <span class="brand-name">ProfitDesk</span>
+    </div>
+    <div class="crumb">
+      <h1>SCM</h1>
+      <p id="sub">Every order from every store, with its tracking</p>
+    </div>
+    <div class="controls">
+      <button id="sync" class="btn btn-ghost" data-write-only>Sync now</button>
+    </div>
+  </header>
+
+  <main class="content">
+    <div id="problems" class="warnings"></div>
+
+    <section class="panel scm-list">
+      <div class="scm-tabs" id="tabs"></div>
+      <div class="scm-filters">
+        <input id="q" class="control scm-search" type="search" placeholder="Search order number, tracking number or customer">
+        <select id="store" class="control"><option value="">All stores</option></select>
+        <select id="carrier" class="control"><option value="">All carriers</option></select>
+        <select id="country" class="control"><option value="">All destinations</option></select>
+        <span class="scm-dates"><input type="date" id="from" class="control" title="Order date from"> – <input type="date" id="to" class="control" title="Order date to"></span>
+      </div>
+      <p class="hint scm-count" id="count"></p>
+      <div class="table-wrap"><table class="table scm-table" id="table"></table></div>
+      <div class="scm-pager" id="pager"></div>
+    </section>
+
+    <section class="panel scm-connect" data-owner-only>
+      <div class="panel-head"><h2>Tracking connection (17TRACK)</h2><span class="hint" id="quota"></span></div>
+      <div class="scm-connect-body">
+        <p class="hint">17TRACK follows each parcel across every carrier (e.g. YunExpress, then Australia
+          Post). Each tracking number uses one quota, once; updates after that are free.</p>
+        <label class="field"><span>17TRACK API key</span>
+          <input id="key" type="password" autocomplete="off" placeholder="Paste the key from 17TRACK → Settings → Security"></label>
+        <div class="field"><span>Track parcels for these stores</span><div id="trackStores" class="scm-store-picks"></div></div>
+        <label class="field"><span>Track parcels fulfilled from</span><input type="date" id="trackFrom" class="control"></label>
+        <p class="hint">Older parcels use quota too, so start with a recent date.</p>
+        <div class="field"><span>Webhook URL (paste into 17TRACK → Settings → Webhook, so updates arrive straight away)</span>
+          <div class="scm-webhook"><code id="webhook"></code><button class="btn btn-sm btn-ghost" id="copyHook">Copy</button></div></div>
+        <button class="btn btn-primary" id="saveTrack">Save</button>
+        <p class="hint" id="trackStatus"></p>
+      </div>
+    </section>
+  </main>
+</div>
+
+<aside class="scm-drawer" id="drawer" hidden>
+  <div class="scm-drawer-head"><h2 id="dTitle"></h2><button class="btn btn-sm btn-ghost" id="dClose">Close</button></div>
+  <div id="dBody"></div>
+</aside>
+<div id="toast" class="toast" hidden></div>
+<script src="/static/nav.js"></script>
+<script src="/static/chat.js"></script>
+<script src="/static/scm.js"></script>
+</body>
+</html>
