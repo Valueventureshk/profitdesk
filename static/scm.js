@@ -310,6 +310,23 @@ $("saveTrack").onclick = async () => {
   finally { b.disabled = false; }
 };
 
+async function loadCredits() {
+  let c;
+  try { c = await api("/api/scm/credits"); } catch { return; }
+  if (!c || (c.left === undefined && !c.error)) return;
+  const box = $("credits");
+  box.hidden = false;
+  if (c.error) { box.className = "scm-credits low"; box.innerHTML = `<strong>17TRACK</strong><span>${esc(c.error)}</span>`; return; }
+  const pct = c.total ? Math.max(0, Math.min(100, (c.left / c.total) * 100)) : 0;
+  box.className = "scm-credits" + (c.low ? " low" : "");
+  box.innerHTML = `<div class="scm-credits-main"><span class="t">17TRACK credits</span>
+      <strong>${(c.left ?? 0).toLocaleString()}</strong><span class="of">left of ${(c.total ?? 0).toLocaleString()}</span></div>
+    <div class="scm-credits-bar"><i style="width:${pct}%"></i></div>
+    <div class="scm-credits-note">${c.low ? `<b>Running low. Top up now</b> so new parcels keep being tracked.`
+      : `${c.per_day ? `About ${c.per_day.toLocaleString()} new parcels a day` : ""}${c.days_left != null ? ` · lasts about ${c.days_left} days` : ""}`}
+      <a href="https://api.17track.net/en/admin/pricing" target="_blank" rel="noopener">Top up ↗</a></div>`;
+}
+
 (function boot() {
   const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
   const t = new Date();
@@ -317,4 +334,6 @@ $("saveTrack").onclick = async () => {
   $("from").value = iso(new Date(t.getTime() - 59 * 86400000));
   load();
   loadTracking();
+  loadCredits();
+  setInterval(loadCredits, 5 * 60 * 1000);
 })();

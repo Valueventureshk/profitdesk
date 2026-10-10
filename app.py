@@ -2258,6 +2258,36 @@ def _scm_rows(where, params, order_by, limit=50, offset=0) -> list:
     return rows
 
 
+_credits_cache: dict = {}
+
+
+async def _credits() -> dict:
+    """17TRACK credits left (checked at most every 5 minutes) and how long they'll last."""
+    key = _tracking_config()["key"]
+    if not key:
+        return None
+    hit = _credits_cache.get("v")
+    if not hit or time.time() - hit[0] > 300:
+        try:
+            q = await track17.quota(key)
+        except track17.TrackError as e:
+            return {"error": str(e)}
+        with db._conn() as con:
+            per_day = con.execute(
+                "SELECT COUNT(DISTINCT number) / 7.0 FROM shipments WHERE number != '' AND cancelled = 0"
+                " AND fulfilled_at >= ?", ((datetime.now(timezone.utc) - timedelta(days=7)).isoformat(),)).fetchone()[0]
+        hit = _credits_cache["v"] = (time.time(), {
+            "left": q.get("quota_remain"), "total": q.get("quota_total"), "used": q.get("quota_used"),
+            "per_day": round(per_day or 0), "days_left": int((q.get("quota_remain") or 0) / per_day) if per_day else None,
+            "low": (q.get("quota_remain") or 0) <= 250})
+    return hit[1]
+
+
+@app.get("/api/scm/credits")
+async def api_scm_credits():
+    return await _credits() or {}
+
+
 @app.get("/api/scm/shipments")
 def api_scm_shipments(view: str = "all", q: str = None, store: str = None, carrier: str = None,
                       country: str = None, start: str = None, end: str = None, page: int = 1,
