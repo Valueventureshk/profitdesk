@@ -71,6 +71,65 @@
     document.addEventListener("click", (e) => { if (!menu.contains(e.target)) menu.hidden = true; });
     document.addEventListener("keydown", (e) => { if (e.key === "Escape") menu.hidden = true; });
   }
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", build);
-  else build();
+  // Desktop: a dark sidebar like Shopify's admin, on every desk.
+  const ICON = {
+    "/": '<path d="M3 13h4v6H3zM10 8h4v11h-4zM17 4h4v15h-4z"/>',
+    "/cash": '<rect x="3" y="6" width="18" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 9v.01M18 15v.01"/>',
+    "/cog": '<path d="M4 7l8-4 8 4v10l-8 4-8-4z"/><path d="M4 7l8 4 8-4M12 11v10"/>',
+    "/inbox": '<path d="M3 13l3-8h12l3 8v6H3z"/><path d="M3 13h5l1.5 2.5h5L16 13h5"/>',
+    "/scm": '<path d="M2 7h11v9H2zM13 10h4l4 3v3h-8z"/><circle cx="6" cy="17.5" r="1.8"/><circle cx="17" cy="17.5" r="1.8"/>',
+    "/expenses": '<path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9 8h6M9 12h6M9 16h3"/>',
+    "/reports": '<path d="M5 3h10l4 4v14H5z"/><path d="M14 3v5h5M9 13h6M9 17h6"/>',
+    settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>',
+    theme: '<path d="M20 14.5A8 8 0 019.5 4a8 8 0 1010.5 10.5z"/>',
+    logout: '<path d="M14 4h5v16h-5M10 8l-4 4 4 4M6 12h10"/>',
+  };
+  const svg = (k) => `<svg viewBox="0 0 24 24" aria-hidden="true">${ICON[k] || ""}</svg>`;
+
+  async function buildRail() {
+    if (document.querySelector(".pd-rail") || !document.querySelector("[data-section-menu]")) return;
+    await ready;
+    if (!me) return;
+    const here = location.pathname.replace(/\/$/, "") || "/";
+    const allowed = SECTIONS.filter((s) => (me.desks || []).includes(s.desk));
+    const rail = document.createElement("aside");
+    rail.className = "pd-rail";
+    const dark = () => document.documentElement.dataset.theme === "dark";
+    rail.innerHTML = `
+      <a class="pd-rail-brand" href="/"><span class="brand-mark">PD</span><span>ProfitDesk</span></a>
+      <nav class="pd-rail-nav">${allowed.map((s) => `<a class="pd-rail-item${here === s.href ? " on" : ""}" href="${s.href}" title="${s.note}">
+        ${svg(s.href)}<span>${s.label.replace(" + Products Monitor", "")}</span></a>`).join("")}</nav>
+      <div class="pd-rail-foot">
+        ${me.role === "owner" ? `<a class="pd-rail-item" href="/#settings">${svg("settings")}<span>Settings</span></a>` : ""}
+        <button class="pd-rail-item" data-rail-theme>${svg("theme")}<span>${dark() ? "Day mode" : "Night mode"}</span></button>
+        <button class="pd-rail-item" data-rail-out>${svg("logout")}<span>Log out</span></button>
+        <div class="pd-rail-user"><span class="pd-rail-avatar">${(me.email || "?").slice(0, 2).toUpperCase()}</span>
+          <span class="pd-rail-who">${me.email || ""}<small>${me.role === "owner" ? "Owner" : me.role === "write" ? "Read & write" : "Read only"}</small></span></div>
+      </div>`;
+    document.body.prepend(rail);
+    document.body.classList.add("has-rail");
+    rail.querySelector("[data-rail-theme]").onclick = (e) => {
+      const next = dark() ? "light" : "dark";
+      document.documentElement.dataset.theme = next;
+      try { localStorage.setItem("pdTheme", next); } catch { /* private mode */ }
+      e.currentTarget.querySelector("span").textContent = next === "dark" ? "Day mode" : "Night mode";
+      window.dispatchEvent(new Event("pd-theme"));
+    };
+    rail.querySelector("[data-rail-out]").onclick = async () => {
+      await fetch("/api/logout", { method: "POST" });
+      location.href = "/login";
+    };
+    // The dashboard opens Settings when it's asked for in the address (from the sidebar).
+    if (here === "/" && location.hash === "#settings") {
+      for (let i = 0; i < 40; i++) {
+        const b = document.getElementById("openSettings");
+        if (b && b.offsetParent !== null) { b.click(); history.replaceState(null, "", "/"); break; }
+        await new Promise((r) => setTimeout(r, 250));
+      }
+    }
+  }
+
+  function start() { build(); buildRail(); }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start);
+  else start();
 })();
