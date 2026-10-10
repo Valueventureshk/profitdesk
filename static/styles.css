@@ -712,6 +712,12 @@ body.read-only [data-write-only] { display: none !important; }
 .msg-head span { color: var(--faint); }
 .msg .mail-body { font-size: 13.5px; }
 .reply-text { width: 100%; min-height: 140px; font: inherit; font-size: 14px; line-height: 1.5; resize: vertical; }
+.reply-files { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.reply-file { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; border: 1px solid var(--line); border-radius: 999px;
+  padding: 2px 4px 2px 10px; background: var(--line-soft); max-width: 100%; }
+.reply-file small { color: var(--muted); }
+.reply-file button { border: 0; background: none; cursor: pointer; color: var(--muted); font-size: 14px; padding: 0 5px; }
+.reply-text.drop { border-color: var(--sales); background: rgba(59,130,246,.05); }
 .reply-bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
 .reply-tr { display: inline-flex; align-items: center; gap: 4px; }
 .reply-tr .control { width: auto; height: 30px; padding: 0 6px; font-size: 12.5px; }

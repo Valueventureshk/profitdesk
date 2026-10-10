@@ -116,8 +116,10 @@ function wireTranslate() {
 // ---- Reply box (tickets and plain emails share it)
 function composerHtml(o) {
   return `<div class="reply-box" data-write-only>
-    <textarea id="tkReply" class="control reply-text" rows="7" placeholder="Write your reply to ${esc(o.name)}…  (Ctrl/⌘ + Enter sends)"></textarea>
+    <textarea id="tkReply" class="control reply-text" rows="7" placeholder="Write your reply to ${esc(o.name)}…  (Ctrl/⌘ + Enter sends · drop files here to attach)"></textarea>
+    <div class="reply-files" id="tkFiles"></div>
     <div class="reply-bar">
+      <label class="btn btn-sm btn-ghost" title="Attach files (up to 20 MB)">📎 Attach<input type="file" id="tkAttach" multiple hidden></label>
       ${o.draft ? `<button class="btn btn-sm btn-ghost" id="tkDraft">✦ Draft with AI</button>` : ""}
       <span class="reply-tr"><button class="btn btn-sm btn-ghost" id="tkTr" title="Translate what's in the box">🌐 Translate to</button><select class="control" id="tkTrLang">${TR_LANGS.map((l) => `<option${l === o.lang ? " selected" : ""}>${l}</option>`).join("")}</select></span>
       <span class="reply-gap"></span>
@@ -131,6 +133,32 @@ function composerHtml(o) {
 function wireComposer(o) {   // o: {key, sendUrl, draftUrl, onSent}
   const box = $("tkReply");
   if (!box) return;
+  // attachments for this reply (kept in the page until sent)
+  let files = [];
+  const kb = (b) => (b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`);
+  const drawFiles = () => {
+    $("tkFiles").innerHTML = files.map((f, i) => `<span class="reply-file">📎 ${esc(f.name)} <small>${kb(f.size)}</small><button data-unattach="${i}" title="Remove">×</button></span>`).join("");
+    for (const b of $("tkFiles").querySelectorAll("[data-unattach]")) b.onclick = () => { files.splice(+b.dataset.unattach, 1); drawFiles(); };
+  };
+  const addFiles = (list) => {
+    for (const f of list) {
+      if (files.reduce((n, x) => n + x.size, 0) + f.size > 20 * 1024 * 1024) { toast("Attachments can be 20 MB at most together.", true); break; }
+      files.push(f);
+    }
+    drawFiles();
+  };
+  $("tkAttach").onchange = (e) => { addFiles([...e.target.files]); e.target.value = ""; };
+  box.ondragover = (e) => { e.preventDefault(); box.classList.add("drop"); };
+  box.ondragleave = () => box.classList.remove("drop");
+  box.ondrop = (e) => { e.preventDefault(); box.classList.remove("drop"); addFiles([...e.dataTransfer.files]); };
+  box.onpaste = (e) => { const f = [...(e.clipboardData?.files || [])]; if (f.length) { e.preventDefault(); addFiles(f); } };
+  const sendIt = (fields) => {
+    if (!files.length) return post(o.sendUrl, fields);
+    const fd = new FormData();
+    for (const [k, v] of Object.entries(fields)) if (v !== undefined && v !== null) fd.append(k, v);
+    for (const f of files) fd.append("files", f, f.name);
+    return api(o.sendUrl, { method: "POST", body: fd });
+  };
   try { box.value = sessionStorage.getItem(o.key) || ""; } catch { /* */ }
   box.oninput = () => { try { sessionStorage.setItem(o.key, box.value); } catch { /* */ } };
   box.onkeydown = (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); $("tkSend").click(); } };
@@ -155,24 +183,26 @@ function wireComposer(o) {   // o: {key, sendUrl, draftUrl, onSent}
   };
   $("tkSend").onclick = async () => {
     const text = box.value.trim();
-    if (!text) return toast("Write the reply first.", true);
+    if (!text && !files.length) return toast("Write the reply first.", true);
     const b = $("tkSend");
-    b.disabled = true; b.textContent = "Sending…";
+    b.disabled = true; b.textContent = files.length ? "Sending with files…" : "Sending…";
+    const sentFiles = files.map((f) => f.name);
     try {
-      try { await post(o.sendUrl, { text, seen: o.seen, opened: o.opened }); }
+      try { await sendIt({ text, seen: o.seen, opened: o.opened }); }
       catch (e) {
         if (e.status !== 409) throw e;
         if (!confirm(`${e.message}\n\nRead the conversation first? Press Cancel to check it, or OK to send your reply anyway.`)) {
           if (o.onConflict) o.onConflict();
           return;
         }
-        await post(o.sendUrl, { text, force: true });
+        await sendIt({ text, force: true });
       }
+      files = []; drawFiles();
       try { sessionStorage.removeItem(o.key); } catch { /* */ }
       box.value = "";
       box.closest(".reply-box").insertAdjacentHTML("beforebegin", `<div class="msg out sent-now">
         <div class="msg-head"><strong>You</strong><span>Sent just now ✓</span></div>
-        <div class="msg-text"><div class="mail-body">${body(text)}</div></div></div>`);
+        <div class="msg-text"><div class="mail-body">${body(text)}</div>${sentFiles.length ? `<div class="hint">📎 ${sentFiles.map(esc).join(" · ")}</div>` : ""}</div></div>`);
       toast("Sent. It's in Gmail's Sent folder too.");
       if (o.onSent) setTimeout(o.onSent, 12000);
     } catch (e) { toast(e.message, true); }

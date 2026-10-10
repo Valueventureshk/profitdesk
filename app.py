@@ -1349,7 +1349,24 @@ def _gmail_link(address: str, message_id: str) -> str:
     return f"https://mail.google.com/mail/u/{quote(address)}/#search/rfc822msgid%3A{quote(mid)}" if mid else ""
 
 
-async def _send_reply(acct: dict, to: str, subject: str, text: str, mid: str, refs: str, store_id) -> None:
+async def _reply_input(request: Request) -> tuple:
+    """A reply's fields and attached files (FormData with files, or plain JSON)."""
+    if (request.headers.get("content-type") or "").startswith("multipart/"):
+        form = await request.form()
+        payload = {k: form.get(k) for k in ("text", "seen", "opened", "force")}
+        payload["force"] = str(payload.get("force") or "").lower() in ("1", "true")
+        files = []
+        for f in form.getlist("files")[:10]:
+            if hasattr(f, "read"):
+                data = await f.read()
+                files.append((f.filename or "file", f.content_type or "application/octet-stream", data))
+        if sum(len(d) for _, _, d in files) > gmail_send.MAX_FILES_BYTES:
+            raise HTTPException(400, "The attachments are bigger than 20 MB together. Send fewer or smaller files.")
+        return payload, files
+    return await request.json(), []
+
+
+async def _send_reply(acct: dict, to: str, subject: str, text: str, mid: str, refs: str, store_id, files=None) -> None:
     """Send through the mailbox's Gmail, then read it back from Sent."""
     if not acct or not acct.get("gmail_token"):
         raise HTTPException(400, "This mailbox isn't signed in for sending yet (Settings → Support mailboxes → Sign in to send).")
@@ -1359,7 +1376,8 @@ async def _send_reply(acct: dict, to: str, subject: str, text: str, mid: str, re
     thread = await asyncio.to_thread(gmail_send.thread_id, acct["address"], acct["password"], mid or "")
     try:
         await gmail_send.send(acct["gmail_token"], acct["address"], (store or {}).get("name", "").strip(), to,
-                              subject or "", text, in_reply_to=mid or "", references=refs or "", thread=thread)
+                              subject or "", text, in_reply_to=mid or "", references=refs or "", thread=thread,
+                              files=files)
     except gmail_send.SendError as e:
         raise HTTPException(400, str(e))
 
@@ -1373,17 +1391,18 @@ async def _send_reply(acct: dict, to: str, subject: str, text: str, mid: str, re
 
 
 @app.post("/api/inbox/messages/{message_id}/reply")
-async def api_inbox_message_reply(message_id: int, payload: dict):
+async def api_inbox_message_reply(message_id: int, request: Request):
     """Reply to any email in All mail (no ticket needed)."""
+    payload, files = await _reply_input(request)
     text = (payload.get("text") or "").strip()
-    if not text:
+    if not text and not files:
         raise HTTPException(400, "Write the reply first.")
     m = db.mail_get(message_id)
     if not m:
         raise HTTPException(404, "That email no longer exists.")
     acct = next((a for a in db.list_mail_accounts() if a["id"] == m["account_id"]), None)
     to = m["from_addr"] if m.get("direction", "in") == "in" else m["to_addr"]
-    await _send_reply(acct, (to or "").strip(), m["subject"], text, m["message_id"], m.get("refs"), m["store_id"])
+    await _send_reply(acct, (to or "").strip(), m["subject"], text, m["message_id"], m.get("refs"), m["store_id"], files)
     return {"ok": True}
 
 
@@ -1391,11 +1410,12 @@ _recent_replies: dict = {}      # ticket id -> (time, who) of the last reply sen
 
 
 @app.post("/api/inbox/tickets/{ticket_id}/reply")
-async def api_inbox_reply(ticket_id: int, payload: dict, request: Request):
+async def api_inbox_reply(ticket_id: int, request: Request):
     """Send a reply from the store's mailbox through Gmail (it shows in Gmail's Sent and the same thread).
     seen: newest email id the sender had on screen. If a teammate replied since, ask first (409)."""
+    payload, files = await _reply_input(request)
     text = (payload.get("text") or "").strip()
-    if not text:
+    if not text and not files:
         raise HTTPException(400, "Write the reply first.")
     user = (getattr(request.state, "user", None) or {}).get("email", "")
     if not payload.get("force"):
@@ -1430,7 +1450,8 @@ async def api_inbox_reply(ticket_id: int, payload: dict, request: Request):
     try:
         await gmail_send.send(acct["gmail_token"], acct["address"], (store or {}).get("name", "").strip(), to,
                               (last["subject"] if last else "") or t["subject"] or "", text,
-                              in_reply_to=mid, references=(last["refs"] if last else "") or "", thread=thread)
+                              in_reply_to=mid, references=(last["refs"] if last else "") or "", thread=thread,
+                              files=files)
     except gmail_send.SendError as e:
         raise HTTPException(400, str(e))
     _recent_replies[ticket_id] = (time.time(), user)

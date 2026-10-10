@@ -74,8 +74,13 @@ def thread_id(address: str, password: str, message_id: str) -> str:
         return ""                 # the reply still threads for the customer through its headers
 
 
+UPLOAD_URL = "https://gmail.googleapis.com/upload/gmail/v1/users/me/messages/send?uploadType=multipart"
+MAX_FILES_BYTES = 20 * 1024 * 1024          # Gmail allows 25 MB per email, files grow ~1/3 when encoded
+
+
 async def send(refresh_token: str, sender: str, sender_name: str, to: str, subject: str, text: str,
-               in_reply_to: str = "", references: str = "", thread: str = "") -> dict:
+               in_reply_to: str = "", references: str = "", thread: str = "", files: list = None) -> dict:
+    """files: [(file name, content type, bytes)] attached to the reply."""
     msg = EmailMessage()
     msg["From"] = formataddr((sender_name, sender)) if sender_name else sender
     msg["To"] = to
@@ -85,16 +90,32 @@ async def send(refresh_token: str, sender: str, sender_name: str, to: str, subje
         msg["In-Reply-To"] = in_reply_to
         msg["References"] = " ".join(x for x in ((references or "").strip(), in_reply_to) if x)
     msg.set_content(text)
-    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
-    body = {"raw": raw}
-    if thread:
-        body["threadId"] = thread
+    files = files or []
+    if sum(len(d) for _, _, d in files) > MAX_FILES_BYTES:
+        raise SendError("The attachments are bigger than 20 MB together. Send fewer or smaller files.")
+    for name, ctype, data in files:
+        main, _, sub = (ctype or "application/octet-stream").partition("/")
+        msg.add_attachment(data, maintype=main or "application", subtype=sub or "octet-stream", filename=name)
     token = await _token(refresh_token)
-    async with httpx.AsyncClient(timeout=60) as client:
-        r = await client.post(SEND_URL, json=body, headers={"Authorization": f"Bearer {token}"})
+
+    async def post(with_thread: bool):
+        if not files:                                # small text reply: the simple way
+            body = {"raw": base64.urlsafe_b64encode(msg.as_bytes()).decode()}
+            if with_thread:
+                body["threadId"] = thread
+            return await client.post(SEND_URL, json=body, headers={"Authorization": f"Bearer {token}"})
+        # with files: Gmail's upload address takes bigger emails
+        boundary = "pd" + base64.urlsafe_b64encode(make_msgid().encode()).decode().strip("=")[:24]
+        meta = ('{"threadId": "%s"}' % thread) if with_thread else "{}"
+        payload = (f"--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{meta}\r\n"
+                   f"--{boundary}\r\nContent-Type: message/rfc822\r\n\r\n").encode() + msg.as_bytes() + \
+            f"\r\n--{boundary}--".encode()
+        return await client.post(UPLOAD_URL, content=payload, headers={
+            "Authorization": f"Bearer {token}", "Content-Type": f"multipart/related; boundary={boundary}"})
+    async with httpx.AsyncClient(timeout=180) as client:
+        r = await post(bool(thread))
         if r.status_code == 404 and thread:          # unknown conversation: send without it
-            body.pop("threadId")
-            r = await client.post(SEND_URL, json=body, headers={"Authorization": f"Bearer {token}"})
+            r = await post(False)
     if r.status_code == 403 and ("accessNotConfigured" in r.text or "has not been used in project" in r.text):
         raise SendError("The Gmail API isn't switched on in the Google Cloud project yet (see Settings → Support mailboxes).")
     if r.status_code in (401, 403):
