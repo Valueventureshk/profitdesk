@@ -318,7 +318,7 @@ async function loadLabels() {
   let d;
   try { d = await api(`/api/inbox/labels${acct ? `?account=${acct}` : ""}`); } catch { return; }
   $("labelNav").innerHTML = d.labels.length ? `<div class="inav-label">Labels</div>` + d.labels.map((l) => `
-    <button data-view="label:${esc(l.name)}" class="lbl${view === "label:" + l.name ? " on" : ""}" title="${esc(l.name)}"><i class="tg-dot" style="--tg:${esc(l.color)}"></i>${esc(l.name)}<b>${l.open || ""}</b></button>`).join("") : "";
+    <button data-view="label:${esc(l.name)}" class="lbl${view === "label:" + l.name ? " on" : ""}" title="${esc(l.name)}"><i class="tg-dot" style="--tg:${esc(l.color)}"></i><span class="lbl-name">${esc(l.name)}</span><b>${l.open || ""}</b></button>`).join("") : "";
 }
 
 let tagCtx = null;    // {target: {ticket_id}|{message_id}, tags, suggest, all}

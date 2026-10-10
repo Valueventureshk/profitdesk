@@ -743,6 +743,8 @@ body.read-only [data-write-only] { display: none !important; }
 .tg-chip.sug { cursor: pointer; border-style: dashed; background: transparent; }
 .tg-dot { display: inline-block; width: 9px; height: 9px; border-radius: 3px; background: var(--tg); flex: none; }
 .inbox-nav button.lbl { font-size: 12.5px; }
+.inbox-nav button.lbl .lbl-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (min-width: 1100px) and (max-width: 1440px) { body.has-rail:not(.rail-slim) .inbox-nav button.lbl .lbl-name { display: none; } }
 .inbox-nav button.lbl .tg-dot { margin: 0 4px 0 3px; }
 .tg-box { display: grid; gap: 6px; margin-bottom: 4px; }
 .tg-box.tg-inline { margin: 4px 0 10px; }
