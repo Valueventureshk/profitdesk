@@ -888,6 +888,20 @@ body.read-only [data-write-only] { display: none !important; }
 .scm-note a { color: var(--muted); margin-left: 6px; }
 @media (max-width: 900px) { .scm-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } .scm-pages { margin-left: 0; } }
 
+/* SCM desk uses Shopify admin's font (Inter), like Parcel Panel */
+.scm-body, .scm-body .scm-page, .scm-body .scm-drawer, .scm-body button, .scm-body input, .scm-body select, .scm-body textarea,
+.scm-body .scm-table .mono, .scm-body .scm-facts .mono, .scm-body .scm-tile strong, .scm-body .scm-timeline .when {
+  font-family: Inter, -apple-system, BlinkMacSystemFont, "San Francisco", "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  font-feature-settings: "tnum" 1, "cv11" 1; letter-spacing: -0.005em; }
+.scm-body .scm-table { font-size: 13px; }
+.scm-body .scm-table th { font-weight: 550; font-size: 12px; text-transform: none; letter-spacing: 0; }
+.scm-body .scm-table .mono { font-size: 13px; }
+.scm-body .scm-tile strong { font-weight: 650; font-size: 22px; }
+.scm-body h1, .scm-body h2 { font-weight: 650; letter-spacing: -0.01em; }
+.scm-body .scm-tabs button { font-weight: 500; }
+.scm-body .scm-tabs button.on { font-weight: 600; }
+.scm-body .scm-chip { font-weight: 500; }
+
 :root[data-theme="dark"] {
   --bg: #0E1116; --panel: #161B22; --ink: #E6EDF3; --muted: #9BA5B4; --faint: #6E7A8A;
   --line: #2A3140; --line-soft: #1C222B; --up: #34D399; --down: #F87171; --accent: #10B981;
