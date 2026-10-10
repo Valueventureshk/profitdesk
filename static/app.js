@@ -643,6 +643,7 @@ async function connectWithToken(domain, token) {
 
 // Settings as tidy groups of expandable items, each with its logo.
 const SET_ICONS = {
+  phone: `<svg class="logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2.5" width="12" height="19" rx="2.5"/><rect x="8.5" y="6" width="3" height="3" rx=".6"/><rect x="12.5" y="6" width="3" height="3" rx=".6"/><rect x="8.5" y="10.5" width="7" height="3" rx=".6"/><path d="M11 18.5h2"/></svg>`,
   shopify: LOGO.shopify, google: LOGO.google, meta: LOGO.meta,
   gmail: `<svg class="logo" viewBox="0 0 24 24"><path fill="#4285F4" d="M2 6.5V18a1.5 1.5 0 0 0 1.5 1.5H6V10l6 4.5 6-4.5v9.5h2.5A1.5 1.5 0 0 0 22 18V6.5l-2.4-1.8L12 10.4 4.4 4.7z"/><path fill="#EA4335" d="M6 10v9.5h0V10l6 4.5 6-4.5L12 10.4 4.4 4.7 2 6.5z" opacity=".9"/><path fill="#34A853" d="M18 10v9.5h2.5A1.5 1.5 0 0 0 22 18V6.5z"/><path fill="#FBBC05" d="M2 6.5V18a1.5 1.5 0 0 0 1.5 1.5H6V10z"/></svg>`,
   ai: `<svg class="logo" viewBox="0 0 24 24"><path fill="#D97757" d="M12 2l1.9 6.1L20 10l-6.1 1.9L12 18l-1.9-6.1L4 10l6.1-1.9z"/><path fill="#D97757" d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z" opacity=".7"/></svg>`,
@@ -663,6 +664,7 @@ const SET_META = {
   "Store groups": ["Money", "groups", "Group stores to see them together on the dashboard"],
   "People": ["Team", "people", "Who can log in, their access level and desks"],
   "Backup": ["Data", "backup", "Download or restore everything in one file"],
+  "iPhone widget": ["Data", "phone", "Pick figures to show on your iPhone home screen"],
 };
 let settingsOrganised = false;
 
@@ -721,6 +723,7 @@ async function openSettings() {
   renderPeople();
   renderMailboxes();
   renderAI();
+  renderWidgets();
   renderStoreSettings();
   await Promise.all([loadAccounts(), loadMetaAccounts()]);
 }
@@ -841,6 +844,103 @@ async function renderPeople() {
 }
 
 /* ------------------------------------------------ AI */
+
+/* ------------------------------------------------ iPhone widget (Scriptable) */
+
+let widgetMeta = null, widgetEditing = null;   // null = list, 0 = new, id = editing
+
+async function renderWidgets() {
+  let r;
+  try { r = await api("/api/widgets"); } catch { $("widgetBox").innerHTML = ""; return; }
+  widgetMeta = r;
+  const scopes = [["all", "All stores"], ...(state.setup.groups || []).map((g) => [`g${g.id}`, `${g.name} (group)`]),
+                  ...state.setup.stores.map((x) => [String(x.id), x.name])];
+  const scopeName = (v) => (scopes.find((x) => x[0] === v) || [, "?"])[1];
+  const label = (k) => (r.metrics.find((m) => m.key === k) || {}).label || k;
+  const period = (k) => (r.periods.find((p) => p.key === k) || {}).label || k;
+  const form = (w) => `
+    <div class="wg-form">
+      <label class="field"><span>Name</span><input id="wgName" class="control" value="${esc(w.name || "")}" placeholder="e.g. Today, all stores"></label>
+      <div class="wg-two">
+        <label class="field"><span>Store</span><select id="wgScope" class="control">${scopes.map(([v, n]) => `<option value="${esc(v)}"${v === (w.scope || "all") ? " selected" : ""}>${esc(n)}</option>`).join("")}</select></label>
+        <label class="field"><span>Period</span><select id="wgPeriod" class="control">${r.periods.map((p) => `<option value="${p.key}"${p.key === (w.period || "today") ? " selected" : ""}>${esc(p.label)}</option>`).join("")}</select></label>
+      </div>
+      <span class="wg-lab">Figures to show <small>(tap in the order you want; small widget shows the first 3, medium 6, large 10)</small></span>
+      <div class="wg-picks" id="wgPicks">${r.metrics.map((m) => {
+        const i = (w.metrics || []).indexOf(m.key);
+        return `<button type="button" class="wg-pick${i >= 0 ? " on" : ""}" data-k="${m.key}">${i >= 0 ? `<em>${i + 1}</em>` : ""}${esc(m.label)}</button>`;
+      }).join("")}</div>
+      <div class="wg-btns"><button class="btn btn-ghost" id="wgCancel">Cancel</button><button class="btn btn-primary" id="wgSave">${w.id ? "Save" : "Create widget"}</button></div>
+    </div>`;
+
+  if (widgetEditing !== null) {
+    const w = widgetEditing ? r.widgets.find((x) => x.id === widgetEditing) || {} :
+      { metrics: ["sales", "ad_spend", "roas", "cogs", "net_profit", "processing_fee"] };
+    $("widgetBox").innerHTML = form(w);
+    let picks = [...(w.metrics || [])];
+    const draw = () => {
+      for (const b of $("wgPicks").querySelectorAll("[data-k]")) {
+        const i = picks.indexOf(b.dataset.k);
+        b.classList.toggle("on", i >= 0);
+        b.innerHTML = (i >= 0 ? `<em>${i + 1}</em>` : "") + esc(label(b.dataset.k));
+      }
+    };
+    $("wgPicks").onclick = (e) => {
+      const b = e.target.closest("[data-k]");
+      if (!b) return;
+      const k = b.dataset.k;
+      picks = picks.includes(k) ? picks.filter((x) => x !== k) : [...picks, k];
+      draw();
+    };
+    $("wgCancel").onclick = () => { widgetEditing = null; renderWidgets(); };
+    $("wgSave").onclick = async () => {
+      const body = { name: $("wgName").value, scope: $("wgScope").value, period: $("wgPeriod").value, metrics: picks };
+      try {
+        await jsonPost(widgetEditing ? `/api/widgets/${widgetEditing}` : "/api/widgets", body, widgetEditing ? "PUT" : "POST");
+        toast(widgetEditing ? "Saved. Your iPhone widget shows it at its next refresh." : "Widget created. Now copy its script to your iPhone.");
+        widgetEditing = null;
+        renderWidgets();
+      } catch (e) { toast(e.message, true); }
+    };
+    return;
+  }
+
+  $("widgetBox").innerHTML = `
+    ${r.widgets.map((w) => `<div class="group-row wg-row"><div class="group-name"><strong>${esc(w.name)}</strong>
+        <span>${esc(scopeName(w.scope))} · ${esc(period(w.period))}${w.last_used ? ` · last read ${esc(w.last_used.slice(0, 16).replace("T", " "))} UTC` : " · not on a phone yet"}</span>
+        <span class="wg-chips">${w.metrics.map((k) => `<i>${esc(label(k))}</i>`).join("")}</span></div>
+      <div class="wg-rowbtns"><button class="btn btn-sm btn-primary" data-wcopy="${w.id}">Copy script</button>
+        <button class="btn btn-sm btn-ghost" data-wedit="${w.id}">Edit</button>
+        <button class="btn btn-sm btn-ghost" data-wdel="${w.id}">Turn off</button></div></div>`).join("")}
+    <button class="btn btn-ghost btn-block" id="wgNew">+ New widget</button>
+    <details class="advanced"${r.widgets.length ? "" : " open"}><summary>How to put it on your iPhone</summary>
+      <ol class="wg-steps">
+        <li>On your iPhone, install <b>Scriptable</b> from the App Store (free).</li>
+        <li>Open ProfitDesk on the iPhone (Safari), go to Settings → iPhone widget and tap <b>Copy script</b>.</li>
+        <li>Open Scriptable, tap <b>+</b>, paste, and name it <b>ProfitDesk</b> at the top. Tap ▶ to preview.</li>
+        <li>On the home screen, press and hold an empty spot → <b>Edit</b> → <b>Add widget</b> → Scriptable → pick a size → Add widget.</li>
+        <li>Tap the new widget → <b>Script</b>: ProfitDesk. Done. It updates about every 15 minutes; tapping it opens ProfitDesk.</li>
+        <li>Lock screen: customise the lock screen → add a Scriptable widget → choose ProfitDesk (shows the first 1–3 figures).</li>
+      </ol>
+      <p class="hint">Want a second widget (say one per store)? Create another here, copy its script into a new
+        Scriptable script with its own name. Changing figures here updates the phone without re-copying.
+        “Turn off” stops that link straight away.</p>
+    </details>`;
+  $("wgNew").onclick = () => { widgetEditing = 0; renderWidgets(); };
+  for (const b of $("widgetBox").querySelectorAll("[data-wedit]")) b.onclick = () => { widgetEditing = +b.dataset.wedit; renderWidgets(); };
+  for (const b of $("widgetBox").querySelectorAll("[data-wdel]")) b.onclick = async () => {
+    if (!confirm("Turn this widget off? It stops working on any phone straight away.")) return;
+    try { await api(`/api/widgets/${b.dataset.wdel}`, { method: "DELETE" }); renderWidgets(); toast("Turned off."); }
+    catch (e) { toast(e.message, true); }
+  };
+  for (const b of $("widgetBox").querySelectorAll("[data-wcopy]")) b.onclick = async () => {
+    try {
+      const d = await api(`/api/widgets/${b.dataset.wcopy}/script`);
+      await navigator.clipboard.writeText(d.script);
+      toast("Script copied. Paste it into a new Scriptable script on your iPhone.");
+    } catch (e) { toast(e.message || "Couldn't copy. Try again from your iPhone's Safari.", true); }
+  };
+}
 
 async function renderAI() {
   let r;

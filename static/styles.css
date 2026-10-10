@@ -1038,6 +1038,22 @@ body.read-only [data-write-only] { display: none !important; }
 .imp-colls select.control.on { background-color: var(--ink); color: var(--panel); border-color: var(--ink); }
 .imp-pager { margin-top: 14px; }
 
+/* ------------------------------------------------ iPhone widget settings */
+.wg-form { display: grid; gap: 10px; }
+.wg-two { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.wg-lab { font-size: 13px; font-weight: 600; }
+.wg-lab small { font-weight: 400; color: var(--muted); }
+.wg-picks { display: flex; flex-wrap: wrap; gap: 6px; }
+.wg-pick { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 999px; padding: 6px 12px; font: inherit; font-size: 13px; cursor: pointer; }
+.wg-pick.on { background: var(--ink); color: var(--panel); border-color: var(--ink); }
+.wg-pick em { font-style: normal; font-size: 11px; font-weight: 700; background: var(--panel); color: var(--ink); border-radius: 999px; width: 18px; height: 18px; display: inline-grid; place-items: center; }
+.wg-btns { display: flex; justify-content: flex-end; gap: 8px; }
+.wg-row { align-items: flex-start; gap: 10px; flex-wrap: wrap; }
+.wg-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.wg-chips i { font-style: normal; font-size: 11.5px; background: var(--line-soft); border-radius: 999px; padding: 2px 8px; }
+.wg-rowbtns { display: flex; gap: 6px; flex-wrap: wrap; }
+.wg-steps { margin: 8px 0; padding-left: 20px; font-size: 13px; line-height: 1.6; }
+
 /* ------------------------------------------------ Importer: product editor */
 .imp-rowbtns { white-space: nowrap; }
 .imp-rowbtns .btn + .btn { margin-left: 6px; }

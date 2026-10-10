@@ -193,7 +193,7 @@ async def _require_login(request: Request, call_next):
     path = request.url.path
     user = auth.user_for(request.cookies.get(auth.SESSION_COOKIE))
     request.state.user = user
-    if path in _OPEN or path.startswith(("/static/", "/proxy/", "/apps/")) or path == "/proxy":
+    if path in _OPEN or path.startswith(("/static/", "/proxy/", "/apps/", "/w/")) or path == "/proxy":
         return await call_next(request)
     launched = _shopify_launch(request)
     if launched:
@@ -3173,6 +3173,142 @@ def api_importer_history(page: int = 1):
     for r in rows:
         r["store"] = names.get(r["store_id"], "")
     return {"items": rows, "total": total, "page": page, "pages": max(1, -(-total // 100))}
+
+
+# ---------------------------------------------------------------- iPhone widget (Scriptable)
+
+# key, label, format, which way is good ("up" gets colour; costs stay neutral)
+WIDGET_METRICS = [("sales", "Sales", "money", "up"), ("ad_spend", "Ad spend", "money", ""),
+                  ("roas", "ROAS", "ratio", "up"), ("cogs", "COG", "money", ""),
+                  ("net_profit", "Net profit", "money", "up"), ("net_margin", "Net margin", "pct", "up"),
+                  ("processing_fee", "Fees", "money", ""), ("orders", "Orders", "int", "up"),
+                  ("google_spend", "Google ads", "money", ""), ("meta_spend", "Meta ads", "money", ""),
+                  ("aov", "Avg order", "money", "up")]
+WIDGET_PERIODS = {"today": "Today", "yesterday": "Yesterday", "7": "Last 7 days", "30": "Last 30 days", "mtd": "This month"}
+_widget_cache: dict = {}        # token -> (time, payload)
+
+
+def _widget_row(r) -> dict:
+    d = dict(r)
+    d["metrics"] = json.loads(d["metrics"] or "[]")
+    d["url"] = f"{BASE_URL}/w/{d['token']}"
+    return d
+
+
+def _widget_clean(payload: dict) -> dict:
+    keys = {k for k, *_ in WIDGET_METRICS}
+    metrics = [m for m in payload.get("metrics") or [] if m in keys][:10]
+    if not metrics:
+        raise HTTPException(400, "Pick at least one figure to show.")
+    period = payload.get("period") if payload.get("period") in WIDGET_PERIODS else "today"
+    return {"name": (payload.get("name") or "").strip()[:60] or "ProfitDesk", "scope": str(payload.get("scope") or "all"),
+            "period": period, "metrics": json.dumps(metrics)}
+
+
+@app.get("/api/widgets")
+def api_widgets():
+    with db._conn() as con:
+        rows = [_widget_row(r) for r in con.execute("SELECT * FROM widgets ORDER BY id")]
+    return {"widgets": rows, "metrics": [{"key": k, "label": l} for k, l, *_ in WIDGET_METRICS],
+            "periods": [{"key": k, "label": v} for k, v in WIDGET_PERIODS.items()]}
+
+
+@app.post("/api/widgets")
+def api_widget_create(payload: dict, request: Request):
+    w = _widget_clean(payload)
+    user = (getattr(request.state, "user", None) or {}).get("email", "")
+    with db._conn() as con:
+        con.execute("INSERT INTO widgets (token, name, scope, period, metrics, created_by) VALUES (?, ?, ?, ?, ?, ?)",
+                    (secrets.token_urlsafe(24), w["name"], w["scope"], w["period"], w["metrics"], user))
+    return api_widgets()
+
+
+@app.put("/api/widgets/{wid:int}")
+def api_widget_update(wid: int, payload: dict):
+    w = _widget_clean(payload)
+    with db._conn() as con:
+        con.execute("UPDATE widgets SET name = ?, scope = ?, period = ?, metrics = ? WHERE id = ?",
+                    (w["name"], w["scope"], w["period"], w["metrics"], wid))
+        tok = con.execute("SELECT token FROM widgets WHERE id = ?", (wid,)).fetchone()
+    if tok:
+        _widget_cache.pop(tok[0], None)
+    return api_widgets()
+
+
+@app.delete("/api/widgets/{wid:int}")
+def api_widget_delete(wid: int):
+    """Turning a widget off kills its link straight away."""
+    with db._conn() as con:
+        tok = con.execute("SELECT token FROM widgets WHERE id = ?", (wid,)).fetchone()
+        con.execute("DELETE FROM widgets WHERE id = ?", (wid,))
+    if tok:
+        _widget_cache.pop(tok[0], None)
+    return api_widgets()
+
+
+@app.get("/api/widgets/{wid:int}/script")
+def api_widget_script(wid: int):
+    with db._conn() as con:
+        r = con.execute("SELECT * FROM widgets WHERE id = ?", (wid,)).fetchone()
+    if not r:
+        raise HTTPException(404, "Widget not found.")
+    w = _widget_row(r)
+    with open(os.path.join(STATIC_DIR, "widget-scriptable.js")) as f:
+        code = f.read()
+    code = code.replace("__WIDGET_URL__", w["url"]).replace("__APP_URL__", BASE_URL).replace("__WIDGET_NAME__", w["name"])
+    return {"name": w["name"], "script": code}
+
+
+@app.get("/w/{token}")
+async def widget_data(token: str):
+    """The widget's figures. Read-only; the link itself is the key (turn it off in Settings)."""
+    with db._conn() as con:
+        r = con.execute("SELECT * FROM widgets WHERE token = ?", (token,)).fetchone()
+        if r:
+            con.execute("UPDATE widgets SET last_used = datetime('now') WHERE id = ?", (r["id"],))
+    if not r:
+        return JSONResponse({"error": "This widget was turned off in ProfitDesk."}, status_code=404)
+    hit = _widget_cache.get(token)
+    if hit and time.time() - hit[0] < 120:
+        return hit[1]
+    w = _widget_row(r)
+    stores = db.list_stores()
+    if w["scope"].startswith("g"):
+        g = next((g for g in db.list_groups() if f"g{g['id']}" == w["scope"]), None)
+        pool = [x for x in stores if g and x["id"] in g["store_ids"]]
+    elif w["scope"] != "all":
+        pool = [x for x in stores if str(x["id"]) == w["scope"]]
+    else:
+        pool = stores
+    if not pool:
+        return JSONResponse({"error": "The store or group for this widget no longer exists."}, status_code=404)
+    today = max(_store_today(x) for x in pool)          # the furthest-ahead store's date
+    p = w["period"]
+    if p == "today":
+        start = end = today
+    elif p == "yesterday":
+        start = end = today - timedelta(days=1)
+    elif p == "mtd":
+        start, end = today.replace(day=1), today
+    else:
+        start, end = today - timedelta(days=int(p) - 1), today
+    try:
+        d = await api_dashboard(scope=w["scope"], start=start.isoformat(), end=end.isoformat(),
+                                compare="same_time" if p == "today" else "period")
+    except HTTPException as e:
+        return JSONResponse({"error": str(e.detail)}, status_code=e.status_code)
+    info = {k: (l, f, good) for k, l, f, good in WIDGET_METRICS}
+    payload = {
+        "name": w["name"], "title": d["title"], "period": WIDGET_PERIODS[p], "currency": d["currency"],
+        "range": d["range"], "compare": "vs yesterday at this time" if p == "today" else "vs previous period",
+        "items": [{"key": k, "label": info[k][0], "format": info[k][1], "good": info[k][2],
+                   "value": d["totals"].get(k), "delta": (d.get("delta") or {}).get(k)} for k in w["metrics"]],
+        "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "open_url": f"{BASE_URL}/?" + "&".join(x for x in (f"store={w['scope']}" if w["scope"] != "all" else "",
+                                                           f"range={p}" if p != "today" else "") if x),
+    }
+    _widget_cache[token] = (time.time(), payload)
+    return payload
 
 
 # ---------------------------------------------------------------- Importer: edit a product in ProfitDesk

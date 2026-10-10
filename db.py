@@ -390,6 +390,18 @@ CREATE INDEX IF NOT EXISTS size_chart_rules_store ON size_chart_rules(store_id, 
 CREATE INDEX IF NOT EXISTS size_chart_rules_chart ON size_chart_rules(chart_id);
 
 -- Product Importer: one row per product per target store.
+CREATE TABLE IF NOT EXISTS widgets (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    token       TEXT NOT NULL UNIQUE,          -- the private read-only link
+    name        TEXT NOT NULL,
+    scope       TEXT NOT NULL DEFAULT 'all',   -- all | store id | g<group id>
+    period      TEXT NOT NULL DEFAULT 'today', -- today | yesterday | 7 | 30 | mtd
+    metrics     TEXT NOT NULL,                 -- JSON list of metric keys, in order
+    created_by  TEXT,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    last_used   TEXT
+);
+
 CREATE TABLE IF NOT EXISTS import_items (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     job_id      TEXT NOT NULL,
