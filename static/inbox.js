@@ -16,7 +16,7 @@ async function api(path, options) {
   let body = {};
   try { body = await r.json(); } catch { /* empty */ }
   if (r.status === 401 && body.login) { location.href = "/login?next=/inbox"; throw new Error("Log in again."); }
-  if (!r.ok) throw new Error(body.error || `Request failed (${r.status})`);
+  if (!r.ok) { const e = new Error(body.error || `Request failed (${r.status})`); e.status = r.status; throw e; }
   return body;
 }
 const post = (path, data) => api(path, { method: "POST", headers: { "Content-Type": "application/json" },
@@ -159,7 +159,15 @@ function wireComposer(o) {   // o: {key, sendUrl, draftUrl, onSent}
     const b = $("tkSend");
     b.disabled = true; b.textContent = "Sending…";
     try {
-      await post(o.sendUrl, { text });
+      try { await post(o.sendUrl, { text, seen: o.seen, opened: o.opened }); }
+      catch (e) {
+        if (e.status !== 409) throw e;
+        if (!confirm(`${e.message}\n\nRead the conversation first? Press Cancel to check it, or OK to send your reply anyway.`)) {
+          if (o.onConflict) o.onConflict();
+          return;
+        }
+        await post(o.sendUrl, { text, force: true });
+      }
       try { sessionStorage.removeItem(o.key); } catch { /* */ }
       box.value = "";
       box.closest(".reply-box").insertAdjacentHTML("beforebegin", `<div class="msg out sent-now">
@@ -396,6 +404,8 @@ async function openTicket(id) {
   trOriginal = new Map(d.messages.map((m) => [String(m.id), m.text]));
   wireTranslate();
   wireComposer({ key: `pdReply:${id}`, sendUrl: `/api/inbox/tickets/${id}/reply`, draftUrl: `/api/inbox/tickets/${id}/draft`,
+                  seen: Math.max(0, ...d.messages.map((m) => m.id)), opened: Date.now() / 1000,
+                  onConflict: () => openTicket(id),
                   onSent: () => { if (current && current.type === "ticket" && current.id === id) { openTicket(id); refresh(); } } });
   const act = async (payload, msg) => {
     try { await post(`/api/inbox/tickets/${id}`, payload); toast(msg); refresh(); openTicket(id); }

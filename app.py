@@ -1056,12 +1056,29 @@ async def api_inbox_message_reply(message_id: int, payload: dict):
     return {"ok": True}
 
 
+_recent_replies: dict = {}      # ticket id -> (time, who) of the last reply sent from ProfitDesk
+
+
 @app.post("/api/inbox/tickets/{ticket_id}/reply")
 async def api_inbox_reply(ticket_id: int, payload: dict, request: Request):
-    """Send a reply from the store's mailbox through Gmail (it shows in Gmail's Sent and the same thread)."""
+    """Send a reply from the store's mailbox through Gmail (it shows in Gmail's Sent and the same thread).
+    seen: newest email id the sender had on screen. If a teammate replied since, ask first (409)."""
     text = (payload.get("text") or "").strip()
     if not text:
         raise HTTPException(400, "Write the reply first.")
+    user = (getattr(request.state, "user", None) or {}).get("email", "")
+    if not payload.get("force"):
+        seen = int(payload.get("seen") or 0)
+        with db._conn() as con:
+            newer = con.execute("SELECT direction, from_addr, date FROM mail_messages WHERE ticket_id = ? AND id > ?"
+                                " ORDER BY id DESC LIMIT 1", (ticket_id, seen)).fetchone() if seen else None
+        recent = _recent_replies.get(ticket_id)
+        if recent and recent[1] != user and time.time() - recent[0] < 900 and recent[0] > float(payload.get("opened") or 0):
+            mins = max(1, round((time.time() - recent[0]) / 60))
+            raise HTTPException(409, f"{recent[1] or 'Someone'} replied to this customer {mins} min ago from ProfitDesk.")
+        if newer:
+            who = "Your team" if newer["direction"] == "out" else "The customer"
+            raise HTTPException(409, f"{who} sent a new email in this conversation since you opened it.")
     with db._conn() as con:
         t = con.execute("SELECT * FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
         if not t:
@@ -1085,7 +1102,7 @@ async def api_inbox_reply(ticket_id: int, payload: dict, request: Request):
                               in_reply_to=mid, references=(last["refs"] if last else "") or "", thread=thread)
     except gmail_send.SendError as e:
         raise HTTPException(400, str(e))
-    user = (getattr(request.state, "user", None) or {}).get("email", "")
+    _recent_replies[ticket_id] = (time.time(), user)
     print(f"Reply sent on ticket {ticket_id} by {user}", flush=True)
 
     async def pick_up():                      # read it back from Sent so the ticket shows "we replied"
