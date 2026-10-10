@@ -435,8 +435,13 @@ def blocks_from_ai(res: dict) -> list:
     blocks = []
     if res.get("title"):
         blocks.append({"type": "title", "text": res["title"]})
-    for t in res.get("tables") or []:
-        blocks.append({"type": "table", "label": t.get("label") or "", "unit": t.get("unit") or "",
+    tables = res.get("tables") or []
+    plain = re.compile(r"^\s*(size\s*chart|size\s*guide|sizes?|guide des tailles|tableau des tailles|gu[ií]a de tallas|tabla de tallas)\s*$", re.I)
+    for t in tables:
+        label = (t.get("label") or "").strip()
+        if len(tables) == 1 and (plain.match(label) or label.lower() == (res.get("title") or "").strip().lower()):
+            label = ""          # one table: its label would only repeat the heading
+        blocks.append({"type": "table", "label": label, "unit": t.get("unit") or "",
                        "header": t.get("header") or [], "rows": t.get("rows") or []})
     if (res.get("notes") or "").strip():
         blocks.append({"type": "text", "html": "<p>" + _html.escape(res["notes"]) + "</p>"})
