@@ -2488,9 +2488,13 @@ async def proxy_track(request: Request, order: str = None, email: str = None, nu
     shop_domain = (query.get("shop") or "").strip().lower()
     store = next((x for x in db.list_stores() if x["shop_domain"].lower() == shop_domain), None)
     if not store:
+        db.set_setting("proxy_last", json.dumps({"at": datetime.now(timezone.utc).isoformat(), "shop": shop_domain,
+                                                 "error": "store not found", "keys": sorted(query)}))
         return Response("Store not found.", status_code=404)
     app_keys = _shopify_app(store["shop_domain"])
     signed = bool(app_keys) and trackpage.verify_proxy(query, app_keys[1])
+    db.set_setting("proxy_last", json.dumps({"at": datetime.now(timezone.utc).isoformat(), "shop": shop_domain,
+                                             "signed": signed, "keys": sorted(k for k in query if k != "signature")}))
     if not signed and not getattr(request.state, "user", None):
         return Response("Not allowed.", status_code=401)
     parcels, message = _find_parcels(store["id"], order, email, nums)
@@ -2655,6 +2659,7 @@ async def api_tracking():
     cfg = _tracking_config()
     out = {"connected": bool(cfg["key"]), "stores": cfg["stores"], "from": cfg["from"],
            "push": sorted(_push_stores()),
+           "proxy_last": json.loads(db.get_setting("proxy_last") or "{}"),
            "langs": {x["id"]: db.get_setting(f"track_lang:{x['id']}") or "en" for x in db.list_stores()},
            "visits": {x["id"]: json.loads(db.get_setting(f"track_visits:{x['id']}") or "{}") for x in db.list_stores()},
            "dropship": [x["id"] for x in db.list_stores()
