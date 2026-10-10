@@ -2272,14 +2272,18 @@ async def _credits() -> dict:
             q = await track17.quota(key)
         except track17.TrackError as e:
             return {"error": str(e)}
+        cfg = _tracking_config()
         with db._conn() as con:
             per_day = con.execute(
                 "SELECT COUNT(DISTINCT number) / 7.0 FROM shipments WHERE number != '' AND cancelled = 0"
                 " AND fulfilled_at >= ?", ((datetime.now(timezone.utc) - timedelta(days=7)).isoformat(),)).fetchone()[0]
+        queued = len(db.shipments_to_register(cfg["stores"], cfg["from"], limit=100000))
+        left = q.get("quota_remain") or 0
         hit = _credits_cache["v"] = (time.time(), {
-            "left": q.get("quota_remain"), "total": q.get("quota_total"), "used": q.get("quota_used"),
-            "per_day": round(per_day or 0), "days_left": int((q.get("quota_remain") or 0) / per_day) if per_day else None,
-            "low": (q.get("quota_remain") or 0) <= 250})
+            "left": left, "total": q.get("quota_total"), "used": q.get("quota_used"), "queued": queued,
+            "per_day": round(per_day or 0),
+            "days_left": max(0, int((left - queued) / per_day)) if per_day else None,
+            "low": left <= 250})
     return hit[1]
 
 
