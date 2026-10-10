@@ -94,6 +94,10 @@ file and have it work.
   `anthropic_api_key` (owner pastes it in Settings → AI). Tickets only for emails from
   setting `tickets_from` (default 8 Oct 2026 HK). Team can override: close, reopen,
   snooze, escalate, relabel, "not a customer email".
+- Cash at end of day: `_snapshot_loop` saves the Cash flow cards at 23:59 HK into
+  `cash_snapshots` (one row per day). Shown in Reports, report type `cash_snapshots`,
+  chat tool `get_cash_history`. Days before 10 Oct 2026 have none; the chat falls back
+  to the statement (`get_cash_statement`), which only rebuilds available + receivable.
 - Business clock is Hong Kong (`CASH_TIMEZONE`). Each store has its own clock;
   "today" is the furthest-ahead store's date.
 

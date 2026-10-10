@@ -8,6 +8,7 @@ const HELP = {
   invoices: "Every uploaded supplier invoice line in the period: order, product, amount, previous price and its check.",
   cash_statement: "The Cash flow statement for the period: opening, money in and out, fees, moves between accounts, closing.",
   tickets: "Support tickets created in the period: store, type, SCM / CS, summary, orders, status and who closed them.",
+  cash_snapshots: "One row per day: the Cash flow cards as they stood at 23:59 Hong Kong time (available now, held, receivable, available + receivable and its change from the day before, ads payable, after ad bills, available by 7 / 14 / 30 / 60 / 90 days).",
   ad_bills: "Ad spend owed to Meta and Google right now, per ad account (the dates are ignored).",
 };
 
@@ -53,6 +54,32 @@ async function load() {
   };
 }
 
+function money(v, cur) {
+  if (v === null || v === undefined) return "–";
+  try {
+    return new Intl.NumberFormat(undefined, { style: "currency", currency: cur, maximumFractionDigits: 0 }).format(v);
+  } catch { return `${cur} ${Math.round(v).toLocaleString()}`; }
+}
+
+async function loadSnapshots() {
+  let d;
+  try { d = await api("/api/cash/snapshots"); } catch { return; }      // no Cash desk: stay hidden
+  $("snapPanel").hidden = false;
+  const rows = d.snapshots.slice(0, 14);
+  const h7 = (x) => (x.horizons || []).find((h) => h.key === "d7");
+  $("snaps").innerHTML = rows.length ? `<thead><tr><th>Day</th><th>Available now</th><th>Receivable</th>
+      <th>Available + receivable</th><th>vs day before</th><th>Ads payable</th><th>After ad bills</th>
+      <th>Available in 7 days</th></tr></thead><tbody>${rows.map((x) => {
+        const c = x.currency;
+        const ch = x.change === null || x.change === undefined ? "–"
+          : `<span style="color:var(${x.change >= 0 ? "--up" : "--down"})">${x.change >= 0 ? "+" : "−"}${money(Math.abs(x.change), c)}</span>`;
+        return `<tr title="${esc((x.problems || []).join("; "))}"><td class="name">${esc(new Date(x.day + "T12:00:00").toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" }))}</td>
+          <td>${money(x.available, c)}</td><td>${money(x.receivable, c)}</td><td><strong>${money(x.position, c)}</strong></td>
+          <td>${ch}</td><td>${money(x.ads_payable, c)}</td><td>${money(x.after_ads, c)}</td><td>${money(h7(x)?.available_by, c)}</td></tr>`;
+      }).join("")}</tbody>`
+    : `<tbody><tr><td class="hint">The first one is saved tonight at 23:59 Hong Kong time. For more days, create the "Cash at end of day" report.</td></tr></tbody>`;
+}
+
 function showHelp() {
   const t = $("type").value;
   $("help").textContent = HELP[t] || "";
@@ -89,4 +116,5 @@ $("make").onclick = async () => {
       setup.stores.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join("");
   } catch (e) { toast(e.message, true); }
   load().catch((e) => toast(e.message, true));
+  loadSnapshots();
 })();

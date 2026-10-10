@@ -15,6 +15,7 @@ TYPES = {
     "cash_statement": ("Cash statement", "cash"),
     "tickets": ("Support tickets", "inbox"),
     "ad_bills": ("Ads payable", "cash"),
+    "cash_snapshots": ("Cash at end of day", "cash"),
 }
 
 
@@ -114,6 +115,30 @@ def ad_bills(ads: dict) -> tuple:
                      _r(a["owed"]) if a["owed"] is not None else "", _r(a.get("owed_display")),
                      (lc.get("time") or "")[:16], lc.get("card", ""), len(a.get("failed") or [])])
     rows.append(["TOTAL", "", "", "", "", "", _r(ads.get("total")), "", "", ""])
+    return cols, rows
+
+
+HORIZONS = (("tomorrow", "By tomorrow"), ("d7", "Next 7 days"), ("d14", "Next 14 days"),
+            ("d30", "Next 30 days"), ("d60", "Next 60 days"), ("d90", "Next 90 days"))
+
+
+def cash_snapshots(snaps: list) -> tuple:
+    """One row per day: the Cash flow cards as saved at 23:59 (Hong Kong), with the
+    change in available + receivable from the day before."""
+    cols = ["Date", "Saved at", "Currency", "Available now", "Held", "Receivable", "Available + receivable",
+            "Change vs day before", "Ads payable", "Meta owed", "Google owed", "After ad bills"] + \
+           [f"{label} (available by)" for _, label in HORIZONS] + ["Problems"]
+    rows, prev = [], None
+    for s in snaps:
+        by = {h["key"]: h["available_by"] for h in s.get("horizons", [])}
+        change = (s["position"] - prev["position"]) if prev and prev["currency"] == s["currency"] \
+            and s.get("position") is not None and prev.get("position") is not None else ""
+        rows.append([s["day"], s["taken_at"][11:19], s["currency"], _r(s.get("available")), _r(s.get("held")),
+                     _r(s.get("receivable")), _r(s.get("position")), _r(change), _r(s.get("ads_payable")),
+                     _r(s.get("ads_meta")), _r(s.get("ads_google")), _r(s.get("after_ads"))] +
+                    [_r(by.get(k)) if by.get(k) is not None else "" for k, _ in HORIZONS] +
+                    ["; ".join(s.get("problems") or [])])
+        prev = s
     return cols, rows
 
 

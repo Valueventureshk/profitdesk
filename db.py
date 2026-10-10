@@ -10,6 +10,7 @@ are fetched live too, but each day's totals are also saved (shopify_days),
 because Shopify only shares the last 60 days of orders: saved days are how
 history older than that stays available.
 """
+import json
 import os
 import sqlite3
 from contextlib import contextmanager
@@ -273,6 +274,15 @@ CREATE TABLE IF NOT EXISTS reports (
     content    TEXT NOT NULL,
     created_by TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- The Cash flow page's top cards as they stood at 23:59 each day (Hong Kong clock),
+-- so days can be compared later. data = JSON of the figures, in `currency`.
+CREATE TABLE IF NOT EXISTS cash_snapshots (
+    day        TEXT PRIMARY KEY,
+    taken_at   TEXT NOT NULL,
+    currency   TEXT NOT NULL,
+    data       TEXT NOT NULL
 );
 
 -- Small app-wide preferences, e.g. the currency the dashboard shows.
@@ -914,6 +924,26 @@ def rename_cash_connection(connection_id: int, label: str):
 def delete_cash_connection(connection_id: int):
     with _conn() as con:
         con.execute("DELETE FROM cash_connections WHERE id = ?", (connection_id,))
+
+
+# ---------------------------------------------------------------- cash snapshots
+
+def save_cash_snapshot(day: str, taken_at: str, currency: str, data: dict):
+    with _conn() as con:
+        con.execute(
+            "INSERT INTO cash_snapshots (day, taken_at, currency, data) VALUES (?, ?, ?, ?)"
+            " ON CONFLICT(day) DO UPDATE SET taken_at = excluded.taken_at,"
+            " currency = excluded.currency, data = excluded.data",
+            (day, taken_at, currency, json.dumps(data)))
+
+
+def cash_snapshots(start: str = "0000", end: str = "9999") -> list:
+    """Oldest first: [{day, taken_at, currency, **figures}]"""
+    with _conn() as con:
+        rows = con.execute("SELECT * FROM cash_snapshots WHERE day BETWEEN ? AND ? ORDER BY day",
+                           (start, end)).fetchall()
+    return [{"day": r["day"], "taken_at": r["taken_at"], "currency": r["currency"], **json.loads(r["data"])}
+            for r in rows]
 
 
 # ---------------------------------------------------------------- settings

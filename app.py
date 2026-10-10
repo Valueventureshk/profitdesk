@@ -72,10 +72,12 @@ async def lifespan(app):
     saver = asyncio.create_task(_save_all_history())
     coster = asyncio.create_task(_cog_loop())
     reader = asyncio.create_task(_mail_loop())
+    snapper = asyncio.create_task(_snapshot_loop())
     yield
     saver.cancel()
     coster.cancel()
     reader.cancel()
+    snapper.cancel()
 
 
 app = FastAPI(title="ProfitDesk", docs_url=None, redoc_url=None, lifespan=lifespan)
@@ -1233,6 +1235,12 @@ async def _make_report(kind: str, start: str = None, end: str = None, scope: str
                 "SELECT t.*, (SELECT COUNT(*) FROM mail_messages m WHERE m.ticket_id = t.id) emails FROM tickets t"
                 " WHERE substr(t.created_at, 1, 10) BETWEEN ? AND ? ORDER BY t.created_at", (start, end))]
         cols, rows = reports.tickets(rows_in, stores)
+    elif kind == "cash_snapshots":
+        before = (date.fromisoformat(start) - timedelta(days=1)).isoformat()
+        snaps = db.cash_snapshots(before, end)       # the day before, for the first day's change
+        cols, rows = reports.cash_snapshots(snaps)
+        if snaps and snaps[0]["day"] < start:
+            rows = rows[1:]
     else:  # ad_bills (now)
         st = await _cash_state(cur, with_ads=True)
         cols, rows = reports.ad_bills((st["summary"] or {}).get("ads") or {})
@@ -1338,6 +1346,17 @@ async def _chat_tool(name: str, args: dict, user: dict) -> dict:
                                      "arriving": h["incoming"]} for h in sm.get("horizons", [])],
                        "accounts": [{"name": a["label"], "available": a["available"], "held": a["reserved"]}
                                     for a in sm.get("accounts", [])]})
+    if name == "get_cash_history":
+        _need(user, "cash")
+        snaps = db.cash_snapshots(args["start"], args["end"])
+        return _round({"snapshots": snaps[-31:],
+                       "note": "Saved at 23:59 Hong Kong time each day. available_by does NOT deduct ads payable."
+                               if snaps else "No end-of-day snapshots saved for those days."})
+    if name == "get_cash_statement":
+        _need(user, "cash")
+        st = await api_cash_statement(start=args["start"], end=args["end"], currency=cur)
+        return _round({k: st.get(k) for k in ("start", "end", "currency", "opening", "closing", "change",
+                                              "sections", "checks")})
     if name == "get_cog":
         _need(user, "cog")
         stores = {x["id"]: x for x in db.list_stores() if not demo.is_demo(x)}
@@ -1808,6 +1827,71 @@ async def api_cash(currency: str = None):
         "fx": None if not fx_table else {"date": fx_table.get("date"),
                                          "source": fx_table.get("source")},
     }
+
+
+def _snapshot_figures(st: dict) -> dict:
+    """The Cash flow page's top cards, as plain numbers."""
+    sm = st["summary"] or {}
+    ads = sm.get("ads") or {}
+    return {
+        "available": sm.get("available"), "held": sm.get("reserved"), "receivable": sm.get("receivable"),
+        "position": sm.get("position"), "ads_payable": sm.get("ads_payable"),
+        "ads_meta": ads.get("meta"), "ads_google": ads.get("google"), "after_ads": sm.get("after_ads"),
+        "horizons": [{"key": h["key"], "label": h["label"], "until": h["until"],
+                      "available_by": h["available_by"], "arriving": h["incoming"]}
+                     for h in sm.get("horizons", [])],
+        "accounts": [{"name": a["label"], "available": a["available"], "held": a["reserved"]}
+                     for a in sm.get("accounts", [])],
+        "problems": st["problems"],
+    }
+
+
+async def _take_snapshot() -> dict:
+    """Save the cash position for today (business clock). Fresh ad bills, not the 5-minute copy."""
+    taken = datetime.now(CASH_TZ)
+    _ads_cache.pop("rows", None)
+    st = await _cash_state(_display_currency(), with_ads=True)
+    if not st["summary"]:
+        raise RuntimeError("No cash accounts connected.")
+    figures = _snapshot_figures(st)
+    db.save_cash_snapshot(taken.date().isoformat(), taken.isoformat(timespec="seconds"), st["base"], figures)
+    return figures
+
+
+async def _snapshot_loop():
+    """Every day at 23:59 Hong Kong time, save the Cash flow cards for that day."""
+    while True:
+        now = datetime.now(CASH_TZ)
+        target = now.replace(hour=23, minute=59, second=0, microsecond=0)
+        if now >= target:
+            # Restarted inside the last minute and today's isn't saved yet: take it now.
+            if not db.cash_snapshots(now.date().isoformat(), now.date().isoformat()):
+                target = now
+            else:
+                target += timedelta(days=1)
+        await asyncio.sleep(max(0.0, (target - datetime.now(CASH_TZ)).total_seconds()))
+        for attempt in range(3):
+            try:
+                await _take_snapshot()
+                break
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                print(f"Cash snapshot failed: {e}")
+                await asyncio.sleep(10)
+        await asyncio.sleep(90)      # past midnight, so the next target is tomorrow's
+
+
+@app.get("/api/cash/snapshots")
+def api_cash_snapshots(start: str = None, end: str = None):
+    """Saved end-of-day cash cards, newest first, each with its change from the day before."""
+    snaps = db.cash_snapshots(start or "0000", end or "9999")
+    prev = None
+    for x in snaps:
+        x["change"] = (x["position"] - prev["position"]) if prev and prev["currency"] == x["currency"] \
+            and None not in (x.get("position"), prev.get("position")) else None
+        prev = x
+    return {"snapshots": snaps[::-1]}
 
 
 @app.get("/api/cash/statement")

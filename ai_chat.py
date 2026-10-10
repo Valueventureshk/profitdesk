@@ -33,15 +33,25 @@ TOOLS = [
           ["start", "end", "scope"]),
     _tool("get_cash", "Cash flow right now: available now, receivable, held, ads payable, what arrives by "
           "tomorrow / 7 / 14 / 30 / 60 / 90 days, per account.", {}, []),
+    _tool("get_cash_history", "Cash flow cards as they stood at 23:59 Hong Kong time on past days (saved every "
+          "night): available now, held, receivable, available + receivable, ads payable, after ad bills, "
+          "available by tomorrow / 7 / 14 / 30 / 60 / 90 days, per account. Use for 'end of day', 'last night', "
+          "'how is cash trending'. Days before saving started have no snapshot: use get_cash_statement.",
+          _RANGE, ["start", "end"]),
+    _tool("get_cash_statement", "Cash statement between two dates (Hong Kong days, up to 92 days back): opening "
+          "and closing 'available + receivable' (closing = at the end of the last day), money in and out, fees, "
+          "moves between accounts. Works for any past day, but only gives available + receivable, not "
+          "the other cards.", _RANGE, ["start", "end"]),
     _tool("get_cog", "COG for a period: sales, COG, COG %, how much is from invoices vs history vs estimates, "
           "and the products with the highest cost share.",
           {**_RANGE, "store": {"type": "string", "description": "all or a store id"}}, ["start", "end", "store"]),
     _tool("get_inbox", "Support inbox: tickets waiting on us, SCM / CS / inquiry counts, escalated, and the "
           "oldest tickets waiting with their AI summaries.", {}, []),
     _tool("create_report", "Make a downloadable spreadsheet (CSV) in the Reports desk and return its link. "
-          "Types: profit_daily, profit_stores, cog_orders, invoices, cash_statement, tickets, ad_bills.",
+          "Types: profit_daily, profit_stores, cog_orders, invoices, cash_statement, tickets, ad_bills, "
+          "cash_snapshots (cash at end of each day).",
           {"type": {"type": "string", "enum": ["profit_daily", "profit_stores", "cog_orders", "invoices",
-                                               "cash_statement", "tickets", "ad_bills"]},
+                                               "cash_statement", "tickets", "ad_bills", "cash_snapshots"]},
            **_RANGE, "scope": {"type": "string", "description": "all, a store id, or g<group id>"}},
           ["type", "start", "end", "scope"]),
 ]
@@ -50,6 +60,7 @@ SYSTEM = """You are ProfitDesk's assistant for the owner and staff of a group of
 Answer questions about their business using the tools: profit, cash flow, COG, the support inbox and reports. Never make up a figure: if a tool can't give it, say so.
 Today is {today} (Hong Kong time). "Today", "yesterday", "last week" (the 7 days ending yesterday), "this month" and similar mean dates on that clock.
 Money is in {currency} unless a tool says otherwise; write amounts with their currency (e.g. A$1,234 for AUD, US$ for USD). Keep answers short and plain: lead with the answer, then the key numbers. Use a small table when comparing several stores or days.
+For cash on a past day, prefer get_cash_history; if that day has no snapshot, use get_cash_statement and say only "available + receivable" can be rebuilt for it.
 When someone asks for a document, file, export, spreadsheet or report, use create_report and give the download link as a Markdown link.
 If a tool says the person has no access, tell them which desk they'd need."""
 
