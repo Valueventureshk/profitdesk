@@ -324,7 +324,7 @@ async function loadCredits() {
     <div class="scm-credits-bar"><i style="width:${pct}%"></i></div>
     <div class="scm-credits-note">${c.low ? `<b>Running low. Top up now</b> so new parcels keep being tracked.`
       : `${c.per_day ? `About ${c.per_day.toLocaleString()} new parcels a day` : ""}${c.days_left != null ? ` · lasts about ${c.days_left} days` : ""}`}
-      <a href="https://api.17track.net/en/admin/pricing" target="_blank" rel="noopener">Top up ↗</a></div>`;
+      <a href="https://api.17track.net/en" target="_blank" rel="noopener">Top up ↗</a></div>`;
 }
 
 (function boot() {
