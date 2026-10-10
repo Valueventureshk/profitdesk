@@ -390,6 +390,23 @@ CREATE INDEX IF NOT EXISTS size_chart_rules_store ON size_chart_rules(store_id, 
 CREATE INDEX IF NOT EXISTS size_chart_rules_chart ON size_chart_rules(chart_id);
 
 -- Product Importer: one row per product per target store.
+-- Gmail labels, in step with each mailbox (mail_labels.py). Per email, like Gmail.
+CREATE TABLE IF NOT EXISTS mail_tags (
+    account_id  INTEGER NOT NULL,
+    name        TEXT NOT NULL,
+    PRIMARY KEY (account_id, name)
+);
+CREATE TABLE IF NOT EXISTS mail_message_tags (
+    message_id  INTEGER NOT NULL,
+    name        TEXT NOT NULL,
+    PRIMARY KEY (message_id, name)
+);
+CREATE INDEX IF NOT EXISTS mail_message_tags_name ON mail_message_tags(name);
+CREATE TABLE IF NOT EXISTS tag_colors (
+    name   TEXT PRIMARY KEY,
+    color  TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS mail_translations (
     message_id  INTEGER NOT NULL,
     lang        TEXT NOT NULL,
@@ -483,6 +500,7 @@ _ADDED_COLUMNS = {
     ],
     "mail_messages": [
         ("direction", "TEXT NOT NULL DEFAULT 'in'"),       # in = from a customer, out = our reply
+        ("tag_suggest", "TEXT"),                           # AI's suggested labels (JSON), staff confirm
         ("category", "TEXT"),        # customer | inquiry | legal | other (AI); NULL = not sorted
         ("labels", "TEXT"),          # scm,cs
         ("ticket_id", "INTEGER"),

@@ -41,6 +41,7 @@ import cog
 import invoices
 import mail_client
 import gmail_send
+import mail_labels
 import tickets
 import ai_brain
 import anthropic
@@ -798,8 +799,184 @@ async def _mail_loop():
                 await _read_mailbox(acct)   # fresh row each time: last_uid moves on
             except Exception as e:
                 print(f"Reading {acct['address']} failed: {e}", flush=True)
+            try:
+                await _sync_labels(acct)
+            except Exception as e:
+                print(f"Labels for {acct['address']} failed: {e}", flush=True)
         await _sort_mail()
+        try:
+            await _suggest_labels()
+        except Exception as e:
+            print(f"Label suggestions failed: {e}", flush=True)
         await asyncio.sleep(120)
+
+
+# ---------------------------------------------------------------- Inbox labels (Gmail labels, two-way)
+
+_label_full: dict = {}          # account id -> time of the last wide (45-day) label read
+
+TAG_PALETTE = ["#DC2626", "#EA580C", "#D97706", "#CA8A04", "#16A34A", "#059669", "#0891B2", "#2563EB",
+               "#4F46E5", "#7C3AED", "#C026D3", "#DB2777", "#64748B"]
+
+
+def _tag_color(name: str, saved: dict = None) -> str:
+    if saved and name in saved:
+        return saved[name]
+    n = name.lower()
+    for words, c in ((("angry", "dispute", "chargeback", "fraud", "legal"), "#DC2626"),
+                     (("follow", "pending", "waiting"), "#CA8A04"), (("agreed", "resolved", "done", "closed"), "#16A34A"),
+                     (("funnel",), "#EA580C"), (("invoice", "payment", "refund"), "#2563EB"),
+                     (("return", "exchange"), "#0891B2"), (("address",), "#7C3AED"), (("marketing",), "#DB2777")):
+        if any(w in n for w in words):
+            return c
+    return TAG_PALETTE[sum(map(ord, name)) % len(TAG_PALETTE)]
+
+
+def _tag_colors() -> dict:
+    with db._conn() as con:
+        return {r[0]: r[1] for r in con.execute("SELECT name, color FROM tag_colors")}
+
+
+async def _sync_labels(acct: dict):
+    """Gmail → ProfitDesk: the mailbox's label list and each recent email's labels."""
+    wide = time.time() - _label_full.get(acct["id"], 0) > 1800
+    names, found = await asyncio.to_thread(mail_labels.sync, acct["address"], acct["password"], 45 if wide else 4)
+    if wide:
+        _label_full[acct["id"]] = time.time()
+    with db._conn() as con:
+        con.execute("DELETE FROM mail_tags WHERE account_id = ?", (acct["id"],))
+        con.executemany("INSERT OR IGNORE INTO mail_tags (account_id, name) VALUES (?, ?)", [(acct["id"], n) for n in names])
+        if found:
+            mids = list(found)
+            for i in range(0, len(mids), 500):
+                part = mids[i:i + 500]
+                rows = con.execute(f"SELECT id, message_id FROM mail_messages WHERE account_id = ? AND message_id IN"
+                                   f" ({','.join('?' * len(part))})", (acct["id"], *part)).fetchall()
+                for r in rows:
+                    con.execute("DELETE FROM mail_message_tags WHERE message_id = ?", (r[0],))
+                    con.executemany("INSERT OR IGNORE INTO mail_message_tags (message_id, name) VALUES (?, ?)",
+                                    [(r[0], n) for n in found.get(r[1], [])])
+
+
+def _tags_of(message_ids: list) -> list:
+    if not message_ids:
+        return []
+    with db._conn() as con:
+        return sorted({r[0] for r in con.execute(
+            f"SELECT name FROM mail_message_tags WHERE message_id IN ({','.join('?' * len(message_ids))})", message_ids)},
+            key=str.lower)
+
+
+@app.get("/api/inbox/labels")
+def api_inbox_labels(account: int = None):
+    """Every label (merged across mailboxes by name) with how many open tickets / emails carry it."""
+    colors = _tag_colors()
+    with db._conn() as con:
+        q = "SELECT DISTINCT name FROM mail_tags" + (" WHERE account_id = ?" if account else "")
+        names = [r[0] for r in con.execute(q, (account,) if account else ())]
+        acct_sql = " AND m.account_id = ?" if account else ""
+        counts = {r[0]: (r[1], r[2]) for r in con.execute(
+            "SELECT g.name, COUNT(DISTINCT CASE WHEN t.status = 'open' THEN t.id END), COUNT(DISTINCT m.id)"
+            " FROM mail_message_tags g JOIN mail_messages m ON m.id = g.message_id"
+            " LEFT JOIN tickets t ON t.id = m.ticket_id WHERE 1=1" + acct_sql + " GROUP BY g.name",
+            (account,) if account else ())}
+    names = sorted(set(names) | set(counts), key=str.lower)
+    return {"labels": [{"name": n, "color": _tag_color(n, colors), "open": counts.get(n, (0, 0))[0],
+                        "emails": counts.get(n, (0, 0))[1]} for n in names]}
+
+
+@app.post("/api/inbox/labels")
+async def api_inbox_label_change(payload: dict):
+    """Add / remove a label on a ticket (its whole Gmail conversation) or a single email; also sets a colour."""
+    action = payload.get("action")
+    name = (payload.get("name") or "").strip()
+    if action == "color":
+        if not re.fullmatch(r"#[0-9A-Fa-f]{6}", payload.get("color") or ""):
+            raise HTTPException(400, "Pick a colour.")
+        with db._conn() as con:
+            con.execute("INSERT OR REPLACE INTO tag_colors (name, color) VALUES (?, ?)", (name, payload["color"]))
+        return {"ok": True}
+    if action not in ("add", "remove") or not name or len(name) > 80 or SYSTEM_LABEL.match(name):
+        raise HTTPException(400, "Pick a label.")
+    with db._conn() as con:
+        if payload.get("ticket_id"):
+            t = con.execute("SELECT account_id FROM tickets WHERE id = ?", (int(payload["ticket_id"]),)).fetchone()
+            if not t:
+                raise HTTPException(404, "That ticket no longer exists.")
+            msgs = [dict(r) for r in con.execute("SELECT id, message_id, direction FROM mail_messages WHERE ticket_id = ?"
+                                                 " ORDER BY date DESC", (int(payload["ticket_id"]),))]
+            account_id = t[0]
+        else:
+            m = con.execute("SELECT id, message_id, direction, account_id FROM mail_messages WHERE id = ?",
+                            (int(payload.get("message_id") or 0),)).fetchone()
+            if not m:
+                raise HTTPException(404, "That email no longer exists.")
+            msgs, account_id = [dict(m)], m["account_id"]
+    acct = next((a for a in db.list_mail_accounts() if a["id"] == account_id), None)
+    if not acct:
+        raise HTTPException(404, "That mailbox was removed.")
+    target = next((x for x in msgs if x["message_id"] and x["direction"] == "in"), None) or \
+        next((x for x in msgs if x["message_id"]), None)
+    if not target:
+        raise HTTPException(400, "Gmail can't find this conversation (no Message-ID).")
+    try:
+        await asyncio.to_thread(mail_labels.change, acct["address"], acct["password"], target["message_id"], name,
+                                action == "add")
+        # other emails of the ticket that Gmail keeps in separate conversations
+        for x in msgs:
+            if x["message_id"] and x is not target and action == "remove":
+                await asyncio.to_thread(mail_labels.change, acct["address"], acct["password"], x["message_id"], name, False)
+    except mail_labels.LabelError as e:
+        raise HTTPException(400, str(e))
+    with db._conn() as con:
+        con.execute("INSERT OR IGNORE INTO mail_tags (account_id, name) VALUES (?, ?)", (account_id, name))
+        for x in msgs:
+            if action == "add":
+                con.execute("INSERT OR IGNORE INTO mail_message_tags (message_id, name) VALUES (?, ?)", (x["id"], name))
+            else:
+                con.execute("DELETE FROM mail_message_tags WHERE message_id = ? AND name = ?", (x["id"], name))
+            sug = con.execute("SELECT tag_suggest FROM mail_messages WHERE id = ?", (x["id"],)).fetchone()
+            if sug and sug[0] and name in sug[0]:
+                con.execute("UPDATE mail_messages SET tag_suggest = ? WHERE id = ?",
+                            (json.dumps([g for g in json.loads(sug[0]) if g != name]), x["id"]))
+    return {"ok": True, "tags": _tags_of([x["id"] for x in msgs])}
+
+
+SYSTEM_LABEL = mail_labels.SYSTEM
+
+
+async def _suggest_labels():
+    """AI suggests labels for new customer emails, learning from how the team labelled past ones."""
+    key = db.get_setting("anthropic_api_key")
+    if not key:
+        return
+    since = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+    with db._conn() as con:
+        todo = [dict(r) for r in con.execute(
+            "SELECT m.id, m.account_id, m.subject, m.text FROM mail_messages m WHERE m.direction = 'in'"
+            " AND m.tag_suggest IS NULL AND m.date >= ? AND m.ticket_id IS NOT NULL"
+            " AND NOT EXISTS (SELECT 1 FROM mail_message_tags g WHERE g.message_id = m.id)"
+            " ORDER BY m.date DESC LIMIT 12", (since,))]
+    for m in todo:
+        with db._conn() as con:
+            names = [r[0] for r in con.execute("SELECT name FROM mail_tags WHERE account_id = ?", (m["account_id"],))]
+            examples = [dict(r) for r in con.execute(
+                "SELECT m.subject, substr(m.text, 1, 300) text, group_concat(g.name, ' | ') labels"
+                " FROM mail_message_tags g JOIN mail_messages m ON m.id = g.message_id"
+                " WHERE m.account_id = ? AND m.direction = 'in' GROUP BY m.id ORDER BY m.date DESC LIMIT 40",
+                (m["account_id"],))]
+        if not names:
+            with db._conn() as con:
+                con.execute("UPDATE mail_messages SET tag_suggest = '[]' WHERE id = ?", (m["id"],))
+            continue
+        try:
+            got = await ai_brain.suggest_labels(key, m, names, examples)
+        except Exception as e:
+            print(f"Label suggestion for {m['id']} failed: {e}", flush=True)
+            got = []
+        with db._conn() as con:
+            con.execute("UPDATE mail_messages SET tag_suggest = ? WHERE id = ?",
+                        (json.dumps([g for g in got if g in names][:3]), m["id"]))
 
 
 @app.get("/inbox", response_class=HTMLResponse)
@@ -878,13 +1055,27 @@ def api_inbox_counts():
 
 
 @app.get("/api/inbox/messages")
-def api_inbox_messages(account: int = None, view: str = "all"):
+def api_inbox_messages(account: int = None, view: str = "all", label: str = ""):
     stores = _store_names()
     cat = {"customer": "customer", "all": None}.get(view)
     rows = db.mail_list([account] if account else None, category=cat)
+    if view == "label":
+        with db._conn() as con:
+            ids = {r[0] for r in con.execute(
+                "SELECT g.message_id FROM mail_message_tags g JOIN mail_messages m ON m.id = g.message_id"
+                " WHERE g.name = ? AND m.ticket_id IS NULL AND m.direction = 'in'", (label,))}
+        rows = [r for r in db.mail_list([account] if account else None, limit=2000) if r["id"] in ids]
+    colors = _tag_colors()
+    tagmap = defaultdict(list)
+    if rows:
+        with db._conn() as con:
+            for mid, n in con.execute(f"SELECT message_id, name FROM mail_message_tags WHERE message_id IN"
+                                      f" ({','.join(str(int(r['id'])) for r in rows)})"):
+                tagmap[mid].append({"name": n, "color": _tag_color(n, colors)})
     for r in rows:
         r["store"] = stores.get(r["store_id"], "")
         r["attachments"] = len(json.loads(r["attachments"] or "[]"))
+        r["tags"] = tagmap.get(r["id"], [])
     return {"messages": rows}
 
 
@@ -901,7 +1092,25 @@ def api_inbox_message(message_id: int):
     m["can_send"] = bool(acct and acct.get("gmail_token"))
     m["mailbox"] = (acct or {}).get("address", "")
     m["reply_lang"] = LANG_NAME.get(db.get_setting(f"track_lang:{m['store_id']}") or "en", "English")
+    m.update(_label_info(m["account_id"], [m["id"]], [m]))
     return m
+
+
+def _label_info(account_id: int, message_ids: list, msgs: list) -> dict:
+    colors = _tag_colors()
+    with db._conn() as con:
+        names = [r[0] for r in con.execute("SELECT name FROM mail_tags WHERE account_id = ? ORDER BY name COLLATE NOCASE",
+                                           (account_id,))]
+    tags = _tags_of(message_ids)
+    sug = []
+    for x in msgs:
+        try:
+            sug += json.loads(x.get("tag_suggest") or "[]")
+        except ValueError:
+            pass
+    return {"tags": [{"name": n, "color": _tag_color(n, colors)} for n in tags],
+            "tag_suggest": [{"name": n, "color": _tag_color(n, colors)} for n in dict.fromkeys(sug) if n not in tags],
+            "all_tags": [{"name": n, "color": _tag_color(n, colors)} for n in names]}
 
 
 TRANSLATE_LANGS = ("English", "French", "Spanish", "German", "Italian", "Portuguese", "Dutch", "Arabic",
@@ -992,23 +1201,33 @@ _TICKET_VIEWS = {
 
 
 @app.get("/api/inbox/tickets")
-def api_inbox_tickets(view: str = "scm", account: int = None):
-    where = _TICKET_VIEWS.get(view)
+def api_inbox_tickets(view: str = "scm", account: int = None, label: str = ""):
+    args = {"now": datetime.now(timezone.utc).isoformat()}
+    if view == "label":
+        where = ("t.id IN (SELECT m.ticket_id FROM mail_messages m JOIN mail_message_tags g ON g.message_id = m.id"
+                 " WHERE g.name = :label)")
+        args["label"] = label
+    else:
+        where = _TICKET_VIEWS.get(view)
     if not where:
         raise HTTPException(400, "Unknown list.")
     where = where.replace("{awake}", "(snoozed_until IS NULL OR snoozed_until <= :now)")
-    args = {"now": datetime.now(timezone.utc).isoformat()}
     if account:
         where += " AND account_id = :acct"
         args["acct"] = account
-    order = "closed_at DESC" if "closed" in where else "(waiting = 'us') DESC, last_message_at DESC"
+    order = ("(status = 'open') DESC, last_message_at DESC" if view == "label" else
+             "closed_at DESC" if "closed" in where else "(waiting = 'us') DESC, last_message_at DESC")
     stores = _store_names()
     with db._conn() as con:
         rows = [dict(r) for r in con.execute(
-            f"SELECT t.*, (SELECT COUNT(*) FROM mail_messages m WHERE m.ticket_id = t.id) emails"
+            f"SELECT t.*, (SELECT COUNT(*) FROM mail_messages m WHERE m.ticket_id = t.id) emails,"
+            f" (SELECT group_concat(DISTINCT g.name) FROM mail_message_tags g JOIN mail_messages m ON m.id = g.message_id"
+            f"  WHERE m.ticket_id = t.id) tags"
             f" FROM tickets t WHERE {where} ORDER BY {order} LIMIT 300", args)]
+    colors = _tag_colors()
     for r in rows:
         r["store"] = stores.get(r["store_id"], "")
+        r["tags"] = [{"name": n, "color": _tag_color(n, colors)} for n in sorted((r["tags"] or "").split(","), key=str.lower) if n]
     return {"tickets": rows}
 
 
@@ -1141,7 +1360,7 @@ def api_inbox_ticket(ticket_id: int):
             raise HTTPException(404, "That ticket no longer exists.")
         t = dict(t)
         msgs = [dict(r) for r in con.execute(
-            "SELECT id, direction, from_name, from_addr, to_addr, subject, date, text, attachments, message_id"
+            "SELECT id, direction, from_name, from_addr, to_addr, subject, date, text, attachments, message_id, tag_suggest"
             " FROM mail_messages WHERE ticket_id = ? ORDER BY date", (ticket_id,))]
         acct = con.execute("SELECT address, gmail_token FROM mail_accounts WHERE id = ?", (t["account_id"],)).fetchone()
     for m in msgs:
@@ -1149,6 +1368,9 @@ def api_inbox_ticket(ticket_id: int):
     t["store"] = _store_names().get(t["store_id"], "")
     t["mailbox"] = acct["address"] if acct else ""
     t["can_send"] = bool(acct and acct["gmail_token"])
+    t.update(_label_info(t["account_id"], [m["id"] for m in msgs], [m for m in msgs if m["direction"] == "in"][-1:]))
+    for m in msgs:
+        m.pop("tag_suggest", None)
     t["reply_lang"] = LANG_NAME.get(db.get_setting(f"track_lang:{t['store_id']}") or "en", "English")
     t["gmail_link"] = _gmail_link(t["mailbox"], msgs[-1]["message_id"]) if msgs else ""
     return {"ticket": t, "messages": msgs}

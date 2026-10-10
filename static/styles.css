@@ -735,6 +735,33 @@ body.read-only [data-write-only] { display: none !important; }
 
 /* Ticket: order panel on the left, links kept short */
 .tk-layout { grid-template-columns: minmax(0, 1fr) 250px; gap: 20px; }
+/* Labels (Gmail labels) */
+.tg-chip { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; font-weight: 600; line-height: 1.5;
+  padding: 0 7px; border-radius: 999px; color: var(--tg); background: color-mix(in srgb, var(--tg) 13%, transparent);
+  border: 1px solid color-mix(in srgb, var(--tg) 30%, transparent); white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.tg-chip button { border: 0; background: none; color: inherit; cursor: pointer; padding: 0 0 0 2px; font-size: 13px; line-height: 1; }
+.tg-chip.sug { cursor: pointer; border-style: dashed; background: transparent; }
+.tg-dot { display: inline-block; width: 9px; height: 9px; border-radius: 3px; background: var(--tg); flex: none; }
+.inbox-nav button.lbl { font-size: 12.5px; }
+.inbox-nav button.lbl .tg-dot { margin: 0 4px 0 3px; }
+.tg-box { display: grid; gap: 6px; margin-bottom: 4px; }
+.tg-box.tg-inline { margin: 4px 0 10px; }
+.tg-list { display: flex; flex-wrap: wrap; gap: 4px; }
+.tg-sug { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; font-size: 11.5px; color: var(--muted); }
+.tg-add { position: relative; }
+.tg-add .control { height: 30px; font-size: 12.5px; padding: 0 8px; }
+.tg-box.tg-inline .tg-add { max-width: 260px; }
+.tg-menu { position: absolute; z-index: 20; left: 0; right: 0; top: 32px; max-height: 260px; overflow: auto; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 10px 30px rgba(15,23,42,.15); padding: 4px; display: grid; }
+.tg-menu button { display: flex; align-items: center; gap: 7px; border: 0; background: none; text-align: left; padding: 6px 8px;
+  border-radius: 6px; cursor: pointer; font: inherit; font-size: 12.5px; color: var(--ink); }
+.tg-menu button:hover { background: var(--line-soft); }
+.tg-menu .tg-new { color: var(--sales); font-weight: 600; }
+.list-sep { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); padding: 10px 12px 4px; }
+.mail-row .mail-tags .tg-chip { margin-right: 3px; }
+@media (min-width: 1100px) and (max-width: 1440px) {
+  body.has-rail:not(.rail-slim) .inbox-nav button.lbl .tg-dot { width: 12px; height: 12px; margin: 0; }
+}
 .ord-parcel { border: 1px solid var(--line); border-radius: 10px; padding: 9px 10px; margin: 8px 0 4px; display: grid; gap: 5px; background: var(--panel); }
 .ord-parcel-top { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
 .ord-scm { font-size: 11.5px; font-weight: 600; text-decoration: none; color: var(--muted); }

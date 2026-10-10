@@ -210,3 +210,24 @@ def quoted_part(text: str) -> str:
         rest = rest[1:]
     out = "\n".join(re.sub(r"^(\s*>)+\s?", "", l) for l in rest)
     return re.sub(r"\n{3,}", "\n\n", out).strip()
+
+
+# ---------------------------------------------------------------- label suggestions (staff confirm)
+
+LABEL_SCHEMA = {"type": "object", "properties": {"labels": {"type": "array", "items": {"type": "string"}}},
+                "required": ["labels"], "additionalProperties": False}
+
+
+async def suggest_labels(api_key: str, msg: dict, names: list, examples: list) -> list:
+    """Up to 3 of the team's own labels for a new email, learnt from how they labelled past emails."""
+    ex = "\n".join(f"- Subject: {e['subject']} | Text: {(e['text'] or '')[:200]!r} -> {e['labels']}" for e in examples)
+    system = ("You label customer-service emails the way this store's team does. Choose 0 to 3 labels from the list "
+              "that fit the email. Use only labels from the list, spelled exactly. Leave out general or archive labels "
+              "unless they clearly apply. If nothing fits, return an empty list.\n\nLabels: " + json.dumps(names, ensure_ascii=False)
+              + ("\n\nHow the team labelled past emails:\n" + ex if ex else ""))
+    client = anthropic.AsyncAnthropic(api_key=api_key, max_retries=2, timeout=60)
+    resp = await client.messages.create(
+        model=MODEL, max_tokens=300, system=system,
+        output_config={"effort": "low", "format": {"type": "json_schema", "schema": LABEL_SCHEMA}},
+        messages=[{"role": "user", "content": f"Subject: {msg['subject']}\n\n{new_part(msg['text'] or '')[:3000]}"}])
+    return json.loads(next((b.text for b in resp.content if b.type == "text"), "{}")).get("labels") or []

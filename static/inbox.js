@@ -268,33 +268,102 @@ async function loadCounts() {
   } catch { /* shown elsewhere */ }
 }
 
-async function loadList() {
-  const acct = $("mailboxSelect").value;
-  PDUrl.set({ view: view === "scm" ? null : view, box: acct });
-  const q = acct ? `&account=${acct}` : "";
-  if (MAIL_VIEWS.has(view)) {
-    let d;
-    try { d = await api(`/api/inbox/messages?view=${view}${q}`); } catch (e) { $("list").innerHTML = esc(e.message); return; }
-    $("list").innerHTML = d.messages.length ? d.messages.map((m) => `
+const tagChips = (tags) => (tags || []).map((g) =>
+  `<span class="tg-chip" style="--tg:${esc(g.color)}">${esc(g.name)}</span>`).join("");
+const mailRow = (m) => `
       <button class="mail-row${current?.type === "mail" && current.id === m.id ? " on" : ""}" data-mail="${m.id}">
         <span class="mail-top"><strong>${esc(m.from_name || m.from_addr)}</strong><small>${when(m.date)}</small></span>
         <span class="mail-subj">${esc(m.subject || "(no subject)")}</span>
         <span class="mail-snip">${esc(m.snippet || "")}</span>
+        ${m.tags && m.tags.length ? `<span class="mail-tags">${tagChips(m.tags)}</span>` : ""}
         <span class="mail-store">${esc(m.store || m.address)}${m.category ? ` · ${esc(m.category)}` : " · not sorted"}${m.attachments ? ` · 📎 ${m.attachments}` : ""}</span>
-      </button>`).join("") : `<p class="hint inbox-empty">Nothing here.</p>`;
-  } else {
-    let d;
-    try { d = await api(`/api/inbox/tickets?view=${view}${q}`); } catch (e) { $("list").innerHTML = esc(e.message); return; }
-    $("list").innerHTML = d.tickets.length ? d.tickets.map((t) => `
+      </button>`;
+const ticketRow = (t) => `
       <button class="mail-row${current?.type === "ticket" && current.id === t.id ? " on" : ""}" data-ticket="${t.id}">
         <span class="mail-top"><strong>${esc(t.customer_name || t.customer_email)}</strong>
           <small>${when(t.status === "closed" ? t.closed_at : t.last_message_at)}</small></span>
         <span class="mail-subj">${esc(t.summary || t.subject || "(no subject)")}</span>
-        <span class="mail-tags">${chips(t)}<span class="mail-store">${esc(t.store)} · ${t.emails} email${t.emails === 1 ? "" : "s"}</span></span>
-      </button>`).join("") : `<p class="hint inbox-empty">Nothing here.</p>`;
+        <span class="mail-tags">${chips(t)}${tagChips(t.tags)}<span class="mail-store">${esc(t.store)} · ${t.emails} email${t.emails === 1 ? "" : "s"}</span></span>
+      </button>`;
+
+async function loadList() {
+  const acct = $("mailboxSelect").value;
+  PDUrl.set({ view: view === "scm" ? null : view, box: acct });
+  const q = acct ? `&account=${acct}` : "";
+  const empty = `<p class="hint inbox-empty">Nothing here.</p>`;
+  if (view.startsWith("label:")) {
+    const label = encodeURIComponent(view.slice(6));
+    let tk, ms;
+    try {
+      [tk, ms] = await Promise.all([api(`/api/inbox/tickets?view=label&label=${label}${q}`), api(`/api/inbox/messages?view=label&label=${label}${q}`)]);
+    } catch (e) { $("list").innerHTML = esc(e.message); return; }
+    $("list").innerHTML = (tk.tickets.map(ticketRow).join("") +
+      (ms.messages.length ? `<div class="list-sep">Emails (no ticket)</div>` + ms.messages.map(mailRow).join("") : "")) || empty;
+  } else if (MAIL_VIEWS.has(view)) {
+    let d;
+    try { d = await api(`/api/inbox/messages?view=${view}${q}`); } catch (e) { $("list").innerHTML = esc(e.message); return; }
+    $("list").innerHTML = d.messages.map(mailRow).join("") || empty;
+  } else {
+    let d;
+    try { d = await api(`/api/inbox/tickets?view=${view}${q}`); } catch (e) { $("list").innerHTML = esc(e.message); return; }
+    $("list").innerHTML = d.tickets.map(ticketRow).join("") || empty;
   }
   for (const b of $("list").querySelectorAll("[data-mail]")) b.onclick = () => openMail(+b.dataset.mail);
   for (const b of $("list").querySelectorAll("[data-ticket]")) b.onclick = () => openTicket(+b.dataset.ticket);
+}
+
+// ---- Labels (Gmail labels, two-way): the left menu section and the picker on tickets/emails
+async function loadLabels() {
+  const acct = $("mailboxSelect").value;
+  let d;
+  try { d = await api(`/api/inbox/labels${acct ? `?account=${acct}` : ""}`); } catch { return; }
+  $("labelNav").innerHTML = d.labels.length ? `<div class="inav-label">Labels</div>` + d.labels.map((l) => `
+    <button data-view="label:${esc(l.name)}" class="lbl${view === "label:" + l.name ? " on" : ""}" title="${esc(l.name)}"><i class="tg-dot" style="--tg:${esc(l.color)}"></i>${esc(l.name)}<b>${l.open || ""}</b></button>`).join("") : "";
+}
+
+let tagCtx = null;    // {target: {ticket_id}|{message_id}, tags, suggest, all}
+function renderTagBox() {
+  const c = tagCtx, el = $("tgBox");
+  if (!c || !el) return;
+  el.innerHTML = `
+    <div class="tg-list">${c.tags.map((g) => `<span class="tg-chip" style="--tg:${esc(g.color)}">${esc(g.name)}<button data-tg-del="${esc(g.name)}" data-write-only title="Remove label">×</button></span>`).join("") || `<span class="hint">No labels</span>`}</div>
+    ${c.suggest.length ? `<div class="tg-sug" data-write-only><span>✦ Suggested:</span>${c.suggest.map((g) => `<button class="tg-chip sug" style="--tg:${esc(g.color)}" data-tg-add="${esc(g.name)}" title="Add this label">+ ${esc(g.name)}</button>`).join("")}</div>` : ""}
+    <div class="tg-add" data-write-only>
+      <input class="control" id="tgSearch" placeholder="+ Add label…" autocomplete="off">
+      <div class="tg-menu" id="tgMenu" hidden></div>
+    </div>`;
+  const search = $("tgSearch"), menu = $("tgMenu");
+  const draw = () => {
+    const q = search.value.trim().toLowerCase();
+    const have = new Set(c.tags.map((g) => g.name));
+    const opts = c.all.filter((g) => !have.has(g.name) && g.name.toLowerCase().includes(q)).slice(0, 40);
+    const exact = c.all.some((g) => g.name.toLowerCase() === q);
+    menu.innerHTML = opts.map((g) => `<button data-tg-add="${esc(g.name)}"><i class="tg-dot" style="--tg:${esc(g.color)}"></i>${esc(g.name)}</button>`).join("")
+      + (q && !exact ? `<button data-tg-add="${esc(search.value.trim())}" class="tg-new">Create label “${esc(search.value.trim())}”</button>` : "")
+      || `<span class="hint">No more labels</span>`;
+    menu.hidden = false;
+  };
+  search.onfocus = draw;
+  search.oninput = draw;
+  search.onkeydown = (e) => { if (e.key === "Enter") { const b = menu.querySelector("[data-tg-add]"); if (b) b.click(); } if (e.key === "Escape") menu.hidden = true; };
+  search.onblur = () => setTimeout(() => { menu.hidden = true; }, 200);
+  el.onclick = async (e) => {
+    const add = e.target.closest("[data-tg-add]"), del = e.target.closest("[data-tg-del]");
+    if (!add && !del) return;
+    const name = (add || del).dataset.tgAdd || (add || del).dataset.tgDel;
+    (add || del).disabled = true;
+    try {
+      const r = await post("/api/inbox/labels", { action: add ? "add" : "remove", name, ...c.target });
+      const color = (n) => (c.all.find((g) => g.name === n) || c.suggest.find((g) => g.name === n) || {}).color || "#64748B";
+      if (add && !c.all.some((g) => g.name === name)) c.all.push({ name, color: "#64748B" });
+      c.tags = r.tags.map((n) => ({ name: n, color: color(n) }));
+      c.suggest = c.suggest.filter((g) => g.name !== name);
+      renderTagBox();
+      toast(add ? `Labelled “${name}” (in Gmail too).` : `Removed “${name}” (in Gmail too).`);
+      loadLabels();
+      loadList();
+    } catch (err) { toast(err.message, true); (add || del).disabled = false; }
+  };
 }
 
 function mark() {
@@ -324,12 +393,15 @@ async function openMail(id) {
       <button class="btn btn-sm btn-ghost" data-make="inquiry">Inquiry</button>
       <button class="btn btn-sm btn-ghost" data-make="legal">Legal</button>
     </div>
+    <div class="tg-box tg-inline" id="tgBox"></div>
     ${trBar()}
     ${m.attachments.length ? `<div class="mail-att">${m.attachments.map((a) => `📎 ${esc(a.name)}`).join(" · ")}</div>` : ""}
     <div class="mail-one" data-mid="${m.id}"><div class="tr-onebar">${trButton(m.id)}</div><div class="msg-text">${mailText(m.text)}</div></div>
     ${composerHtml({ name: m.from_name || m.from_addr, draft: false, lang: m.reply_lang, canSend: m.can_send, mailbox: m.mailbox })}`;
   wireComposer({ key: `pdReplyMail:${id}`, sendUrl: `/api/inbox/messages/${id}/reply` });
   trOriginal = new Map([[String(m.id), m.text]]);
+  tagCtx = { target: { message_id: m.id }, tags: m.tags || [], suggest: m.tag_suggest || [], all: m.all_tags || [] };
+  renderTagBox();
   wireTranslate();
   for (const b of $("read").querySelectorAll("[data-make]")) {
     b.onclick = async () => {
@@ -383,6 +455,8 @@ async function openTicket(id) {
           ${t.status === "open"
             ? `<button class="btn btn-primary btn-block" data-act="close">Close ticket</button>`
             : `<button class="btn btn-ghost btn-block" data-act="reopen">Reopen</button>`}
+          <div class="tk-side-label">Labels</div>
+          <div class="tg-box" id="tgBox"></div>
           <div class="tk-side-label">Type</div>
           <div class="tk-toggles">
             <label><input type="checkbox" data-label="scm" ${labels.includes("scm") ? "checked" : ""}> SCM · order</label>
@@ -402,6 +476,8 @@ async function openTicket(id) {
     </div>`;
   loadOrders(id);
   trOriginal = new Map(d.messages.map((m) => [String(m.id), m.text]));
+  tagCtx = { target: { ticket_id: id }, tags: t.tags || [], suggest: t.tag_suggest || [], all: t.all_tags || [] };
+  renderTagBox();
   wireTranslate();
   wireComposer({ key: `pdReply:${id}`, sendUrl: `/api/inbox/tickets/${id}/reply`, draftUrl: `/api/inbox/tickets/${id}/draft`,
                   seen: Math.max(0, ...d.messages.map((m) => m.id)), opened: Date.now() / 1000,
@@ -621,22 +697,24 @@ function pollTraining() {
   }, 4000);
 }
 
-function refresh() { loadCounts(); if (view !== "training") loadList(); }
+function refresh() { loadCounts(); loadLabels(); if (view !== "training") loadList(); }
 
 for (const b of $("nav").querySelectorAll("[data-view]")) {
   b.title = [...b.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent).join("").trim();
-  b.onclick = () => {
-    view = b.dataset.view;
-    for (const x of $("nav").querySelectorAll("[data-view]")) x.classList.toggle("on", x === b);
-    document.querySelector(".inbox3").classList.toggle("training", view === "training");
-    if (b.dataset.restoring) delete b.dataset.restoring;
-    else PDUrl.set({ ticket: null, mail: null });
-    if (view === "training") { current = null; PDUrl.set({ view: "training" }); loadTraining(); return; }
-    loadList();
-  };
 }
+$("nav").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-view]");
+  if (!b) return;
+  view = b.dataset.view;
+  for (const x of $("nav").querySelectorAll("[data-view]")) x.classList.toggle("on", x === b);
+  document.querySelector(".inbox3").classList.toggle("training", view === "training");
+  if (b.dataset.restoring) delete b.dataset.restoring;
+  else PDUrl.set({ ticket: null, mail: null });
+  if (view === "training") { current = null; PDUrl.set({ view: "training" }); loadTraining(); return; }
+  loadList();
+});
 $("refresh").onclick = refresh;
-$("mailboxSelect").onchange = loadList;
+$("mailboxSelect").onchange = () => { loadList(); loadLabels(); };
 
 (async function boot() {
   try {
@@ -651,7 +729,11 @@ $("mailboxSelect").onchange = loadList;
   if (box && [...$("mailboxSelect").options].some((o) => o.value === box)) $("mailboxSelect").value = box;
   const t = PDUrl.get("ticket"), m = PDUrl.get("mail");
   const vb = $("nav").querySelector(`[data-view="${PDUrl.get("view")}"]`);
-  if (vb) { vb.dataset.restoring = "1"; vb.click(); loadCounts(); } else refresh();
+  if ((PDUrl.get("view") || "").startsWith("label:")) {
+    view = PDUrl.get("view");
+    for (const x of $("nav").querySelectorAll("[data-view]")) x.classList.remove("on");
+    refresh();
+  } else if (vb) { vb.dataset.restoring = "1"; vb.click(); loadCounts(); loadLabels(); } else refresh();
   if (t) openTicket(+t); else if (m) openMail(+m);
   setInterval(refresh, 60000);
 })();
