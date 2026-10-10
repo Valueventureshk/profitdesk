@@ -3336,27 +3336,49 @@ async def api_importer_rewrite(payload: dict):
         raise HTTPException(400, str(e))
 
 
+@app.get("/api/importer/product/chart")
+def api_importer_product_chart(store: int, id: str):
+    gid = _imp_gid(id)
+    with db._conn() as con:
+        r = con.execute("SELECT chart_id FROM size_chart_rules WHERE store_id = ? AND kind = 'product' AND value = ?",
+                        (int(store), gid)).fetchone()
+        charts = [dict(x) for x in con.execute("SELECT id, name, status FROM size_charts ORDER BY name COLLATE NOCASE")]
+    return {"size_chart_id": r[0] if r else 0, "charts": charts}
+
+
 @app.post("/api/importer/product/size-chart-ai")
-async def api_importer_size_chart_ai(payload: dict, request: Request):
-    """Read the chosen product images into a size chart and assign it to this product."""
+async def api_importer_size_chart_ai(request: Request):
+    """Read size-chart images (ticked product photos, or uploaded files) into a size chart
+    and assign it to this product."""
+    images = []
+    if (request.headers.get("content-type") or "").startswith("multipart/"):
+        form = await request.form()
+        payload = {"store": form.get("store"), "id": form.get("id"), "name": form.get("name")}
+        for f in form.getlist("files")[:6]:
+            if hasattr(f, "read"):
+                data = await f.read()
+                if len(data) > 8 * 1024 * 1024:
+                    raise HTTPException(400, f"{f.filename} is bigger than 8 MB.")
+                mt = f.content_type if f.content_type in ("image/png", "image/jpeg", "image/webp", "image/gif") else "image/jpeg"
+                images.append((mt, data))
+    else:
+        payload = await request.json()
+        images = [("url", u) for u in payload.get("urls") or [] if str(u).startswith("http")][:6]
     st = _imp_store(payload.get("store"))
     gid = _imp_gid(payload.get("id"))
-    urls = [u for u in payload.get("urls") or [] if str(u).startswith("http")][:6]
-    if not urls:
-        raise HTTPException(400, "Pick the image(s) that show the size chart.")
+    if not images:
+        raise HTTPException(400, "Choose the size chart image(s).")
     key = db.get_setting("anthropic_api_key")
     if not key:
         raise HTTPException(400, "Add the Anthropic API key in Settings → AI first.")
     lang = LANG_NAME.get(db.get_setting(f"track_lang:{st['id']}") or "en", "English")
     try:
-        res = await sizecharts.read_images(key, [("url", u) for u in urls], lang, "cm")
+        res = await sizecharts.read_images(key, images, lang, "cm")
     except sizecharts.AIError as e:
         raise HTTPException(400, str(e))
     if not res.get("found"):
         raise HTTPException(400, "The AI didn't find a size chart in those images.")
     user = (getattr(request.state, "user", None) or {}).get("email", "")
-    with db._conn() as con:
-        con.execute("DELETE FROM size_chart_rules WHERE store_id = ? AND kind = 'product' AND value = ?", (st["id"], gid))
     name = (payload.get("name") or "").strip() or res.get("title") or "Size chart"
     cid = _sc_save({"name": name, "status": "active", "blocks": sizecharts.blocks_from_ai(res), "source": "ai-import",
                     "rules": [{"store_id": st["id"], "kind": "product", "value": gid, "label": payload.get("name") or ""}]},
@@ -3483,6 +3505,9 @@ def _sc_save(payload: dict, chart_id: int = None, user: str = "") -> int:
             for x in payload.get("rules") or []:
                 if x.get("kind") not in ("product", "collection", "tag", "type", "vendor", "all") or not x.get("store_id"):
                     continue
+                if x["kind"] == "product" and x.get("value"):     # a product shows one chart
+                    con.execute("DELETE FROM size_chart_rules WHERE store_id = ? AND kind = 'product' AND value = ?",
+                                (int(x["store_id"]), str(x["value"])[:300]))
                 con.execute("INSERT INTO size_chart_rules (chart_id, store_id, kind, value, label) VALUES (?, ?, ?, ?, ?)",
                             (chart_id, int(x["store_id"]), x["kind"], str(x.get("value") or "")[:300],
                              str(x.get("label") or "")[:300]))

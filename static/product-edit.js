@@ -131,10 +131,12 @@ function peRender() {
       </div>
 
       <div class="panel pe-card">
-        <div class="pe-cardhead"><h3>Size chart</h3><a class="hint" href="/sizecharts" target="_blank">Manage charts ↗</a></div>
-        <select class="control" id="peChart"><option value="0">No size chart</option>${pe.charts.map((c) => `<option value="${c.id}"${c.id === pe.size_chart_id ? " selected" : ""}>${esc(c.name)}${c.status === "draft" ? " (draft)" : ""}</option>`).join("")}</select>
+        <div class="pe-cardhead"><h3>Size chart</h3><a class="pe-chartlink" id="peChartLink" target="_blank" rel="noopener"></a></div>
+        <select class="control" id="peChart">${peChartOptions()}</select>
+        <label class="btn btn-ghost pe-scup"><input type="file" id="peScFiles" accept="image/*" multiple hidden>⬆ Upload a size chart image (AI builds it)</label>
+        <div id="peScDone"></div>
         ${peImages().length ? `<div class="pe-scai">
-          <span class="hint">…or tick the image(s) showing the size chart and let AI build it:</span>
+          <span class="hint">…or, if one of the product photos is the size chart, tick it:</span>
           <div class="pe-scpick">${peImages().map((m) => peImgUrl(m) ? `<label><input type="checkbox" data-scurl="${esc(peImgUrl(m))}"${looksSize(m) ? " checked" : ""}><img src="${esc(thumb(peImgUrl(m), 120))}" alt=""></label>` : "").join("")}</div>
           <button class="btn btn-sm btn-ghost" id="peScAI">✦ Make size chart from ticked images</button>
         </div>` : ""}
@@ -150,6 +152,33 @@ function peRender() {
   </div>`;
   peWire();
 }
+
+function peChartOptions() {
+  return `<option value="0">No size chart</option>` + pe.charts.map((c) => `<option value="${c.id}"${c.id === pe.size_chart_id ? " selected" : ""}>${esc(c.name)}${c.status === "draft" ? " (draft)" : ""}</option>`).join("");
+}
+function peChartLink() {
+  const id = +$("peChart").value, a = $("peChartLink");
+  a.href = id ? `/sizecharts?edit=${id}` : `/sizecharts?new=1&store=${pe.store.id}&product=${encodeURIComponent(pe.product.id)}&title=${encodeURIComponent($("peTitle").value)}`;
+  a.textContent = id ? "Edit this chart ↗" : "Create a chart for this product ↗";
+}
+function peChartMade(r) {
+  if (!pe.charts.some((c) => c.id === r.id)) pe.charts.push({ id: r.id, name: r.name, status: "active" });
+  pe.size_chart_id = r.id;
+  $("peChart").innerHTML = peChartOptions();
+  $("peChart").value = r.id;
+  peChartLink();
+  $("peScDone").innerHTML = `<div class="pe-scdone">✓ “${esc(r.name)}” made and assigned to this product. <a href="/sizecharts?edit=${r.id}" target="_blank" rel="noopener">Review &amp; edit in Size Charts ↗</a></div>`;
+}
+// Back from the Size Charts tab: show the chart now assigned there (unless the box was changed here)
+window.addEventListener("focus", async () => {
+  if (!pe || $("page-edit").hidden || $("peChart")?.dataset.touched) return;
+  try {
+    const d = await api(`/api/importer/product/chart?store=${pe.store.id}&id=${encodeURIComponent(pe.product.id)}`);
+    pe.charts = d.charts; pe.size_chart_id = d.size_chart_id;
+    $("peChart").innerHTML = peChartOptions();
+    peChartLink();
+  } catch { /* keep what's shown */ }
+});
 
 function peCollect() {
   if (!$("peDescHtml").hidden) $("peDesc").innerHTML = $("peDescHtml").value;
@@ -195,7 +224,20 @@ function peWire() {
   $("peSave").onclick = () => peSave();
   if ($("peActivate")) $("peActivate").onclick = () => peSave("ACTIVE");
   if ($("peDraft")) $("peDraft").onclick = () => peSave("DRAFT");
-  $("peChart").onchange = mark;
+  $("peChart").onchange = () => { $("peChart").dataset.touched = "1"; peChartLink(); mark(); };
+  peChartLink();
+  $("peScFiles").onchange = async (e) => {
+    const files = [...e.target.files];
+    if (!files.length) return;
+    const lab = $("peScFiles").parentElement;
+    lab.classList.add("busy"); lab.lastChild.textContent = "Reading the chart… (about 10 seconds)";
+    const fd = new FormData();
+    fd.append("store", pe.store.id); fd.append("id", pe.product.id); fd.append("name", $("peTitle").value);
+    files.forEach((f) => fd.append("files", f));
+    try { peChartMade(await api("/api/importer/product/size-chart-ai", { method: "POST", body: fd })); }
+    catch (err) { toast(err.message, true); }
+    finally { lab.classList.remove("busy"); lab.lastChild.textContent = "⬆ Upload a size chart image (AI builds it)"; e.target.value = ""; }
+  };
 
   // description toolbar
   for (const b of document.querySelectorAll(".pe-tools [data-cmd]")) b.onclick = () => {
@@ -279,12 +321,7 @@ function peWire() {
     const b = $("peScAI");
     b.disabled = true; b.textContent = "Reading the chart…";
     try {
-      const r = await send("/api/importer/product/size-chart-ai", { store: pe.store.id, id: pe.product.id, urls, name: $("peTitle").value });
-      pe.charts.push({ id: r.id, name: r.name, status: "active" });
-      pe.size_chart_id = r.id;
-      $("peChart").innerHTML += `<option value="${r.id}">${esc(r.name)}</option>`;
-      $("peChart").value = r.id;
-      toast("Size chart made and added to this product. Check it any time in Size Charts.");
+      peChartMade(await send("/api/importer/product/size-chart-ai", { store: pe.store.id, id: pe.product.id, urls, name: $("peTitle").value }));
     } catch (e) { toast(e.message, true); }
     finally { b.disabled = false; b.textContent = "✦ Make size chart from ticked images"; }
   };

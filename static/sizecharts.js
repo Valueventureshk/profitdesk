@@ -465,5 +465,13 @@ for (const b of $("pages").querySelectorAll("[data-page]")) b.onclick = () => {
     await loadList();
     const t = await send("/api/sizecharts/preview", { blocks: [] });   // warm-up
     TEMPLATES_FROM_SERVER = await api("/api/sizecharts/templates");
+    const q = new URLSearchParams(location.search);
+    if (q.get("edit")) await openEditor(+q.get("edit"));
+    else if (q.get("new") && q.get("product")) {
+      const title = q.get("title") || "";
+      await openEditor(null, { name: title, rules: [{ store_id: +q.get("store"), kind: "product", value: q.get("product"), label: title }] });
+      toast("New chart for this product. Add a table, a template or ✦ Add from image, then Save.");
+    }
+    if (q.get("edit") || q.get("new")) history.replaceState(null, "", "/sizecharts");
   } catch (e) { if (!TEMPLATES_FROM_SERVER) toast(e.message, true); }
 })();
