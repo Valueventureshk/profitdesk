@@ -102,3 +102,18 @@ async def send(refresh_token: str, sender: str, sender_name: str, to: str, subje
     if r.status_code >= 300:
         raise SendError(f"Gmail couldn't send it ({r.status_code}): {r.text[:200]}")
     return {**r.json(), "message_id": msg["Message-ID"]}
+
+
+async def check(refresh_token: str) -> str:
+    """Prove sending will work without sending anything: Gmail is handed an empty message,
+    which it refuses as invalid only if the sign-in and the Gmail API are both fine."""
+    token = await _token(refresh_token)
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.post(SEND_URL, json={"raw": ""}, headers={"Authorization": f"Bearer {token}"})
+    if r.status_code == 400:
+        return "ok"
+    if "accessNotConfigured" in r.text or "has not been used in project" in r.text or "disabled" in r.text:
+        raise SendError("The Gmail API isn't switched on yet: open the Gmail API link in Settings → Support mailboxes and click Enable.")
+    if r.status_code in (401, 403):
+        raise SendError("Gmail refused this mailbox's sign-in. Click Sign in to send again.")
+    raise SendError(f"Unexpected answer from Gmail ({r.status_code}): {r.text[:200]}")

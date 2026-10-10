@@ -1873,6 +1873,18 @@ def gmail_start(account: int):
         return _closer(str(e))
 
 
+@app.get("/api/mail-accounts/{account_id}/gmail-check")
+async def api_mail_gmail_check(account_id: int):
+    acct = next((a for a in db.list_mail_accounts() if a["id"] == account_id), None)
+    if not acct or not acct.get("gmail_token"):
+        raise HTTPException(400, "This mailbox isn't signed in to send yet.")
+    try:
+        await gmail_send.check(acct["gmail_token"])
+    except gmail_send.SendError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True}
+
+
 @app.post("/api/mail-accounts/{account_id}/gmail-signout")
 def api_mail_gmail_signout(account_id: int):
     with db._conn() as con:
