@@ -29,7 +29,9 @@
       (cfg.display === "link" ? "background:none;border:0;padding:0;text-decoration:underline;" :
         "background:" + cfg.bg + ";border:1px solid " + cfg.border + ";border-radius:6px;padding:8px 14px;" + (cfg.underline ? "text-decoration:underline;" : "")) + "}" +
       ".pdsc-trigger svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}" +
-      ".pdsc-wrap{text-align:" + (cfg.align || "left") + "}" +
+      ".pdsc-wrap{display:block;text-align:" + (cfg.align || "left") + "}" +
+      ".pdsc-wrap.pdsc-inline{display:inline-block;margin-left:12px;margin-right:auto;vertical-align:middle;text-align:left;text-transform:none;letter-spacing:normal}" +
+      ".pdsc-inline .pdsc-trigger{margin:0;" + (cfg.display === "link" ? "" : "padding:3px 10px;") + "}" +
       ".pdsc-ov{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:2147483000;display:flex;align-items:center;justify-content:center;padding:16px}" +
       ".pdsc-box{background:#fff;color:#111;max-width:860px;width:100%;max-height:88vh;overflow:auto;border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,.3);font:inherit}" +
       ".pdsc-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 20px;border-bottom:1px solid #eee;position:sticky;top:0;background:#fff;z-index:1}" +
@@ -51,8 +53,41 @@
       ".pdsc-res small{display:block;color:#555}@media(max-width:560px){.pdsc-box{max-height:92vh}.pdsc-grid{grid-template-columns:1fr}}";
   }
 
+  // The "Size" heading of the product's size option, on any theme ("Size", "SIZE: S", "Taille", "Talla"…).
+  var SIZE_RX = /^\s*(sizes?|taille|tailles|talla|tallas|tama\u00f1o|gr\u00f6\u00dfe|gr\u00f6sse|maat|taglia|tamanho|\u5c3a\u7801|\u5c3a\u5bf8|\u30b5\u30a4\u30ba)(?=\s|:|\uff1a|$)/i;
+  var NOT_RX = /guide|chart|guía|guia|tableau|tabla|fit|help|find/i;
+  function ownText(el) {
+    var t = "";
+    for (var n = el.firstChild; n; n = n.nextSibling) if (n.nodeType === 3) t += n.nodeValue;
+    t = t.replace(/\s+/g, " ").trim();
+    if (!t && el.children.length === 0) t = (el.textContent || "").trim();
+    return t;
+  }
+  function sizeLabel() {
+    var form = document.querySelector('form[action*="/cart/add"]');
+    var scopes = [];
+    if (form) scopes.push(form.closest(".shopify-section, section, main") || form.parentNode);
+    scopes.push(document.querySelector("main") || document.body);
+    for (var i = 0; i < scopes.length; i++) {
+      var els = scopes[i].querySelectorAll("legend, label, span, div, p, strong, b, h2, h3, h4, h5, h6, dt, th");
+      for (var j = 0; j < els.length; j++) {
+        var el = els[j];
+        if (el.closest(".pdsc-wrap, header, footer, nav, .pdsc-ov")) continue;
+        var t = ownText(el);
+        if (!t || t.length > 30 || !SIZE_RX.test(t) || NOT_RX.test(t)) continue;
+        if (!el.getClientRects().length) continue;      // hidden (e.g. a mobile-only copy)
+        return el;
+      }
+    }
+    return null;
+  }
+
   function anchor(cfg) {
     var form = document.querySelector('form[action*="/cart/add"]');
+    if (cfg.position === "size_label") {
+      var lab = sizeLabel();
+      if (lab) return { el: lab, where: "inside" };
+    }
     if (cfg.position === "above_cart") {
       var add = document.querySelector('form[action*="/cart/add"] [name="add"], form[action*="/cart/add"] button[type="submit"]');
       if (add) return { el: add.closest(".product-form__buttons") || add, where: "before" };
@@ -73,14 +108,32 @@
     var st = document.createElement("style");
     st.textContent = css(cfg);
     document.head.appendChild(st);
-    var wrap = document.createElement("div");
+    var wrap = document.createElement("span");
     wrap.className = "pdsc-wrap";
     var label = (cfg.prefix ? cfg.prefix + " " : "") + (tx.label || "Size chart") + (cfg.suffix ? " " + cfg.suffix : "");
     wrap.innerHTML = '<button type="button" class="pdsc-trigger">' + (ICONS[cfg.icon] ? '<svg viewBox="0 0 24 24">' + ICONS[cfg.icon] + "</svg>" : "") + "<span>" + esc(label) + "</span></button>";
-    var a = anchor(cfg);
-    if (!a) return;
-    a.el.parentNode.insertBefore(wrap, a.where === "after" ? a.el.nextSibling : a.el);
-    wrap.querySelector("button").addEventListener("click", function () { open(d); });
+    wrap.querySelector("button").addEventListener("click", function (e) { e.preventDefault(); e.stopPropagation(); open(d); });
+    function place() {
+      var a = anchor(cfg);
+      if (!a) return;
+      wrap.classList.toggle("pdsc-inline", a.where === "inside");
+      if (a.where === "inside") {
+        // Right after "Size: S", ahead of anything else in that label (e.g. another app's size guide link)
+        var before = null;
+        for (var n = a.el.firstChild; n; n = n.nextSibling) {
+          if (n === wrap || n.nodeType !== 1) continue;
+          if (/^(A|BUTTON)$/.test(n.tagName) || n.querySelector("a, button") || /guide|chart|kiwi|panda|ks-|sizing/i.test(String(n.className))) { before = n; break; }
+        }
+        a.el.insertBefore(wrap, before);
+      }
+      else a.el.parentNode.insertBefore(wrap, a.where === "after" ? a.el.nextSibling : a.el);
+    }
+    place();
+    // Many themes redraw the variant picker when a size is chosen: put the button back.
+    var t;
+    new MutationObserver(function () {
+      if (!wrap.isConnected) { clearTimeout(t); t = setTimeout(place, 120); }
+    }).observe(document.body, { childList: true, subtree: true });
   }
 
   function open(d) {

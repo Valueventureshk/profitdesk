@@ -3183,7 +3183,7 @@ def sizecharts_page():
 
 SC_DEFAULTS = {"enabled": False, "display": "button", "label": "", "prefix": "", "suffix": "", "icon": "ruler",
                "font_size": 14, "color": "#111111", "bg": "#ffffff", "border": "#d0d0d0", "bold": True,
-               "underline": False, "align": "left", "position": "above_variants", "advisor": True, "accent": "#111111"}
+               "underline": False, "align": "left", "position": "size_label", "advisor": True, "accent": "#111111"}
 SC_TEXT = {
     "en": {"label": "Size chart", "advisor": "Find my size", "height": "Height", "weight": "Weight", "fit": "Fit",
            "snug": "Snug", "regular": "Regular", "loose": "Loose", "body": "Body type", "slim": "Slim",
