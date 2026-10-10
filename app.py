@@ -4028,7 +4028,8 @@ async def api_shopify_permissions():
         return {"store": store["name"].strip(), "granted": len(WANTED_SCOPES & have),
                 "of": len(WANTED_SCOPES), "missing": sorted(WANTED_SCOPES - have),
                 "error": None if got else "Couldn't read this store's permissions",
-                "approve": f"{BASE_URL}/auth/shopify/start?shop_domain={store['shop_domain']}"}
+                "approve": f"{BASE_URL}/auth/shopify/start?shop_domain={store['shop_domain']}",
+                "client_id": (_shopify_app(store["shop_domain"]) or ("",))[0]}
     stores = [x for x in db.list_stores() if not demo.is_demo(x) and x.get("access_token")]
     return {"stores": await asyncio.gather(*[one(x) for x in stores])}
 
