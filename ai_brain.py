@@ -172,31 +172,41 @@ _ATTRIB = re.compile(r"(\bwrote\s*:|a écrit\s*:|escribió\s*:|schrieb.*:|ha scr
 _LEAD = re.compile(r"^(on|le|el|am)\b", re.I)
 
 
-def new_part(text: str) -> str:
-    """The email without the earlier conversation it quotes (same rules as the Inbox screen)."""
-    lines = (text or "").replace("﻿", "").splitlines()
+def _cut(lines: list):
+    """Index of the first line of the quoted earlier conversation, or None."""
     for i, raw in enumerate(lines):
         l = raw.strip()
         if _ATTRIB.search(l):
             if i > 0 and _LEAD.match(lines[i - 1].strip()) and not _LEAD.match(l):
-                i -= 1
-            return "\n".join(lines[:i]).rstrip()
+                return i - 1
+            return i
         if re.match(r"^(from|de|von)\s*:", l, re.I) and any(
                 re.match(r"^(sent|envoyé|enviado|date|gesendet)\s*:", x.strip(), re.I) for x in lines[i + 1:i + 4]):
-            return "\n".join(lines[:i]).rstrip()
+            return i
         if l.startswith(">") and sum(1 for x in lines[i:i + 3] if x.strip().startswith(">")) >= 2:
-            return "\n".join(lines[:i]).rstrip()
-    return (text or "").rstrip()
+            return i
+    return None
+
+
+def new_part(text: str) -> str:
+    """The email without the earlier conversation it quotes (same rules as the Inbox screen)."""
+    lines = (text or "").replace("\ufeff", "").splitlines()
+    i = _cut(lines)
+    return ("\n".join(lines[:i]) if i is not None else "\n".join(lines)).rstrip()
 
 
 def quoted_part(text: str) -> str:
-    """The earlier conversation an email quotes, without the ">" marks (the opposite of new_part)."""
-    full = (text or "").replace("﻿", "")
-    main = new_part(full)
-    rest = full[len(main):].strip("\n").splitlines()
-    if rest and (_ATTRIB.search(rest[0]) or _LEAD.match(rest[0].strip())):
-        rest = rest[1:]
-        if rest and re.search(r"(wrote|a écrit|escribió)\s*:\s*$", rest[0], re.I):
+    """The earlier conversation an email quotes, without the attribution line and ">" marks."""
+    lines = (text or "").replace("\ufeff", "").splitlines()
+    i = _cut(lines)
+    if i is None:
+        return ""
+    rest = lines[i:]
+    # drop the "On <date>, <name> wrote:" line (it can wrap over two lines)
+    for _ in range(2):
+        if rest and (_ATTRIB.search(rest[0]) or _LEAD.match(rest[0].strip())) and not rest[0].strip().startswith(">"):
             rest = rest[1:]
+    if rest and re.match(r"^\s*>?\s*\S*.*(wrote|a écrit|escribió)\s*:\s*$", rest[0], re.I):
+        rest = rest[1:]
     out = "\n".join(re.sub(r"^(\s*>)+\s?", "", l) for l in rest)
     return re.sub(r"\n{3,}", "\n\n", out).strip()

@@ -945,7 +945,7 @@ async def api_inbox_translate(ids: str = "", lang: str = "English", quotes: str 
 
 async def _translate_quotes(ids: list, lang: str) -> dict:
     """The quoted part of these emails, translated (saved under '<language>|quote')."""
-    key_lang = f"{lang}|quote"
+    key_lang = f"{lang}|quote2"      # v2: fixed quote extraction (old saved ones ignored)
     marks = ",".join("?" * len(ids))
     with db._conn() as con:
         done = {r[0]: r[1] for r in con.execute(
