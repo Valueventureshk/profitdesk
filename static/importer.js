@@ -48,12 +48,14 @@ function renderStorePickers() {
     box.querySelector("[data-all]").onchange = (e) => {
       try { localStorage.setItem("impStores", JSON.stringify(e.target.checked ? stores.map((s) => s.id) : [])); } catch { /* */ }
       renderStorePickers();
+      renderCollectionPickers();
     };
     for (const cb of box.querySelectorAll("input[value]")) cb.onchange = () => {
       const now = [...box.querySelectorAll("input[value]:checked")].map((i) => +i.value);
       try { localStorage.setItem("impStores", JSON.stringify(now)); } catch { /* */ }
       renderStorePickers();
       box.querySelector("details").open = true;
+      renderCollectionPickers();
     };
   }
 }
@@ -109,6 +111,9 @@ function summary(p, host) {
     variants: (p.variants || []).length, price_min: prices.length ? Math.min(...prices) : 0,
     price_max: prices.length ? Math.max(...prices) : 0, url: `https://${host}/products/${p.handle}` };
 }
+function sourceBase(u) {
+  return u.kind === "collection" ? `https://${u.host}/collections/${u.handle}/products.json` : `https://${u.host}/products.json`;
+}
 async function loadUrl(url, button) {
   const old = button.textContent;
   button.disabled = true;
@@ -117,24 +122,54 @@ async function loadUrl(url, button) {
     button.textContent = "Loading…";
     let currency = null;
     try { currency = ((await getJson(`https://${u.host}/meta.json`)).currency || "").toUpperCase() || null; } catch { /* optional */ }
-    let raw = [];
+    let raw = [], more = false;
     if (u.kind === "product") {
       raw = [(await getJson(`https://${u.host}/products/${u.handle}.json`)).product];
     } else {
-      const base = u.kind === "collection" ? `https://${u.host}/collections/${u.handle}/products.json` : `https://${u.host}/products.json`;
-      for (let page = 1; page <= 20; page++) {
-        const batch = (await getJson(`${base}?limit=250&page=${page}`)).products || [];
-        raw = raw.concat(batch);
-        button.textContent = `Loading… ${raw.length}`;
-        if (batch.length < 250) break;
-      }
+      raw = (await getJson(`${sourceBase(u)}?limit=250&page=1`)).products || [];
+      more = raw.length === 250;
     }
     raw = raw.filter((p) => p && p.id && p.title);
     if (!raw.length) throw new Error("No products found there.");
-    return { host: u.host, kind: u.kind, currency, raw: new Map(raw.map((p) => [String(p.id), p])),
-      products: raw.map((p) => summary(p, u.host)) };
+    return { host: u.host, kind: u.kind, src: u, currency, nextPage: 2, more,
+      raw: new Map(raw.map((p) => [String(p.id), p])), products: raw.map((p) => summary(p, u.host)) };
   } catch (e) { toast(e.message, true); return null; }
   finally { button.disabled = false; button.textContent = old; }
+}
+async function loadNextPage() {
+  if (!current?.more) return 0;
+  const batch = ((await getJson(`${sourceBase(current.src)}?limit=250&page=${current.nextPage}`)).products || [])
+    .filter((p) => p && p.id && p.title);
+  current.nextPage += 1;
+  current.more = batch.length === 250;
+  for (const p of batch) {
+    if (!current.raw.has(String(p.id))) { current.raw.set(String(p.id), p); current.products.push(summary(p, current.host)); }
+  }
+  return batch.length;
+}
+
+// ------------------------------------------------ collection picker (shared)
+let collectionTitle = "";
+async function renderCollectionPickers() {
+  const st = chosenStores();
+  let list = [];
+  if (st.length) {
+    try { list = (await api(`/api/importer/collections?stores=${st.join(",")}`)).collections; } catch { /* keep empty */ }
+  }
+  if (collectionTitle && !list.some((c) => c.title === collectionTitle)) list.unshift({ title: collectionTitle, stores: [], isNew: true });
+  for (const box of document.querySelectorAll("[data-collection]")) {
+    box.innerHTML = `<select class="control imp-coll${collectionTitle ? " on" : ""}" title="Add the imported products to a collection">
+      <option value="">No collection</option>
+      ${list.map((c) => `<option value="${esc(c.title)}"${c.title === collectionTitle ? " selected" : ""}>${esc(c.title)}${c.isNew ? " (new)" : c.stores.length < st.length ? ` (in ${c.stores.length} of ${st.length} stores, created in the rest)` : ""}</option>`).join("")}
+      <option value="__new">+ New collection…</option></select>`;
+    box.querySelector("select").onchange = (e) => {
+      if (e.target.value === "__new") {
+        const name = (prompt("Name of the new collection (created as a manual collection in each chosen store)") || "").trim();
+        collectionTitle = name || collectionTitle;
+      } else collectionTitle = e.target.value;
+      renderCollectionPickers();
+    };
+  }
 }
 
 function productCard(p, cur, check = true) {
@@ -161,17 +196,38 @@ $("oneLoad").onclick = async () => {
   $("oneImport").onclick = () => startImport([String(p.id)]);
 };
 
-function renderMulti() {
-  const d = current;
+const PER_PAGE = 50;
+let multiPage = 1;
+function filtered() {
   const q = ($("multiFilter")?.value || "").toLowerCase();
-  const list = d.products.filter((p) => !q || p.title.toLowerCase().includes(q));
-  $("multiGrid").innerHTML = list.map((p) => productCard(p, d.currency)).join("") || `<p class="hint">No products match.</p>`;
+  return current.products.filter((p) => !q || p.title.toLowerCase().includes(q));
+}
+function renderMulti() {
+  const d = current, list = filtered();
+  const pages = Math.max(1, Math.ceil(list.length / PER_PAGE));
+  multiPage = Math.min(multiPage, pages);
+  const shown = list.slice((multiPage - 1) * PER_PAGE, multiPage * PER_PAGE);
+  $("multiGrid").innerHTML = shown.map((p) => productCard(p, d.currency)).join("") || `<p class="hint">No products match.</p>`;
   for (const cb of $("multiGrid").querySelectorAll("[data-id]")) cb.onchange = () => {
     cb.checked ? picked.add(cb.dataset.id) : picked.delete(cb.dataset.id);
     cb.closest(".imp-prod").classList.toggle("on", cb.checked);
     $("multiCount").textContent = `${picked.size} selected`;
   };
   $("multiCount").textContent = `${picked.size} selected`;
+  $("multiLoaded").innerHTML = `<b>${d.products.length.toLocaleString()}</b>${d.more ? "+" : ""} products from <b>${esc(d.host)}</b>${d.currency ? ` · ${esc(d.currency)}` : ""}`;
+  $("multiPager").innerHTML = `<button class="btn btn-sm btn-ghost" id="mPrev"${multiPage <= 1 ? " disabled" : ""}>‹ Prev</button>
+    <span class="hint">Page ${multiPage} of ${pages}${d.more ? "+" : ""}</span>
+    <button class="btn btn-sm btn-ghost" id="mNext"${multiPage >= pages ? " disabled" : ""}>Next ›</button>
+    ${d.more ? `<button class="btn btn-sm btn-ghost" id="mMore">Load 250 more</button>` : ""}`;
+  $("mPrev").onclick = () => { multiPage--; renderMulti(); $("multiList").scrollIntoView({ behavior: "smooth" }); };
+  $("mNext").onclick = () => { multiPage++; renderMulti(); $("multiList").scrollIntoView({ behavior: "smooth" }); };
+  if ($("mMore")) $("mMore").onclick = async (e) => {
+    e.target.disabled = true; e.target.textContent = "Loading…";
+    const before = current.products.length;
+    try { await loadNextPage(); multiPage = Math.floor(before / PER_PAGE) + 1; $("multiFilter").value = ""; }
+    catch (err) { toast(err.message, true); }
+    renderMulti();
+  };
 }
 
 $("multiLoad").onclick = async () => {
@@ -179,39 +235,59 @@ $("multiLoad").onclick = async () => {
   if (!d) return;
   current = d;
   picked = new Set();
+  multiPage = 1;
   $("multiList").innerHTML = `<div class="imp-listbar">
-      <span><b>${d.products.length.toLocaleString()}</b> products from <b>${esc(d.host)}</b>${d.currency ? ` · ${esc(d.currency)}` : ""}</span>
-      <input id="multiFilter" class="control" placeholder="Filter by title">
-      <button class="btn btn-sm btn-ghost" id="selAll">Select all</button>
+      <span id="multiLoaded"></span>
+      <input id="multiFilter" class="control" placeholder="Filter loaded products by title">
+      <button class="btn btn-sm btn-ghost" id="selPage">Select page</button>
+      <button class="btn btn-sm btn-ghost" id="selAll">Select all loaded</button>
       <button class="btn btn-sm btn-ghost" id="selNone">Clear</button>
       <span class="hint" id="multiCount"></span>
+      <button class="btn btn-ghost" id="importAll">Import all products</button>
       <button class="btn btn-primary" id="multiImport">Import selected</button></div>
-    <div class="imp-grid" id="multiGrid"></div>`;
-  $("multiFilter").oninput = renderMulti;
-  $("selAll").onclick = () => {
-    const q = $("multiFilter").value.toLowerCase();
-    for (const p of current.products) if (!q || p.title.toLowerCase().includes(q)) picked.add(String(p.id));
+    <div class="imp-grid" id="multiGrid"></div>
+    <div class="scm-pager imp-pager" id="multiPager"></div>`;
+  $("multiFilter").oninput = () => { multiPage = 1; renderMulti(); };
+  $("selPage").onclick = () => {
+    for (const p of filtered().slice((multiPage - 1) * PER_PAGE, multiPage * PER_PAGE)) picked.add(String(p.id));
     renderMulti();
   };
+  $("selAll").onclick = () => { for (const p of filtered()) picked.add(String(p.id)); renderMulti(); };
   $("selNone").onclick = () => { picked.clear(); renderMulti(); };
   $("multiImport").onclick = () => startImport([...picked]);
+  $("importAll").onclick = async (e) => {
+    const b = e.target;
+    b.disabled = true;
+    try {
+      while (current.more) { b.textContent = `Loading all… ${current.products.length}`; await loadNextPage(); }
+    } catch (err) { toast(err.message, true); }
+    b.disabled = false; b.textContent = "Import all products";
+    renderMulti();
+    startImport(current.products.map((p) => String(p.id)));
+  };
   renderMulti();
 };
 
 // ------------------------------------------------ import + progress
+let jobs = [];
 async function startImport(ids) {
   const st = chosenStores();
   if (!st.length) { toast("Pick at least one store in “Import into”.", true); return; }
   if (!ids.length) { toast("Pick at least one product.", true); return; }
   const names = stores.filter((s) => st.includes(s.id)).map((s) => s.name).join(", ");
-  if (ids.length > 500) { toast("Import up to 500 products at a time.", true); return; }
-  if (!confirm(`Import ${ids.length} product${ids.length === 1 ? "" : "s"} into ${names}?\nThey'll be created as ${cfg.active ? "ACTIVE (visible to customers)" : "Draft"}.`)) return;
+  if (!confirm(`Import ${ids.length.toLocaleString()} product${ids.length === 1 ? "" : "s"} into ${names}?` +
+    `${collectionTitle ? `\nAdd them to the collection “${collectionTitle}”.` : ""}` +
+    `\nThey'll be created as ${cfg.active ? "ACTIVE (visible to customers)" : "Draft"}.`)) return;
+  jobs = [];
   try {
-    const r = await send("/api/importer/import", { host: current.host, currency: current.currency, stores: st,
-      products: ids.map((id) => current.raw.get(String(id))).filter(Boolean) });
+    for (let i = 0; i < ids.length; i += 500) {
+      const r = await send("/api/importer/import", { host: current.host, currency: current.currency, stores: st,
+        collection: collectionTitle, products: ids.slice(i, i + 500).map((id) => current.raw.get(String(id))).filter(Boolean) });
+      jobs.push(r.job);
+    }
     $("progress").hidden = false;
     $("progress").scrollIntoView({ behavior: "smooth" });
-    poll(r.job);
+    poll();
   } catch (e) { toast(e.message, true); }
 }
 
@@ -225,19 +301,26 @@ function itemRows(items) {
     <td>${i.admin_url ? `<a class="btn btn-sm btn-ghost" href="${esc(i.admin_url)}" target="_blank" rel="noopener">Open in Shopify</a>` : ""}</td></tr>`).join("")}</tbody>`;
 }
 
-async function poll(job) {
+async function poll() {
   clearTimeout(pollTimer);
-  let d;
-  try { d = await api(`/api/importer/jobs/${job}`); } catch { pollTimer = setTimeout(() => poll(job), 3000); return; }
-  const done = d.items.filter((i) => i.status !== "queued").length;
-  const ok = d.items.filter((i) => i.status === "done").length;
-  const bad = d.items.filter((i) => i.status === "failed").length;
-  const skip = d.items.filter((i) => i.status === "skipped").length;
-  $("progTitle").textContent = d.running ? `Importing… ${done} of ${d.items.length}` : `Import finished`;
+  let items = [], running = false;
+  try {
+    for (const j of jobs) {
+      const d = await api(`/api/importer/jobs/${j}`);
+      items = items.concat(d.items);
+      running = running || d.running;
+    }
+  } catch { pollTimer = setTimeout(poll, 3000); return; }
+  const done = items.filter((i) => i.status !== "queued").length;
+  const ok = items.filter((i) => i.status === "done").length;
+  const bad = items.filter((i) => i.status === "failed").length;
+  const skip = items.filter((i) => i.status === "skipped").length;
+  $("progTitle").textContent = running ? `Importing… ${done.toLocaleString()} of ${items.length.toLocaleString()}` : "Import finished";
   $("progNote").textContent = `${ok} imported · ${skip} skipped · ${bad} failed`;
-  $("progBar").style.width = `${d.items.length ? (done / d.items.length) * 100 : 0}%`;
-  $("progTable").innerHTML = itemRows(d.items);
-  if (d.running) pollTimer = setTimeout(() => poll(job), 2500);
+  $("progBar").style.width = `${items.length ? (done / items.length) * 100 : 0}%`;
+  const recent = items.filter((i) => i.status !== "queued").slice(-100).reverse();
+  $("progTable").innerHTML = itemRows(running ? recent : items.slice(0, 500));
+  if (running) pollTimer = setTimeout(poll, 2500);
   else toast(bad ? `Done, ${bad} failed. See the reasons below.` : "All done.", !!bad);
 }
 
@@ -336,5 +419,6 @@ for (const b of $("pages").querySelectorAll("[data-page]")) b.onclick = () => {
     stores = d.stores;
     renderStorePickers();
     renderSettings();
+    renderCollectionPickers();
   } catch (e) { toast(e.message, true); }
 })();

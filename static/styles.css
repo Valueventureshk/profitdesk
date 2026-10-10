@@ -1034,6 +1034,10 @@ body.read-only [data-write-only] { display: none !important; }
 .imp-save { margin-top: 14px; display: flex; justify-content: flex-end; }
 @media (max-width: 700px) { .imp-one { grid-template-columns: 1fr; } .imp-stores, .imp-pick summary { width: 100%; } }
 
+.imp-colls select.control { height: 40px; border-radius: 8px; font-size: 13px; font-weight: 500; max-width: 260px; }
+.imp-colls select.control.on { background-color: var(--ink); color: var(--panel); border-color: var(--ink); }
+.imp-pager { margin-top: 14px; }
+
 :root[data-theme="dark"] {
   --bg: #0E1116; --panel: #161B22; --ink: #E6EDF3; --muted: #9BA5B4; --faint: #6E7A8A;
   --line: #2A3140; --line-soft: #1C222B; --up: #34D399; --down: #F87171; --accent: #10B981;

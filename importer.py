@@ -283,3 +283,24 @@ mutation Set($input: ProductSetInput!) {
 
 HANDLE_EXISTS = """
 query Exists($q: String!) { products(first: 1, query: $q) { nodes { id handle } } }"""
+
+COLLECTIONS = """
+query Collections($q: String) { collections(first: 250, query: $q, sortKey: TITLE) { nodes { id title } } }"""
+
+COLLECTION_CREATE = """
+mutation C($input: CollectionInput!) {
+  collectionCreate(input: $input) { collection { id title } userErrors { field message } }
+}"""
+
+COLLECTION_ADD = """
+mutation A($id: ID!, $productIds: [ID!]!) {
+  collectionAddProducts(id: $id, productIds: $productIds) { userErrors { field message } }
+}"""
+
+PUBLICATIONS = """
+query { publications(first: 25) { nodes { id name } } }"""
+
+PUBLISH = """
+mutation P($id: ID!, $input: [PublicationInput!]!) {
+  publishablePublish(id: $id, input: $input) { userErrors { field message } }
+}"""

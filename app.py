@@ -2959,6 +2959,7 @@ async def _run_import(job_id: str, token_data: dict, ids: list, store_ids: list,
             if not store:
                 continue
             client = ShopifyClient(store["shop_domain"], store["access_token"])
+            extras = await _store_extras(client, token_data.get("collection") or "")
             factor = 1.0
             if cfg.get("convert_currency") and src_cur and src_cur != store["currency"]:
                 if store["currency"] not in tables:
@@ -2987,6 +2988,20 @@ async def _run_import(job_id: str, token_data: dict, ids: list, store_ids: list,
                             err = "; ".join(f"{e.get('message')}" for e in errs)[:500]
                         else:
                             gid, status = r["productSet"]["product"]["id"], "done"
+                            notes = []
+                            if extras["publication"]:
+                                pr = await client.gql(importer.PUBLISH, {"id": gid, "input": [
+                                    {"publicationId": extras["publication"]}]})
+                                if pr["publishablePublish"]["userErrors"]:
+                                    notes.append("Not added to Online Store")
+                            if extras["collection"]:
+                                cr = await client.gql(importer.COLLECTION_ADD, {"id": extras["collection"],
+                                                                                "productIds": [gid]})
+                                if cr["collectionAddProducts"]["userErrors"]:
+                                    notes.append("Not added to the collection")
+                            elif extras["error"]:
+                                notes.append(extras["error"])
+                            err = "; ".join(notes) or None
                 except Exception as e:
                     err = str(e)[:500]
                 if gid:
@@ -2998,6 +3013,59 @@ async def _run_import(job_id: str, token_data: dict, ids: list, store_ids: list,
                 await asyncio.sleep(0.4)
     finally:
         _import_running.discard(job_id)
+
+
+@app.get("/api/importer/collections")
+async def api_importer_collections(stores: str = ""):
+    """Manual collections in the chosen stores (products can only be added to manual ones), by title."""
+    ids = [int(x) for x in stores.split(",") if x.strip().isdigit()]
+    all_stores = {x["id"]: x for x in db.list_stores()}
+
+    async def one(sid):
+        st = all_stores.get(sid)
+        if not st:
+            return sid, []
+        try:
+            r = await ShopifyClient(st["shop_domain"], st["access_token"]).gql(
+                importer.COLLECTIONS, {"q": "collection_type:custom"})
+            return sid, [c["title"] for c in r["collections"]["nodes"]]
+        except Exception:
+            return sid, []
+    got = await asyncio.gather(*[one(i) for i in ids])
+    titles = {}
+    for sid, names in got:
+        for t in names:
+            titles.setdefault(t, []).append(sid)
+    return {"collections": [{"title": t, "stores": v} for t, v in sorted(titles.items(), key=lambda kv: kv[0].lower())]}
+
+
+async def _store_extras(client, title: str) -> dict:
+    """Online Store publication id, and the collection with this title (created if missing)."""
+    out = {"publication": None, "collection": None, "error": None}
+    try:
+        pubs = (await client.gql(importer.PUBLICATIONS))["publications"]["nodes"]
+        out["publication"] = next((p["id"] for p in pubs if (p.get("name") or "").lower() == "online store"), None)
+    except Exception:
+        pass
+    if title:
+        try:
+            found = (await client.gql(importer.COLLECTIONS, {"q": f'collection_type:custom title:"{title}"'}))
+            hit = next((c for c in found["collections"]["nodes"] if c["title"].strip().lower() == title.strip().lower()), None)
+            if hit:
+                out["collection"] = hit["id"]
+            else:
+                r = await client.gql(importer.COLLECTION_CREATE, {"input": {"title": title}})
+                errs = r["collectionCreate"]["userErrors"]
+                if errs:
+                    out["error"] = "Collection: " + "; ".join(e["message"] for e in errs)
+                else:
+                    out["collection"] = r["collectionCreate"]["collection"]["id"]
+                    if out["publication"]:
+                        await client.gql(importer.PUBLISH, {"id": out["collection"],
+                                                            "input": [{"publicationId": out["publication"]}]})
+        except Exception as e:
+            out["error"] = f"Collection: {e}"[:200]
+    return out
 
 
 @app.post("/api/importer/import")
@@ -3012,7 +3080,8 @@ async def api_importer_import(payload: dict, request: Request):
         raise HTTPException(400, "Pick at least one product.")
     if not store_ids:
         raise HTTPException(400, "Pick at least one store to import into.")
-    data = {"host": host, "currency": currency, "raw": {str(p["id"]): p for p in products}}
+    data = {"host": host, "currency": currency, "raw": {str(p["id"]): p for p in products},
+            "collection": (payload.get("collection") or "").strip()[:255]}
     ids = list(data["raw"])
     user = (getattr(request.state, "user", None) or {}).get("email", "")
     job_id = secrets.token_hex(6)
