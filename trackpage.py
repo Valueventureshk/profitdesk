@@ -44,13 +44,9 @@ COUNTRY = {"AU": "Australia", "US": "United States", "CA": "Canada", "GB": "Unit
 
 
 def destination(s: dict) -> str:
-    """'New South Wales, Australia', 'California, United States', or just the country."""
+    """The customer's state or province ('South Australia', 'California'), else the country."""
     code = (s.get("country") or "").upper()
-    country = COUNTRY.get(code, code)
-    province = (s.get("province") or "").strip()
-    if province and country and province.lower() != country.lower():
-        return f"{province}, {country}"
-    return province or country or "your country"
+    return (s.get("province") or "").strip() or COUNTRY.get(code, code) or "your country"
 
 
 def verify_proxy(query: dict, secret: str) -> bool:
