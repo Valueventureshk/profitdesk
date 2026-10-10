@@ -18,38 +18,68 @@
       <h1>SCM</h1>
       <p id="sub">Every order from every store, with its tracking</p>
     </div>
-    <div class="controls">
-      <button id="sync" class="btn btn-ghost" data-write-only>Sync now</button>
-    </div>
+    <nav class="scm-pages" id="pages">
+      <button data-page="orders" class="on">Orders</button>
+      <button data-page="settings" data-owner-only>Settings</button>
+    </nav>
   </header>
 
-  <main class="content">
+  <main class="content" id="ordersPage">
     <div id="problems" class="warnings"></div>
 
+    <section class="scm-tiles" id="tiles"></section>
+
     <section class="panel scm-list">
+      <div class="scm-listhead">
+        <h2>Orders</h2>
+        <div class="scm-actions">
+          <a class="btn btn-sm btn-ghost" id="export" href="#">Export</a>
+          <button class="btn btn-sm btn-ghost" id="sync" data-write-only>Sync orders</button>
+        </div>
+      </div>
       <div class="scm-tabs" id="tabs"></div>
       <div class="scm-filters">
-        <input id="q" class="control scm-search" type="search" placeholder="Search order number, tracking number or customer">
+        <div class="scm-searchbox"><span>⌕</span><input id="q" type="search" placeholder="Search order number, tracking number or customer"></div>
         <select id="store" class="control"><option value="">All stores</option></select>
         <select id="carrier" class="control"><option value="">All carriers</option></select>
         <select id="country" class="control"><option value="">All destinations</option></select>
-        <span class="scm-dates"><input type="date" id="from" class="control" title="Order date from"> – <input type="date" id="to" class="control" title="Order date to"></span>
+        <select id="range" class="control" title="Date range">
+          <option value="7">Last 7 days</option><option value="30">Last 30 days</option>
+          <option value="60" selected>Last 60 days</option><option value="90">Last 90 days</option>
+          <option value="365">Last 12 months</option><option value="custom">Custom…</option>
+        </select>
+        <select id="dateBy" class="control" title="Which date the range uses">
+          <option value="order">by order date</option><option value="fulfilled">by fulfilment date</option>
+        </select>
+        <span class="scm-dates" id="customDates" hidden><input type="date" id="from" class="control"> – <input type="date" id="to" class="control"></span>
+        <select id="sort" class="control" title="Sort">
+          <option value="order_desc">Newest orders</option><option value="order_asc">Oldest orders</option>
+          <option value="update_desc">Latest update</option><option value="update_asc">Longest without update</option>
+          <option value="transit_desc">Longest in transit</option>
+        </select>
+      </div>
+      <div class="scm-bulk" id="bulk" hidden>
+        <span id="bulkCount"></span>
+        <button class="btn btn-sm btn-ghost" id="bulkFlag" data-write-only>⚑ Flag</button>
+        <button class="btn btn-sm btn-ghost" id="bulkUnflag" data-write-only>Remove flag</button>
       </div>
       <p class="hint scm-count" id="count"></p>
       <div class="table-wrap"><table class="table scm-table" id="table"></table></div>
       <div class="scm-pager" id="pager"></div>
     </section>
+  </main>
 
+  <main class="content" id="settingsPage" hidden>
     <section class="panel scm-connect" data-owner-only>
       <div class="panel-head"><h2>Tracking connection (17TRACK)</h2><span class="hint" id="quota"></span></div>
       <div class="scm-connect-body">
         <p class="hint">17TRACK follows each parcel across every carrier (e.g. YunExpress, then Australia
-          Post). Each tracking number uses one quota, once; updates after that are free.</p>
+          Post). Each tracking number uses one credit, once. Updates and customer lookups are free.</p>
         <label class="field"><span>17TRACK API key</span>
           <input id="key" type="text" class="scm-secret" name="track17-api-key" autocomplete="off" data-lpignore="true" data-1p-ignore spellcheck="false" placeholder="Paste the key from 17TRACK → Settings → Security"></label>
         <div class="field"><span>Track parcels for these stores</span><div id="trackStores" class="scm-store-picks"></div></div>
         <label class="field"><span>Track parcels fulfilled from</span><input type="date" id="trackFrom" class="control"></label>
-        <p class="hint">Older parcels use quota too, so start with a recent date.</p>
+        <p class="hint">Older parcels use credits too, so start with a recent date.</p>
         <div class="field"><span>Webhook URL (paste into 17TRACK → Settings → Webhook, so updates arrive straight away)</span>
           <div class="scm-webhook"><code id="webhook"></code><button class="btn btn-sm btn-ghost" id="copyHook">Copy</button></div></div>
         <div class="field"><span>Customer tracking page · dropship mode hides the journey until the parcel reaches the customer's country</span>

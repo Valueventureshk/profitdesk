@@ -344,6 +344,25 @@ CREATE TABLE IF NOT EXISTS shipments (
     UNIQUE (store_id, order_id, number)
 );
 CREATE INDEX IF NOT EXISTS shipments_number ON shipments(number);
+
+-- SCM desk: the team's notes on an order (special events, supplier replies...)
+-- and a "needs attention" flag. Kept per order, so they survive parcel changes.
+CREATE TABLE IF NOT EXISTS scm_notes (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    store_id   INTEGER NOT NULL,
+    order_id   TEXT NOT NULL,
+    text       TEXT NOT NULL,
+    author     TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS scm_notes_order ON scm_notes(store_id, order_id);
+CREATE TABLE IF NOT EXISTS scm_flags (
+    store_id   INTEGER NOT NULL,
+    order_id   TEXT NOT NULL,
+    flagged_by TEXT,
+    flagged_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (store_id, order_id)
+);
 CREATE INDEX IF NOT EXISTS shipments_order_at ON shipments(order_at);
 
 -- Small app-wide preferences, e.g. the currency the dashboard shows.

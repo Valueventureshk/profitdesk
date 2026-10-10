@@ -2188,16 +2188,19 @@ SCM_VIEWS = {
     "stuck": "((s.status IN ('info_received', 'in_transit', 'pending') AND s.number != '' AND s.registered = 1"
              " AND COALESCE(s.last_event_at, s.fulfilled_at) < :stuck_since)"
              " OR (s.status = 'awaiting' AND s.order_at < :late_since))",
+    "flagged": "EXISTS (SELECT 1 FROM scm_flags f WHERE f.store_id = s.store_id AND f.order_id = s.order_id)",
+    "noted": "EXISTS (SELECT 1 FROM scm_notes n WHERE n.store_id = s.store_id AND n.order_id = s.order_id)",
 }
 
 
-def _scm_where(view, q, store, carrier, country, start, end) -> tuple:
+def _scm_where(view, q, store, carrier, country, start, end, date_by: str = "order") -> tuple:
     now = datetime.now(timezone.utc)
     params = {"stuck_since": (now - timedelta(days=7)).isoformat(),
               "late_since": (now - timedelta(days=5)).isoformat(),
               "start": start or (now - timedelta(days=60)).date().isoformat(),
               "end": (date.fromisoformat(end) + timedelta(days=1)).isoformat() if end else "9999"}
-    where = ["s.order_at >= :start", "s.order_at < :end"]
+    col = "s.fulfilled_at" if date_by == "fulfilled" else "s.order_at"
+    where = [f"{col} >= :start", f"{col} < :end"]
     where.append("s.cancelled = 1" if view == "cancelled" else "s.cancelled = 0")
     if SCM_VIEWS.get(view):
         where.append(SCM_VIEWS[view])
@@ -2223,29 +2226,23 @@ _SCM_COLS = ("id, store_id, order_id, order_name, order_at, customer, email, cou
              " registered, register_error, cancelled, fulfillment")
 
 
-@app.get("/api/scm/shipments")
-def api_scm_shipments(view: str = "all", q: str = None, store: str = None, carrier: str = None,
-                      country: str = None, start: str = None, end: str = None, page: int = 1):
-    where, params = _scm_where(view, q, store, carrier, country, start, end)
-    base_where, base_params = _scm_where("all", q, store, carrier, country, start, end)
+SCM_SORT = {
+    "order_desc": "s.order_at DESC", "order_asc": "s.order_at ASC",
+    "update_desc": "COALESCE(s.last_event_at, '') DESC", "update_asc": "COALESCE(s.last_event_at, '9999') ASC",
+    "transit_desc": "COALESCE(s.transit_days, julianday('now') - julianday(s.fulfilled_at), 0) DESC",
+}
+
+
+def _scm_rows(where, params, order_by, limit=50, offset=0) -> list:
     with db._conn() as con:
-        total = con.execute(f"SELECT COUNT(*) FROM shipments s WHERE {where}", params).fetchone()[0]
         rows = [dict(r) for r in con.execute(
-            f"SELECT {_SCM_COLS} FROM shipments s WHERE {where} ORDER BY s.order_at DESC LIMIT 50 OFFSET :off",
-            {**params, "off": max(0, page - 1) * 50})]
-        counts = {}
-        for v in SCM_VIEWS:
-            w, p = _scm_where(v, q, store, carrier, country, start, end)
-            counts[v] = con.execute(f"SELECT COUNT(*) FROM shipments s WHERE {w}", p).fetchone()[0]
-        w, p = _scm_where("cancelled", q, store, carrier, country, start, end)
-        counts["cancelled"] = con.execute(f"SELECT COUNT(*) FROM shipments s WHERE {w}", p).fetchone()[0]
-        carriers = [r[0] for r in con.execute(
-            f"SELECT COALESCE(NULLIF(s.carrier_name, ''), s.company) c FROM shipments s WHERE {base_where}"
-            " AND COALESCE(NULLIF(s.carrier_name, ''), s.company, '') != '' GROUP BY c ORDER BY COUNT(*) DESC",
-            base_params)]
-        countries = [r[0] for r in con.execute(
-            f"SELECT s.country FROM shipments s WHERE {base_where} AND s.country != '' GROUP BY s.country"
-            " ORDER BY COUNT(*) DESC", base_params)]
+            f"SELECT {_SCM_COLS},"
+            " (SELECT COUNT(*) FROM scm_notes n WHERE n.store_id = s.store_id AND n.order_id = s.order_id) notes,"
+            " (SELECT text FROM scm_notes n WHERE n.store_id = s.store_id AND n.order_id = s.order_id"
+            "  ORDER BY n.id DESC LIMIT 1) last_note,"
+            " EXISTS (SELECT 1 FROM scm_flags f WHERE f.store_id = s.store_id AND f.order_id = s.order_id) flagged"
+            f" FROM shipments s WHERE {where} ORDER BY {order_by}, s.id DESC LIMIT :lim OFFSET :off",
+            {**params, "lim": limit, "off": offset})]
     now = datetime.now(timezone.utc)
     names = _store_names()
     for r in rows:
@@ -2256,10 +2253,106 @@ def api_scm_shipments(view: str = "all", q: str = None, store: str = None, carri
         if r["fulfilled_at"] and r["transit_days"] is None:
             r["transit_days"] = (datetime.fromisoformat(end_at.replace("Z", "+00:00"))
                                  - datetime.fromisoformat(r["fulfilled_at"].replace("Z", "+00:00"))).days
+        r["quiet_days"] = (now - datetime.fromisoformat(r["last_event_at"].replace("Z", "+00:00"))).days \
+            if r.get("last_event_at") else None
+    return rows
+
+
+@app.get("/api/scm/shipments")
+def api_scm_shipments(view: str = "all", q: str = None, store: str = None, carrier: str = None,
+                      country: str = None, start: str = None, end: str = None, page: int = 1,
+                      sort: str = "order_desc", date_by: str = "order"):
+    args = (q, store, carrier, country, start, end, date_by)
+    where, params = _scm_where(view, *args)
+    base_where, base_params = _scm_where("all", *args)
+    with db._conn() as con:
+        total = con.execute(f"SELECT COUNT(*) FROM shipments s WHERE {where}", params).fetchone()[0]
+        counts = {}
+        for v in list(SCM_VIEWS) + ["cancelled"]:
+            w, p = _scm_where(v, *args)
+            counts[v] = con.execute(f"SELECT COUNT(*) FROM shipments s WHERE {w}", p).fetchone()[0]
+        carriers = [r[0] for r in con.execute(
+            f"SELECT COALESCE(NULLIF(s.carrier_name, ''), s.company) c FROM shipments s WHERE {base_where}"
+            " AND COALESCE(NULLIF(s.carrier_name, ''), s.company, '') != '' GROUP BY c ORDER BY COUNT(*) DESC",
+            base_params)]
+        countries = [r[0] for r in con.execute(
+            f"SELECT s.country FROM shipments s WHERE {base_where} AND s.country != '' GROUP BY s.country"
+            " ORDER BY COUNT(*) DESC", base_params)]
+        st = dict(con.execute(
+            "SELECT SUM(s.number != '') parcels, SUM(s.number != '' AND s.registered = 1) tracked,"
+            " SUM(s.status = 'delivered') delivered,"
+            " SUM(s.registered = 1 AND s.status NOT IN ('pending', 'awaiting', 'expired')) with_updates,"
+            " AVG(CASE WHEN s.status = 'delivered' AND s.delivered_at IS NOT NULL AND s.fulfilled_at IS NOT NULL"
+            "     THEN julianday(s.delivered_at) - julianday(s.fulfilled_at) END) avg_delivery_days,"
+            " AVG(CASE WHEN s.number != '' AND s.fulfilled_at IS NOT NULL"
+            "     THEN julianday(s.fulfilled_at) - julianday(s.order_at) END) avg_dispatch_days,"
+            " COUNT(DISTINCT s.store_id || ':' || s.order_id) orders"
+            f" FROM shipments s WHERE {base_where}", base_params).fetchone())
+    rows = _scm_rows(where, params, SCM_SORT.get(sort, SCM_SORT["order_desc"]), 50, max(0, page - 1) * 50)
+    names = _store_names()
     return {"rows": rows, "total": total, "page": page, "pages": max(1, -(-total // 50)),
-            "counts": counts, "carriers": carriers, "countries": countries,
+            "counts": counts, "carriers": carriers, "countries": countries, "summary": st,
             "stores": [{"id": k, "name": v} for k, v in names.items()],
             "status": _scm_status()}
+
+
+@app.get("/api/scm/export")
+def api_scm_export(view: str = "all", q: str = None, store: str = None, carrier: str = None,
+                   country: str = None, start: str = None, end: str = None, sort: str = "order_desc",
+                   date_by: str = "order"):
+    """The current view as a spreadsheet (CSV)."""
+    from fastapi.responses import Response
+    where, params = _scm_where(view, q, store, carrier, country, start, end, date_by)
+    rows = _scm_rows(where, params, SCM_SORT.get(sort, SCM_SORT["order_desc"]), 20000, 0)
+    cols = ["Store", "Order", "Order date", "Customer", "Email", "Ship to", "Items", "Tracking number", "Carrier",
+            "Last mile", "Last mile number", "Fulfilled", "Status", "Last checkpoint", "Last update",
+            "Transit days", "Delivered", "Flagged", "Notes", "Latest note"]
+    out = [[r["store"], r["order_name"], (r["order_at"] or "")[:16], r["customer"], r["email"],
+            ", ".join(x for x in (r["city"], r["country"]) if x), r["items"], r["number"],
+            r["carrier_name"] or r["company"], r["last_mile"], r["last_mile_number"], (r["fulfilled_at"] or "")[:16],
+            "untracked" if r["number"] and not r["registered"] else r["status"], r["last_event"],
+            (r["last_event_at"] or "")[:16], r["transit_days"], (r["delivered_at"] or "")[:16],
+            "yes" if r["flagged"] else "", r["notes"], r["last_note"] or ""] for r in rows]
+    name = f"scm-{view}-{datetime.now(CASH_TZ):%Y-%m-%d}.csv"
+    return Response(reports.to_csv(cols, out), media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+@app.post("/api/scm/orders/{store_id}/{order_id}/notes")
+def api_scm_add_note(store_id: int, order_id: str, payload: dict, request: Request):
+    text = (payload.get("text") or "").strip()
+    if not text:
+        raise HTTPException(400, "Write a note first.")
+    user = getattr(request.state, "user", None) or {}
+    with db._conn() as con:
+        con.execute("INSERT INTO scm_notes (store_id, order_id, text, author) VALUES (?, ?, ?, ?)",
+                    (store_id, order_id, text[:4000], user.get("name") or user.get("email") or ""))
+    return {"ok": True}
+
+
+@app.delete("/api/scm/notes/{note_id}")
+def api_scm_delete_note(note_id: int, request: Request):
+    user = getattr(request.state, "user", None) or {}
+    with db._conn() as con:
+        n = con.execute("SELECT author FROM scm_notes WHERE id = ?", (note_id,)).fetchone()
+        if not n:
+            raise HTTPException(404, "That note no longer exists.")
+        if user.get("role") != "owner" and n["author"] not in (user.get("name"), user.get("email")):
+            raise HTTPException(403, "Only the person who wrote a note (or an owner) can delete it.")
+        con.execute("DELETE FROM scm_notes WHERE id = ?", (note_id,))
+    return {"ok": True}
+
+
+@app.post("/api/scm/orders/{store_id}/{order_id}/flag")
+def api_scm_flag(store_id: int, order_id: str, payload: dict, request: Request):
+    user = getattr(request.state, "user", None) or {}
+    with db._conn() as con:
+        if payload.get("flagged"):
+            con.execute("INSERT OR REPLACE INTO scm_flags (store_id, order_id, flagged_by) VALUES (?, ?, ?)",
+                        (store_id, order_id, user.get("name") or user.get("email") or ""))
+        else:
+            con.execute("DELETE FROM scm_flags WHERE store_id = ? AND order_id = ?", (store_id, order_id))
+    return {"ok": True}
 
 
 @app.get("/api/scm/shipments/{shipment_id}")
@@ -2277,12 +2370,21 @@ def api_scm_shipment(shipment_id: int):
             "SELECT id, subject, status, kind, labels, created_at FROM tickets WHERE store_id = ?"
             " AND (orders LIKE ? OR customer_email = ?) ORDER BY created_at DESC LIMIT 10",
             (r["store_id"], f"%{key}%", r["email"] or "-"))] if key else []
+    with db._conn() as con:
+        notes = [dict(n) for n in con.execute(
+            "SELECT id, text, author, created_at FROM scm_notes WHERE store_id = ? AND order_id = ? ORDER BY id DESC",
+            (r["store_id"], r["order_id"]))]
+        flag = con.execute("SELECT flagged_by, flagged_at FROM scm_flags WHERE store_id = ? AND order_id = ?",
+                           (r["store_id"], r["order_id"])).fetchone()
     store = next((x for x in db.list_stores() if x["id"] == r["store_id"]), None)
     r["events"] = json.loads(r["events"] or "[]")
     r["store"] = (store or {}).get("name", "").strip()
     r["shopify_url"] = (f"https://admin.shopify.com/store/{store['shop_domain'].removesuffix('.myshopify.com')}"
                         f"/orders/{r['order_id']}") if store else None
-    return {"shipment": r, "other_parcels": others, "tickets": tickets}
+    r["tracking_page"] = (f"https://{store['shop_domain']}/apps/track?nums={r['number']}"
+                          if store and r["number"] else None)
+    return {"shipment": r, "other_parcels": others, "tickets": tickets, "notes": notes,
+            "flag": dict(flag) if flag else None}
 
 
 def _scm_status() -> dict:
