@@ -20,7 +20,14 @@ import httpx
 API_VERSION = os.getenv("SHOPIFY_API_VERSION", "2026-07")
 
 # View-only. This is the entire set of permissions the app asks a merchant for.
-SCOPES = "read_orders"
+# Everything ProfitDesk uses or will use (see SHOPIFY-APP-RELEASE.md). Must match the
+# scopes in each store's app version, or Shopify refuses the extra ones.
+SCOPES = ("read_orders,read_all_orders,write_orders,write_fulfillments,write_merchant_managed_fulfillment_orders,"
+          "write_third_party_fulfillment_orders,write_assigned_fulfillment_orders,write_products,write_inventory,"
+          "read_locations,write_publications,write_online_store_pages,write_online_store_navigation,write_content,"
+          "write_themes,write_files,write_metaobjects,write_metaobject_definitions,write_discounts,write_pixels,"
+          "read_customer_events,write_script_tags,read_customers,write_marketing_events,write_translations,"
+          "read_analytics,read_shipping")
 
 SHOP_DOMAIN_RE = re.compile(r"^[a-z0-9][a-z0-9-]*\.myshopify\.com$")
 
