@@ -122,7 +122,7 @@ window.PDUrl = {
         ${svg(s.href)}<span>${s.label.replace(" + Products Monitor", "")}</span></a>`).join("")}</nav>
       <div class="pd-rail-foot">
         <button class="pd-rail-item" data-rail-fold title="Make the sidebar narrower or wider">${svg("fold")}<span>Collapse sidebar</span></button>
-        ${me.role === "owner" ? `<a class="pd-rail-item" href="/#settings">${svg("settings")}<span>Settings</span></a>` : ""}
+        ${me.role === "owner" ? `<a class="pd-rail-item" href="/?settings=1" data-rail-settings>${svg("settings")}<span>Settings</span></a>` : ""}
         <button class="pd-rail-item" data-rail-theme>${svg("theme")}<span>${dark() ? "Day mode" : "Night mode"}</span></button>
         <button class="pd-rail-item" data-rail-out>${svg("logout")}<span>Log out</span></button>
         <div class="pd-rail-user"><span class="pd-rail-avatar">${(me.email || "?").slice(0, 2).toUpperCase()}</span>
@@ -153,14 +153,11 @@ window.PDUrl = {
       await fetch("/api/logout", { method: "POST" });
       location.href = "/login";
     };
-    // The dashboard opens Settings when it's asked for in the address (from the sidebar).
-    if (here === "/" && location.hash === "#settings") {
-      for (let i = 0; i < 40; i++) {
-        const b = document.getElementById("openSettings");
-        if (b && b.offsetParent !== null) { b.click(); history.replaceState(null, "", "/" + location.search); break; }
-        await new Promise((r) => setTimeout(r, 250));
-      }
-    }
+    // Settings lives on the dashboard: there it opens straight away, elsewhere it goes there (/?settings=1).
+    const set = rail.querySelector("[data-rail-settings]");
+    if (set && here === "/") set.onclick = (e) => {
+      if (typeof window.openSettings === "function") { e.preventDefault(); window.openSettings(); }
+    };
   }
 
   function start() { build(); buildRail(); }

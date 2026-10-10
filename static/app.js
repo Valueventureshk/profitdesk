@@ -215,7 +215,10 @@ async function boot() {
   renderCurrencyPicker();
   if (!state.start) applyRange();
   await load();
-  if (PDUrl.get("settings")) openSettings();
+  if (PDUrl.get("settings") || location.hash === "#settings") {
+    if (location.hash === "#settings") history.replaceState(null, "", location.pathname + location.search);
+    openSettings();
+  }
 }
 
 function renderCurrencyPicker() {
