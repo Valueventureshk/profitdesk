@@ -256,7 +256,7 @@ def healthz():
 def login_page():
     with open(os.path.join(STATIC_DIR, "login.html")) as f:
         html = f.read()
-    stamp = int(os.path.getmtime(os.path.join(STATIC_DIR, "styles.css")))
+    stamp = _stamp("styles.css")
     html = html.replace("/static/styles.css", f"/static/styles.css?v={stamp}")
     html = html.replace("__FIRST_RUN__", "true" if not auth.has_users() else "false")
     html = html.replace("__NEEDS_CODE__",
@@ -502,13 +502,29 @@ def index(request: Request):
     return _page("index.html", ("app.js", "nav.js", "styles.css", "chat.js"))
 
 
+_stamps: dict = {}
+
+
+def _stamp(name: str) -> str:
+    """Short fingerprint of a static file's contents. (Edit times aren't reliable on
+    Railway: a deploy can keep the old time, and browsers then keep the old file.)"""
+    path = os.path.join(STATIC_DIR, name)
+    st = os.stat(path)
+    key = (name, st.st_mtime_ns, st.st_size)
+    if key not in _stamps:
+        import hashlib
+        with open(path, "rb") as f:
+            _stamps[key] = hashlib.md5(f.read()).hexdigest()[:10]
+    return _stamps[key]
+
+
 def _page(filename: str, assets) -> HTMLResponse:
     """Serve a page with each script and stylesheet stamped by its edit time,
     so a browser never keeps running an old copy after an update."""
     with open(os.path.join(STATIC_DIR, filename)) as f:
         html = f.read()
     for name in assets:
-        stamp = int(os.path.getmtime(os.path.join(STATIC_DIR, name)))
+        stamp = _stamp(name)
         html = html.replace(f"/static/{name}", f"/static/{name}?v={stamp}")
     return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
@@ -3162,7 +3178,7 @@ def api_importer_history(page: int = 1):
 
 @app.get("/sizecharts", response_class=HTMLResponse)
 def sizecharts_page():
-    return _page("sizecharts.html", ("sizecharts.js", "nav.js", "styles.css", "chat.js"))
+    return _page("sizecharts.html", ("sizecharts.js", "garments.js", "nav.js", "styles.css", "chat.js"))
 
 
 SC_DEFAULTS = {"enabled": False, "display": "button", "label": "", "prefix": "", "suffix": "", "icon": "ruler",
