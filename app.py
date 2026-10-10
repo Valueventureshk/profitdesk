@@ -2521,6 +2521,133 @@ async def proxy_track(request: Request, order: str = None, email: str = None, nu
                         f'this shows inside its own theme at {html.escape(shop_domain)}/apps/track</p>{body}')
 
 
+STOREFRONT_Q = """
+query Store {
+  menus(first: 25) { nodes { id handle title items { id title type url resourceId tags
+    items { id title type url resourceId tags items { id title type url resourceId tags } } } } }
+  pages(first: 100) { nodes { id title handle isPublished } }
+  urlRedirects(first: 250) { nodes { id path target } }
+}"""
+MENU_UPDATE = """
+mutation M($id: ID!, $title: String!, $handle: String, $items: [MenuItemUpdateInput!]!) {
+  menuUpdate(id: $id, title: $title, handle: $handle, items: $items) { menu { id } userErrors { field message } }
+}"""
+PAGE_UPDATE = """
+mutation P($id: ID!, $page: PageUpdateInput!) {
+  pageUpdate(id: $id, page: $page) { page { id isPublished } userErrors { field message } }
+}"""
+REDIRECT_CREATE = """
+mutation R($r: UrlRedirectInput!) {
+  urlRedirectCreate(urlRedirect: $r) { urlRedirect { id } userErrors { field message } }
+}"""
+TRACK_TITLE = {"en": "Track your order", "es": "Seguir mi pedido", "fr": "Suivre ma commande"}
+
+
+def _is_track_link(item: dict, track_pages: set) -> bool:
+    url = (item.get("url") or "").lower()
+    if "/apps/track" in url and "parcel" not in url:
+        return False                                 # already ours
+    if "parcelpanel" in url or "parcel-panel" in url or "/apps/parcel" in url:
+        return True
+    return any(url.rstrip("/").endswith(f"/pages/{h}") for h in track_pages)
+
+
+def _menu_input(items: list, change) -> list:
+    out = []
+    for it in items:
+        new = {"id": it["id"], "title": it["title"], "type": it["type"], "tags": it.get("tags") or [],
+               "items": _menu_input(it.get("items") or [], change)}
+        if it.get("resourceId"):
+            new["resourceId"] = it["resourceId"]
+        if it.get("url") and it["type"] == "HTTP":
+            new["url"] = it["url"]
+        out.append(change(it, new))
+    return out
+
+
+async def _storefront_plan(store: dict, apply: bool) -> dict:
+    client = ShopifyClient(store["shop_domain"], store["access_token"])
+    data = await client.gql(STOREFRONT_Q)
+    menus, pages = data["menus"]["nodes"], data["pages"]["nodes"]
+    redirects = {r["path"].lower(): r["target"] for r in data["urlRedirects"]["nodes"]}
+    track_pages = {p["handle"] for p in pages if "track" in p["handle"].lower() or "track" in p["title"].lower()
+                   or "suivi" in p["handle"].lower() or "seguimiento" in p["handle"].lower()}
+    lang = db.get_setting(f"track_lang:{store['id']}") or "en"
+    actions, errors = [], []
+
+    def walk(items):
+        for it in items:
+            yield it
+            yield from walk(it.get("items") or [])
+
+    has_ours = any("/apps/track" in (it.get("url") or "") and "parcel" not in (it.get("url") or "")
+                   for m in menus for it in walk(m["items"]))
+    found = False
+    for m in menus:
+        hits = [it for it in walk(m["items"]) if _is_track_link(it, track_pages)]
+        if not hits:
+            continue
+        found = True
+        actions.append(f"Menu '{m['title']}': point " + ", ".join(f"'{h['title']}' ({h.get('url')})" for h in hits)
+                       + " to /apps/track")
+        if apply:
+            def change(it, new):
+                if _is_track_link(it, track_pages):
+                    new.update(type="HTTP", url="/apps/track")
+                    new.pop("resourceId", None)
+                return new
+            r = await client.gql(MENU_UPDATE, {"id": m["id"], "title": m["title"], "handle": m["handle"],
+                                              "items": _menu_input(m["items"], change)})
+            errors += [e["message"] for e in r["menuUpdate"]["userErrors"]]
+    if not found and not has_ours:
+        target = next((m for m in menus if m["handle"] == "footer"), None) or \
+            next((m for m in menus if m["handle"] == "main-menu"), None)
+        if target:
+            actions.append(f"Menu '{target['title']}': add '{TRACK_TITLE[lang]}' → /apps/track")
+            if apply:
+                items = _menu_input(target["items"], lambda it, new: new)
+                items.append({"title": TRACK_TITLE[lang], "type": "HTTP", "url": "/apps/track", "tags": [], "items": []})
+                r = await client.gql(MENU_UPDATE, {"id": target["id"], "title": target["title"],
+                                                  "handle": target["handle"], "items": items})
+                errors += [e["message"] for e in r["menuUpdate"]["userErrors"]]
+        else:
+            errors.append("No footer or main menu found")
+    elif has_ours and not found:
+        actions.append("Menu already links to /apps/track")
+    for p in pages:
+        if p["handle"] not in track_pages:
+            continue
+        path = f"/pages/{p['handle']}"
+        if p["isPublished"]:
+            actions.append(f"Page '{p['title']}' ({path}): unpublish")
+            if apply:
+                r = await client.gql(PAGE_UPDATE, {"id": p["id"], "page": {"isPublished": False}})
+                errors += [e["message"] for e in r["pageUpdate"]["userErrors"]]
+        if path.lower() not in redirects:
+            actions.append(f"Redirect {path} → /apps/track")
+            if apply:
+                r = await client.gql(REDIRECT_CREATE, {"r": {"path": path, "target": "/apps/track"}})
+                errors += [e["message"] for e in r["urlRedirectCreate"]["userErrors"]]
+    return {"store": store["name"].strip(), "menus": [m["title"] for m in menus],
+            "tracking_pages": sorted(track_pages), "actions": actions, "errors": errors}
+
+
+@app.post("/api/storefront/tracking")
+async def api_storefront_tracking(payload: dict):
+    """Owner: point each store's menus at the ProfitDesk tracking page (apply=false shows the plan)."""
+    apply = bool(payload.get("apply"))
+    only = {int(x) for x in payload.get("stores") or []}
+    stores = [x for x in db.list_stores() if not demo.is_demo(x) and x.get("access_token")
+              and (not only or x["id"] in only)]
+    out = []
+    for x in stores:
+        try:
+            out.append(await _storefront_plan(x, apply))
+        except Exception as e:
+            out.append({"store": x["name"].strip(), "actions": [], "errors": [str(e)[:300]]})
+    return {"applied": apply, "stores": out}
+
+
 @app.get("/api/tracking")
 async def api_tracking():
     cfg = _tracking_config()

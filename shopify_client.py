@@ -450,6 +450,10 @@ class ShopifyClient:
                 cursor = conn["pageInfo"]["endCursor"]
         return out
 
+    async def gql(self, query: str, variables: dict = None) -> dict:
+        async with httpx.AsyncClient(timeout=60) as client:
+            return await self._post(client, query, variables)
+
     async def fulfillment_event(self, fulfillment_id: str, status: str, happened_at: str = None,
                                 message: str = None, city: str = None, province: str = None,
                                 country: str = None, estimated: str = None):
