@@ -268,6 +268,24 @@ async function loadCounts() {
   } catch { /* shown elsewhere */ }
 }
 
+// ---- Attachments: photos as thumbnails, other files as cards (fetched from Gmail on first open)
+function attGrid(m) {
+  const list = m.attachments || [];
+  if (!list.length) return "";
+  const size = (b) => (b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`);
+  const icon = (t, n) => (/pdf/.test(t) ? "PDF" : /sheet|excel|csv/.test(t + n) ? "XLS" : /word|document/.test(t) ? "DOC"
+    : /zip|compressed/.test(t) ? "ZIP" : /video/.test(t) ? "VID" : (n.split(".").pop() || "FILE").slice(0, 4).toUpperCase());
+  return `<div class="att-grid">${list.map((a, i) => {
+    const url = `/api/inbox/attachments/${m.id}/${i}`;
+    const img = /^image\/(png|jpe?g|gif|webp)$/.test(a.type || "");
+    return `<div class="att${img ? " att-img" : ""}">
+      ${img ? `<a href="${url}" target="_blank" rel="noopener" title="Open full size"><img src="${url}" alt="${esc(a.name)}" loading="lazy"></a>`
+            : `<a class="att-ico" href="${url}${/pdf/.test(a.type || "") ? "" : "?download=1"}" target="_blank" rel="noopener">${icon(a.type || "", a.name || "")}</a>`}
+      <div class="att-meta"><span title="${esc(a.name)}">${esc(a.name)}</span><small>${a.size ? size(a.size) : ""}</small>
+        <a href="${url}?download=1" title="Download">⬇</a></div></div>`;
+  }).join("")}</div>`;
+}
+
 const tagChips = (tags) => (tags || []).map((g) =>
   `<span class="tg-chip" style="--tg:${esc(g.color)}">${esc(g.name)}</span>`).join("");
 const mailRow = (m) => `
@@ -395,7 +413,7 @@ async function openMail(id) {
     </div>
     <div class="tg-box tg-inline" id="tgBox"></div>
     ${trBar()}
-    ${m.attachments.length ? `<div class="mail-att">${m.attachments.map((a) => `📎 ${esc(a.name)}`).join(" · ")}</div>` : ""}
+    ${attGrid(m)}
     <div class="mail-one" data-mid="${m.id}"><div class="tr-onebar">${trButton(m.id)}</div><div class="msg-text">${mailText(m.text)}</div></div>
     ${composerHtml({ name: m.from_name || m.from_addr, draft: false, lang: m.reply_lang, canSend: m.can_send, mailbox: m.mailbox })}`;
   wireComposer({ key: `pdReplyMail:${id}`, sendUrl: `/api/inbox/messages/${id}/reply` });
@@ -430,7 +448,7 @@ async function openTicket(id) {
       <div class="msg-head"><strong>${m.direction === "out" ? "You" : esc(m.from_name || m.from_addr)}</strong>
         <span>${trButton(m.id)} ${full(m.date)}</span></div>
       <div class="msg-text">${mailText(m.text)}</div>
-      ${m.attachments.length ? `<div class="mail-att">${m.attachments.map((a) => `📎 ${esc(a.name)}`).join(" · ")}</div>` : ""}
+      ${attGrid(m)}
     </div>`).join("");
   $("read").innerHTML = `
     <div class="tk-layout">
