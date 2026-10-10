@@ -5,3 +5,4 @@ python-dotenv==1.0.1
 tzdata>=2024.1
 pypdf>=5.0
 anthropic>=1.12
+python-multipart==0.0.20

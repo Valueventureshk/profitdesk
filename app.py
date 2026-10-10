@@ -3443,7 +3443,7 @@ async def api_sizechart_from_image(request: Request):
         raise HTTPException(400, "Add the Anthropic API key in Settings → AI first.")
     lang = form.get("language") or "English"
     try:
-        res = await sizecharts.read_images(key, images, lang, form.get("unit") or "cm")
+        res = await sizecharts.read_images(key, images, lang, form.get("unit", "cm"))
     except sizecharts.AIError as e:
         raise HTTPException(400, str(e))
     if not res.get("found"):
