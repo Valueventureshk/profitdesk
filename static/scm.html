@@ -46,7 +46,7 @@
         <p class="hint">17TRACK follows each parcel across every carrier (e.g. YunExpress, then Australia
           Post). Each tracking number uses one quota, once; updates after that are free.</p>
         <label class="field"><span>17TRACK API key</span>
-          <input id="key" type="password" autocomplete="off" placeholder="Paste the key from 17TRACK → Settings → Security"></label>
+          <input id="key" type="text" class="scm-secret" name="track17-api-key" autocomplete="off" data-lpignore="true" data-1p-ignore spellcheck="false" placeholder="Paste the key from 17TRACK → Settings → Security"></label>
         <div class="field"><span>Track parcels for these stores</span><div id="trackStores" class="scm-store-picks"></div></div>
         <label class="field"><span>Track parcels fulfilled from</span><input type="date" id="trackFrom" class="control"></label>
         <p class="hint">Older parcels use quota too, so start with a recent date.</p>

@@ -165,7 +165,11 @@ $("copyHook").onclick = () => { navigator.clipboard?.writeText($("webhook").text
 $("saveTrack").onclick = async () => {
   const body = { stores: [...$("trackStores").querySelectorAll("input:checked")].map((i) => +i.value), from: $("trackFrom").value,
     dropship: [...$("pageStores").querySelectorAll("[data-drop]:checked")].map((i) => +i.dataset.drop) };
-  if ($("key").value.trim()) body.key = $("key").value.trim();
+  const key = $("key").value.trim();
+  if (key) {
+    if (/\s/.test(key) || key.length < 20) { toast("That doesn't look like a 17TRACK key. Leave the box empty to keep the saved one.", true); return; }
+    body.key = key;
+  }
   const b = $("saveTrack");
   b.disabled = true;
   try {

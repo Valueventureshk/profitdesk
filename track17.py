@@ -54,6 +54,8 @@ async def _post(key: str, path: str, body) -> dict:
             raise TrackError(f"Couldn't reach 17TRACK ({type(e).__name__}).") from e
     if r.status_code == 429:
         raise TrackError("17TRACK is busy (too many requests). It'll retry shortly.")
+    if r.status_code == 401:
+        raise TrackError("17TRACK didn't accept that key. Copy it again from 17TRACK → Settings → Security.")
     if r.status_code >= 400:
         raise TrackError(f"17TRACK error {r.status_code}.")
     out = r.json()
