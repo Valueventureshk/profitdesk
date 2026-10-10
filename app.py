@@ -155,6 +155,33 @@ def _denied(request: Request, user: dict):
     return None
 
 
+def _shopify_launch(request: Request):
+    """The app opened from inside a store's Shopify admin (signed by Shopify): if the
+    store hasn't granted everything ProfitDesk asks for, send it to Shopify's approval
+    screen. Works whichever Shopify login is used, and needs no ProfitDesk login."""
+    q = dict(request.query_params)
+    if request.url.path != "/" or "hmac" not in q or "shop" not in q:
+        return None
+    domain = shop.normalize_domain(q["shop"])
+    keys = _shopify_app(domain)
+    if not keys or not shop.verify_hmac(q, keys):
+        return None
+    store = next((x for x in db.list_stores() if x["shop_domain"] == domain), None)
+    have = _scopes.get(store["id"], (0, set()))[1] if store else set()
+    have = have | {"read_" + g[6:] for g in have if g.startswith("write_")}
+    wanted = set(shop.SCOPES.split(","))
+    if store and wanted <= have:
+        return None
+    state = secrets.token_urlsafe(24)
+    _shopify_states[state] = domain
+    url = shop.install_url(domain, SHOPIFY_REDIRECT, state, keys)
+    # Inside the admin the app may be framed; break out to the top window.
+    return HTMLResponse(f'<!doctype html><meta charset="utf-8"><title>ProfitDesk</title>'
+                        f'<p style="font-family:sans-serif">Opening Shopify\'s permission screen…</p>'
+                        f'<script>window.top.location.href = {json.dumps(url)};</script>'
+                        f'<p><a href="{html.escape(url)}" target="_top">Continue</a></p>')
+
+
 @app.middleware("http")
 async def _require_login(request: Request, call_next):
     path = request.url.path
@@ -162,6 +189,9 @@ async def _require_login(request: Request, call_next):
     request.state.user = user
     if path in _OPEN or path.startswith(("/static/", "/proxy/")):
         return await call_next(request)
+    launched = _shopify_launch(request)
+    if launched:
+        return launched
     if user:
         blocked = _denied(request, user)
         return blocked or await call_next(request)
