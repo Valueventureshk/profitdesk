@@ -897,6 +897,10 @@ def api_inbox_message(message_id: int):
     m["attachments"] = json.loads(m["attachments"] or "[]")
     m.pop("html", None)          # shown as plain text (safe)
     m.pop("ai", None)
+    acct = next((a for a in db.list_mail_accounts() if a["id"] == m["account_id"]), None)
+    m["can_send"] = bool(acct and acct.get("gmail_token"))
+    m["mailbox"] = (acct or {}).get("address", "")
+    m["reply_lang"] = LANG_NAME.get(db.get_setting(f"track_lang:{m['store_id']}") or "en", "English")
     return m
 
 
@@ -1012,6 +1016,44 @@ def _gmail_link(address: str, message_id: str) -> str:
     from urllib.parse import quote
     mid = (message_id or "").strip("<>")
     return f"https://mail.google.com/mail/u/{quote(address)}/#search/rfc822msgid%3A{quote(mid)}" if mid else ""
+
+
+async def _send_reply(acct: dict, to: str, subject: str, text: str, mid: str, refs: str, store_id) -> None:
+    """Send through the mailbox's Gmail, then read it back from Sent."""
+    if not acct or not acct.get("gmail_token"):
+        raise HTTPException(400, "This mailbox isn't signed in for sending yet (Settings → Support mailboxes → Sign in to send).")
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", to or ""):
+        raise HTTPException(400, "There's no email address to reply to.")
+    store = next((x for x in db.list_stores() if x["id"] == store_id), None)
+    thread = await asyncio.to_thread(gmail_send.thread_id, acct["address"], acct["password"], mid or "")
+    try:
+        await gmail_send.send(acct["gmail_token"], acct["address"], (store or {}).get("name", "").strip(), to,
+                              subject or "", text, in_reply_to=mid or "", references=refs or "", thread=thread)
+    except gmail_send.SendError as e:
+        raise HTTPException(400, str(e))
+
+    async def pick_up():
+        await asyncio.sleep(4)
+        a = next((x for x in db.list_mail_accounts() if x["id"] == acct["id"]), None)
+        if a:
+            await _read_mailbox(a)
+            await _sort_mail()
+    asyncio.create_task(pick_up())
+
+
+@app.post("/api/inbox/messages/{message_id}/reply")
+async def api_inbox_message_reply(message_id: int, payload: dict):
+    """Reply to any email in All mail (no ticket needed)."""
+    text = (payload.get("text") or "").strip()
+    if not text:
+        raise HTTPException(400, "Write the reply first.")
+    m = db.mail_get(message_id)
+    if not m:
+        raise HTTPException(404, "That email no longer exists.")
+    acct = next((a for a in db.list_mail_accounts() if a["id"] == m["account_id"]), None)
+    to = m["from_addr"] if m.get("direction", "in") == "in" else m["to_addr"]
+    await _send_reply(acct, (to or "").strip(), m["subject"], text, m["message_id"], m.get("refs"), m["store_id"])
+    return {"ok": True}
 
 
 @app.post("/api/inbox/tickets/{ticket_id}/reply")

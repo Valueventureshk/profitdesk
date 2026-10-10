@@ -113,6 +113,65 @@ function wireTranslate() {
   if (trPref("pdTrAuto", "")) translateMsgs(ids, true);
 }
 
+// ---- Reply box (tickets and plain emails share it)
+function composerHtml(o) {
+  return `<div class="reply-box" data-write-only>
+    <textarea id="tkReply" class="control reply-text" rows="7" placeholder="Write your reply to ${esc(o.name)}…  (Ctrl/⌘ + Enter sends)"></textarea>
+    <div class="reply-bar">
+      ${o.draft ? `<button class="btn btn-sm btn-ghost" id="tkDraft">✦ Draft with AI</button>` : ""}
+      <span class="reply-tr"><button class="btn btn-sm btn-ghost" id="tkTr" title="Translate what's in the box">🌐 Translate to</button><select class="control" id="tkTrLang">${TR_LANGS.map((l) => `<option${l === o.lang ? " selected" : ""}>${l}</option>`).join("")}</select></span>
+      <span class="reply-gap"></span>
+      ${o.gmail ? `<a class="btn btn-sm btn-ghost" href="${esc(o.gmail)}" target="_blank" rel="noopener">Open in Gmail ↗</a>` : ""}
+      <button class="btn btn-primary" id="tkSend"${o.canSend ? "" : " disabled"}>Send</button>
+    </div>
+    <p class="hint reply-note">${o.canSend ? `Sends from <b>${esc(o.mailbox)}</b>. It shows in Gmail too (Sent, same conversation).`
+      : `To send from here, sign <b>${esc(o.mailbox)}</b> in once: Settings → Support mailboxes → <b>Sign in to send</b>. Until then, copy your reply into Gmail.`}</p>
+  </div>`;
+}
+function wireComposer(o) {   // o: {key, sendUrl, draftUrl, onSent}
+  const box = $("tkReply");
+  if (!box) return;
+  try { box.value = sessionStorage.getItem(o.key) || ""; } catch { /* */ }
+  box.oninput = () => { try { sessionStorage.setItem(o.key, box.value); } catch { /* */ } };
+  box.onkeydown = (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); $("tkSend").click(); } };
+  if ($("tkDraft") && o.draftUrl) $("tkDraft").onclick = async () => {
+    const b = $("tkDraft");
+    if (box.value.trim() && !confirm("Replace what's in the reply box with an AI draft?")) return;
+    b.disabled = true; b.textContent = "Writing…";
+    try { const r = await post(o.draftUrl, {}); box.value = r.draft; box.oninput(); box.focus(); }
+    catch (e) { toast(e.message, true); }
+    finally { b.disabled = false; b.textContent = "✦ Draft again"; }
+  };
+  $("tkTr").onclick = async () => {
+    if (!box.value.trim()) return toast("Write the reply first.", true);
+    const b = $("tkTr");
+    b.disabled = true; b.textContent = "Translating…";
+    try {
+      const r = await post("/api/inbox/translate-text", { text: box.value, lang: $("tkTrLang").value });
+      box.value = r.text; box.oninput();
+      toast(`Translated into ${$("tkTrLang").value}. Check it, then Send.`);
+    } catch (e) { toast(e.message, true); }
+    finally { b.disabled = false; b.textContent = "🌐 Translate to"; }
+  };
+  $("tkSend").onclick = async () => {
+    const text = box.value.trim();
+    if (!text) return toast("Write the reply first.", true);
+    const b = $("tkSend");
+    b.disabled = true; b.textContent = "Sending…";
+    try {
+      await post(o.sendUrl, { text });
+      try { sessionStorage.removeItem(o.key); } catch { /* */ }
+      box.value = "";
+      box.closest(".reply-box").insertAdjacentHTML("beforebegin", `<div class="msg out sent-now">
+        <div class="msg-head"><strong>You</strong><span>Sent just now ✓</span></div>
+        <div class="msg-text"><div class="mail-body">${body(text)}</div></div></div>`);
+      toast("Sent. It's in Gmail's Sent folder too.");
+      if (o.onSent) setTimeout(o.onSent, 12000);
+    } catch (e) { toast(e.message, true); }
+    finally { b.disabled = false; b.textContent = "Send"; }
+  };
+}
+
 // The new part of an email, and the earlier conversation it quotes (shown small, folded).
 const ATTRIB = /(\bwrote\s*:|a écrit\s*:|escribió\s*:|schrieb\s*.*:|ha scritto\s*:|-----\s*original message\s*-----|^_{10,}$)/i;
 function splitQuote(text) {
@@ -259,7 +318,9 @@ async function openMail(id) {
     </div>
     ${trBar()}
     ${m.attachments.length ? `<div class="mail-att">${m.attachments.map((a) => `📎 ${esc(a.name)}`).join(" · ")}</div>` : ""}
-    <div class="mail-one" data-mid="${m.id}"><div class="tr-onebar">${trButton(m.id)}</div><div class="msg-text">${mailText(m.text)}</div></div>`;
+    <div class="mail-one" data-mid="${m.id}"><div class="tr-onebar">${trButton(m.id)}</div><div class="msg-text">${mailText(m.text)}</div></div>
+    ${composerHtml({ name: m.from_name || m.from_addr, draft: false, lang: m.reply_lang, canSend: m.can_send, mailbox: m.mailbox })}`;
+  wireComposer({ key: `pdReplyMail:${id}`, sendUrl: `/api/inbox/messages/${id}/reply` });
   trOriginal = new Map([[String(m.id), m.text]]);
   wireTranslate();
   for (const b of $("read").querySelectorAll("[data-make]")) {
@@ -300,18 +361,8 @@ async function openTicket(id) {
         ${trBar()}
         ${t.summary ? `<div class="tk-summary"><b>AI summary</b> ${esc(t.summary)}${t.orders ? ` · orders ${esc(t.orders)}` : ""}</div>` : ""}
         ${thread}
-        <div class="reply-box" data-write-only>
-          <textarea id="tkReply" class="control reply-text" rows="7" placeholder="Write your reply to ${esc(t.customer_name || t.customer_email)}…  (Ctrl/⌘ + Enter sends)"></textarea>
-          <div class="reply-bar">
-            <button class="btn btn-sm btn-ghost" id="tkDraft">✦ Draft with AI</button>
-            <span class="reply-tr"><button class="btn btn-sm btn-ghost" id="tkTr" title="Translate what's in the box">🌐 Translate to</button><select class="control" id="tkTrLang">${TR_LANGS.map((l) => `<option${l === t.reply_lang ? " selected" : ""}>${l}</option>`).join("")}</select></span>
-            <span class="reply-gap"></span>
-            ${t.gmail_link ? `<a class="btn btn-sm btn-ghost" href="${esc(t.gmail_link)}" target="_blank" rel="noopener">Open in Gmail ↗</a>` : ""}
-            <button class="btn btn-primary" id="tkSend"${t.can_send ? "" : " disabled"}>Send</button>
-          </div>
-          <p class="hint reply-note">${t.can_send ? `Sends from <b>${esc(t.mailbox)}</b>. It shows in Gmail too (Sent, same conversation).`
-            : `To send from here, sign <b>${esc(t.mailbox)}</b> in once: Settings → Support mailboxes → <b>Sign in to send</b>. Until then, copy your reply into Gmail.`}</p>
-        </div>
+        ${composerHtml({ name: t.customer_name || t.customer_email, draft: true, lang: t.reply_lang, gmail: t.gmail_link,
+                         canSend: t.can_send, mailbox: t.mailbox })}
       </div>
       <aside class="tk-side">
         <div class="tk-orders" id="tkOrders"><div class="tk-side-label">Orders</div><p class="hint">Looking up…</p></div>
@@ -344,56 +395,8 @@ async function openTicket(id) {
   loadOrders(id);
   trOriginal = new Map(d.messages.map((m) => [String(m.id), m.text]));
   wireTranslate();
-  // Reply box: kept per ticket until sent, so switching tickets doesn't lose it
-  const draftKey = `pdReply:${id}`;
-  const box = $("tkReply");
-  if (box) {
-    try { box.value = sessionStorage.getItem(draftKey) || ""; } catch { /* */ }
-    box.oninput = () => { try { sessionStorage.setItem(draftKey, box.value); } catch { /* */ } };
-    box.onkeydown = (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); $("tkSend").click(); } };
-  }
-  if ($("tkDraft")) $("tkDraft").onclick = async () => {
-    const b = $("tkDraft");
-    if (box.value.trim() && !confirm("Replace what's in the reply box with an AI draft?")) return;
-    b.disabled = true;
-    b.textContent = "Writing…";
-    try {
-      const r = await post(`/api/inbox/tickets/${id}/draft`, {});
-      box.value = r.draft;
-      box.oninput();
-      box.focus();
-    } catch (e) { toast(e.message, true); }
-    finally { b.disabled = false; b.textContent = "✦ Draft again"; }
-  };
-  if ($("tkTr")) $("tkTr").onclick = async () => {
-    if (!box.value.trim()) return toast("Write the reply first.", true);
-    const b = $("tkTr");
-    b.disabled = true; b.textContent = "Translating…";
-    try {
-      const r = await post("/api/inbox/translate-text", { text: box.value, lang: $("tkTrLang").value });
-      box.value = r.text; box.oninput();
-      toast(`Translated into ${$("tkTrLang").value}. Check it, then Send.`);
-    } catch (e) { toast(e.message, true); }
-    finally { b.disabled = false; b.textContent = "🌐 Translate to"; }
-  };
-  if ($("tkSend")) $("tkSend").onclick = async () => {
-    const text = box.value.trim();
-    if (!text) return toast("Write the reply first.", true);
-    const b = $("tkSend");
-    b.disabled = true; b.textContent = "Sending…";
-    try {
-      await post(`/api/inbox/tickets/${id}/reply`, { text });
-      try { sessionStorage.removeItem(draftKey); } catch { /* */ }
-      box.value = "";
-      // show it in the conversation straight away; the real copy comes back from Gmail's Sent in a moment
-      box.closest(".reply-box").insertAdjacentHTML("beforebegin", `<div class="msg out sent-now">
-        <div class="msg-head"><strong>You</strong><span>Sent just now ✓</span></div>
-        <div class="msg-text"><div class="mail-body">${body(text)}</div></div></div>`);
-      toast("Sent. It's in Gmail's Sent folder too.");
-      setTimeout(() => { if (current && current.type === "ticket" && current.id === id) { openTicket(id); refresh(); } }, 12000);
-    } catch (e) { toast(e.message, true); }
-    finally { b.disabled = false; b.textContent = "Send"; }
-  };
+  wireComposer({ key: `pdReply:${id}`, sendUrl: `/api/inbox/tickets/${id}/reply`, draftUrl: `/api/inbox/tickets/${id}/draft`,
+                  onSent: () => { if (current && current.type === "ticket" && current.id === id) { openTicket(id); refresh(); } } });
   const act = async (payload, msg) => {
     try { await post(`/api/inbox/tickets/${id}`, payload); toast(msg); refresh(); openTicket(id); }
     catch (e) { toast(e.message, true); }
