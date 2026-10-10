@@ -3,14 +3,14 @@
 
 const $ = (id) => document.getElementById(id);
 const VIEWS = [
-  ["all", "All"], ["awaiting", "Waiting for tracking"], ["pending", "Pending"], ["info_received", "Info received"],
+  ["all", "All"], ["awaiting", "Waiting for tracking"], ["untracked", "Not tracked"], ["pending", "Pending"], ["info_received", "Info received"],
   ["in_transit", "In transit"], ["out_for_delivery", "Out for delivery"], ["pickup", "Ready for pickup"],
   ["delivered", "Delivered"], ["exception", "Exception"], ["stuck", "Stuck"], ["cancelled", "Cancelled"],
 ];
 const LABEL = {
   awaiting: "Waiting for tracking", pending: "Pending", info_received: "Info received", in_transit: "In transit",
   out_for_delivery: "Out for delivery", pickup: "Ready for pickup", delivered: "Delivered", exception: "Exception",
-  failed_attempt: "Failed attempt", expired: "Expired",
+  failed_attempt: "Failed attempt", expired: "Expired", untracked: "Not tracked",
 };
 let state = { view: "all", page: 1 };
 let data = null;
@@ -93,7 +93,7 @@ function render() {
     return `<tr data-id="${r.id}"><td class="name"><strong>${esc(r.order_name)}</strong><span class="sub">${esc(r.store)}</span></td>
       <td class="mono">${tn}${r.last_mile_number && r.last_mile_number !== r.number ? `<span class="sub">${esc(r.last_mile)} ${esc(r.last_mile_number)}</span>` : ""}</td>
       <td>${esc(carrier)}${r.last_mile && r.last_mile !== carrier ? `<span class="sub">→ ${esc(r.last_mile)}</span>` : ""}</td>
-      <td class="scm-lastcell">${last}</td><td class="mono">${transit}</td><td>${when(r.order_at)}</td><td>${chip(r.status)}</td></tr>`;
+      <td class="scm-lastcell">${last}</td><td class="mono">${transit}</td><td>${when(r.order_at)}</td><td>${chip(r.number && !r.registered ? "untracked" : r.status)}</td></tr>`;
   }).join("") || `<tr><td colspan="7" class="hint">Nothing here.</td></tr>`}</tbody>`;
   for (const tr of $("table").querySelectorAll("[data-id]")) tr.onclick = () => openShipment(tr.dataset.id);
 
@@ -110,7 +110,7 @@ async function openShipment(id) {
   $("dTitle").innerHTML = `${esc(s.order_name)} <span class="sub">${esc(s.store)}</span>`;
   const events = s.events || [];
   $("dBody").innerHTML = `
-    <div class="scm-d-top">${chip(s.status)}${s.shopify_url ? ` <a class="btn btn-sm btn-ghost" href="${esc(s.shopify_url)}" target="_blank" rel="noopener">Open in Shopify</a>` : ""}</div>
+    <div class="scm-d-top">${chip(s.number && !s.registered ? "untracked" : s.status)}${s.shopify_url ? ` <a class="btn btn-sm btn-ghost" href="${esc(s.shopify_url)}" target="_blank" rel="noopener">Open in Shopify</a>` : ""}</div>
     <dl class="scm-facts">
       <dt>Customer</dt><dd>${esc(s.customer || "–")}<span class="sub">${esc(s.email || "")}</span></dd>
       <dt>Ship to</dt><dd>${esc([s.city, s.country].filter(Boolean).join(", ") || "–")}</dd>

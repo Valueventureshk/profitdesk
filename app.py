@@ -2141,7 +2141,8 @@ def scm_page():
 SCM_VIEWS = {
     "all": None,
     "awaiting": "s.status = 'awaiting'",
-    "pending": "s.status = 'pending'",
+    "untracked": "s.number != '' AND s.registered = 0",
+    "pending": "s.status = 'pending' AND s.registered = 1",
     "info_received": "s.status = 'info_received'",
     "in_transit": "s.status = 'in_transit'",
     "out_for_delivery": "s.status = 'out_for_delivery'",
@@ -2149,7 +2150,7 @@ SCM_VIEWS = {
     "delivered": "s.status = 'delivered'",
     "exception": "s.status IN ('exception', 'failed_attempt', 'expired')",
     # Moving nowhere: no carrier update for 7 days, or no tracking 5 days after the order.
-    "stuck": "((s.status IN ('info_received', 'in_transit', 'pending') AND s.number != ''"
+    "stuck": "((s.status IN ('info_received', 'in_transit', 'pending') AND s.number != '' AND s.registered = 1"
              " AND COALESCE(s.last_event_at, s.fulfilled_at) < :stuck_since)"
              " OR (s.status = 'awaiting' AND s.order_at < :late_since))",
 }
