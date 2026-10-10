@@ -24,6 +24,7 @@ One request per email, answered in a fixed JSON shape (structured output):
 The key is the owner's Anthropic API key, pasted in Settings → AI.
 """
 import json
+import re
 
 import anthropic
 
@@ -165,3 +166,24 @@ async def translate(api_key: str, texts: list, language: str = "English") -> lis
     if len(out) != len(texts):
         raise ValueError("The translation came back incomplete. Try again.")
     return out
+
+
+_ATTRIB = re.compile(r"(\bwrote\s*:|a écrit\s*:|escribió\s*:|schrieb.*:|ha scritto\s*:|-----\s*original message\s*-----|^_{10,}$)", re.I)
+_LEAD = re.compile(r"^(on|le|el|am)\b", re.I)
+
+
+def new_part(text: str) -> str:
+    """The email without the earlier conversation it quotes (same rules as the Inbox screen)."""
+    lines = (text or "").replace("﻿", "").splitlines()
+    for i, raw in enumerate(lines):
+        l = raw.strip()
+        if _ATTRIB.search(l):
+            if i > 0 and _LEAD.match(lines[i - 1].strip()) and not _LEAD.match(l):
+                i -= 1
+            return "\n".join(lines[:i]).rstrip()
+        if re.match(r"^(from|de|von)\s*:", l, re.I) and any(
+                re.match(r"^(sent|envoyé|enviado|date|gesendet)\s*:", x.strip(), re.I) for x in lines[i + 1:i + 4]):
+            return "\n".join(lines[:i]).rstrip()
+        if l.startswith(">") and sum(1 for x in lines[i:i + 3] if x.strip().startswith(">")) >= 2:
+            return "\n".join(lines[:i]).rstrip()
+    return (text or "").rstrip()

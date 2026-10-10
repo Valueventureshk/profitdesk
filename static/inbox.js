@@ -68,7 +68,11 @@ async function translateMsgs(ids, quiet) {
     for (const id of ids) {
       const box = document.querySelector(`[data-mid="${id}"]`), t = d.translations[String(id)];
       if (!box || t === undefined) continue;
-      box.querySelector(".msg-text").innerHTML = mailText(t);
+      // translated new part + the original quoted history (its own email above gets translated too)
+      const orig = splitQuote(trOriginal.get(String(id)) || "");
+      box.querySelector(".msg-text").innerHTML = `<div class="mail-body">${body(splitQuote(t).main)}</div>` + (orig.quote ? `
+        <div class="mail-quote"><div class="mail-quote-head">↩ ${esc(orig.head || "Earlier message")}</div>
+        <div class="mail-body">${body(orig.quote)}</div></div>` : "");
       box.classList.add("translated");
       box.dataset.lang = lang;
       const b = box.querySelector("[data-tr]");

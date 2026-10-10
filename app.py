@@ -912,30 +912,31 @@ async def api_inbox_translate(ids: str, lang: str = "English"):
             f"SELECT message_id, text FROM mail_translations WHERE lang = ? AND message_id IN ({marks})", (lang, *wanted))}
         todo = [dict(r) for r in con.execute(
             f"SELECT id, text FROM mail_messages WHERE id IN ({marks})", wanted) if r[0] not in done]
-    todo = [m for m in todo if (m["text"] or "").strip()]
+    # Only the new part of each email: the quoted history is the earlier emails, translated on their own.
+    todo = [{"id": m["id"], "text": ai_brain.new_part(m["text"])} for m in todo]
+    todo = [m for m in todo if m["text"].strip()]
     if todo:
         key = db.get_setting("anthropic_api_key")
         if not key:
             raise HTTPException(400, "Add the Anthropic API key in Settings → AI first.")
-        batch, size = [], 0
-        batches = []
-        for m in todo:                                # ~25k characters per AI call
-            if batch and size + len(m["text"]) > 25000:
-                batches.append(batch); batch, size = [], 0
-            batch.append(m); size += len(m["text"])
-        batches.append(batch)
-        for b in batches:
+
+        async def one(m):                               # every email at the same time
             try:
-                out = await ai_brain.translate(key, [m["text"] for m in b], lang)
+                return m, (await ai_brain.translate(key, [m["text"]], lang))[0], None
             except anthropic.AuthenticationError:
-                raise HTTPException(400, "Anthropic didn't accept the API key (Settings → AI).")
+                return m, None, "Anthropic didn't accept the API key (Settings → AI)."
             except (anthropic.APIError, ValueError) as e:
-                raise HTTPException(400, f"Couldn't translate right now: {str(e)[:150]}")
-            with db._conn() as con:
-                for m, t in zip(b, out):
+                return m, None, "Couldn't translate right now: " + str(e)[:150]
+        results = await asyncio.gather(*[one(m) for m in todo])
+        with db._conn() as con:
+            for m, t, err in results:
+                if t is not None:
                     con.execute("INSERT OR REPLACE INTO mail_translations (message_id, lang, text) VALUES (?, ?, ?)",
                                 (m["id"], lang, t))
                     done[m["id"]] = t
+        errs = [e for _, t, e in results if e]
+        if errs and not done:
+            raise HTTPException(400, errs[0])
     return {"translations": {str(k): v for k, v in done.items()}}
 
 
