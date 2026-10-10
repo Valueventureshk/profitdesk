@@ -40,6 +40,37 @@ function when(iso) {
     : d.toLocaleDateString(undefined, { day: "numeric", month: "short" });
 }
 // Long links in emails (Gmail, tracking, Shopify) shown short but still clickable.
+// The new part of an email, and the earlier conversation it quotes (shown small, folded).
+const ATTRIB = /(\bwrote\s*:|a écrit\s*:|escribió\s*:|schrieb\s*.*:|ha scritto\s*:|-----\s*original message\s*-----|^_{10,}$)/i;
+function splitQuote(text) {
+  const lines = String(text || "").replace(/\ufeff/g, "").split(/\r?\n/);
+  let cut = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i].trim();
+    if (ATTRIB.test(l)) { cut = i; if (i > 0 && /^(on|le|el|am)\b/i.test(lines[i - 1].trim()) && !/^(on|le|el|am)\b/i.test(l)) cut = i - 1; break; }
+    if (/^(from|de|von)\s*:/i.test(l) && lines.slice(i + 1, i + 4).some((x) => /^(sent|envoyé|enviado|date|gesendet)\s*:/i.test(x.trim()))) { cut = i; break; }
+    if (l.startsWith(">") && lines.slice(i, i + 3).filter((x) => x.trim().startsWith(">")).length >= 2) { cut = i; break; }
+  }
+  if (cut < 0) return { main: text, quote: "", head: "" };
+  const main = lines.slice(0, cut).join("\n").replace(/\s+$/, "");
+  const rest = lines.slice(cut);
+  const head = ATTRIB.test(rest[0]) || /^(on|le|el|am)\b/i.test(rest[0].trim()) ? rest.shift().trim().replace(/^>\s?/, "") : "";
+  if (head && rest.length && /(wrote|a écrit|escribió)\s*:\s*$/i.test(rest[0]) && !ATTRIB.test(head)) rest.shift();
+  const quote = rest.map((l) => l.replace(/^(\s*>)+\s?/, "")).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  return { main: main || "(no new text)", quote, head };
+}
+function mailText(text) {
+  const { main, quote, head } = splitQuote(text);
+  return `<div class="mail-body">${body(main)}</div>` + (quote ? `
+    <div class="mail-quote" title="Click to show or hide the earlier message">
+      <div class="mail-quote-head">↩ ${esc(head || "Earlier message")}</div>
+      <div class="mail-body">${body(quote)}</div></div>` : "");
+}
+document.addEventListener("click", (e) => {
+  const q = e.target.closest(".mail-quote");
+  if (q && !e.target.closest("a")) q.classList.toggle("open");
+});
+
 function body(text) {
   return esc(text || "(empty)").replace(/https?:\/\/[^\s<>"]+/g, (url) => {
     let label = url;
@@ -132,7 +163,7 @@ async function openMail(id) {
       <button class="btn btn-sm btn-ghost" data-make="legal">Legal</button>
     </div>
     ${m.attachments.length ? `<div class="mail-att">${m.attachments.map((a) => `📎 ${esc(a.name)}`).join(" · ")}</div>` : ""}
-    <div class="mail-body">${body(m.text)}</div>`;
+    ${mailText(m.text)}`;
   for (const b of $("read").querySelectorAll("[data-make]")) {
     b.onclick = async () => {
       try {
@@ -155,10 +186,10 @@ async function openTicket(id) {
   const labels = (t.labels || "").split(",").filter(Boolean);
   const snoozed = t.snoozed_until && new Date(t.snoozed_until) > new Date();
   const thread = d.messages.map((m) => `
-    <div class="msg ${m.direction === "out" ? "out" : ""}">
+    <div class="msg ${m.direction === "out" ? "out" : "in"}">
       <div class="msg-head"><strong>${m.direction === "out" ? "You" : esc(m.from_name || m.from_addr)}</strong>
         <span>${full(m.date)}</span></div>
-      <div class="mail-body">${body(m.text)}</div>
+      ${mailText(m.text)}
       ${m.attachments.length ? `<div class="mail-att">${m.attachments.map((a) => `📎 ${esc(a.name)}`).join(" · ")}</div>` : ""}
     </div>`).join("");
   $("read").innerHTML = `

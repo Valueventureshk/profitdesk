@@ -681,8 +681,22 @@ body.read-only [data-write-only] { display: none !important; }
 .tk-layout { display: grid; grid-template-columns: minmax(0, 1fr) 220px; gap: 22px; }
 .tk-summary { background: #F8FAFC; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
   font-size: 13px; margin-bottom: 14px; }
-.msg { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; }
-.msg.out { background: #F8FAFC; margin-left: 36px; }
+.msg { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; background: var(--panel); }
+.msg.in { background: #F0FAF4; border-color: #CDEBD9; margin-right: 36px; }
+.msg.out { margin-left: 36px; }
+[data-theme="dark"] .msg.in { background: rgba(16,185,129,.08); border-color: rgba(16,185,129,.25); }
+.mail-quote { margin-top: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--line-soft); padding: 6px 10px;
+  cursor: pointer; position: relative; max-height: 78px; overflow: hidden; }
+.mail-quote::after { content: "Show earlier message ▾"; position: absolute; left: 0; right: 0; bottom: 0; padding: 14px 10px 5px;
+  font-size: 11px; font-weight: 600; color: var(--muted); background: linear-gradient(transparent, var(--line-soft) 55%); }
+.mail-quote.open { max-height: none; }
+.mail-quote.open::after { content: "Hide ▴"; position: static; display: block; padding: 4px 0 0; background: none; }
+.mail-quote-head { font-size: 11px; color: var(--muted); margin-bottom: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mail-quote .mail-body { font-size: 12px !important; line-height: 1.45; color: var(--muted); }
+.msg.in .mail-quote { background: rgba(255,255,255,.55); }
+.msg.in .mail-quote::after { background: linear-gradient(transparent, #F7FCF9 55%); }
+[data-theme="dark"] .msg.in .mail-quote { background: rgba(0,0,0,.15); }
+[data-theme="dark"] .msg.in .mail-quote::after { background: linear-gradient(transparent, #18231f 55%); }
 .msg-head { display: flex; justify-content: space-between; gap: 10px; font-size: 12.5px; margin-bottom: 6px; }
 .msg-head span { color: var(--faint); }
 .msg .mail-body { font-size: 13.5px; }
