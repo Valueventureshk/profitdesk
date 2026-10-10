@@ -740,6 +740,7 @@ body.read-only [data-write-only] { display: none !important; }
 .att { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--panel); display: grid; }
 .att-img a:first-child { display: block; aspect-ratio: 4 / 3; background: var(--line-soft); }
 .att-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.att-noprev::after { content: "No preview"; display: grid; place-items: center; height: 100%; color: var(--muted); font-size: 12px; }
 .att-ico { display: grid; place-items: center; aspect-ratio: 4 / 3; background: var(--line-soft); color: var(--muted);
   font-weight: 700; font-size: 15px; letter-spacing: .05em; text-decoration: none; }
 .att-meta { display: grid; grid-template-columns: 1fr auto; grid-template-rows: auto auto; column-gap: 6px; padding: 6px 8px; font-size: 11.5px; }

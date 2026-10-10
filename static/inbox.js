@@ -277,9 +277,10 @@ function attGrid(m) {
     : /zip|compressed/.test(t) ? "ZIP" : /video/.test(t) ? "VID" : (n.split(".").pop() || "FILE").slice(0, 4).toUpperCase());
   return `<div class="att-grid">${list.map((a, i) => {
     const url = `/api/inbox/attachments/${m.id}/${i}`;
-    const img = /^image\/(png|jpe?g|gif|webp)$/.test(a.type || "");
+    const img = /^image\//.test(a.type || "") || /\.(heic|heif)$/i.test(a.name || "");
+    const heic = /heic|heif/i.test((a.type || "") + (a.name || ""));
     return `<div class="att${img ? " att-img" : ""}">
-      ${img ? `<a href="${url}" target="_blank" rel="noopener" title="Open full size"><img src="${url}" alt="${esc(a.name)}" loading="lazy"></a>`
+      ${img ? `<a href="${url}${heic ? "?jpeg=1" : ""}" target="_blank" rel="noopener" title="Open full size"><img src="${url}?thumb=1" alt="${esc(a.name)}" loading="lazy" onerror="this.parentNode.classList.add('att-noprev');this.remove()"></a>`
             : `<a class="att-ico" href="${url}${/pdf/.test(a.type || "") ? "" : "?download=1"}" target="_blank" rel="noopener">${icon(a.type || "", a.name || "")}</a>`}
       <div class="att-meta"><span title="${esc(a.name)}">${esc(a.name)}</span><small>${a.size ? size(a.size) : ""}</small>
         <a href="${url}?download=1" title="Download">⬇</a></div></div>`;

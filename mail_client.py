@@ -202,7 +202,7 @@ def fetch_history(address: str, password: str, days: int, folder: str = "INBOX",
     return count
 
 
-def fetch_attachment(address: str, password: str, message_id: str, index: int, provider: str = "google") -> tuple:
+def fetch_attachment(address: str, password: str, message_id: str, index, provider: str = "google"):
     """One attachment of an email, straight from Gmail: (file name, type, bytes).
     index counts the email's attachments in the same order as _attachments()."""
     mid = (message_id or "").strip().strip("<>")
@@ -232,6 +232,8 @@ def fetch_attachment(address: str, password: str, message_id: str, index: int, p
         raise _explain(e, "fetch the attachment")
     msg = email.message_from_bytes(raw, policy=email.policy.default)
     parts = [p for p in msg.walk() if p.get_filename()]
+    if index is None:                     # all of them (one trip to Gmail for the whole email)
+        return [(p.get_filename(), p.get_content_type(), p.get_payload(decode=True) or b"") for p in parts]
     if index < 0 or index >= len(parts):
         raise MailError("That attachment isn't in the email.")
     p = parts[index]

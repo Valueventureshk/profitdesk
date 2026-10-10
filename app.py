@@ -832,8 +832,60 @@ def _att_cleanup():
                 pass
 
 
+_att_gate = asyncio.Semaphore(3)          # at most 3 emails fetched from Gmail at once
+_att_locks: dict = {}
+
+
+async def _att_cached(m: dict) -> str:
+    """Folder with every attachment of this email, fetched from Gmail once (whole email in one trip)."""
+    folder = os.path.join(ATT_DIR, str(m["id"]))
+    if os.path.exists(os.path.join(folder, ".done")):
+        return folder
+    lock = _att_locks.setdefault(m["id"], asyncio.Lock())
+    async with lock:
+        if os.path.exists(os.path.join(folder, ".done")):
+            return folder
+        acct = next((a for a in db.list_mail_accounts() if a["id"] == m["account_id"]), None)
+        if not acct:
+            raise HTTPException(404, "That mailbox was removed.")
+        async with _att_gate:
+            try:
+                parts = await asyncio.to_thread(mail_client.fetch_attachment, acct["address"], acct["password"],
+                                                m["message_id"], None)
+            except mail_client.MailError as e:
+                raise HTTPException(400, str(e))
+        os.makedirs(folder, exist_ok=True)
+        for i, (_n, _t, data) in enumerate(parts):
+            with open(os.path.join(folder, str(i)), "wb") as f:
+                f.write(data)
+        open(os.path.join(folder, ".done"), "w").close()
+        if random.random() < 0.05:
+            asyncio.get_running_loop().run_in_executor(None, _att_cleanup)
+    _att_locks.pop(m["id"], None)
+    return folder
+
+
+def _att_image(path: str, out: str, size: int) -> bool:
+    """A JPEG copy of a photo (also iPhone HEIC), at most `size` pixels wide/high."""
+    try:
+        from PIL import Image, ImageOps
+        try:
+            import pillow_heif
+            pillow_heif.register_heif_opener()
+        except ImportError:
+            pass
+        with Image.open(path) as im:
+            im = ImageOps.exif_transpose(im)
+            im.thumbnail((size, size))
+            im.convert("RGB").save(out, "JPEG", quality=82)
+        return True
+    except Exception:
+        return False
+
+
 @app.get("/api/inbox/attachments/{message_id}/{index}")
-async def api_inbox_attachment(message_id: int, index: int, download: int = 0):
+async def api_inbox_attachment(message_id: int, index: int, download: int = 0, thumb: int = 0, jpeg: int = 0):
+    """download=1 the original file; thumb=1 a small JPEG preview; jpeg=1 a full-size JPEG (for HEIC photos)."""
     m = db.mail_get(message_id)
     if not m:
         raise HTTPException(404, "That email no longer exists.")
@@ -841,29 +893,28 @@ async def api_inbox_attachment(message_id: int, index: int, download: int = 0):
     if index < 0 or index >= len(info):
         raise HTTPException(404, "That attachment isn't in the email.")
     meta = info[index]
-    folder = os.path.join(ATT_DIR, str(message_id))
+    folder = await _att_cached(m)
     path = os.path.join(folder, str(index))
-    if os.path.exists(path):
-        with open(path, "rb") as f:
-            data = f.read()
-        os.utime(path)                                   # opened again: keep it longer
-        ctype = meta.get("type") or "application/octet-stream"
-    else:
-        acct = next((a for a in db.list_mail_accounts() if a["id"] == m["account_id"]), None)
-        if not acct:
-            raise HTTPException(404, "That mailbox was removed.")
-        try:
-            _name, ctype, data = await asyncio.to_thread(mail_client.fetch_attachment, acct["address"], acct["password"],
-                                                         m["message_id"], index)
-        except mail_client.MailError as e:
-            raise HTTPException(400, str(e))
-        os.makedirs(folder, exist_ok=True)
-        with open(path, "wb") as f:
-            f.write(data)
-        if random.random() < 0.05:
-            asyncio.get_running_loop().run_in_executor(None, _att_cleanup)
+    if not os.path.exists(path):
+        raise HTTPException(404, "That attachment isn't in the email.")
+    os.utime(path)                                       # opened again: keep it longer
     from urllib.parse import quote
     name = meta.get("name") or "attachment"
+    ctype = meta.get("type") or "application/octet-stream"
+    if (thumb or jpeg) and not download:
+        out = f"{path}.{'thumb' if thumb else 'full'}.jpg"
+        if not os.path.exists(out):
+            ok = await asyncio.to_thread(_att_image, path, out, 480 if thumb else 2400)
+            if not ok:
+                raise HTTPException(415, "No preview for this file.")
+        with open(out, "rb") as f:
+            data = f.read()
+        return Response(data, media_type="image/jpeg", headers={
+            "Content-Disposition": f"inline; filename*=UTF-8''{quote(name.rsplit('.', 1)[0] + '.jpg')}",
+            "X-Content-Type-Options": "nosniff", "Cache-Control": "private, max-age=86400",
+            "Content-Security-Policy": "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox"})
+    with open(path, "rb") as f:
+        data = f.read()
     inline = ctype in ATT_INLINE and not download
     headers = {"Content-Disposition": f"{'inline' if inline else 'attachment'}; filename*=UTF-8''{quote(name)}",
                "X-Content-Type-Options": "nosniff", "Cache-Control": "private, max-age=86400"}

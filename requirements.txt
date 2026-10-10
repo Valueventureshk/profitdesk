@@ -6,3 +6,5 @@ tzdata>=2024.1
 pypdf>=5.0
 anthropic>=1.12
 python-multipart==0.0.20
+Pillow>=10.4
+pillow-heif>=0.18
