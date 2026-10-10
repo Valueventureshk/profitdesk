@@ -894,6 +894,7 @@ body.read-only [data-write-only] { display: none !important; }
   font-family: Inter, -apple-system, BlinkMacSystemFont, "San Francisco", "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
   font-feature-settings: "tnum" 1, "cv11" 1; letter-spacing: -0.005em; }
 .scm-body .scm-table { font-size: 13px; }
+.scm-table th, .scm-table td { text-align: left; }
 .scm-body .scm-table th { font-weight: 550; font-size: 12px; text-transform: none; letter-spacing: 0; }
 .scm-body .scm-table .mono { font-size: 13px; }
 .scm-body .scm-tile strong { font-weight: 650; font-size: 22px; }
