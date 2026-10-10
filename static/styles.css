@@ -927,20 +927,20 @@ body.read-only [data-write-only] { display: none !important; }
   .scm-filters select.control { font-size: 12.5px; height: 30px; padding: 0 26px 0 10px; background-position: right 10px center; }
 }
 
-.scm-credits { display: grid; grid-template-columns: auto 1fr auto; gap: 8px 18px; align-items: center;
-  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 16px; margin-bottom: 12px; }
-.scm-credits-main { display: flex; align-items: baseline; gap: 8px; }
-.scm-credits-main .t { font-size: 12px; color: var(--muted); }
-.scm-credits-main strong { font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; color: var(--ink); }
-.scm-credits-main .of { font-size: 12px; color: var(--faint); }
-.scm-credits-bar { height: 6px; background: var(--line-soft); border-radius: 999px; overflow: hidden; }
-.scm-credits-bar i { display: block; height: 100%; background: var(--up); border-radius: 999px; transition: width .4s ease; }
-.scm-credits-note { font-size: 12.5px; color: var(--muted); }
-.scm-credits-note a { margin-left: 8px; color: var(--ink); font-weight: 600; }
+.scm-credits { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 999px; padding: 6px 14px; margin-bottom: 10px; font-size: 12px; }
+.scm-credits-main { display: flex; align-items: baseline; gap: 5px; }
+.scm-credits-main .t { color: var(--muted); }
+.scm-credits-main strong { font-size: 13px; font-weight: 650; font-variant-numeric: tabular-nums; color: var(--ink); }
+.scm-credits-main .of { color: var(--faint); }
+.scm-credits-bar { flex: 0 0 80px; height: 4px; background: var(--line-soft); border-radius: 999px; overflow: hidden; }
+.scm-credits-bar i { display: block; height: 100%; background: var(--up); border-radius: 999px; }
+.scm-credits-note { color: var(--muted); }
+.scm-credits-note a { margin-left: 6px; color: var(--ink); font-weight: 600; }
 .scm-credits.low { border-color: var(--down); background: rgba(220,38,38,.06); }
 .scm-credits.low .scm-credits-main strong, .scm-credits.low b { color: var(--down); }
 .scm-credits.low .scm-credits-bar i { background: var(--down); }
-@media (max-width: 700px) { .scm-credits { grid-template-columns: 1fr; } }
+@media (max-width: 700px) { .scm-credits { border-radius: 12px; } }
 
 :root[data-theme="dark"] {
   --bg: #0E1116; --panel: #161B22; --ink: #E6EDF3; --muted: #9BA5B4; --faint: #6E7A8A;

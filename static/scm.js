@@ -320,10 +320,10 @@ async function loadCredits() {
   const pct = c.total ? Math.max(0, Math.min(100, (c.left / c.total) * 100)) : 0;
   box.className = "scm-credits" + (c.low ? " low" : "");
   box.innerHTML = `<div class="scm-credits-main"><span class="t">17TRACK credits</span>
-      <strong>${(c.left ?? 0).toLocaleString()}</strong><span class="of">left of ${(c.total ?? 0).toLocaleString()}</span></div>
+      <strong>${(c.left ?? 0).toLocaleString()}</strong><span class="of">/ ${(c.total ?? 0).toLocaleString()}</span></div>
     <div class="scm-credits-bar"><i style="width:${pct}%"></i></div>
-    <div class="scm-credits-note">${c.low ? `<b>Running low. Top up now</b> so new parcels keep being tracked.`
-      : `${c.queued ? `${c.queued.toLocaleString()} parcels queued to send · ` : ""}${c.per_day ? `about ${c.per_day.toLocaleString()} new parcels a day` : ""}${c.days_left != null ? ` · lasts about ${c.days_left} days` : ""}`}
+    <div class="scm-credits-note">${c.low ? `<b>Running low, top up now</b>`
+      : `${c.days_left != null ? `lasts ~${c.days_left} days` : ""}${c.queued ? ` · ${c.queued.toLocaleString()} queued` : ""}`}
       <a href="https://api.17track.net/en" target="_blank" rel="noopener">Top up ↗</a></div>`;
 }
 
