@@ -153,13 +153,3 @@ def change(address: str, password: str, message_id: str, label: str, add: bool =
     except OSError as e:
         raise LabelError(f"Couldn't reach Gmail ({type(e).__name__})")
 
-
-def sample(address: str, password: str, n: int = 3) -> list:
-    """A few raw label answers from Gmail (for checking the reader)."""
-    m, rows = _open(address, password)
-    with m:
-        since = (datetime.now() - timedelta(days=10)).strftime("%d-%b-%Y")
-        typ, data = m.uid("search", None, f"SINCE {since}")
-        uids = (data[0] or b"").split()[-n:]
-        typ, got = m.uid("fetch", b",".join(uids).decode(), "(X-GM-LABELS BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])")
-        return [repr(p)[:400] for p in got or []]
