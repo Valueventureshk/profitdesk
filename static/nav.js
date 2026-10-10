@@ -136,6 +136,7 @@ window.PDUrl = {
     document.body.classList.toggle("rail-slim", folded);
     document.body.prepend(rail);
     document.body.classList.add("has-rail");
+    window.dispatchEvent(new Event("pd-rail"));
     rail.querySelector("[data-rail-fold]").onclick = () => {
       folded = !document.body.classList.contains("rail-slim");
       document.body.classList.toggle("rail-slim", folded);

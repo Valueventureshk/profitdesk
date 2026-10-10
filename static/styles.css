@@ -1058,6 +1058,14 @@ body.read-only [data-write-only] { display: none !important; }
   body.has-rail { padding-left: 228px; }
   body.has-rail [data-section-menu] { display: none; }
   body.has-rail .layout .sidebar { top: 0; }
+  /* The dashboard's store list column gives way to two dropdowns in the top bar */
+  body.has-rail .layout { grid-template-columns: 1fr; }
+  body.has-rail .layout > .sidebar { display: none; }
+  .top-picks { display: inline-flex; gap: 8px; align-items: center; }
+  .top-picks .view-pick, .top-picks .store-pick { display: block; width: auto; min-width: 150px; max-width: 220px; }
+  .top-picks .view-pick { font-weight: 600; background: var(--tint); color: #065F46; border-color: #A7F3D0; }
+  [data-theme="dark"] .top-picks .view-pick { color: var(--up); border-color: rgba(52,211,153,.35); }
+  .top-picks .view-pick[hidden] { display: none; }
   .pd-rail-brand { display: flex; align-items: center; gap: 9px; color: #fff; text-decoration: none; font-weight: 650;
     padding: 4px 10px 16px; letter-spacing: -.01em; }
   .pd-rail-brand .brand-mark { background: #fff; color: #1A1A1A; }

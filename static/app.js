@@ -259,7 +259,19 @@ function renderFxNote(d) {
   el.hidden = false;
 }
 
+// Desktop with the dark sidebar: the store list column goes; its two dropdowns sit in the top bar.
+function placePickers() {
+  if (!document.body.classList.contains("has-rail") || $("topPicks")) return;
+  const box = document.createElement("span");
+  box.id = "topPicks";
+  box.className = "top-picks";
+  box.append($("viewPick"), $("storePick"));
+  document.querySelector(".topbar .controls").prepend(box);
+}
+window.addEventListener("pd-rail", placePickers);
+
 function renderNav() {
+  placePickers();
   const stores = state.setup.stores;
   const parts = [];
 
