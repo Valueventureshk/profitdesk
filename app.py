@@ -2570,8 +2570,10 @@ async def _storefront_plan(store: dict, apply: bool) -> dict:
     data = await client.gql(STOREFRONT_Q)
     menus, pages = data["menus"]["nodes"], data["pages"]["nodes"]
     redirects = {r["path"].lower(): r["target"] for r in data["urlRedirects"]["nodes"]}
-    track_pages = {p["handle"] for p in pages if "track" in p["handle"].lower() or "track" in p["title"].lower()
-                   or "suivi" in p["handle"].lower() or "seguimiento" in p["handle"].lower()}
+    # Only real order-tracking pages (not e.g. a product page with "tracking" in its name).
+    track_pages = {p["handle"] for p in pages if re.fullmatch(
+        r"(order-)?track(ing)?(-(your|my))?(-order)?|order-tracking|track-order(s)?|seguimiento(-del?-pedido)?"
+        r"|rastre(ar|o)(-(tu|mi))?(-pedido)?|suivi(-de)?(-(la|ma|votre))?(-commande)?", p["handle"].lower())}
     lang = db.get_setting(f"track_lang:{store['id']}") or "en"
     actions, errors = [], []
 
