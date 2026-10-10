@@ -54,6 +54,7 @@
     <section id="page-edit" hidden>
       <div class="sc-edbar panel">
         <button class="btn btn-ghost" id="edBack">← Back</button>
+        <span class="sc-ico sc-ico-lg" id="edIcon"></span>
         <input id="edName" class="control" placeholder="Size chart name">
         <select id="edStatus" class="control"><option value="active">Active</option><option value="draft">Draft</option></select>
         <button class="btn btn-primary" id="edSave" data-write-only>Save</button>
@@ -117,6 +118,14 @@
   <div class="sc-dlgbtns"><button class="btn btn-ghost" id="aiCancel">Cancel</button><button class="btn btn-primary" id="aiGo">Read the chart</button></div>
 </dialog>
 
+<!-- new chart: template gallery -->
+<dialog id="newDlg" class="sc-dlg sc-dlg-wide">
+  <h3>Create a size chart</h3>
+  <p class="hint">Start from a template (you can change every number), a blank chart, or a supplier's image.</p>
+  <div class="sc-gallery" id="gallery"></div>
+  <div class="sc-dlgbtns"><button class="btn btn-ghost" id="newCancel">Cancel</button></div>
+</dialog>
+
 <!-- import -->
 <dialog id="impDlg" class="sc-dlg">
   <h3>Import size charts</h3>
@@ -130,6 +139,7 @@
 <div id="toast" class="toast" hidden></div>
 <script src="/static/nav.js"></script>
 <script src="/static/chat.js"></script>
+<script src="/static/garments.js"></script>
 <script src="/static/sizecharts.js"></script>
 </body>
 </html>

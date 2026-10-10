@@ -43,7 +43,7 @@ async function loadList() {
   }
   $("list").innerHTML = `<thead><tr><th class="scm-check"><input type="checkbox" id="pickAll"></th><th>Name</th><th>Status</th><th>Applies to</th><th>Updated</th><th></th></tr></thead><tbody>${
     d.charts.map((c) => `<tr data-id="${c.id}"><td class="scm-check" onclick="event.stopPropagation()"><input type="checkbox" data-pick="${c.id}"${picked.has(String(c.id)) ? " checked" : ""}></td>
-      <td class="name"><strong>${esc(c.name)}</strong>${c.countries ? `<span class="sub">only ${esc(c.countries)}</span>` : ""}</td>
+      <td class="name sc-namecell"><span class="sc-ico">${Garments.svg(Garments.guess(c.name), 22)}</span><span><strong>${esc(c.name)}</strong>${c.countries ? `<span class="sub">only ${esc(c.countries)}</span>` : ""}</span></td>
       <td><span class="imp-st ${c.status === "active" ? "st-done" : ""}">${c.status === "active" ? "Active" : "Draft"}</span></td>
       <td>${c.applies.length ? c.applies.map((a) => `<span class="sc-chip">${esc(a.store)} · ${a.count} ${a.kinds.join("/")}</span>`).join(" ") : `<span class="hint">not assigned</span>`}</td>
       <td class="hint">${esc((c.updated_at || "").slice(0, 10))}</td>
@@ -84,6 +84,7 @@ function showPage(p) {
 async function openEditor(id, preset) {
   chart = id ? await api(`/api/sizecharts/${id}`) : { id: null, name: "", status: "active", countries: "", blocks: [], rules: [], ...(preset || {}) };
   $("edName").value = chart.name;
+  edIcon();
   $("edStatus").value = chart.status;
   $("edCountries").value = chart.countries || "";
   showPage("edit");
@@ -323,7 +324,28 @@ $("edSave").onclick = async () => {
   } catch (e) { toast(e.message, true); }
 };
 $("edBack").onclick = () => { showPage("list"); loadList(); };
-$("btnNew").onclick = () => openEditor(null);
+function edIcon() { $("edIcon").innerHTML = Garments.svg(Garments.guess($("edName").value), 26); }
+$("edName").addEventListener("input", edIcon);
+
+// "Create size chart": a gallery of templates with garment icons
+$("btnNew").onclick = () => {
+  const card = (key, icon, name, sub) => `<button class="sc-tpl" data-tpl="${key}"><span class="sc-ico sc-ico-xl">${icon}</span><b>${esc(name)}</b><small>${esc(sub)}</small></button>`;
+  const cols = (key) => (TEMPLATES_FROM_SERVER[key] || []).find((b) => b.type === "table")?.header.slice(1).join(" · ") || "";
+  $("gallery").innerHTML = card("", Garments.svg("hanger", 40), "Blank", "Start from scratch")
+    + (meta.templates || []).map((t) => card(t.key, Garments.svg(Garments.forTemplate(t.key), 40), t.name, cols(t.key))).join("")
+    + `<button class="sc-tpl sc-tpl-ai" data-tpl="__ai"><span class="sc-ico sc-ico-xl">✦</span><b>From an image</b><small>AI reads a supplier's chart</small></button>`;
+  $("newDlg").showModal();
+};
+$("newCancel").onclick = () => $("newDlg").close();
+$("gallery").onclick = (e) => {
+  const b = e.target.closest("[data-tpl]");
+  if (!b) return;
+  $("newDlg").close();
+  const key = b.dataset.tpl;
+  if (key === "__ai") return $("btnAI").click();
+  const t = (meta.templates || []).find((x) => x.key === key);
+  openEditor(null, key ? { name: t?.name || "", blocks: JSON.parse(JSON.stringify(TEMPLATES_FROM_SERVER[key] || [])) } : {});
+};
 
 // ------------------------------------------------ AI from image
 let aiFiles = [], aiTarget = "new";
