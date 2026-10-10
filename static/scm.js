@@ -150,6 +150,9 @@ async function loadTracking() {
   try { t = await api("/api/tracking"); } catch { return; }     // not an owner
   $("trackStores").innerHTML = t.store_list.map((s) => `<label class="scm-pick"><input type="checkbox" value="${s.id}"${t.stores.includes(s.id) ? " checked" : ""}> ${esc(s.name)}</label>`).join("");
   $("trackFrom").value = t.from;
+  $("pageStores").innerHTML = t.store_list.map((s) => `<div class="scm-page-row"><span>${esc(s.name)}</span>
+    <label class="scm-pick"><input type="checkbox" data-drop="${s.id}"${t.dropship.includes(s.id) ? " checked" : ""}> Dropship mode</label>
+    <a href="/proxy/track?shop=${encodeURIComponent(t.domains[s.id])}" target="_blank" rel="noopener">Preview page</a></div>`).join("");
   $("webhook").textContent = t.webhook;
   $("key").placeholder = t.connected ? "Connected · paste a new key to replace it" : "Paste the key from 17TRACK → Settings → Security";
   const qt = t.quota;
@@ -160,7 +163,8 @@ async function loadTracking() {
 }
 $("copyHook").onclick = () => { navigator.clipboard?.writeText($("webhook").textContent); toast("Copied."); };
 $("saveTrack").onclick = async () => {
-  const body = { stores: [...$("trackStores").querySelectorAll("input:checked")].map((i) => +i.value), from: $("trackFrom").value };
+  const body = { stores: [...$("trackStores").querySelectorAll("input:checked")].map((i) => +i.value), from: $("trackFrom").value,
+    dropship: [...$("pageStores").querySelectorAll("[data-drop]:checked")].map((i) => +i.dataset.drop) };
   if ($("key").value.trim()) body.key = $("key").value.trim();
   const b = $("saveTrack");
   b.disabled = true;

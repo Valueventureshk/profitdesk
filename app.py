@@ -6,6 +6,7 @@ Nothing is stored except your connections and your cost percentage. Sales and
 ad spend are read live from Shopify, Google and Meta every time the dashboard loads.
 """
 import asyncio
+import html
 import json
 import os
 import re
@@ -30,6 +31,7 @@ import auth
 import cashflow
 import statement
 import adbills
+import trackpage
 import track17
 import expenses
 import cog
@@ -158,7 +160,7 @@ async def _require_login(request: Request, call_next):
     path = request.url.path
     user = auth.user_for(request.cookies.get(auth.SESSION_COOKIE))
     request.state.user = user
-    if path in _OPEN or path.startswith("/static/"):
+    if path in _OPEN or path.startswith(("/static/", "/proxy/")):
         return await call_next(request)
     if user:
         blocked = _denied(request, user)
@@ -2373,10 +2375,70 @@ async def api_scm_webhook(request: Request):
     return {"ok": True}
 
 
+def _find_parcels(store_id: int, order: str, email: str, nums: str) -> tuple:
+    """A customer's parcels: by order number + email, or by tracking number(s)."""
+    with db._conn() as con:
+        if nums:
+            wanted = [n.strip().replace(" ", "") for n in nums.split(",") if n.strip()][:10]
+            if not wanted:
+                return [], "Enter a tracking number."
+            marks = ",".join("?" * len(wanted))
+            rows = con.execute(f"SELECT * FROM shipments WHERE store_id = ? AND cancelled = 0 AND"
+                               f" (number IN ({marks}) OR last_mile_number IN ({marks}))",
+                               (store_id, *wanted, *wanted)).fetchall()
+            return [dict(r) for r in rows], ("" if rows else "We couldn't find that tracking number yet. "
+                                             "It can take a day after shipping to show up.")
+        name = (order or "").strip().lstrip("#")
+        if not name or not (email or "").strip():
+            return [], ""
+        rows = con.execute("SELECT * FROM shipments WHERE store_id = ? AND cancelled = 0 AND"
+                           " ltrim(order_name, '#') = ? COLLATE NOCASE AND lower(email) = ?",
+                           (store_id, name, email.strip().lower())).fetchall()
+        return [dict(r) for r in rows], ("" if rows else "We couldn't find an order with that number and email. "
+                                         "Check both match your order confirmation.")
+
+
+@app.get("/proxy/track")
+async def proxy_track(request: Request, order: str = None, email: str = None, nums: str = None):
+    """The customer tracking page. Reached through each store's Shopify app proxy
+    (store.com/apps/track), which signs the request; owners can preview it directly."""
+    from fastapi.responses import Response
+    query = {}
+    for k, v in request.query_params.multi_items():
+        query.setdefault(k, []).append(v)
+    query = {k: (v if len(v) > 1 else v[0]) for k, v in query.items()}
+    shop_domain = (query.get("shop") or "").strip().lower()
+    store = next((x for x in db.list_stores() if x["shop_domain"].lower() == shop_domain), None)
+    if not store:
+        return Response("Store not found.", status_code=404)
+    app_keys = _shopify_app(store["shop_domain"])
+    signed = bool(app_keys) and trackpage.verify_proxy(query, app_keys[1])
+    if not signed and not getattr(request.state, "user", None):
+        return Response("Not allowed.", status_code=401)
+    parcels, message = _find_parcels(store["id"], order, email, nums)
+    dropship = (db.get_setting(f"track_dropship:{store['id']}") or "1") == "1"
+    body = trackpage.page(store["name"].strip(), parcels, {"order": order, "email": email}, message, dropship,
+                          "/apps/track" if signed else "/proxy/track")
+    if signed:
+        return Response(body, media_type="application/liquid")
+    # Owner preview, outside the store's theme.
+    hidden = f'<input type="hidden" name="shop" value="{html.escape(shop_domain)}">'
+    body = body.replace('<button type="submit">', hidden + '<button type="submit">', 1).replace(
+        "?nums='+encodeURIComponent(n)", f"?shop={shop_domain}&nums='+encodeURIComponent(n)", 1)
+    return HTMLResponse(f'<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,'
+                        f'initial-scale=1"><title>Track your order · {html.escape(store["name"])}</title>'
+                        f'<body style="font-family:-apple-system,Helvetica,Arial,sans-serif;margin:0">'
+                        f'<p style="background:#fef3c7;margin:0;padding:8px 16px;font-size:13px">Preview: on the store '
+                        f'this shows inside its own theme at {html.escape(shop_domain)}/apps/track</p>{body}')
+
+
 @app.get("/api/tracking")
 async def api_tracking():
     cfg = _tracking_config()
     out = {"connected": bool(cfg["key"]), "stores": cfg["stores"], "from": cfg["from"],
+           "dropship": [x["id"] for x in db.list_stores()
+                        if (db.get_setting(f"track_dropship:{x['id']}") or "1") == "1"],
+           "domains": {x["id"]: x["shop_domain"] for x in db.list_stores()},
            "webhook": f"{BASE_URL}/api/scm/webhook", "status": _scm_status(),
            "store_list": [{"id": k, "name": v} for k, v in _store_names().items()]}
     if cfg["key"]:
@@ -2397,6 +2459,10 @@ async def api_tracking_save(payload: dict):
             except track17.TrackError as e:
                 raise HTTPException(400, str(e))
         db.set_setting("track17_key", key)
+    if "dropship" in payload:
+        on = {int(x) for x in payload["dropship"] or []}
+        for x in db.list_stores():
+            db.set_setting(f"track_dropship:{x['id']}", "1" if x["id"] in on else "0")
     if "stores" in payload:
         db.set_setting("track_stores", json.dumps([int(x) for x in payload["stores"] or []]))
     if payload.get("from"):
