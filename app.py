@@ -31,6 +31,7 @@ import auth
 import cashflow
 import statement
 import adbills
+import sizecharts
 import importer
 import trackpage
 import track17
@@ -113,14 +114,16 @@ _DESK_PATHS = {
     "expenses": ("/expenses", "/api/expenses"),
     "scm": ("/scm", "/api/scm"),
     "importer": ("/importer", "/api/importer"),
+    "sizecharts": ("/sizecharts", "/api/sizecharts"),
 }
 _DESK_HOME = {"profit": "/", "cash": "/cash", "cog": "/cog", "inbox": "/inbox", "reports": "/reports",
-             "expenses": "/expenses", "scm": "/scm", "importer": "/importer"}
+             "expenses": "/expenses", "scm": "/scm", "importer": "/importer",
+             "sizecharts": "/sizecharts"}
 # Shared by every desk's pages: the user's own details and the dropdown lists.
 _EVERYONE = {"/api/me", "/api/me/password", "/api/logout", "/change-password",
              "/api/setup", "/api/chat"}
 # What "read & write" people may change (owners may change anything).
-_WRITE_OK = ("/api/invoices", "/api/cog/sync", "/api/inbox", "/api/expenses", "/api/scm", "/api/importer")
+_WRITE_OK = ("/api/invoices", "/api/cog/sync", "/api/inbox", "/api/expenses", "/api/scm", "/api/importer", "/api/sizecharts")
 # What anyone with the desk may do, read-only people included (it changes nothing).
 _ANY_OK = ("/api/reports",)
 
@@ -187,9 +190,6 @@ def _shopify_launch(request: Request):
 @app.middleware("http")
 async def _require_login(request: Request, call_next):
     path = request.url.path
-    if path.startswith(("/proxy", "/apps")):
-        db.set_setting("proxy_seen", json.dumps({"at": datetime.now(timezone.utc).isoformat(), "path": path,
-                                                 "query": sorted(request.query_params.keys())}))
     user = auth.user_for(request.cookies.get(auth.SESSION_COOKIE))
     request.state.user = user
     if path in _OPEN or path.startswith(("/static/", "/proxy/", "/apps/")) or path == "/proxy":
@@ -2631,15 +2631,14 @@ async def proxy_track(request: Request, order: str = None, email: str = None, nu
     shop_domain = (query.get("shop") or "").strip().lower()
     store = next((x for x in db.list_stores() if x["shop_domain"].lower() == shop_domain), None)
     if not store:
-        db.set_setting("proxy_last", json.dumps({"at": datetime.now(timezone.utc).isoformat(), "shop": shop_domain,
-                                                 "error": "store not found", "keys": sorted(query)}))
         return Response("Store not found.", status_code=404)
     app_keys = _shopify_app(store["shop_domain"])
     signed = bool(app_keys) and trackpage.verify_proxy(query, app_keys[1])
-    db.set_setting("proxy_last", json.dumps({"at": datetime.now(timezone.utc).isoformat(), "shop": shop_domain,
-                                             "signed": signed, "keys": sorted(k for k in query if k != "signature")}))
     if not signed and not getattr(request.state, "user", None):
         return Response("Not allowed.", status_code=401)
+    if rest.strip("/").startswith("sizechart"):
+        return await _sizechart_for(store, request.query_params.get("handle") or "",
+                                    request.query_params.get("country") or "")
     parcels, message = _find_parcels(store["id"], order, email, nums)
     if signed and nums and not order:
         # Arrived from a link in a shipping email (the email links carry the tracking number).
@@ -2856,8 +2855,6 @@ async def api_tracking():
     cfg = _tracking_config()
     out = {"connected": bool(cfg["key"]), "stores": cfg["stores"], "from": cfg["from"],
            "push": sorted(_push_stores()),
-           "proxy_last": json.loads(db.get_setting("proxy_last") or "{}"),
-           "proxy_seen": json.loads(db.get_setting("proxy_seen") or "{}"),
            "langs": {x["id"]: db.get_setting(f"track_lang:{x['id']}") or "en" for x in db.list_stores()},
            "visits": {x["id"]: json.loads(db.get_setting(f"track_visits:{x['id']}") or "{}") for x in db.list_stores()},
            "dropship": [x["id"] for x in db.list_stores()
@@ -2953,6 +2950,7 @@ async def _run_import(job_id: str, token_data: dict, ids: list, store_ids: list,
     stores = {x["id"]: x for x in db.list_stores()}
     src_cur = token_data.get("currency")
     tables = {}
+    ai_charts = {}      # source product id -> size chart id made by the AI (shared by every target store)
     try:
         for sid in store_ids:
             store = stores.get(sid)
@@ -3001,6 +2999,9 @@ async def _run_import(job_id: str, token_data: dict, ids: list, store_ids: list,
                                     notes.append("Not added to the collection")
                             elif extras["error"]:
                                 notes.append(extras["error"])
+                            sc_note = await _import_size_chart(cfg, p, sid, gid, ai_charts, user)
+                            if sc_note:
+                                notes.append(sc_note)
                             err = "; ".join(notes) or None
                 except Exception as e:
                     err = str(e)[:500]
@@ -3068,6 +3069,42 @@ async def _store_extras(client, title: str) -> dict:
     return out
 
 
+async def _import_size_chart(cfg: dict, p: dict, store_id: int, gid: str, ai_charts: dict, user: str) -> str:
+    """Give a freshly imported product its size chart. Returns a note for the history, or ''."""
+    mode = cfg.get("size_chart_mode") or "none"
+    if mode == "none":
+        return ""
+    chart_id = None
+    if mode == "chart":
+        chart_id = int(cfg.get("size_chart_id") or 0) or None
+    elif mode == "ai":
+        pid = str(p.get("id"))
+        if pid not in ai_charts:
+            ai_charts[pid] = None
+            key = db.get_setting("anthropic_api_key")
+            imgs = importer.size_chart_images(p)
+            if key and imgs:
+                lang = LANG_NAME.get(db.get_setting(f"track_lang:{store_id}") or "en", "English")
+                try:
+                    res = await sizecharts.read_images(key, [("url", u) for u in imgs], lang, "cm")
+                    if res.get("found"):
+                        ai_charts[pid] = _sc_save({"name": p.get("title") or "Size chart", "status": "active",
+                                                   "blocks": sizecharts.blocks_from_ai(res), "source": "ai-import"},
+                                                  None, user)
+                except Exception as e:
+                    return f"Size chart: {e}"[:150]
+        chart_id = ai_charts.get(pid)
+        if not chart_id:
+            return "No size chart found in the source"
+    if not chart_id:
+        return ""
+    with db._conn() as con:
+        con.execute("INSERT INTO size_chart_rules (chart_id, store_id, kind, value, label) VALUES (?, ?, 'product', ?, ?)",
+                    (chart_id, store_id, gid, p.get("title")))
+    _sc_cache.clear()
+    return ""
+
+
 @app.post("/api/importer/import")
 async def api_importer_import(payload: dict, request: Request):
     """The browser loads the source store's products (Shopify blocks servers from doing
@@ -3119,6 +3156,466 @@ def api_importer_history(page: int = 1):
     for r in rows:
         r["store"] = names.get(r["store_id"], "")
     return {"items": rows, "total": total, "page": page, "pages": max(1, -(-total // 100))}
+
+
+# ---------------------------------------------------------------- Size Charts desk
+
+@app.get("/sizecharts", response_class=HTMLResponse)
+def sizecharts_page():
+    return _page("sizecharts.html", ("sizecharts.js", "nav.js", "styles.css", "chat.js"))
+
+
+SC_DEFAULTS = {"enabled": False, "display": "button", "label": "", "prefix": "", "suffix": "", "icon": "ruler",
+               "font_size": 14, "color": "#111111", "bg": "#ffffff", "border": "#d0d0d0", "bold": True,
+               "underline": False, "align": "left", "position": "above_variants", "advisor": True, "accent": "#111111"}
+SC_TEXT = {
+    "en": {"label": "Size chart", "advisor": "Find my size", "height": "Height", "weight": "Weight", "fit": "Fit",
+           "snug": "Snug", "regular": "Regular", "loose": "Loose", "body": "Body type", "slim": "Slim",
+           "average": "Average", "curvy": "Curvy", "athletic": "Athletic", "go": "Get my size",
+           "rec": "We recommend", "again": "Try again", "busy": "Working it out…", "chart": "Size chart"},
+    "es": {"label": "Guía de tallas", "advisor": "Encuentra tu talla", "height": "Altura", "weight": "Peso",
+           "fit": "Ajuste", "snug": "Ceñido", "regular": "Normal", "loose": "Holgado", "body": "Tipo de cuerpo",
+           "slim": "Delgado", "average": "Medio", "curvy": "Con curvas", "athletic": "Atlético",
+           "go": "Ver mi talla", "rec": "Te recomendamos", "again": "Probar otra vez", "busy": "Calculando…",
+           "chart": "Guía de tallas"},
+    "fr": {"label": "Guide des tailles", "advisor": "Trouver ma taille", "height": "Taille (cm)", "weight": "Poids",
+           "fit": "Coupe", "snug": "Ajustée", "regular": "Normale", "loose": "Ample", "body": "Morphologie",
+           "slim": "Mince", "average": "Moyenne", "curvy": "Pulpeuse", "athletic": "Athlétique",
+           "go": "Voir ma taille", "rec": "Nous recommandons", "again": "Recommencer", "busy": "Calcul en cours…",
+           "chart": "Guide des tailles"},
+}
+LANG_NAME = {"en": "English", "es": "Spanish", "fr": "French"}
+
+
+def _sc_cfg(store_id: int) -> dict:
+    try:
+        saved = json.loads(db.get_setting(f"sizechart_cfg:{store_id}") or "{}")
+    except ValueError:
+        saved = {}
+    return {**SC_DEFAULTS, **saved}
+
+
+def _sc_row(r) -> dict:
+    d = dict(r)
+    d["blocks"] = json.loads(d.get("blocks") or "[]")
+    return d
+
+
+def _sc_rules(chart_ids: list) -> dict:
+    if not chart_ids:
+        return {}
+    out = {}
+    with db._conn() as con:
+        for r in con.execute(f"SELECT * FROM size_chart_rules WHERE chart_id IN ({','.join('?' * len(chart_ids))})"
+                             " ORDER BY id", chart_ids):
+            out.setdefault(r["chart_id"], []).append(dict(r))
+    return out
+
+
+@app.get("/api/sizecharts")
+def api_sizecharts(q: str = "", status: str = "", store: str = "", page: int = 1, brief: int = 0):
+    where, params = ["1=1"], []
+    if q:
+        where.append("lower(c.name) LIKE ?")
+        params.append(f"%{q.lower()}%")
+    if status in ("active", "draft"):
+        where.append("c.status = ?")
+        params.append(status)
+    if store.isdigit():
+        where.append("EXISTS (SELECT 1 FROM size_chart_rules r WHERE r.chart_id = c.id AND r.store_id = ?)")
+        params.append(int(store))
+    w = " AND ".join(where)
+    with db._conn() as con:
+        if brief:
+            rows = [dict(r) for r in con.execute(f"SELECT c.id, c.name, c.status FROM size_charts c WHERE {w}"
+                                                 " ORDER BY c.name LIMIT 2000", params)]
+            return {"charts": rows}
+        total = con.execute(f"SELECT COUNT(*) FROM size_charts c WHERE {w}", params).fetchone()[0]
+        rows = [dict(r) for r in con.execute(
+            f"SELECT c.id, c.name, c.status, c.countries, c.source, c.updated_at FROM size_charts c WHERE {w}"
+            " ORDER BY c.updated_at DESC, c.id DESC LIMIT 50 OFFSET ?", (*params, max(0, page - 1) * 50))]
+    rules = _sc_rules([r["id"] for r in rows])
+    names = _store_names()
+    for r in rows:
+        rs = rules.get(r["id"], [])
+        r["rules"] = len(rs)
+        summary = {}
+        for x in rs:
+            summary.setdefault(names.get(x["store_id"], "?"), []).append(x["kind"])
+        r["applies"] = [{"store": k, "count": len(v), "kinds": sorted(set(v))} for k, v in summary.items()]
+    return {"charts": rows, "total": total, "page": page, "pages": max(1, -(-total // 50)),
+            "stores": [{"id": k, "name": v, "lang": db.get_setting(f"track_lang:{k}") or "en"} for k, v in names.items()],
+            "templates": [{"key": k, "name": v[0]} for k, v in sizecharts.TEMPLATES.items()]}
+
+
+@app.get("/api/sizecharts/{chart_id:int}")
+def api_sizechart(chart_id: int):
+    with db._conn() as con:
+        r = con.execute("SELECT * FROM size_charts WHERE id = ?", (chart_id,)).fetchone()
+    if not r:
+        raise HTTPException(404, "That size chart no longer exists.")
+    c = _sc_row(r)
+    c["rules"] = _sc_rules([chart_id]).get(chart_id, [])
+    return c
+
+
+def _sc_save(payload: dict, chart_id: int = None, user: str = "") -> int:
+    name = (payload.get("name") or "").strip()[:200] or "Size chart"
+    status = payload.get("status") if payload.get("status") in ("active", "draft") else "draft"
+    blocks = sizecharts.normalise(payload.get("blocks"))
+    countries = ",".join(sorted({c.strip().upper()[:2] for c in re.split(r"[,\s]+", payload.get("countries") or "") if c.strip()}))
+    with db._conn() as con:
+        if chart_id:
+            con.execute("UPDATE size_charts SET name = ?, status = ?, blocks = ?, countries = ?, updated_at = datetime('now')"
+                        " WHERE id = ?", (name, status, json.dumps(blocks), countries, chart_id))
+        else:
+            chart_id = con.execute("INSERT INTO size_charts (name, status, blocks, countries, source, created_by)"
+                                   " VALUES (?, ?, ?, ?, ?, ?)", (name, status, json.dumps(blocks), countries,
+                                                                    payload.get("source") or "manual", user)).lastrowid
+        if "rules" in payload:
+            con.execute("DELETE FROM size_chart_rules WHERE chart_id = ?", (chart_id,))
+            for x in payload.get("rules") or []:
+                if x.get("kind") not in ("product", "collection", "tag", "type", "vendor", "all") or not x.get("store_id"):
+                    continue
+                con.execute("INSERT INTO size_chart_rules (chart_id, store_id, kind, value, label) VALUES (?, ?, ?, ?, ?)",
+                            (chart_id, int(x["store_id"]), x["kind"], str(x.get("value") or "")[:300],
+                             str(x.get("label") or "")[:300]))
+    _sc_cache.clear()
+    return chart_id
+
+
+@app.post("/api/sizecharts")
+def api_sizechart_create(payload: dict, request: Request):
+    user = (getattr(request.state, "user", None) or {}).get("email", "")
+    return {"id": _sc_save(payload, None, user)}
+
+
+@app.put("/api/sizecharts/{chart_id:int}")
+def api_sizechart_update(chart_id: int, payload: dict):
+    return {"id": _sc_save(payload, chart_id)}
+
+
+@app.delete("/api/sizecharts/{chart_id:int}")
+def api_sizechart_delete(chart_id: int):
+    with db._conn() as con:
+        con.execute("DELETE FROM size_chart_rules WHERE chart_id = ?", (chart_id,))
+        con.execute("DELETE FROM size_charts WHERE id = ?", (chart_id,))
+    _sc_cache.clear()
+    return {"ok": True}
+
+
+@app.post("/api/sizecharts/{chart_id:int}/duplicate")
+def api_sizechart_duplicate(chart_id: int, request: Request):
+    c = api_sizechart(chart_id)
+    user = (getattr(request.state, "user", None) or {}).get("email", "")
+    return {"id": _sc_save({"name": c["name"] + " (copy)", "status": "draft", "blocks": c["blocks"],
+                             "countries": c["countries"], "source": c.get("source")}, None, user)}
+
+
+@app.post("/api/sizecharts/bulk")
+def api_sizechart_bulk(payload: dict):
+    ids = [int(i) for i in payload.get("ids") or []]
+    action = payload.get("action")
+    if not ids:
+        raise HTTPException(400, "Pick at least one chart.")
+    with db._conn() as con:
+        marks = ",".join("?" * len(ids))
+        if action in ("active", "draft"):
+            con.execute(f"UPDATE size_charts SET status = ?, updated_at = datetime('now') WHERE id IN ({marks})",
+                        (action, *ids))
+        elif action == "delete":
+            con.execute(f"DELETE FROM size_chart_rules WHERE chart_id IN ({marks})", ids)
+            con.execute(f"DELETE FROM size_charts WHERE id IN ({marks})", ids)
+        else:
+            raise HTTPException(400, "Unknown action.")
+    _sc_cache.clear()
+    return {"ok": True}
+
+
+@app.get("/api/sizecharts/templates")
+def api_sizechart_templates():
+    return {k: sizecharts.template(k) for k in sizecharts.TEMPLATES}
+
+
+@app.post("/api/sizecharts/preview")
+def api_sizechart_preview(payload: dict):
+    blocks = sizecharts.normalise(payload.get("blocks"))
+    return {"html": sizecharts.render(blocks), "html_in": sizecharts.render(blocks, True) if sizecharts.has_cm(blocks) else None,
+            "blocks": blocks}
+
+
+@app.get("/api/sizecharts/export")
+def api_sizechart_export(ids: str = ""):
+    from fastapi.responses import Response
+    want = [int(i) for i in ids.split(",") if i.strip().isdigit()]
+    with db._conn() as con:
+        q = "SELECT * FROM size_charts" + (f" WHERE id IN ({','.join('?' * len(want))})" if want else "")
+        rows = [_sc_row(r) for r in con.execute(q, want)]
+    rules = _sc_rules([r["id"] for r in rows])
+    out = [{"name": r["name"], "status": r["status"], "countries": r["countries"], "blocks": r["blocks"],
+            "rules": [{k: x[k] for k in ("store_id", "kind", "value", "label")} for x in rules.get(r["id"], [])]}
+           for r in rows]
+    return Response(json.dumps({"profitdesk_size_charts": out}, ensure_ascii=False), media_type="application/json",
+                    headers={"Content-Disposition": f'attachment; filename="size-charts-{date.today()}.json"'})
+
+
+async def _all_products(store) -> list:
+    """Every product's id, title and handle in a store (for matching imported charts)."""
+    client = ShopifyClient(store["shop_domain"], store["access_token"])
+    out, cursor = [], None
+    for _ in range(100):
+        r = await client.gql("""query P($c: String) { products(first: 250, after: $c) {
+            pageInfo { hasNextPage endCursor } nodes { id title handle } } }""", {"c": cursor})
+        out += r["products"]["nodes"]
+        if not r["products"]["pageInfo"]["hasNextPage"]:
+            break
+        cursor = r["products"]["pageInfo"]["endCursor"]
+    return out
+
+
+@app.post("/api/sizecharts/import")
+async def api_sizechart_import(payload: dict, request: Request):
+    """A Panda / Kiwi / ProfitDesk export. Charts named after a product are linked to that
+    product in the chosen store (Panda's export drops the links)."""
+    data = payload.get("data")
+    store_id = int(payload.get("store_id") or 0)
+    user = (getattr(request.state, "user", None) or {}).get("email", "")
+    if isinstance(data, dict) and "profitdesk_size_charts" in data:
+        n = 0
+        for c in data["profitdesk_size_charts"]:
+            _sc_save({**c, "source": "import"}, None, user)
+            n += 1
+        return {"imported": n, "linked": 0}
+    charts = sizecharts.parse_export(data)
+    if not charts:
+        raise HTTPException(400, "No size charts found in that file.")
+    by_title = {}
+    store = next((x for x in db.list_stores() if x["id"] == store_id), None)
+    if store:
+        for p in await _all_products(store):
+            by_title.setdefault(sizecharts.norm_title(p["title"]), p)
+    imported = linked = 0
+    for c in charts:
+        p = by_title.get(sizecharts.norm_title(c["name"]))
+        rules = [{"store_id": store_id, "kind": "product", "value": p["id"], "label": p["title"]}] if p else []
+        _sc_save({"name": c["name"], "status": "active" if p else "draft", "blocks": c["blocks"],
+                  "rules": rules, "source": payload.get("source") or "panda"}, None, user)
+        imported += 1
+        linked += bool(p)
+    return {"imported": imported, "linked": linked, "unlinked": imported - linked}
+
+
+@app.post("/api/sizecharts/from-image")
+async def api_sizechart_from_image(request: Request):
+    """Staff upload size-chart image(s); Claude reads them into tables (draft, not saved yet)."""
+    form = await request.form()
+    images = []
+    for f in form.getlist("images"):
+        if hasattr(f, "read"):
+            data = await f.read()
+            if len(data) > 8 * 1024 * 1024:
+                raise HTTPException(400, f"{f.filename} is bigger than 8 MB.")
+            mt = f.content_type if f.content_type in ("image/png", "image/jpeg", "image/webp", "image/gif") else "image/jpeg"
+            images.append((mt, data))
+    for u in (form.get("urls") or "").split():
+        if u.startswith("http"):
+            images.append(("url", u))
+    if not images:
+        raise HTTPException(400, "Add at least one image.")
+    key = db.get_setting("anthropic_api_key")
+    if not key:
+        raise HTTPException(400, "Add the Anthropic API key in Settings → AI first.")
+    lang = form.get("language") or "English"
+    try:
+        res = await sizecharts.read_images(key, images, lang, form.get("unit") or "cm")
+    except sizecharts.AIError as e:
+        raise HTTPException(400, str(e))
+    if not res.get("found"):
+        raise HTTPException(400, "The AI didn't find a size chart in those images.")
+    blocks = sizecharts.blocks_from_ai(res)
+    return {"name": res.get("title") or "Size chart", "blocks": blocks}
+
+
+@app.get("/api/sizecharts/products")
+async def api_sizechart_products(store: int, q: str = ""):
+    st = next((x for x in db.list_stores() if x["id"] == store), None)
+    if not st:
+        raise HTTPException(404, "Store not found.")
+    term = re.sub(r"[\"'\\\\]", " ", q).strip()
+    r = await ShopifyClient(st["shop_domain"], st["access_token"]).gql(
+        """query S($q: String) { products(first: 25, query: $q, sortKey: TITLE) {
+            nodes { id title handle featuredMedia { preview { image { url } } } } } }""",
+        {"q": f"title:*{term}*" if term else None})
+    return {"products": [{"id": p["id"], "title": p["title"], "handle": p["handle"],
+                          "image": ((((p.get("featuredMedia") or {}).get("preview") or {}).get("image") or {}).get("url"))}
+                         for p in r["products"]["nodes"]]}
+
+
+@app.get("/api/sizecharts/collections")
+async def api_sizechart_collections(store: int):
+    st = next((x for x in db.list_stores() if x["id"] == store), None)
+    if not st:
+        raise HTTPException(404, "Store not found.")
+    r = await ShopifyClient(st["shop_domain"], st["access_token"]).gql(
+        "query { collections(first: 250, sortKey: TITLE) { nodes { id title handle } } }")
+    return {"collections": r["collections"]["nodes"]}
+
+
+# ---- display settings per store, and the storefront script
+
+SCRIPT_TAGS = """query { scriptTags(first: 50) { nodes { id src } } }"""
+SCRIPT_CREATE = """mutation C($i: ScriptTagInput!) { scriptTagCreate(input: $i) { scriptTag { id } userErrors { field message } } }"""
+SCRIPT_DELETE = """mutation D($id: ID!) { scriptTagDelete(id: $id) { deletedScriptTagId userErrors { field message } } }"""
+
+
+async def _sc_script(store, on: bool) -> str:
+    """Add or remove the size chart script on the store. Returns an error message or ''."""
+    client = ShopifyClient(store["shop_domain"], store["access_token"])
+    src = f"{BASE_URL}/static/sizechart-widget.js"
+    try:
+        tags = (await client.gql(SCRIPT_TAGS))["scriptTags"]["nodes"]
+        ours = [t for t in tags if "sizechart-widget.js" in (t.get("src") or "")]
+        if on and not ours:
+            r = await client.gql(SCRIPT_CREATE, {"i": {"src": src, "displayScope": "ONLINE_STORE", "cache": False}})
+            errs = r["scriptTagCreate"]["userErrors"]
+            if errs:
+                return "; ".join(e["message"] for e in errs)
+        if not on:
+            for t in ours:
+                await client.gql(SCRIPT_DELETE, {"id": t["id"]})
+    except Exception as e:
+        return str(e)[:200]
+    return ""
+
+
+@app.get("/api/sizecharts/settings")
+def api_sizechart_settings():
+    return {"stores": [{"id": x["id"], "name": x["name"].strip(), "domain": x["shop_domain"],
+                        "lang": db.get_setting(f"track_lang:{x['id']}") or "en", "cfg": _sc_cfg(x["id"])}
+                       for x in db.list_stores() if not demo.is_demo(x) and x.get("access_token")],
+            "text": SC_TEXT}
+
+
+@app.put("/api/sizecharts/settings/{store_id}")
+async def api_sizechart_settings_save(store_id: int, payload: dict):
+    store = next((x for x in db.list_stores() if x["id"] == store_id), None)
+    if not store:
+        raise HTTPException(404, "Store not found.")
+    cfg = _sc_cfg(store_id)
+    was = cfg["enabled"]
+    for k, v in (payload or {}).items():
+        if k in SC_DEFAULTS:
+            cfg[k] = v
+    err = ""
+    if bool(cfg["enabled"]) != bool(was):
+        err = await _sc_script(store, bool(cfg["enabled"]))
+        if err:
+            cfg["enabled"] = was
+    db.set_setting(f"sizechart_cfg:{store_id}", json.dumps(cfg))
+    _sc_cache.clear()
+    if err:
+        raise HTTPException(400, f"Couldn't switch the size chart on the store: {err}")
+    return {"ok": True, "cfg": cfg}
+
+
+_sc_cache: dict = {}       # (store_id, handle) -> (time, product info)
+_advise_hits: dict = {}    # ip -> [times]
+
+PRODUCT_INFO = """query P($q: String!) { products(first: 1, query: $q) { nodes {
+  id title tags productType vendor collections(first: 100) { nodes { id } } } } }"""
+
+
+async def _sc_product(store, handle: str):
+    key = (store["id"], handle)
+    hit = _sc_cache.get(key)
+    if hit and time.time() - hit[0] < 600:
+        return hit[1]
+    r = await ShopifyClient(store["shop_domain"], store["access_token"]).gql(
+        PRODUCT_INFO, {"q": f"handle:'{handle}'"})
+    nodes = r["products"]["nodes"]
+    info = nodes[0] if nodes else None
+    _sc_cache[key] = (time.time(), info)
+    return info
+
+
+def _sc_match(store_id: int, p: dict, country: str):
+    """The chart for this product: product > collection > tag > type > vendor > all."""
+    with db._conn() as con:
+        rules = [dict(r) for r in con.execute(
+            "SELECT r.kind, r.value, c.id, c.name, c.blocks, c.countries FROM size_chart_rules r"
+            " JOIN size_charts c ON c.id = r.chart_id WHERE r.store_id = ? AND c.status = 'active'", (store_id,))]
+    tags = {t.lower() for t in p.get("tags") or []}
+    cols = {c["id"] for c in ((p.get("collections") or {}).get("nodes") or [])}
+    order = ["product", "collection", "tag", "type", "vendor", "all"]
+
+    def fits(r):
+        k, v = r["kind"], (r["value"] or "")
+        return ((k == "product" and v == p["id"]) or (k == "collection" and v in cols) or
+                (k == "tag" and v.lower() in tags) or (k == "type" and v.lower() == (p.get("productType") or "").lower()) or
+                (k == "vendor" and v.lower() == (p.get("vendor") or "").lower()) or k == "all")
+
+    def here(r):
+        cs = [c for c in (r["countries"] or "").split(",") if c]
+        return not cs or not country or country.upper() in cs
+    hits = [r for r in rules if fits(r) and here(r)]
+    hits.sort(key=lambda r: order.index(r["kind"]))
+    return hits[0] if hits else None
+
+
+async def _sizechart_for(store, handle: str, country: str):
+    cfg = _sc_cfg(store["id"])
+    if not cfg["enabled"] or not handle:
+        return JSONResponse({"chart": None})
+    try:
+        p = await _sc_product(store, re.sub(r"[^a-zA-Z0-9\-_.%]", "", handle)[:255])
+    except Exception:
+        return JSONResponse({"chart": None})
+    hit = _sc_match(store["id"], p, country) if p else None
+    if not hit:
+        return JSONResponse({"chart": None})
+    blocks = json.loads(hit["blocks"])
+    lang = db.get_setting(f"track_lang:{store['id']}") or "en"
+    text = SC_TEXT.get(lang, SC_TEXT["en"])
+    return JSONResponse({"chart": {"id": hit["id"], "name": hit["name"], "html": sizecharts.render(blocks),
+                                   "html_in": sizecharts.render(blocks, True) if sizecharts.has_cm(blocks) else None},
+                         "cfg": {k: cfg[k] for k in SC_DEFAULTS if k != "enabled"},
+                         "text": {**text, "label": cfg["label"] or text["label"]},
+                         "advisor": bool(cfg["advisor"] and db.get_setting("anthropic_api_key"))},
+                        headers={"Cache-Control": "public, max-age=120"})
+
+
+@app.post("/proxy/track/sizechart/advise")
+async def proxy_sizechart_advise(request: Request):
+    """The 'Find my size' answer, through the store's app proxy."""
+    query = dict(request.query_params)
+    store = next((x for x in db.list_stores() if x["shop_domain"].lower() == (query.get("shop") or "").lower()), None)
+    keys = _shopify_app(store["shop_domain"]) if store else None
+    if not store or not keys or not trackpage.verify_proxy(query, keys[1]):
+        return JSONResponse({"error": "Not allowed."}, status_code=401)
+    ip = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip() or "?"
+    now = time.time()
+    hits = [t for t in _advise_hits.get(ip, []) if now - t < 3600]
+    if len(hits) >= 20:
+        return JSONResponse({"error": "Please try again later."}, status_code=429)
+    _advise_hits[ip] = hits + [now]
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    p = await _sc_product(store, re.sub(r"[^a-zA-Z0-9\-_.%]", "", str(body.get("handle") or ""))[:255])
+    hit = _sc_match(store["id"], p, str(body.get("country") or "")) if p else None
+    key = db.get_setting("anthropic_api_key")
+    if not hit or not key:
+        return JSONResponse({"error": "No size chart for this product."}, status_code=404)
+    lang = LANG_NAME.get(db.get_setting(f"track_lang:{store['id']}") or "en", "English")
+    answers = {k: str(body.get(k) or "")[:20] for k in ("height", "weight", "height_unit", "weight_unit", "fit", "body", "usual")}
+    try:
+        res = await sizecharts.advise(key, sizecharts.tables_text(json.loads(hit["blocks"])), answers, lang)
+    except sizecharts.AIError as e:
+        return JSONResponse({"error": str(e)}, status_code=503)
+    n = int(db.get_setting(f"sizechart_advice:{store['id']}") or 0) + 1
+    db.set_setting(f"sizechart_advice:{store['id']}", str(n))
+    return JSONResponse(res)
 
 
 @app.post("/api/cash/airwallex")

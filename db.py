@@ -365,6 +365,30 @@ CREATE TABLE IF NOT EXISTS scm_flags (
 );
 CREATE INDEX IF NOT EXISTS shipments_order_at ON shipments(order_at);
 
+-- Size Charts desk: charts (blocks JSON, see sizecharts.py) and which store's
+-- products get them (kind: product | collection | tag | type | vendor | all).
+CREATE TABLE IF NOT EXISTS size_charts (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'draft',      -- active | draft
+    blocks      TEXT NOT NULL DEFAULT '[]',
+    countries   TEXT NOT NULL DEFAULT '',            -- comma-separated ISO codes, empty = everywhere
+    source      TEXT,                                -- manual | panda | kiwi | ai | ai-import
+    created_by  TEXT,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS size_chart_rules (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    chart_id  INTEGER NOT NULL,
+    store_id  INTEGER NOT NULL,
+    kind      TEXT NOT NULL,
+    value     TEXT NOT NULL DEFAULT '',
+    label     TEXT
+);
+CREATE INDEX IF NOT EXISTS size_chart_rules_store ON size_chart_rules(store_id, kind, value);
+CREATE INDEX IF NOT EXISTS size_chart_rules_chart ON size_chart_rules(chart_id);
+
 -- Product Importer: one row per product per target store.
 CREATE TABLE IF NOT EXISTS import_items (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,

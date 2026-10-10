@@ -356,6 +356,10 @@ const SETTINGS = [
     ["strip_alt", "check", "Remove ALT text from description images", ""],
     ["source_metafield", "check", "Save the source URL on the product", "Stored in the metafield profitdesk.source_url."],
   ]],
+  ["Size chart", [
+    ["size_chart_mode", "select", "Size chart for imported products", "", [["none", "Don't add one"], ["chart", "Assign this chart (below)"], ["ai", "✦ AI: read the size chart image in the product and create the chart"]]],
+    ["size_chart_id", "chart", "Chart to assign", "Used when “Assign this chart” is chosen. Manage charts in the Size Charts desk."],
+  ]],
   ["Currency", [
     ["convert_currency", "check", "Convert prices into each store's currency", "At today's rate: a USD source goes into ZAVA in AUD, Vizo in EUR, Tendance in CAD."],
   ]],
@@ -383,6 +387,7 @@ function renderSettings() {
         and <input class="control" type="number" step="0.01" data-k="price_fixed" value="${esc(cfg.price_fixed)}"> fixed</div>
         <small>Example: source 20.00 → yours ${previewPrice(20).toFixed(2)} (before currency conversion)</small></div>`;
     if (type === "select") return `<label class="imp-field"><span>${label}</span><select class="control" data-k="${k}">${opts.map(([v, n]) => `<option value="${v}"${cfg[k] === v ? " selected" : ""}>${n}</option>`).join("")}</select></label>`;
+    if (type === "chart") return `<label class="imp-field"><span>${label}</span><select class="control" data-k="${k}"><option value="0">Choose a chart…</option>${(window.__charts || []).map((c) => `<option value="${c.id}"${+cfg[k] === c.id ? " selected" : ""}>${esc(c.name)}${c.status === "draft" ? " (draft)" : ""}</option>`).join("")}</select><small>${help}</small></label>`;
     if (type === "tags") return `<label class="imp-field"><span>${label}</span><input class="control" data-k="${k}" value="${esc((cfg[k] || []).join(", "))}"><small>${help}</small></label>`;
     return `<label class="imp-field"><span>${label}</span><input class="control" ${type === "number" ? 'type="number" step="0.01"' : ""} data-k="${k}" value="${esc(cfg[k] ?? "")}">${help ? `<small>${help}</small>` : ""}</label>`;
   }).join("")}</fieldset>`).join("");
@@ -394,7 +399,7 @@ function readSettings() {
     const k = el.dataset.k;
     if (el.type === "checkbox") out[k] = el.checked;
     else if (k === "custom_tags") out[k] = el.value.split(",").map((t) => t.trim()).filter(Boolean);
-    else if (el.type === "number") out[k] = el.value === "" ? 0 : +el.value;
+    else if (el.type === "number" || k === "size_chart_id") out[k] = el.value === "" ? 0 : +el.value;
     else out[k] = el.value;
   }
   return out;
@@ -417,6 +422,7 @@ for (const b of $("pages").querySelectorAll("[data-page]")) b.onclick = () => {
     const d = await api("/api/importer/settings");
     cfg = d.settings;
     stores = d.stores;
+    try { window.__charts = (await api("/api/sizecharts?brief=1")).charts; } catch { window.__charts = []; }
     renderStorePickers();
     renderSettings();
     renderCollectionPickers();

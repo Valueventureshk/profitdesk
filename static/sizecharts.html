@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ProfitDesk · Size Charts</title>
+<script>try{var t=localStorage.getItem("pdTheme")||(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");document.documentElement.dataset.theme=t;}catch(e){}</script>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;650;700&display=swap">
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body class="scm-body">
+<div class="cash-page imp-page">
+  <header class="cash-top">
+    <div class="brand" data-section-menu title="Switch section">
+      <span class="brand-mark">PD</span>
+      <span class="brand-name">ProfitDesk</span>
+    </div>
+    <div class="crumb">
+      <h1>Size Charts</h1>
+      <p>One place for every store's size charts</p>
+    </div>
+    <nav class="scm-pages" id="pages">
+      <button data-page="list" class="on">Size charts</button>
+      <button data-page="settings" data-write-only>Display settings</button>
+    </nav>
+  </header>
+
+  <main class="content">
+    <!-- list -->
+    <section class="panel imp-card" id="page-list">
+      <div class="sc-listhead">
+        <div class="scm-searchbox"><span>⌕</span><input id="q" type="search" placeholder="Search size charts"></div>
+        <select id="fStore" class="control"><option value="">All stores</option></select>
+        <select id="fStatus" class="control"><option value="">Active + draft</option><option value="active">Active</option><option value="draft">Draft</option></select>
+        <span class="sc-actions" data-write-only>
+          <button class="btn btn-ghost" id="btnImport">Import</button>
+          <a class="btn btn-ghost" id="btnExport" href="/api/sizecharts/export">Export all</a>
+          <button class="btn btn-ghost" id="btnAI">✦ From image (AI)</button>
+          <button class="btn btn-primary" id="btnNew">Create size chart</button>
+        </span>
+      </div>
+      <div class="scm-bulk" id="bulk" hidden>
+        <span id="bulkCount"></span>
+        <button class="btn btn-sm btn-ghost" data-bulk="active">Make active</button>
+        <button class="btn btn-sm btn-ghost" data-bulk="draft">Make draft</button>
+        <button class="btn btn-sm btn-ghost" data-bulk="export">Export</button>
+        <button class="btn btn-sm btn-ghost sc-danger" data-bulk="delete">Delete</button>
+      </div>
+      <div class="table-wrap"><table class="table sc-table" id="list"></table></div>
+      <div class="scm-pager" id="pager"></div>
+    </section>
+
+    <!-- editor -->
+    <section id="page-edit" hidden>
+      <div class="sc-edbar panel">
+        <button class="btn btn-ghost" id="edBack">← Back</button>
+        <input id="edName" class="control" placeholder="Size chart name">
+        <select id="edStatus" class="control"><option value="active">Active</option><option value="draft">Draft</option></select>
+        <button class="btn btn-primary" id="edSave" data-write-only>Save</button>
+      </div>
+      <div class="sc-editor">
+        <div class="panel sc-left">
+          <div class="sc-tabs" id="edTabs">
+            <button data-t="content" class="on">Content</button>
+            <button data-t="applies">Applies to</button>
+            <button data-t="where">Countries</button>
+          </div>
+          <div id="t-content">
+            <div class="sc-add">
+              <select id="addTemplate" class="control"><option value="">+ Template…</option></select>
+              <button class="btn btn-sm btn-ghost" data-add="title">+ Title</button>
+              <button class="btn btn-sm btn-ghost" data-add="table">+ Table</button>
+              <button class="btn btn-sm btn-ghost" data-add="text">+ Text</button>
+              <button class="btn btn-sm btn-ghost" data-add="image">+ Image</button>
+              <button class="btn btn-sm btn-ghost" data-add="divider">+ Divider</button>
+              <button class="btn btn-sm btn-ghost" data-add="tabs">+ Tabs</button>
+              <button class="btn btn-sm btn-ghost" id="edAI">✦ Add from image</button>
+            </div>
+            <div id="blocks"></div>
+          </div>
+          <div id="t-applies" hidden>
+            <p class="hint">Which products show this chart. The most specific wins: product, then collection, tag, product type, vendor, then “all products”.</p>
+            <div id="rules"></div>
+            <button class="btn btn-sm btn-ghost" id="addRule">+ Add a rule</button>
+          </div>
+          <div id="t-where" hidden>
+            <label class="imp-field"><span>Show only to visitors from these countries</span>
+              <input id="edCountries" class="control" placeholder="e.g. US, CA (empty = everywhere)">
+              <small>Two-letter country codes. Use this for a US-size chart for US visitors and an EU one for Europe.</small></label>
+          </div>
+        </div>
+        <div class="panel sc-right">
+          <div class="sc-prevhead"><b>Preview</b><span class="sc-units" id="prevUnits" hidden><button data-u="cm" class="on">CM</button><button data-u="in">IN</button></span></div>
+          <div class="sc-preview" id="preview"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- settings -->
+    <section id="page-settings" hidden>
+      <p class="hint sc-setnote">Switch a store on to show its size charts on product pages. ProfitDesk adds a small script to that store (no theme editing), and the pop-up uses the store's own fonts. The language follows each store's tracking-page language (SCM → Settings).</p>
+      <div id="settings" class="sc-settings"></div>
+    </section>
+  </main>
+</div>
+
+<!-- AI from image -->
+<dialog id="aiDlg" class="sc-dlg">
+  <h3>Create a size chart from an image</h3>
+  <p class="hint">Upload the supplier's size chart (screenshots from 1688, AliExpress, Taobao… Chinese is fine). The AI reads it into a clean table.</p>
+  <label class="sc-drop" id="aiDrop"><input type="file" id="aiFiles" accept="image/*" multiple hidden><span>Drop images here or click to choose</span></label>
+  <div id="aiThumbs" class="sc-thumbs"></div>
+  <div class="imp-inline">
+    <label>Language <select id="aiLang" class="control"><option>English</option><option>French</option><option>Spanish</option></select></label>
+    <label>Units <select id="aiUnit" class="control"><option value="cm">Centimetres</option><option value="in">Inches</option><option value="">Keep as in image</option></select></label>
+  </div>
+  <div class="sc-dlgbtns"><button class="btn btn-ghost" id="aiCancel">Cancel</button><button class="btn btn-primary" id="aiGo">Read the chart</button></div>
+</dialog>
+
+<!-- import -->
+<dialog id="impDlg" class="sc-dlg">
+  <h3>Import size charts</h3>
+  <p class="hint">An export from Panda Size Chart, Kiwi or ProfitDesk (.json). Charts named after a product are linked to that product in the store you pick and set Active; the rest come in as Draft.</p>
+  <input type="file" id="impFile" accept=".json,application/json" class="control">
+  <label class="imp-field"><span>Link to products in</span><select id="impStore" class="control"></select></label>
+  <p class="hint" id="impNote"></p>
+  <div class="sc-dlgbtns"><button class="btn btn-ghost" id="impCancel">Cancel</button><button class="btn btn-primary" id="impGo">Import</button></div>
+</dialog>
+
+<div id="toast" class="toast" hidden></div>
+<script src="/static/nav.js"></script>
+<script src="/static/chat.js"></script>
+<script src="/static/sizecharts.js"></script>
+</body>
+</html>

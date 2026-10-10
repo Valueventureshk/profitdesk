@@ -43,7 +43,25 @@ DEFAULTS = {
     "compare_pct": 0.0, "compare_multiplier": 1.5,
     "compare_whole_end": "", "compare_cents": "",
     "custom_tags": [], "product_type": "",
+    "size_chart_mode": "none",    # none | chart (assign a chosen chart) | ai (read the source's size chart image)
+    "size_chart_id": 0,
 }
+
+
+def size_chart_images(p: dict, limit: int = 4) -> list:
+    """Images likely to be a size chart: the ones in the description first, then product
+    images whose name or alt mentions size / chart (incl. Chinese 尺码 / 尺寸)."""
+    out = []
+    for src in re.findall(r'<img[^>]+src=["\']([^"\']+)', p.get("body_html") or "", re.I):
+        if src.startswith("//"):
+            src = "https:" + src
+        if src.startswith("http") and src not in out:
+            out.append(src)
+    hint = re.compile(r"size|chart|guide|measure|taille|talla|尺码|尺寸", re.I)
+    for i in p.get("images") or []:
+        if hint.search((i.get("src") or "") + " " + (i.get("alt") or "")) and i["src"] not in out:
+            out.append(i["src"])
+    return out[:limit]
 
 
 class ImportError_(RuntimeError):
