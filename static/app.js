@@ -933,13 +933,53 @@ async function renderWidgets() {
     try { await api(`/api/widgets/${b.dataset.wdel}`, { method: "DELETE" }); renderWidgets(); toast("Turned off."); }
     catch (e) { toast(e.message, true); }
   };
-  for (const b of $("widgetBox").querySelectorAll("[data-wcopy]")) b.onclick = async () => {
-    try {
-      const d = await api(`/api/widgets/${b.dataset.wcopy}/script`);
-      await navigator.clipboard.writeText(d.script);
-      toast("Script copied. Paste it into a new Scriptable script on your iPhone.");
-    } catch (e) { toast(e.message || "Couldn't copy. Try again from your iPhone's Safari.", true); }
+  // Fetch every script now, so the tap copies straight away (Safari blocks a copy that waits on the network).
+  const scripts = {};
+  for (const w of r.widgets) api(`/api/widgets/${w.id}/script`).then((d) => { scripts[w.id] = d.script; }).catch(() => {});
+  for (const b of $("widgetBox").querySelectorAll("[data-wcopy]")) b.onclick = () => {
+    const id = b.dataset.wcopy;
+    const done = () => toast("Script copied. Paste it into a new Scriptable script on your iPhone.");
+    const text = scripts[id];
+    if (text && navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(done, () => showScript(text));
+    } else if (window.ClipboardItem && navigator.clipboard?.write) {
+      // still loading: hand Safari a promise so the copy keeps the tap's permission
+      const blob = api(`/api/widgets/${id}/script`).then((d) => { scripts[id] = d.script; return new Blob([d.script], { type: "text/plain" }); });
+      navigator.clipboard.write([new ClipboardItem({ "text/plain": blob })]).then(done,
+        () => blob.then(() => showScript(scripts[id])).catch((e) => toast(e.message, true)));
+    } else {
+      api(`/api/widgets/${id}/script`).then((d) => showScript(d.script)).catch((e) => toast(e.message, true));
+    }
   };
+}
+
+// Fallback: the script in a box, already selected, with its own Copy button
+function showScript(text) {
+  let dlg = $("wgScriptDlg");
+  if (!dlg) {
+    dlg = document.createElement("dialog");
+    dlg.id = "wgScriptDlg";
+    dlg.className = "wg-dlg";
+    dlg.innerHTML = `<h3>Widget script</h3>
+      <p class="hint">Your browser didn't allow automatic copying. Tap <b>Copy</b> below, or select all the text and copy it.</p>
+      <textarea id="wgScriptText" class="control" readonly></textarea>
+      <div class="wg-btns"><button class="btn btn-ghost" id="wgScriptClose">Close</button><button class="btn btn-primary" id="wgScriptCopy">Copy</button></div>`;
+    document.body.appendChild(dlg);
+    $("wgScriptClose").onclick = () => dlg.close();
+    $("wgScriptCopy").onclick = () => {
+      const ta = $("wgScriptText");
+      ta.focus(); ta.select(); ta.setSelectionRange(0, ta.value.length);
+      let ok = false;
+      try { ok = document.execCommand("copy"); } catch { ok = false; }
+      if (ok) { toast("Script copied. Paste it into a new Scriptable script on your iPhone."); dlg.close(); }
+      else navigator.clipboard?.writeText(ta.value).then(() => { toast("Script copied."); dlg.close(); },
+        () => toast("Select all the text and copy it by hand (press and hold → Select All → Copy).", true));
+    };
+  }
+  $("wgScriptText").value = text || "";
+  dlg.showModal();
+  const ta = $("wgScriptText");
+  ta.focus(); ta.select();
 }
 
 async function renderAI() {
