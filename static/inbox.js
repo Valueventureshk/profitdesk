@@ -57,7 +57,7 @@ function splitQuote(text) {
   const head = ATTRIB.test(rest[0]) || /^(on|le|el|am)\b/i.test(rest[0].trim()) ? rest.shift().trim().replace(/^>\s?/, "") : "";
   if (head && rest.length && /(wrote|a écrit|escribió)\s*:\s*$/i.test(rest[0]) && !ATTRIB.test(head)) rest.shift();
   const quote = rest.map((l) => l.replace(/^(\s*>)+\s?/, "")).join("\n").replace(/\n{3,}/g, "\n\n").trim();
-  return { main: main || "(no new text)", quote, head };
+  return { main: main || "(no new text)", quote, head: head.replace(/\s*<[^>]*$/, "").replace(/\s*(wrote|a écrit|escribió)\s*:?\s*$/i, "") };
 }
 function mailText(text) {
   const { main, quote, head } = splitQuote(text);
