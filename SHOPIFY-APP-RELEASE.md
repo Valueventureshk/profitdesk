@@ -2,6 +2,24 @@
 
 Do this once for each of the 12 "Profitdesk x <store>" apps. About 3 minutes per store.
 
+## Every box in the new version
+
+| Box | What to put |
+|---|---|
+| App name | Leave it ("Profitdesk x <store>") |
+| App URL | `https://profitdesk-production.up.railway.app` |
+| Embed app in Shopify admin | **Off** (unticked) |
+| Preferences URL | Leave empty |
+| Webhooks API version | `2026-07` |
+| Access scopes | The line below |
+| Optional scopes | Leave empty |
+| Use legacy install flow | Leave it as it was |
+| Redirect URLs | `https://profitdesk-production.up.railway.app/auth/shopify/callback` |
+| App proxy: Subpath prefix | `apps` |
+| App proxy: Subpath | `track` |
+| App proxy: Proxy URL | `https://profitdesk-production.up.railway.app/proxy/track` |
+| POS / anything else | Leave it as it was |
+
 ## Permissions (scopes): paste this whole line
 
 ```
