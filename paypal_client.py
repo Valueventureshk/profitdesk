@@ -202,5 +202,6 @@ def payment_fees(rows: list) -> dict:
         if not code.startswith("T00") or _amount(amt) <= 0 or not t.get("invoice_id"):
             continue
         out[t["invoice_id"]] = {"fee": abs(_amount(t.get("fee_amount"))),
-                                "currency": amt.get("currency_code"), "amount": _amount(amt)}
+                                "currency": amt.get("currency_code"), "amount": _amount(amt),
+                                "time": t.get("transaction_initiation_date")}
     return out

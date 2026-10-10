@@ -3753,6 +3753,10 @@ async def _cog_sync(days_back: int = None, store_ids: list = None) -> dict:
             except Exception as e:
                 report[x["name"].strip()] = f"error: {e}"
         fee_map = await _actual_fees(fetched)
+        # PayPal payments already matched by Shopify's payment id belong to those orders,
+        # so the amount-and-time fallback never takes them.
+        fee_map["_claimed"] = {p["payment_id"] for v in fetched.values() for o in v[2]
+                               for p in (o.get("payments") or []) if p["payment_id"] in fee_map}
         # Each store's tag (AS…, …CH) from its own order names, then its cost history.
         known = {sid: [o["name"] for o in v[2]] for sid, v in fetched.items()}
         saved = _cog.get("tags") or {}
@@ -3800,13 +3804,44 @@ async def _actual_fees(fetched: dict) -> dict:
 
     conns = db.list_cash_connections()
     got = await asyncio.gather(*[one(c) for c in conns], return_exceptions=True)
-    out = {}
+    out, pool = {}, []
     for c, g in zip(conns, got):
         if isinstance(g, Exception):
             print(f"Fees from {c['label']} failed: {g}", flush=True)
-        else:
-            out.update(g)
+            continue
+        out.update(g)
+        if c["provider"] == "paypal":
+            pool += [dict(v, invoice_id=k) for k, v in g.items()]
+    # Some stores' PayPal checkout passes PayPal a different id than Shopify's payment id
+    # (e.g. Revionel, Dovaro). Those payments are matched by amount and time instead.
+    out["_paypal_pool"] = pool
     return out
+
+
+def _paypal_by_amount(fee_map: dict, amount: float, currency: str, created: str):
+    """A PayPal payment of this amount and currency within 3 hours of the order, not yet
+    claimed by its own invoice id or by another order."""
+    pool = fee_map.get("_paypal_pool") or []
+    try:
+        t0 = datetime.fromisoformat(str(created).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    claimed = fee_map.setdefault("_claimed", set())
+    best = None
+    for e in pool:
+        if e["invoice_id"] in claimed or e.get("currency") != currency or abs(e["amount"] - amount) > 0.01:
+            continue
+        try:
+            tw = datetime.fromisoformat(str(e.get("time")).replace("Z", "+00:00").replace("+0000", "+00:00"))
+        except ValueError:
+            continue
+        gap = abs((tw - t0).total_seconds())
+        if gap <= 3 * 3600 and (best is None or gap < best[0]):
+            best = (gap, e)
+    if not best:
+        return None
+    claimed.add(best[1]["invoice_id"])
+    return best[1]
 
 
 async def _order_fee_rows(store, orders: list, fee_map: dict) -> list:
@@ -3819,6 +3854,8 @@ async def _order_fee_rows(store, orders: list, fee_map: dict) -> list:
         for p in o.get("payments") or []:
             est = metrics.processing_fees({p["gateway"]: [1, p["amount"]]}, rates, plan, cur, hkd)[0]
             hit = fee_map.get(p["payment_id"])
+            if not hit and "paypal" in (p["gateway"] or "").lower():
+                hit = _paypal_by_amount(fee_map, p["amount"], cur, o["created"])
             actual = None
             if hit:
                 actual = hit["fee"]
