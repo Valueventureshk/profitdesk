@@ -39,7 +39,6 @@ async function loadList() {
   meta = { stores: d.stores, templates: d.templates };
   if ($("fStore").options.length <= 1) {
     $("fStore").innerHTML += d.stores.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join("");
-    $("addTemplate").innerHTML += d.templates.map((t) => `<option value="${t.key}">${esc(t.name)}</option>`).join("");
   }
   $("list").innerHTML = `<thead><tr><th class="scm-check"><input type="checkbox" id="pickAll"></th><th>Name</th><th>Status</th><th>Applies to</th><th>Updated</th><th></th></tr></thead><tbody>${
     d.charts.map((c) => `<tr data-id="${c.id}"><td class="scm-check" onclick="event.stopPropagation()"><input type="checkbox" data-pick="${c.id}"${picked.has(String(c.id)) ? " checked" : ""}></td>
@@ -213,13 +212,7 @@ function pasteGrid(t, text, r0, c0) {
   renderBlocks();
 }
 for (const b of document.querySelectorAll("[data-add]")) b.onclick = () => { chart.blocks.push(newBlock(b.dataset.add)); renderBlocks(); };
-$("addTemplate").onchange = async (e) => {
-  const key = e.target.value;
-  e.target.value = "";
-  if (!key) return;
-  const tpl = TEMPLATES_FROM_SERVER[key];
-  if (tpl) { chart.blocks.push(...JSON.parse(JSON.stringify(tpl))); renderBlocks(); }
-};
+$("addTemplate").onclick = () => openGallery("add");
 let TEMPLATES_FROM_SERVER = {};
 
 let pvTimer;
@@ -327,24 +320,39 @@ $("edBack").onclick = () => { showPage("list"); loadList(); };
 function edIcon() { $("edIcon").innerHTML = Garments.svg(Garments.guess($("edName").value), 26); }
 $("edName").addEventListener("input", edIcon);
 
-// "Create size chart": a gallery of templates with garment icons
-$("btnNew").onclick = () => {
+// Template gallery with garment icons: "new" = Create size chart, "add" = + Template inside the editor
+let galMode = "new";
+function openGallery(mode) {
+  galMode = mode;
   const card = (key, icon, name, sub) => `<button class="sc-tpl" data-tpl="${key}"><span class="sc-ico sc-ico-xl">${icon}</span><b>${esc(name)}</b><small>${esc(sub)}</small></button>`;
   const cols = (key) => (TEMPLATES_FROM_SERVER[key] || []).find((b) => b.type === "table")?.header.slice(1).join(" · ") || "";
-  $("gallery").innerHTML = card("", Garments.svg("hanger", 40), "Blank", "Start from scratch")
+  $("galTitle").textContent = mode === "add" ? "Add a template" : "Create a size chart";
+  $("galHint").textContent = mode === "add" ? "Adds its table to this chart. You can change every number afterwards."
+    : "Start from a template (you can change every number), a blank chart, or a supplier's image.";
+  $("gallery").innerHTML = (mode === "new" ? card("", Garments.svg("hanger", 40), "Blank", "Start from scratch") : "")
     + (meta.templates || []).map((t) => card(t.key, Garments.svg(Garments.forTemplate(t.key), 40), t.name, cols(t.key))).join("")
     + `<button class="sc-tpl sc-tpl-ai" data-tpl="__ai"><span class="sc-ico sc-ico-xl">✦</span><b>From an image</b><small>AI reads a supplier's chart</small></button>`;
   $("newDlg").showModal();
-};
+}
+$("btnNew").onclick = () => openGallery("new");
 $("newCancel").onclick = () => $("newDlg").close();
 $("gallery").onclick = (e) => {
   const b = e.target.closest("[data-tpl]");
   if (!b) return;
   $("newDlg").close();
   const key = b.dataset.tpl;
-  if (key === "__ai") return $("btnAI").click();
   const t = (meta.templates || []).find((x) => x.key === key);
-  openEditor(null, key ? { name: t?.name || "", blocks: JSON.parse(JSON.stringify(TEMPLATES_FROM_SERVER[key] || [])) } : {});
+  const blocks = JSON.parse(JSON.stringify(TEMPLATES_FROM_SERVER[key] || []));
+  if (galMode === "add") {
+    if (key === "__ai") return $("edAI").click();
+    const hasTitle = chart.blocks.some((x) => x.type === "title");
+    chart.blocks.push(...blocks.filter((x) => !(hasTitle && x.type === "title")));
+    if (!$("edName").value.trim() && t) { $("edName").value = t.name; edIcon(); }
+    renderBlocks();
+    return;
+  }
+  if (key === "__ai") return $("btnAI").click();
+  openEditor(null, key ? { name: t?.name || "", blocks } : {});
 };
 
 // ------------------------------------------------ AI from image

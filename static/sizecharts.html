@@ -68,7 +68,7 @@
           </div>
           <div id="t-content">
             <div class="sc-add">
-              <select id="addTemplate" class="control"><option value="">+ Template…</option></select>
+              <button class="btn btn-sm btn-ghost" id="addTemplate">+ Template</button>
               <button class="btn btn-sm btn-ghost" data-add="title">+ Title</button>
               <button class="btn btn-sm btn-ghost" data-add="table">+ Table</button>
               <button class="btn btn-sm btn-ghost" data-add="text">+ Text</button>
@@ -120,8 +120,8 @@
 
 <!-- new chart: template gallery -->
 <dialog id="newDlg" class="sc-dlg sc-dlg-wide">
-  <h3>Create a size chart</h3>
-  <p class="hint">Start from a template (you can change every number), a blank chart, or a supplier's image.</p>
+  <h3 id="galTitle">Create a size chart</h3>
+  <p class="hint" id="galHint">Start from a template (you can change every number), a blank chart, or a supplier's image.</p>
   <div class="sc-gallery" id="gallery"></div>
   <div class="sc-dlgbtns"><button class="btn btn-ghost" id="newCancel">Cancel</button></div>
 </dialog>
