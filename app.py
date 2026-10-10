@@ -2360,15 +2360,58 @@ async def _scm_track():
         _scm_set_status(track_error=str(e))
 
 
+# 17TRACK status -> Shopify fulfillment event. Each is sent once per parcel.
+SHOPIFY_EVENT = {"in_transit": "IN_TRANSIT", "pickup": "READY_FOR_PICKUP", "out_for_delivery": "OUT_FOR_DELIVERY",
+                 "failed_attempt": "ATTEMPTED_DELIVERY", "delivered": "DELIVERED"}
+
+
+def _push_stores() -> set:
+    return {x["id"] for x in db.list_stores() if db.get_setting(f"scm_push:{x['id']}") == "1"}
+
+
+async def _scm_push():
+    """Send new tracking statuses to Shopify for stores with "Tell Shopify" on."""
+    on = _push_stores()
+    if not on:
+        return
+    stores = {x["id"]: x for x in db.list_stores()}
+    with db._conn() as con:
+        rows = [dict(r) for r in con.execute(
+            f"SELECT id, store_id, fulfillment_gid, status, pushed, last_event_at, delivered_at, eta_to, city,"
+            f" province, country FROM shipments WHERE registered = 1 AND cancelled = 0 AND fulfillment_gid IS NOT NULL"
+            f" AND status IN ({','.join('?' * len(SHOPIFY_EVENT))}) AND store_id IN ({','.join('?' * len(on))})"
+            f" AND instr(',' || pushed || ',', ',' || status || ',') = 0 LIMIT 200",
+            (*SHOPIFY_EVENT, *on))]
+    for r in rows:
+        store = stores.get(r["store_id"])
+        if not store:
+            continue
+        local = r["status"] in ("out_for_delivery", "delivered", "failed_attempt", "pickup")
+        try:
+            await ShopifyClient(store["shop_domain"], store["access_token"]).fulfillment_event(
+                r["fulfillment_gid"], SHOPIFY_EVENT[r["status"]],
+                happened_at=r["delivered_at"] if r["status"] == "delivered" else r["last_event_at"],
+                city=r["city"] if local else None, province=r["province"] if local else None,
+                estimated=r["eta_to"])
+            err = None
+        except Exception as e:
+            err = str(e)[:200]
+        with db._conn() as con:
+            con.execute("UPDATE shipments SET pushed = trim(pushed || ',' || ?, ','), push_error = ? WHERE id = ?",
+                        (r["status"], err, r["id"]))
+        await asyncio.sleep(0.6)
+
+
 async def _scm_run():
     async with _scm_running:
-        if not db.get_setting("scm_resync_v2"):
+        if not db.get_setting("scm_resync_v3"):
             # One full re-read so older orders get their state / province too.
             with db._conn() as con:
                 con.execute("DELETE FROM settings WHERE key LIKE 'scm_sync:%'")
-            db.set_setting("scm_resync_v2", "1")
+            db.set_setting("scm_resync_v3", "1")
         await _scm_sync_orders()
         await _scm_track()
+        await _scm_push()
         _scm_set_status(last_sync=datetime.now(timezone.utc).isoformat())
 
 
@@ -2471,6 +2514,7 @@ async def proxy_track(request: Request, order: str = None, email: str = None, nu
 async def api_tracking():
     cfg = _tracking_config()
     out = {"connected": bool(cfg["key"]), "stores": cfg["stores"], "from": cfg["from"],
+           "push": sorted(_push_stores()),
            "dropship": [x["id"] for x in db.list_stores()
                         if (db.get_setting(f"track_dropship:{x['id']}") or "1") == "1"],
            "domains": {x["id"]: x["shop_domain"] for x in db.list_stores()},
@@ -2494,6 +2538,15 @@ async def api_tracking_save(payload: dict):
             except track17.TrackError as e:
                 raise HTTPException(400, str(e))
         db.set_setting("track17_key", key)
+    if "push" in payload:
+        on = {int(x) for x in payload["push"] or []}
+        for x in db.list_stores():
+            was = db.get_setting(f"scm_push:{x['id']}") == "1"
+            if x["id"] in on and not was:
+                # Only changes from now on: don't email customers about parcels that already moved.
+                with db._conn() as con:
+                    con.execute("UPDATE shipments SET pushed = status WHERE store_id = ?", (x["id"],))
+            db.set_setting(f"scm_push:{x['id']}", "1" if x["id"] in on else "0")
     if "dropship" in payload:
         on = {int(x) for x in payload["dropship"] or []}
         for x in db.list_stores():

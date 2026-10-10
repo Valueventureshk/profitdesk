@@ -110,8 +110,12 @@ file and have it work.
   SCM → Tracking connection, fulfilled on/after `track_from`, are registered with 17TRACK
   (1 quota each, once). Updates arrive by webhook (signed sha256(body/key)); a daily
   `gettrackinfo` catches up. Key = setting `track17_key` (owner pastes it on the SCM page).
-  Planned next: customer tracking page per store (Shopify app proxy, dropship mode),
-  Shopify fulfillment events so Shopify sends the shipping update emails.
+  Customer tracking page: Shopify app proxy apps/track → /proxy/track (signed; owners can
+  preview unsigned), dropship mode per store, "In transit to <state>". "Tell Shopify" per
+  store (setting scm_push:<id>, off by default) sends fulfillment events (IN_TRANSIT,
+  OUT_FOR_DELIVERY, DELIVERED...) once each; turning it on marks current statuses as sent.
+  Store permissions: shopify_client.SCOPES (27, see SHOPIFY-APP-RELEASE.md), check
+  /api/shopify/permissions; opening the app from Shopify admin asks for missing ones.
 - Business clock is Hong Kong (`CASH_TIMEZONE`). Each store has its own clock;
   "today" is the furthest-ahead store's date.
 

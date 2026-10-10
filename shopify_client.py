@@ -120,8 +120,17 @@ query Shipments($cursor: String, $q: String!) {
       legacyResourceId name createdAt updatedAt cancelledAt test
       displayFulfillmentStatus email currentSubtotalLineItemsQuantity
       shippingAddress { name city province countryCodeV2 }
-      fulfillments(first: 10) { status createdAt trackingInfo { number url company } }
+      fulfillments(first: 10) { id status createdAt trackingInfo { number url company } }
     }
+  }
+}
+"""
+
+FULFILLMENT_EVENT = """
+mutation Event($e: FulfillmentEventInput!) {
+  fulfillmentEventCreate(fulfillmentEvent: $e) {
+    fulfillmentEvent { id status }
+    userErrors { field message }
   }
 }
 """
@@ -426,7 +435,8 @@ class ShopifyClient:
                             if n and n not in seen:
                                 seen.add(n)
                                 parcels.append({"number": n, "company": t.get("company") or "",
-                                                "url": t.get("url") or "", "fulfilled": f.get("createdAt")})
+                                                "url": t.get("url") or "", "fulfilled": f.get("createdAt"),
+                                                "fid": f.get("id")})
                     out.append({"order_id": o["legacyResourceId"], "name": o["name"],
                                 "created": o["createdAt"], "cancelled": bool(o.get("cancelledAt")),
                                 "fulfillment": o.get("displayFulfillmentStatus") or "",
@@ -439,6 +449,22 @@ class ShopifyClient:
                     break
                 cursor = conn["pageInfo"]["endCursor"]
         return out
+
+    async def fulfillment_event(self, fulfillment_id: str, status: str, happened_at: str = None,
+                                message: str = None, city: str = None, province: str = None,
+                                country: str = None, estimated: str = None):
+        """Tell Shopify where a parcel is. OUT_FOR_DELIVERY and DELIVERED make Shopify
+        send its own customer emails (if those notifications are on in the store)."""
+        e = {"fulfillmentId": fulfillment_id, "status": status}
+        for k, v in (("happenedAt", happened_at), ("message", message), ("city", city),
+                     ("province", province), ("country", country), ("estimatedDeliveryAt", estimated)):
+            if v:
+                e[k] = v
+        async with httpx.AsyncClient(timeout=30) as client:
+            data = await self._post(client, FULFILLMENT_EVENT, {"e": e})
+        errs = data["fulfillmentEventCreate"]["userErrors"]
+        if errs:
+            raise ShopifyError("; ".join(x["message"] for x in errs))
 
     async def shop_info(self):
         async with httpx.AsyncClient(timeout=30) as client:

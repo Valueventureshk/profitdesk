@@ -377,7 +377,8 @@ def _conn():
 
 # Columns added after the first release. Older databases get them on startup.
 _ADDED_COLUMNS = {
-    "shipments": [("province", "TEXT")],
+    "shipments": [("province", "TEXT"), ("fulfillment_gid", "TEXT"), ("pushed", "TEXT NOT NULL DEFAULT ''"),
+                  ("push_error", "TEXT")],
     "stores": [
         ("meta_account_id", "TEXT UNIQUE"),
         ("meta_account_name", "TEXT"),
@@ -1061,7 +1062,8 @@ def save_order_shipments(store_id: int, o: dict):
                         (store_id, o["order_id"]))
         rows = o["parcels"] or [{"number": "", "company": "", "url": "", "fulfilled": None}]
         for p in rows:
-            vals = {**base, "company": p["company"], "tracking_url": p["url"], "fulfilled_at": p["fulfilled"]}
+            vals = {**base, "company": p["company"], "tracking_url": p["url"], "fulfilled_at": p["fulfilled"],
+                    "fulfillment_gid": p.get("fid")}
             cols = list(vals)
             con.execute(
                 f"INSERT INTO shipments (store_id, order_id, number, {', '.join(cols)}, status)"
