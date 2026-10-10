@@ -153,7 +153,8 @@ async function loadTracking() {
   $("pageStores").innerHTML = t.store_list.map((s) => `<div class="scm-page-row"><span>${esc(s.name)}</span>
     <label class="scm-pick"><input type="checkbox" data-drop="${s.id}"${t.dropship.includes(s.id) ? " checked" : ""}> Dropship mode</label>
     <label class="scm-pick" title="Send each tracking update to Shopify, so Shopify emails the customer when the parcel is out for delivery and delivered"><input type="checkbox" data-push="${s.id}"${(t.push || []).includes(s.id) ? " checked" : ""}> Tell Shopify (delivery emails)</label>
-    <a href="/proxy/track?shop=${encodeURIComponent(t.domains[s.id])}" target="_blank" rel="noopener">Preview page</a></div>`).join("");
+    <a href="/proxy/track?shop=${encodeURIComponent(t.domains[s.id])}" target="_blank" rel="noopener">Preview page</a>
+    <span class="hint" title="Customers who opened the tracking page from a link in a shipping email">${(t.visits?.[s.id]?.email_links) ? `${t.visits[s.id].email_links} from emails · last ${ago(t.visits[s.id].last)}` : "no email visits yet"}</span></div>`).join("");
   $("webhook").textContent = t.webhook;
   $("key").placeholder = t.connected ? "Connected · paste a new key to replace it" : "Paste the key from 17TRACK → Settings → Security";
   const qt = t.quota;

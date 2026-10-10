@@ -2494,6 +2494,16 @@ async def proxy_track(request: Request, order: str = None, email: str = None, nu
     if not signed and not getattr(request.state, "user", None):
         return Response("Not allowed.", status_code=401)
     parcels, message = _find_parcels(store["id"], order, email, nums)
+    if signed and nums and not order:
+        # Arrived from a link in a shipping email (the email links carry the tracking number).
+        key = f"track_visits:{store['id']}"
+        try:
+            v = json.loads(db.get_setting(key) or "{}")
+        except ValueError:
+            v = {}
+        v["email_links"] = v.get("email_links", 0) + 1
+        v["last"] = datetime.now(timezone.utc).isoformat()
+        db.set_setting(key, json.dumps(v))
     dropship = (db.get_setting(f"track_dropship:{store['id']}") or "1") == "1"
     body = trackpage.page(store["name"].strip(), parcels, {"order": order, "email": email}, message, dropship,
                           (query.get("path_prefix") or "/apps/track") if signed else "/proxy/track")
@@ -2515,6 +2525,7 @@ async def api_tracking():
     cfg = _tracking_config()
     out = {"connected": bool(cfg["key"]), "stores": cfg["stores"], "from": cfg["from"],
            "push": sorted(_push_stores()),
+           "visits": {x["id"]: json.loads(db.get_setting(f"track_visits:{x['id']}") or "{}") for x in db.list_stores()},
            "dropship": [x["id"] for x in db.list_stores()
                         if (db.get_setting(f"track_dropship:{x['id']}") or "1") == "1"],
            "domains": {x["id"]: x["shop_domain"] for x in db.list_stores()},
