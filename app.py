@@ -9,6 +9,7 @@ import asyncio
 import html
 import json
 import os
+import random
 import re
 import secrets
 import time
@@ -23,7 +24,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 import airwallex_client as awx
@@ -809,6 +810,66 @@ async def _mail_loop():
         except Exception as e:
             print(f"Label suggestions failed: {e}", flush=True)
         await asyncio.sleep(120)
+
+
+# ---------------------------------------------------------------- Inbox attachments (from Gmail, kept 60 days)
+
+ATT_DIR = os.path.join(os.path.dirname(os.path.abspath(db.DB_PATH)), "attachments")
+ATT_KEEP_DAYS = 60
+ATT_INLINE = {"image/png", "image/jpeg", "image/gif", "image/webp", "application/pdf"}   # everything else downloads
+
+
+def _att_cleanup():
+    """Copies not opened for ATT_KEEP_DAYS are removed (the original stays in Gmail)."""
+    cutoff = time.time() - ATT_KEEP_DAYS * 86400
+    for root, _dirs, files in os.walk(ATT_DIR):
+        for f in files:
+            path = os.path.join(root, f)
+            try:
+                if os.path.getatime(path) < cutoff and os.path.getmtime(path) < cutoff:
+                    os.remove(path)
+            except OSError:
+                pass
+
+
+@app.get("/api/inbox/attachments/{message_id}/{index}")
+async def api_inbox_attachment(message_id: int, index: int, download: int = 0):
+    m = db.mail_get(message_id)
+    if not m:
+        raise HTTPException(404, "That email no longer exists.")
+    info = json.loads(m["attachments"] or "[]")
+    if index < 0 or index >= len(info):
+        raise HTTPException(404, "That attachment isn't in the email.")
+    meta = info[index]
+    folder = os.path.join(ATT_DIR, str(message_id))
+    path = os.path.join(folder, str(index))
+    if os.path.exists(path):
+        with open(path, "rb") as f:
+            data = f.read()
+        os.utime(path)                                   # opened again: keep it longer
+        ctype = meta.get("type") or "application/octet-stream"
+    else:
+        acct = next((a for a in db.list_mail_accounts() if a["id"] == m["account_id"]), None)
+        if not acct:
+            raise HTTPException(404, "That mailbox was removed.")
+        try:
+            _name, ctype, data = await asyncio.to_thread(mail_client.fetch_attachment, acct["address"], acct["password"],
+                                                         m["message_id"], index)
+        except mail_client.MailError as e:
+            raise HTTPException(400, str(e))
+        os.makedirs(folder, exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(data)
+        if random.random() < 0.05:
+            asyncio.get_running_loop().run_in_executor(None, _att_cleanup)
+    from urllib.parse import quote
+    name = meta.get("name") or "attachment"
+    inline = ctype in ATT_INLINE and not download
+    headers = {"Content-Disposition": f"{'inline' if inline else 'attachment'}; filename*=UTF-8''{quote(name)}",
+               "X-Content-Type-Options": "nosniff", "Cache-Control": "private, max-age=86400"}
+    if inline and ctype.startswith("image/"):
+        headers["Content-Security-Policy"] = "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox"
+    return Response(data, media_type=ctype if inline else "application/octet-stream", headers=headers)
 
 
 # ---------------------------------------------------------------- Inbox labels (Gmail labels, two-way)

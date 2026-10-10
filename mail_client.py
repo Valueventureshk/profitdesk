@@ -200,3 +200,39 @@ def fetch_history(address: str, password: str, days: int, folder: str = "INBOX",
     except Exception as e:
         raise _explain(e, "read past emails")
     return count
+
+
+def fetch_attachment(address: str, password: str, message_id: str, index: int, provider: str = "google") -> tuple:
+    """One attachment of an email, straight from Gmail: (file name, type, bytes).
+    index counts the email's attachments in the same order as _attachments()."""
+    mid = (message_id or "").strip().strip("<>")
+    if not mid:
+        raise MailError("This email has no Message-ID, so Gmail can't find it.")
+    imap_host, imap_port, _, _ = PROVIDERS[provider]
+    try:
+        with imaplib.IMAP4_SSL(imap_host, imap_port, ssl_context=ssl.create_default_context(), timeout=120) as m:
+            m.login(address, password)
+            box = '"[Gmail]/All Mail"'
+            typ, rows = m.list()
+            for raw in rows or []:
+                line = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
+                if "\\All" in line:
+                    name = line.rsplit(' "/" ', 1)[-1].strip()
+                    box = name if name.startswith('"') else f'"{name}"'
+            m.select(box, readonly=True)
+            typ, data = m.uid("search", None, "X-GM-RAW", f'"rfc822msgid:{mid}"')
+            uids = (data[0] or b"").split()
+            if not uids:
+                raise MailError("Gmail doesn't have this email any more (deleted?).")
+            typ, got = m.uid("fetch", uids[-1], "(BODY.PEEK[])")
+            raw = next(p[1] for p in got if isinstance(p, tuple))
+    except MailError:
+        raise
+    except Exception as e:
+        raise _explain(e, "fetch the attachment")
+    msg = email.message_from_bytes(raw, policy=email.policy.default)
+    parts = [p for p in msg.walk() if p.get_filename()]
+    if index < 0 or index >= len(parts):
+        raise MailError("That attachment isn't in the email.")
+    p = parts[index]
+    return p.get_filename(), p.get_content_type(), p.get_payload(decode=True) or b""
