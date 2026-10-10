@@ -78,14 +78,62 @@ function previewPrice(src) {
   return Math.round(x * 100) / 100;
 }
 
-// ------------------------------------------------ load
+// ------------------------------------------------ load (in the browser: Shopify blocks servers from this)
+function parseUrl(raw) {
+  let url = (raw || "").trim();
+  if (!url) throw new Error("Paste a product, collection or store link.");
+  if (!/^https?:\/\//i.test(url)) url = "https://" + url;
+  let u;
+  try { u = new URL(url); } catch { throw new Error("That doesn't look like a web address."); }
+  const path = u.pathname.replace(/\/$/, "");
+  let m = path.match(/\/products\/([^/?#]+)/);
+  if (m) return { host: u.host, kind: "product", handle: m[1].replace(/\.json$/, "") };
+  m = path.match(/\/collections\/([^/?#]+)/);
+  if (m) return { host: u.host, kind: "collection", handle: m[1] };
+  return { host: u.host, kind: "store" };
+}
+async function getJson(url) {
+  let r;
+  try { r = await fetch(url, { credentials: "omit" }); }
+  catch { throw new Error("That store didn't answer, or it blocks product copying."); }
+  if (r.status === 404) throw new Error("Nothing found at that address. The product may have been removed.");
+  if (r.status === 401 || r.status === 403) throw new Error("That store blocks product copying (or is password-protected).");
+  if (r.status === 429) throw new Error("That store is limiting requests. Wait a minute and try again.");
+  if (!r.ok) throw new Error(`That store answered with an error (${r.status}).`);
+  try { return await r.json(); } catch { throw new Error("That address isn't a Shopify store."); }
+}
+function summary(p, host) {
+  const prices = (p.variants || []).map((v) => +v.price || 0);
+  const imgs = p.images || [];
+  return { id: p.id, handle: p.handle, title: p.title, image: imgs[0]?.src || null, images: imgs.length,
+    variants: (p.variants || []).length, price_min: prices.length ? Math.min(...prices) : 0,
+    price_max: prices.length ? Math.max(...prices) : 0, url: `https://${host}/products/${p.handle}` };
+}
 async function loadUrl(url, button) {
-  if (!url.trim()) { toast("Paste a link first.", true); return null; }
-  button.disabled = true;
   const old = button.textContent;
-  button.textContent = "Loading…";
-  try { return await send("/api/importer/load", { url }); }
-  catch (e) { toast(e.message, true); return null; }
+  button.disabled = true;
+  try {
+    const u = parseUrl(url);
+    button.textContent = "Loading…";
+    let currency = null;
+    try { currency = ((await getJson(`https://${u.host}/meta.json`)).currency || "").toUpperCase() || null; } catch { /* optional */ }
+    let raw = [];
+    if (u.kind === "product") {
+      raw = [(await getJson(`https://${u.host}/products/${u.handle}.json`)).product];
+    } else {
+      const base = u.kind === "collection" ? `https://${u.host}/collections/${u.handle}/products.json` : `https://${u.host}/products.json`;
+      for (let page = 1; page <= 20; page++) {
+        const batch = (await getJson(`${base}?limit=250&page=${page}`)).products || [];
+        raw = raw.concat(batch);
+        button.textContent = `Loading… ${raw.length}`;
+        if (batch.length < 250) break;
+      }
+    }
+    raw = raw.filter((p) => p && p.id && p.title);
+    if (!raw.length) throw new Error("No products found there.");
+    return { host: u.host, kind: u.kind, currency, raw: new Map(raw.map((p) => [String(p.id), p])),
+      products: raw.map((p) => summary(p, u.host)) };
+  } catch (e) { toast(e.message, true); return null; }
   finally { button.disabled = false; button.textContent = old; }
 }
 
@@ -156,9 +204,11 @@ async function startImport(ids) {
   if (!st.length) { toast("Pick at least one store in “Import into”.", true); return; }
   if (!ids.length) { toast("Pick at least one product.", true); return; }
   const names = stores.filter((s) => st.includes(s.id)).map((s) => s.name).join(", ");
+  if (ids.length > 500) { toast("Import up to 500 products at a time.", true); return; }
   if (!confirm(`Import ${ids.length} product${ids.length === 1 ? "" : "s"} into ${names}?\nThey'll be created as ${cfg.active ? "ACTIVE (visible to customers)" : "Draft"}.`)) return;
   try {
-    const r = await send("/api/importer/import", { token: current.token, ids, stores: st });
+    const r = await send("/api/importer/import", { host: current.host, currency: current.currency, stores: st,
+      products: ids.map((id) => current.raw.get(String(id))).filter(Boolean) });
     $("progress").hidden = false;
     $("progress").scrollIntoView({ behavior: "smooth" });
     poll(r.job);

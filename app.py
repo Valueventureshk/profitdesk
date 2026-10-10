@@ -2945,24 +2945,6 @@ def api_importer_settings_save(payload: dict):
     return {"ok": True, "settings": cfg}
 
 
-_loaded: dict = {}      # token -> (time, {host, currency, raw: {id: product}})
-
-
-@app.post("/api/importer/load")
-async def api_importer_load(payload: dict):
-    try:
-        got = await importer.load(payload.get("url"), max_products=int(payload.get("max") or 2000))
-    except importer.ImportError_ as e:
-        raise HTTPException(400, str(e))
-    token = secrets.token_urlsafe(10)
-    for k in [k for k, v in _loaded.items() if time.time() - v[0] > 3 * 3600]:
-        _loaded.pop(k, None)
-    _loaded[token] = (time.time(), {"host": got["host"], "currency": got["currency"],
-                                    "raw": {str(p["id"]): p for p in got["raw"]}})
-    return {"token": token, "host": got["host"], "kind": got["kind"], "currency": got["currency"],
-            "products": got["products"]}
-
-
 _import_running: set = set()
 
 
@@ -3020,16 +3002,18 @@ async def _run_import(job_id: str, token_data: dict, ids: list, store_ids: list,
 
 @app.post("/api/importer/import")
 async def api_importer_import(payload: dict, request: Request):
-    hit = _loaded.get(payload.get("token") or "")
-    if not hit:
-        raise HTTPException(400, "Load the products again (the list expired).")
-    data = hit[1]
-    ids = [str(i) for i in payload.get("ids") or [] if str(i) in data["raw"]]
+    """The browser loads the source store's products (Shopify blocks servers from doing
+    that) and sends the chosen ones here with the source host and currency."""
+    host = re.sub(r"[^a-z0-9.\-]", "", (payload.get("host") or "").lower())[:200]
+    currency = (payload.get("currency") or "").upper()[:3] or None
+    products = [p for p in (payload.get("products") or []) if isinstance(p, dict) and p.get("id") and p.get("title")][:500]
     store_ids = [int(x) for x in payload.get("stores") or []]
-    if not ids:
+    if not products:
         raise HTTPException(400, "Pick at least one product.")
     if not store_ids:
         raise HTTPException(400, "Pick at least one store to import into.")
+    data = {"host": host, "currency": currency, "raw": {str(p["id"]): p for p in products}}
+    ids = list(data["raw"])
     user = (getattr(request.state, "user", None) or {}).get("email", "")
     job_id = secrets.token_hex(6)
     with db._conn() as con:
@@ -3039,7 +3023,7 @@ async def api_importer_import(payload: dict, request: Request):
                 imgs = p.get("images") or []
                 con.execute("INSERT INTO import_items (job_id, source_url, title, image, store_id, created_by)"
                             " VALUES (?, ?, ?, ?, ?, ?)",
-                            (job_id, f"https://{data['host']}/products/{p.get('handle')}", p.get("title"),
+                            (job_id, f"https://{host}/products/{p.get('handle')}", p.get("title"),
                              imgs[0].get("src") if imgs else None, sid, user))
     _import_running.add(job_id)
     asyncio.create_task(_run_import(job_id, data, ids, store_ids, user))
