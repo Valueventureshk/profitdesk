@@ -1041,6 +1041,8 @@ body.read-only [data-write-only] { display: none !important; }
 /* ------------------------------------------------ Size Charts desk */
 .sc-listhead { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
 .sc-listhead .scm-searchbox { flex: 1 1 240px; }
+.sc-listhead > select.control, .sc-edbar > select.control { width: auto; flex: 0 0 auto; height: 38px; min-width: 140px; }
+.sc-edbar > .btn { flex: 0 0 auto; }
 .sc-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
 .sc-danger { color: var(--down); }
 .sc-table tbody tr { cursor: pointer; }
