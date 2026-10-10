@@ -424,7 +424,8 @@ class ShopifyClient:
                                 "created": o["createdAt"], "cancelled": bool(o.get("cancelledAt")),
                                 "fulfillment": o.get("displayFulfillmentStatus") or "",
                                 "email": o.get("email") or "", "customer": a.get("name") or "",
-                                "city": a.get("city") or "", "country": a.get("countryCodeV2") or "",
+                                "city": a.get("city") or "", "province": a.get("province") or "",
+                                "country": a.get("countryCodeV2") or "",
                                 "items": o.get("currentSubtotalLineItemsQuantity") or 0,
                                 "parcels": parcels})
                 if not conn["pageInfo"]["hasNextPage"]:

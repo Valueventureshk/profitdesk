@@ -2332,6 +2332,11 @@ async def _scm_track():
 
 async def _scm_run():
     async with _scm_running:
+        if not db.get_setting("scm_resync_v2"):
+            # One full re-read so older orders get their state / province too.
+            with db._conn() as con:
+                con.execute("DELETE FROM settings WHERE key LIKE 'scm_sync:%'")
+            db.set_setting("scm_resync_v2", "1")
         await _scm_sync_orders()
         await _scm_track()
         _scm_set_status(last_sync=datetime.now(timezone.utc).isoformat())

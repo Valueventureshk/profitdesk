@@ -377,6 +377,7 @@ def _conn():
 
 # Columns added after the first release. Older databases get them on startup.
 _ADDED_COLUMNS = {
+    "shipments": [("province", "TEXT")],
     "stores": [
         ("meta_account_id", "TEXT UNIQUE"),
         ("meta_account_name", "TEXT"),
@@ -1037,7 +1038,7 @@ def save_expense_suggestions(picks: list):
 
 # ---------------------------------------------------------------- shipments
 
-_SHIP_ORDER = ("order_name", "order_at", "email", "customer", "city", "country", "items",
+_SHIP_ORDER = ("order_name", "order_at", "email", "customer", "city", "province", "country", "items",
                "cancelled", "fulfillment")
 TRACK_FIELDS = ("status", "sub_status", "last_event", "last_event_at", "last_location", "carrier_name",
                 "last_mile", "last_mile_number", "origin", "destination", "transit_days", "eta_from",
@@ -1047,7 +1048,8 @@ TRACK_FIELDS = ("status", "sub_status", "last_event", "last_event_at", "last_loc
 def save_order_shipments(store_id: int, o: dict):
     """One Shopify order: its parcels, or one 'waiting for tracking' row."""
     base = {"order_name": o["name"], "order_at": o["created"], "email": o["email"],
-            "customer": o["customer"], "city": o["city"], "country": o["country"],
+            "customer": o["customer"], "city": o["city"], "province": o.get("province") or "",
+            "country": o["country"],
             "items": o["items"], "cancelled": int(o["cancelled"]), "fulfillment": o["fulfillment"]}
     numbers = [p["number"] for p in o["parcels"]]
     with _conn() as con:

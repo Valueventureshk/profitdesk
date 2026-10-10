@@ -35,8 +35,22 @@ ORIGIN_WORDS = ("china", "shenzhen", "guangzhou", "dongguan", "yiwu", "hangzhou"
                 ", cn", " cn ", "(cn)", "sorting center of", "export")
 ARRIVAL_SUBS = ("InTransit_CustomsProcessing", "InTransit_CustomsReleased", "InTransit_CustomsRequiringInformation",
                 "OutForDelivery", "Delivered", "AvailableForPickup", "DeliveryFailure")
-COUNTRY = {"AU": "Australia", "US": "the United States", "CA": "Canada", "GB": "the United Kingdom",
-           "NZ": "New Zealand", "IE": "Ireland", "DE": "Germany", "FR": "France", "NL": "the Netherlands"}
+COUNTRY = {"AU": "Australia", "US": "United States", "CA": "Canada", "GB": "United Kingdom",
+           "NZ": "New Zealand", "IE": "Ireland", "DE": "Germany", "FR": "France", "NL": "Netherlands",
+           "BE": "Belgium", "AT": "Austria", "CH": "Switzerland", "IT": "Italy", "ES": "Spain", "PT": "Portugal",
+           "SE": "Sweden", "NO": "Norway", "DK": "Denmark", "FI": "Finland", "PL": "Poland", "SG": "Singapore",
+           "MY": "Malaysia", "AE": "United Arab Emirates", "SA": "Saudi Arabia", "ZA": "South Africa",
+           "JP": "Japan", "KR": "South Korea", "MX": "Mexico", "BR": "Brazil", "PH": "Philippines", "IN": "India"}
+
+
+def destination(s: dict) -> str:
+    """'New South Wales, Australia', 'California, United States', or just the country."""
+    code = (s.get("country") or "").upper()
+    country = COUNTRY.get(code, code)
+    province = (s.get("province") or "").strip()
+    if province and country and province.lower() != country.lower():
+        return f"{province}, {country}"
+    return province or country or "your country"
 
 
 def verify_proxy(query: dict, secret: str) -> bool:
@@ -92,7 +106,7 @@ def timeline(s: dict, dropship: bool) -> list:
         out = [(e["time"], e["text"], e.get("location", "")) for e in local if not _origin(e, dest)]
         transit = next((e.get("time") for e in ordered if (e.get("sub") or "").startswith("InTransit")), None)
         if transit and s.get("status") not in ("pending", "info_received"):
-            out.append((transit, f"In transit to {COUNTRY.get(dest.upper(), dest) or 'your country'}", ""))
+            out.append((transit, f"In transit to {destination(s)}", ""))
     else:
         out = [(e["time"], e["text"], e.get("location", "")) for e in events]
     if s.get("fulfilled_at"):
