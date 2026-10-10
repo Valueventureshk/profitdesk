@@ -200,12 +200,22 @@ async function boot() {
 
   const ids = [...state.setup.stores.map((s) => String(s.id)),
                ...state.setup.groups.map((g) => `g${g.id}`)];
+  if (PDUrl.get("store")) state.scope = PDUrl.get("store");
   if (state.scope !== "all" && !ids.includes(state.scope)) state.scope = "all";
+  const range = PDUrl.get("range");
+  if (range && [...$("rangeSelect").options].some((o) => o.value === range)) {
+    $("rangeSelect").value = range;
+    if (range === "custom" && PDUrl.get("from") && PDUrl.get("to")) {
+      $("startDate").value = PDUrl.get("from");
+      $("endDate").value = PDUrl.get("to");
+    }
+  }
 
   renderNav();
   renderCurrencyPicker();
   if (!state.start) applyRange();
   await load();
+  if (PDUrl.get("settings")) openSettings();
 }
 
 function renderCurrencyPicker() {
@@ -312,6 +322,10 @@ function navItem(scope, label, icon) {
 /* ------------------------------------------------ dashboard */
 
 async function load(fresh = false) {
+  const custom = $("rangeSelect").value === "custom";
+  PDUrl.set({ store: state.scope === "all" ? null : state.scope,
+              range: $("rangeSelect").value === "today" ? null : $("rangeSelect").value,
+              from: custom ? state.start : null, to: custom ? state.end : null });
   const params = new URLSearchParams({
     scope: state.scope, start: state.start, end: state.end,
   });
@@ -697,6 +711,7 @@ function openSettingsItem(id) {
 }
 
 async function openSettings() {
+  PDUrl.set({ settings: 1 });
   organiseSettings();
   $("drawer").hidden = false;
   renderGoogleBox();
@@ -710,7 +725,7 @@ async function openSettings() {
   await Promise.all([loadAccounts(), loadMetaAccounts()]);
 }
 
-function closeSettings() { $("drawer").hidden = true; }
+function closeSettings() { $("drawer").hidden = true; PDUrl.set({ settings: null }); }
 
 async function openGroupSettings() {
   const pending = openSettings();

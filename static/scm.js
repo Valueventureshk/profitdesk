@@ -82,6 +82,11 @@ function markFilters() {
 
 async function load() {
   markFilters();
+  const custom = $("range").value === "custom";
+  const keep = { view: state.view === "all" ? null : state.view, page: state.page > 1 ? state.page : null, q: $("q").value.trim(),
+                 from: custom ? $("from").value : null, to: custom ? $("to").value : null };
+  for (const [id, def] of Object.entries(DEFAULTS)) keep[id] = $(id).value === def ? null : $(id).value;
+  PDUrl.set(keep);
   try { data = await api(`/api/scm/shipments?${query()}`); }
   catch (e) { toast(e.message, true); return; }
   render();
@@ -124,7 +129,7 @@ function render() {
       `<option value="${k}"${state.view === k ? " selected" : ""}>${n} (${(c[k] ?? 0).toLocaleString()})</option>`).join("")}</select>`;
   for (const b of $("tabs").querySelectorAll("[data-v]")) b.onclick = () => setView(b.dataset.v);
   $("more").onchange = (e) => e.target.value && setView(e.target.value);
-  if ($("store").options.length <= 1) fill($("store"), data.stores, "All stores");
+  if (!$("store").dataset.filled) { fill($("store"), data.stores, "All stores"); $("store").dataset.filled = "1"; }
   fill($("carrier"), data.carriers, "All carriers");
   fill($("country"), data.countries, "All destinations");
   const st = data.status || {};
@@ -189,6 +194,7 @@ $("bulkFlag").onclick = () => bulkFlag(true).catch((e) => toast(e.message, true)
 $("bulkUnflag").onclick = () => bulkFlag(false).catch((e) => toast(e.message, true));
 
 async function openShipment(id) {
+  PDUrl.set({ open: id });
   let d;
   try { d = await api(`/api/scm/shipments/${id}`); } catch (e) { toast(e.message, true); return; }
   const s = d.shipment;
@@ -244,8 +250,8 @@ async function openShipment(id) {
   };
   $("drawer").hidden = false;
 }
-$("dClose").onclick = () => { $("drawer").hidden = true; };
-document.addEventListener("keydown", (e) => { if (e.key === "Escape") $("drawer").hidden = true; });
+$("dClose").onclick = () => { $("drawer").hidden = true; PDUrl.set({ open: null }); };
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") { $("drawer").hidden = true; PDUrl.set({ open: null }); } });
 
 let typing;
 $("q").oninput = () => { clearTimeout(typing); typing = setTimeout(() => { state.page = 1; load(); }, 300); };
@@ -267,6 +273,7 @@ for (const b of $("pages").querySelectorAll("[data-page]")) b.onclick = () => {
   for (const x of $("pages").querySelectorAll("[data-page]")) x.classList.toggle("on", x === b);
   $("ordersPage").hidden = b.dataset.page !== "orders";
   $("settingsPage").hidden = b.dataset.page !== "settings";
+  PDUrl.set({ tab: b.dataset.page === "orders" ? null : b.dataset.page });
 };
 
 async function loadTracking() {
@@ -332,6 +339,24 @@ async function loadCredits() {
   const t = new Date();
   $("to").value = iso(t);
   $("from").value = iso(new Date(t.getTime() - 59 * 86400000));
+  // Back to the filters, page and order from before a refresh
+  for (const id of Object.keys(DEFAULTS)) {
+    const v = PDUrl.get(id);
+    if (v === null) continue;
+    if (![...$(id).options].some((o) => o.value === v)) $(id).add(new Option("…", v));   // list fills in after loading
+    $(id).value = v;
+  }
+  if ($("range").value === "custom") {
+    $("customDates").hidden = false;
+    if (PDUrl.get("from")) $("from").value = PDUrl.get("from");
+    if (PDUrl.get("to")) $("to").value = PDUrl.get("to");
+  }
+  if (PDUrl.get("q")) $("q").value = PDUrl.get("q");
+  if (PDUrl.get("view")) state.view = PDUrl.get("view");
+  if (+PDUrl.get("page") > 1) state.page = +PDUrl.get("page");
+  const tab = $("pages").querySelector(`[data-page="${PDUrl.get("tab")}"]`);
+  if (tab) tab.click();
+  if (PDUrl.get("open")) openShipment(PDUrl.get("open"));
   load();
   loadTracking();
   loadCredits();

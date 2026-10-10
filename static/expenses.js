@@ -49,6 +49,8 @@ function options(selected) {
 }
 
 async function load(fresh = false) {
+  PDUrl.set({ period: period === "month" ? null : period, from: period === "custom" ? $("from").value : null,
+              to: period === "custom" ? $("to").value : null });
   const q = new URLSearchParams({ period, currency: $("currencySelect").value || "" });
   if (period === "custom") { q.set("start", $("from").value); q.set("end", $("to").value); }
   if (fresh) q.set("_", Date.now());
@@ -126,6 +128,7 @@ function renderCards() {
 }
 
 function renderDetail() {
+  PDUrl.set({ cat: openCat });
   const c = openCat && data.categories.find((x) => x.key === openCat);
   $("detailPanel").hidden = !c;
   if (!c) return;
@@ -179,5 +182,14 @@ $("currencySelect").onchange = () => load();
     $("currencySelect").innerHTML = setup.currency_options.map((c) =>
       `<option${c === setup.display_currency ? " selected" : ""}>${esc(c)}</option>`).join("");
   } catch { /* falls back to the server's default */ }
+  // Back to the period and category from before a refresh
+  const pb = $("periods").querySelector(`[data-p="${PDUrl.get("period")}"]`);
+  if (pb) {
+    if (PDUrl.get("period") === "custom") { $("from").value = PDUrl.get("from") || $("from").value; $("to").value = PDUrl.get("to") || $("to").value; }
+    for (const x of $("periods").querySelectorAll("[data-p]")) x.classList.toggle("on", x === pb);
+    period = pb.dataset.p;
+    $("customBox").hidden = period !== "custom";
+  }
+  openCat = PDUrl.get("cat");
   load();
 })();

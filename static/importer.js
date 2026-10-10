@@ -414,6 +414,7 @@ $("saveSettings").onclick = async () => {
 for (const b of $("pages").querySelectorAll("[data-page]")) b.onclick = () => {
   for (const x of $("pages").querySelectorAll("[data-page]")) x.classList.toggle("on", x === b);
   for (const id of ["one", "multi", "history", "settings"]) $(`page-${id}`).hidden = b.dataset.page !== id;
+  PDUrl.set({ tab: b.dataset.page === "one" ? null : b.dataset.page });
   if (b.dataset.page === "history") loadHistory().catch((e) => toast(e.message, true));
 };
 
@@ -427,4 +428,8 @@ for (const b of $("pages").querySelectorAll("[data-page]")) b.onclick = () => {
     renderSettings();
     renderCollectionPickers();
   } catch (e) { toast(e.message, true); }
+  // Back to the tab / product you were editing before a refresh
+  const tab = $("pages").querySelector(`[data-page="${PDUrl.get("tab")}"]`);
+  if (tab) tab.click();
+  if (PDUrl.get("edit") && PDUrl.get("estore")) openProductEditor(PDUrl.get("estore"), PDUrl.get("edit"));
 })();

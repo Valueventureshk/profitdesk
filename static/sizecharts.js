@@ -34,11 +34,15 @@ const storeName = (id) => meta.stores.find((s) => s.id === +id)?.name || "?";
 
 // ------------------------------------------------ list
 async function loadList() {
+  PDUrl.set({ q: $("q").value.trim(), status: $("fStatus").value, fstore: $("fStore").value, page: state.page > 1 ? state.page : null });
   const q = new URLSearchParams({ q: $("q").value, status: $("fStatus").value, store: $("fStore").value, page: state.page });
   const d = await api(`/api/sizecharts?${q}`);
   meta = { stores: d.stores, templates: d.templates };
-  if ($("fStore").options.length <= 1) {
-    $("fStore").innerHTML += d.stores.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join("");
+  if (!$("fStore").dataset.filled) {
+    const keep = $("fStore").value;
+    $("fStore").innerHTML = `<option value="">All stores</option>` + d.stores.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join("");
+    $("fStore").value = keep;
+    $("fStore").dataset.filled = "1";
   }
   $("list").innerHTML = `<thead><tr><th class="scm-check"><input type="checkbox" id="pickAll"></th><th>Name</th><th>Status</th><th>Applies to</th><th>Updated</th><th></th></tr></thead><tbody>${
     d.charts.map((c) => `<tr data-id="${c.id}"><td class="scm-check" onclick="event.stopPropagation()"><input type="checkbox" data-pick="${c.id}"${picked.has(String(c.id)) ? " checked" : ""}></td>
@@ -75,12 +79,15 @@ $("fStore").onchange = $("fStatus").onchange = () => { state.page = 1; loadList(
 
 // ------------------------------------------------ editor
 function showPage(p) {
+  PDUrl.set({ tab: p === "settings" ? "settings" : null });
+  if (p !== "edit") PDUrl.set({ chart: null });
   $("page-list").hidden = p !== "list";
   $("page-edit").hidden = p !== "edit";
   $("page-settings").hidden = p !== "settings";
   for (const x of $("pages").querySelectorAll("[data-page]")) x.classList.toggle("on", x.dataset.page === (p === "edit" ? "list" : p));
 }
 async function openEditor(id, preset) {
+  PDUrl.set({ chart: id || null });
   chart = id ? await api(`/api/sizecharts/${id}`) : { id: null, name: "", status: "active", countries: "", blocks: [], rules: [], ...(preset || {}) };
   $("edName").value = chart.name;
   edIcon();
@@ -313,6 +320,7 @@ $("edSave").onclick = async () => {
   try {
     const r = chart.id ? await send(`/api/sizecharts/${chart.id}`, body, "PUT") : await send("/api/sizecharts", body);
     chart.id = r.id;
+    PDUrl.set({ chart: r.id });
     toast("Saved.");
   } catch (e) { toast(e.message, true); }
 };
@@ -470,6 +478,15 @@ for (const b of $("pages").querySelectorAll("[data-page]")) b.onclick = () => {
 
 (async function boot() {
   try {
+    // Back to the filters / chart / tab from before a refresh
+    if (PDUrl.get("q")) $("q").value = PDUrl.get("q");
+    for (const [id, k] of [["fStatus", "status"], ["fStore", "fstore"]]) {
+      const v = PDUrl.get(k);
+      if (!v) continue;
+      if (![...$(id).options].some((o) => o.value === v)) $(id).add(new Option("…", v));
+      $(id).value = v;
+    }
+    if (+PDUrl.get("page") > 1) state.page = +PDUrl.get("page");
     await loadList();
     const t = await send("/api/sizecharts/preview", { blocks: [] });   // warm-up
     TEMPLATES_FROM_SERVER = await api("/api/sizecharts/templates");
@@ -480,6 +497,8 @@ for (const b of $("pages").querySelectorAll("[data-page]")) b.onclick = () => {
       await openEditor(null, { name: title, rules: [{ store_id: +q.get("store"), kind: "product", value: q.get("product"), label: title }] });
       toast("New chart for this product. Add a table, a template or ✦ Add from image, then Save.");
     }
-    if (q.get("edit") || q.get("new")) history.replaceState(null, "", "/sizecharts");
+    else if (q.get("chart")) await openEditor(+q.get("chart"));
+    else if (q.get("tab") === "settings") $("pages").querySelector('[data-page="settings"]')?.click();
+    if (q.get("edit") || q.get("new")) PDUrl.set({ edit: null, new: null, product: null, title: null, store: null });
   } catch (e) { if (!TEMPLATES_FROM_SERVER) toast(e.message, true); }
 })();

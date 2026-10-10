@@ -67,6 +67,9 @@ const SOURCE = { invoice: "Invoice", catalog: "History", estimate: "Estimate", c
 
 async function loadDay() {
   const [from, to] = range();
+  const custom = $("range").value === "custom";
+  PDUrl.set({ range: $("range").value, store: $("storeSelect").value === "all" ? null : $("storeSelect").value,
+              from: custom ? from : null, to: custom ? to : null });
   $("dates").hidden = $("range").value !== "custom";
   if ($("range").value !== "custom") { $("from").value = from; $("to").value = to; }
   $("sub").textContent = (from === to ? niceDate(from) : `${niceDate(from)} – ${niceDate(to)}`) + " · loading…";
@@ -125,6 +128,7 @@ async function loadDay() {
 async function loadProducts() {
   const sid = $("productStore").value;
   if (!sid) return;
+  PDUrl.set({ pstore: sid, q: $("search").value.trim() });
   if (!productsCache[sid]) {
     $("products").innerHTML = `<tbody><tr><td class="hint">Loading…</td></tr></tbody>`;
     try { productsCache[sid] = (await api(`/api/cog/products?store=${sid}`)).products; }
@@ -252,6 +256,7 @@ drop.addEventListener("drop", (e) => {
 for (const b of document.querySelectorAll(".cog-tab")) {
   b.onclick = () => {
     for (const x of document.querySelectorAll(".cog-tab")) x.classList.toggle("on", x === b);
+    PDUrl.set({ tab: b.dataset.tab === "check" ? null : b.dataset.tab });
     $("checkView").hidden = b.dataset.tab !== "check";
     $("productsView").hidden = b.dataset.tab !== "products";
     $("invoicesView").hidden = b.dataset.tab !== "invoices";
@@ -294,6 +299,15 @@ $("refresh").onclick = async () => {
       $("problems").innerHTML = `<div class="warn">The orders sheet isn't connected yet.</div>`;
     }
   } catch (e) { toast(e.message, true); }
+  // Back to the view from before a refresh
+  const has = (sel, v) => v && [...sel.options].some((o) => o.value === v);
+  if (has($("range"), PDUrl.get("range"))) $("range").value = PDUrl.get("range");
+  if ($("range").value === "custom") { $("from").value = PDUrl.get("from") || ""; $("to").value = PDUrl.get("to") || ""; }
+  if (has($("storeSelect"), PDUrl.get("store"))) $("storeSelect").value = PDUrl.get("store");
+  if (has($("productStore"), PDUrl.get("pstore"))) $("productStore").value = PDUrl.get("pstore");
+  if (PDUrl.get("q")) $("search").value = PDUrl.get("q");
+  const tab = document.querySelector(`.cog-tab[data-tab="${PDUrl.get("tab")}"]`);
   loadDay();
   loadInvoices();
+  if (tab) tab.click();
 })();

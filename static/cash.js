@@ -234,6 +234,8 @@ function openStatement() {
 let stmtSeq = 0;
 async function loadStatement() {
   const [from, to] = stmtRange();
+  const custom = $("stmtPreset").value === "custom";
+  PDUrl.set({ statement: $("stmtPreset").value, from: custom ? from : null, to: custom ? to : null });
   $("stmtDates").hidden = $("stmtPreset").value !== "custom";
   if ($("stmtPreset").value !== "custom") { $("stmtFrom").value = from; $("stmtTo").value = to; }
   $("stmtSub").textContent = from === to ? niceDate(from) : `${niceDate(from)} – ${niceDate(to)}`;
@@ -320,6 +322,7 @@ function renderStatement(st) {
 }
 
 $("stmtClose").onclick = () => $("stmt").close();
+$("stmt").addEventListener("close", () => PDUrl.set({ statement: null, from: null, to: null }));
 $("stmt").addEventListener("click", (e) => { if (e.target === $("stmt")) $("stmt").close(); });
 $("stmtPreset").onchange = () => {
   if ($("stmtPreset").value === "custom") { $("stmtDates").hidden = false; return; }
@@ -398,5 +401,11 @@ $("currencySelect").onchange = async (e) => {
   } catch (e) {
     toast(e.message, true);
   }
-  load();
+  await load();
+  const sp = PDUrl.get("statement");      // the statement was open before a refresh
+  if (sp && [...$("stmtPreset").options].some((o) => o.value === sp)) {
+    $("stmtPreset").value = sp;
+    if (sp === "custom") { $("stmtFrom").value = PDUrl.get("from") || ""; $("stmtTo").value = PDUrl.get("to") || ""; }
+    openStatement();
+  }
 })();

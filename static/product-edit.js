@@ -19,6 +19,7 @@ function peShow() {
 }
 
 async function openProductEditor(storeId, productId) {
+  PDUrl.set({ edit: productId, estore: storeId });
   if ($("page-edit").hidden) peShow();
   $("page-edit").innerHTML = `<div class="panel pe-loading">Loading the product from Shopify…</div>`;
   try {
@@ -34,6 +35,7 @@ async function openProductEditor(storeId, productId) {
 function peClose() {
   if (peDirty && !confirm("You have changes that aren't saved. Leave without saving?")) return;
   peDirty = false;
+  PDUrl.set({ edit: null, estore: null });
   $("page-edit").hidden = true;
   $("pages").hidden = false;
   peWasOpen.forEach((x) => { x.hidden = false; });

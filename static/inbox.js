@@ -78,6 +78,7 @@ async function loadCounts() {
 
 async function loadList() {
   const acct = $("mailboxSelect").value;
+  PDUrl.set({ view: view === "scm" ? null : view, box: acct });
   const q = acct ? `&account=${acct}` : "";
   if (MAIL_VIEWS.has(view)) {
     let d;
@@ -114,6 +115,7 @@ function mark() {
 
 async function openMail(id) {
   current = { type: "mail", id };
+  PDUrl.set({ mail: id, ticket: null });
   mark();
   let m;
   try { m = await api(`/api/inbox/messages/${id}`); } catch (e) { $("read").innerHTML = esc(e.message); return; }
@@ -145,6 +147,7 @@ async function openMail(id) {
 
 async function openTicket(id) {
   current = { type: "ticket", id };
+  PDUrl.set({ ticket: id, mail: null });
   mark();
   let d;
   try { d = await api(`/api/inbox/tickets/${id}`); } catch (e) { $("read").innerHTML = esc(e.message); return; }
@@ -242,7 +245,7 @@ async function openTicket(id) {
       if (a === "not_customer") {
         if (!confirm("Not a customer email? The ticket is removed and the email stays in All mail.")) return;
         post(`/api/inbox/tickets/${id}`, { action: "not_customer" })
-          .then(() => { toast("Removed."); current = null; $("read").innerHTML = ""; refresh(); })
+          .then(() => { toast("Removed."); current = null; PDUrl.set({ ticket: null, mail: null }); $("read").innerHTML = ""; refresh(); })
           .catch((e) => toast(e.message, true));
       }
     };
@@ -416,7 +419,9 @@ for (const b of $("nav").querySelectorAll("[data-view]")) {
     view = b.dataset.view;
     for (const x of $("nav").querySelectorAll("[data-view]")) x.classList.toggle("on", x === b);
     document.querySelector(".inbox3").classList.toggle("training", view === "training");
-    if (view === "training") { current = null; loadTraining(); return; }
+    if (b.dataset.restoring) delete b.dataset.restoring;
+    else PDUrl.set({ ticket: null, mail: null });
+    if (view === "training") { current = null; PDUrl.set({ view: "training" }); loadTraining(); return; }
     loadList();
   };
 }
@@ -431,6 +436,12 @@ $("mailboxSelect").onchange = loadList;
       opts.map((a) => `<option value="${a.id}">${esc(a.store || a.address)}</option>`).join("");
     $("mailboxSelect").hidden = !opts.length;
   } catch { $("mailboxSelect").hidden = true; }
-  refresh();
+  // Back to the view and email from before a refresh
+  const box = PDUrl.get("box");
+  if (box && [...$("mailboxSelect").options].some((o) => o.value === box)) $("mailboxSelect").value = box;
+  const t = PDUrl.get("ticket"), m = PDUrl.get("mail");
+  const vb = $("nav").querySelector(`[data-view="${PDUrl.get("view")}"]`);
+  if (vb) { vb.dataset.restoring = "1"; vb.click(); loadCounts(); } else refresh();
+  if (t) openTicket(+t); else if (m) openMail(+m);
   setInterval(refresh, 60000);
 })();

@@ -1,5 +1,21 @@
 /* The section menu behind the PD logo, shared by every ProfitDesk page.
    Phones and desktop both open it by tapping/clicking the logo. */
+
+// What you're looking at lives in the address (e.g. /?store=6&range=7), so a refresh or a
+// shared link opens the same view. Empty values drop out of the address.
+window.PDUrl = {
+  get(k) { return new URLSearchParams(location.search).get(k); },
+  set(obj) {
+    const q = new URLSearchParams(location.search);
+    for (const [k, v] of Object.entries(obj)) {
+      if (v === null || v === undefined || v === "" || v === false) q.delete(k); else q.set(k, v);
+    }
+    const qs = q.toString();
+    const url = location.pathname + (qs ? "?" + qs : "") + location.hash;
+    if (url !== location.pathname + location.search + location.hash) history.replaceState(history.state, "", url);
+  },
+};
+
 (function () {
   const SECTIONS = [
     { href: "/", desk: "profit", label: "Profit dashboard", note: "Sales, ad spend, fees and profit" },
@@ -127,7 +143,7 @@
     if (here === "/" && location.hash === "#settings") {
       for (let i = 0; i < 40; i++) {
         const b = document.getElementById("openSettings");
-        if (b && b.offsetParent !== null) { b.click(); history.replaceState(null, "", "/"); break; }
+        if (b && b.offsetParent !== null) { b.click(); history.replaceState(null, "", "/" + location.search); break; }
         await new Promise((r) => setTimeout(r, 250));
       }
     }

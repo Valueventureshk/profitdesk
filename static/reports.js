@@ -86,7 +86,8 @@ function showHelp() {
   $("scopeBox").hidden = !["profit_daily", "profit_stores", "cog_orders"].includes(t);
 }
 
-$("type").onchange = showHelp;
+$("type").onchange = () => { showHelp(); PDUrl.set({ type: $("type").value }); };
+for (const id of ["from", "to", "scope"]) $(id).addEventListener("change", () => PDUrl.set({ [id]: $(id).value }));
 $("make").onclick = async () => {
   const b = $("make");
   b.disabled = true;
@@ -115,6 +116,12 @@ $("make").onclick = async () => {
       (setup.groups || []).map((g) => `<option value="g${g.id}">${esc(g.name)} (group)</option>`).join("") +
       setup.stores.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join("");
   } catch (e) { toast(e.message, true); }
+  // Back to the report you were setting up before a refresh
+  const has = (sel, v) => v && [...sel.options].some((o) => o.value === v);
+  if (has($("type"), PDUrl.get("type"))) { $("type").value = PDUrl.get("type"); showHelp(); }
+  if (has($("scope"), PDUrl.get("scope"))) $("scope").value = PDUrl.get("scope");
+  if (PDUrl.get("from")) $("from").value = PDUrl.get("from");
+  if (PDUrl.get("to")) $("to").value = PDUrl.get("to");
   load().catch((e) => toast(e.message, true));
   loadSnapshots();
 })();
