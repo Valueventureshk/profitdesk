@@ -94,8 +94,12 @@ file and have it work.
   the login middleware (`_denied`, `_DESK_PATHS`, `_WRITE_OK`); pages hide
   `data-owner-only` / `data-write-only` elements to match. New people get a temporary
   password and must choose their own at first login (`/change-password`).
-- Inbox: mailboxes are read every 2 min (Railway Hobby blocks outgoing SMTP, so replies
-  are made in Gmail for now and picked up from the Sent folder). AI key = setting
+- Inbox: mailboxes are read every 2 min. Replying (Railway Hobby blocks SMTP): each mailbox
+  signs in once with Google for gmail.send only (`gmail_send.py`, Settings → Support mailboxes →
+  Sign in to send; token in `mail_accounts.gmail_token`; needs the Gmail API enabled in the Google
+  Cloud project). Replies go through the Gmail API into the same Gmail thread (thread id found over
+  IMAP via X-GM-THRID), then are read back from Sent like any Gmail reply. Translate: `ai_brain.translate`
+  (Haiku), saved in `mail_translations`; only each email's new part (`ai_brain.new_part`). AI key = setting
   `anthropic_api_key` (owner pastes it in Settings → AI). Tickets only for emails from
   setting `tickets_from` (default 8 Oct 2026 HK). Team can override: close, reopen,
   snooze, escalate, relabel, "not a customer email".
