@@ -114,6 +114,12 @@ file and have it work.
   preview unsigned), dropship mode per store, "In transit to <state>". "Tell Shopify" per
   store (setting scm_push:<id>, off by default) sends fulfillment events (IN_TRANSIT,
   OUT_FOR_DELIVERY, DELIVERED...) once each; turning it on marks current statuses as sent.
+  SCM page has Orders (tiles, status tabs, More views: stuck/flagged/with notes/not
+  tracked/cancelled, export CSV, bulk flag) and Settings (17TRACK). Team notes and
+  flags are per order (`scm_notes`, `scm_flags`), so they survive parcel changes.
+  Store menus: owner tool POST /api/storefront/tracking {apply|revert, stores} points
+  Parcel Panel links at /apps/track. App proxy must be in each app version (Amber
+  Ashton's app is under another Shopify login, not done yet).
   Store permissions: shopify_client.SCOPES (27, see SHOPIFY-APP-RELEASE.md), check
   /api/shopify/permissions; opening the app from Shopify admin asks for missing ones.
 - Business clock is Hong Kong (`CASH_TIMEZONE`). Each store has its own clock;
