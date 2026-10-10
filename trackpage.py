@@ -43,10 +43,66 @@ COUNTRY = {"AU": "Australia", "US": "United States", "CA": "Canada", "GB": "Unit
            "JP": "Japan", "KR": "South Korea", "MX": "Mexico", "BR": "Brazil", "PH": "Philippines", "IN": "India"}
 
 
-def destination(s: dict) -> str:
+def destination(s: dict, lang: str = "en") -> str:
     """The customer's state or province ('South Australia', 'California'), else the country."""
     code = (s.get("country") or "").upper()
-    return (s.get("province") or "").strip() or COUNTRY.get(code, code) or "your country"
+    return (s.get("province") or "").strip() or COUNTRY.get(code, code) or t("your country", lang)
+
+
+# The page in the store's own language (setting track_lang:<store id>). English is the key.
+LANG = {
+    "es": {
+        "Ordered": "Pedido", "Shipped": "Enviado", "In transit": "En tránsito", "Out for delivery": "En reparto",
+        "Delivered": "Entregado",
+        "We're preparing your order": "Estamos preparando tu pedido", "Your order has shipped": "Tu pedido ha sido enviado",
+        "On its way": "En camino", "Ready for pickup": "Listo para recoger", "Delivery attempted": "Intento de entrega",
+        "There's a delay with this parcel": "Hay un retraso con este paquete",
+        "Order confirmed": "Pedido confirmado", "In transit to {}": "En tránsito hacia {}",
+        "Parcel {} of {}": "Paquete {} de {}", "Order {}": "Pedido {}", "Estimated delivery": "Entrega estimada",
+        "Track your order": "Sigue tu pedido",
+        "Enter your order number and email to see where your parcel is.":
+            "Introduce tu número de pedido y tu email para ver dónde está tu paquete.",
+        "Order number": "Número de pedido", "Email": "Email", "e.g. #13109": "p. ej. #13109",
+        "The email you ordered with": "El email con el que hiciste el pedido", "Track": "Seguir",
+        "Or use your tracking number:": "O usa tu número de seguimiento:", "enter it here": "introdúcelo aquí",
+        "Tracking number": "Número de seguimiento", "your country": "tu país",
+        "Enter a tracking number.": "Introduce un número de seguimiento.",
+        "We couldn't find that tracking number yet. It can take a day after shipping to show up.":
+            "Aún no encontramos ese número de seguimiento. Puede tardar un día en aparecer tras el envío.",
+        "We couldn't find an order with that number and email. Check both match your order confirmation.":
+            "No encontramos un pedido con ese número y email. Comprueba que coinciden con tu confirmación de pedido.",
+        "months": ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sept", "oct", "nov", "dic"],
+        "days": ["lun", "mar", "mié", "jue", "vie", "sáb", "dom"],
+    },
+    "fr": {
+        "Ordered": "Commandé", "Shipped": "Expédié", "In transit": "En transit", "Out for delivery": "En livraison",
+        "Delivered": "Livré",
+        "We're preparing your order": "Nous préparons votre commande", "Your order has shipped": "Votre commande a été expédiée",
+        "On its way": "En route", "Ready for pickup": "Prêt à être récupéré", "Delivery attempted": "Tentative de livraison",
+        "There's a delay with this parcel": "Ce colis a du retard",
+        "Order confirmed": "Commande confirmée", "In transit to {}": "En transit vers {}",
+        "Parcel {} of {}": "Colis {} sur {}", "Order {}": "Commande {}", "Estimated delivery": "Livraison estimée",
+        "Track your order": "Suivre votre commande",
+        "Enter your order number and email to see where your parcel is.":
+            "Entrez votre numéro de commande et votre courriel pour voir où se trouve votre colis.",
+        "Order number": "Numéro de commande", "Email": "Courriel", "e.g. #13109": "ex. #13109",
+        "The email you ordered with": "Le courriel utilisé pour la commande", "Track": "Suivre",
+        "Or use your tracking number:": "Ou utilisez votre numéro de suivi :", "enter it here": "saisissez-le ici",
+        "Tracking number": "Numéro de suivi", "your country": "votre pays",
+        "Enter a tracking number.": "Saisissez un numéro de suivi.",
+        "We couldn't find that tracking number yet. It can take a day after shipping to show up.":
+            "Nous ne trouvons pas encore ce numéro de suivi. Il peut apparaître jusqu’à un jour après l’expédition.",
+        "We couldn't find an order with that number and email. Check both match your order confirmation.":
+            "Aucune commande ne correspond à ce numéro et ce courriel. Vérifiez-les dans votre confirmation de commande.",
+        "months": ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."],
+        "days": ["lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim."],
+    },
+}
+
+
+def t(text: str, lang: str, *args) -> str:
+    out = (LANG.get(lang) or {}).get(text, text)
+    return out.format(*args) if args else out
 
 
 def verify_proxy(query: dict, secret: str) -> bool:
@@ -68,14 +124,20 @@ def _e(s) -> str:
     return html.escape(str(s or "")).replace("{", "&#123;").replace("}", "&#125;")
 
 
-def _when(iso, with_time=True) -> str:
+def _when(iso, with_time=True, lang="en") -> str:
     if not iso:
         return ""
     try:
         d = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
     except ValueError:
         return ""
-    return d.strftime("%d %b %Y, %H:%M") if with_time else d.strftime("%a %d %b")
+    names = LANG.get(lang)
+    if not names:
+        return d.strftime("%d %b %Y, %H:%M") if with_time else d.strftime("%a %d %b")
+    month = names["months"][d.month - 1]
+    if with_time:
+        return f"{d.day} {month} {d.year}, {d:%H:%M}"
+    return f"{names['days'][d.weekday()]} {d.day} {month}"
 
 
 def _origin(e: dict, dest: str) -> bool:
@@ -84,7 +146,7 @@ def _origin(e: dict, dest: str) -> bool:
     return any(w in text for w in ORIGIN_WORDS)
 
 
-def timeline(s: dict, dropship: bool) -> list:
+def timeline(s: dict, dropship: bool, lang: str = "en") -> list:
     """Events to show the customer, newest first: [(time, text, place)]."""
     events = json.loads(s.get("events") or "[]") if isinstance(s.get("events"), str) else (s.get("events") or [])
     dest = s.get("country") or ""
@@ -102,13 +164,13 @@ def timeline(s: dict, dropship: bool) -> list:
         out = [(e["time"], e["text"], e.get("location", "")) for e in local if not _origin(e, dest)]
         transit = next((e.get("time") for e in ordered if (e.get("sub") or "").startswith("InTransit")), None)
         if transit and s.get("status") not in ("pending", "info_received"):
-            out.append((transit, f"In transit to {destination(s)}", ""))
+            out.append((transit, t("In transit to {}", lang, destination(s, lang)), ""))
     else:
         out = [(e["time"], e["text"], e.get("location", "")) for e in events]
     if s.get("fulfilled_at"):
-        out.append((s["fulfilled_at"], "Your order has shipped", ""))
+        out.append((s["fulfilled_at"], t("Your order has shipped", lang), ""))
     if s.get("order_at"):
-        out.append((s["order_at"], "Order confirmed", ""))
+        out.append((s["order_at"], t("Order confirmed", lang), ""))
     def key(ev):
         try:
             return datetime.fromisoformat(str(ev[0]).replace("Z", "+00:00")).timestamp()
@@ -117,25 +179,25 @@ def timeline(s: dict, dropship: bool) -> list:
     return sorted(out, key=key, reverse=True)
 
 
-def _parcel(s: dict, dropship: bool, n: int, of: int) -> str:
+def _parcel(s: dict, dropship: bool, n: int, of: int, lang: str = "en") -> str:
     status = s["status"] if s.get("number") else "awaiting"
     step = STEP_OF.get(status, 1)
-    bar = "".join(f'<li class="{"done" if i <= step else ""}{" now" if i == step else ""}"><span></span>{_e(t)}</li>'
-                  for i, (_, t) in enumerate(STEPS))
+    bar = "".join(f'<li class="{"done" if i <= step else ""}{" now" if i == step else ""}"><span></span>{_e(t(label, lang))}</li>'
+                  for i, (_, label) in enumerate(STEPS))
     if dropship:
         carrier, number = (s.get("last_mile") or ""), (s.get("last_mile_number") or "")
     else:
         carrier, number = (s.get("carrier_name") or s.get("company") or ""), s.get("number") or ""
     eta = ""
     if status != "delivered" and (s.get("eta_from") or s.get("eta_to")):
-        a, b = _when(s.get("eta_from"), False), _when(s.get("eta_to"), False)
-        eta = f'<p class="pdt-eta">Estimated delivery <strong>{_e(a)}{" – " + _e(b) if b and b != a else ""}</strong></p>'
-    rows = "".join(f'<li><time>{_e(_when(t))}</time><div>{_e(text)}{f"<small>{_e(place)}</small>" if place else ""}</div></li>'
-                   for t, text, place in timeline(s, dropship))
-    head = f"Parcel {n} of {of}" if of > 1 else f"Order {_e(s.get('order_name'))}"
+        a, b = _when(s.get("eta_from"), False, lang), _when(s.get("eta_to"), False, lang)
+        eta = f'<p class="pdt-eta">{_e(t("Estimated delivery", lang))} <strong>{_e(a)}{" – " + _e(b) if b and b != a else ""}</strong></p>'
+    rows = "".join(f'<li><time>{_e(_when(when, True, lang))}</time><div>{_e(text)}{f"<small>{_e(place)}</small>" if place else ""}</div></li>'
+                   for when, text, place in timeline(s, dropship, lang))
+    head = t("Parcel {} of {}", lang, n, of) if of > 1 else _e(t("Order {}", lang, s.get("order_name") or ""))
     return f'''<section class="pdt-card">
   <p class="pdt-kicker">{head}</p>
-  <h2>{_e(STATUS_TEXT.get(status, "On its way"))}</h2>
+  <h2>{_e(t(STATUS_TEXT.get(status, "On its way"), lang))}</h2>
   {eta}
   <ol class="pdt-steps">{bar}</ol>
   {f'<p class="pdt-num">{_e(carrier)} <span>{_e(number)}</span></p>' if number else ""}
@@ -171,18 +233,19 @@ STYLE = """<style>
 </style>"""
 
 
-def page(store_name: str, parcels: list, ask: dict, message: str, dropship: bool, action: str) -> str:
+def page(store_name: str, parcels: list, ask: dict, message: str, dropship: bool, action: str,
+         lang: str = "en") -> str:
     form = f'''<form method="get" action="{_e(action)}">
-  <label>Order number<input name="order" value="{_e(ask.get("order"))}" placeholder="e.g. #13109" autocomplete="off"></label>
-  <label>Email<input name="email" type="email" value="{_e(ask.get("email"))}" placeholder="The email you ordered with"></label>
-  <button type="submit">Track</button>
+  <label>{_e(t("Order number", lang))}<input name="order" value="{_e(ask.get("order"))}" placeholder="{_e(t("e.g. #13109", lang))}" autocomplete="off"></label>
+  <label>{_e(t("Email", lang))}<input name="email" type="email" value="{_e(ask.get("email"))}" placeholder="{_e(t("The email you ordered with", lang))}"></label>
+  <button type="submit">{_e(t("Track", lang))}</button>
 </form>
-<p class="pdt-or">Or use your tracking number: <a href="#" onclick="var n=prompt('Tracking number');if(n)location.href='{_e(action)}?nums='+encodeURIComponent(n);return false">enter it here</a></p>'''
-    body = "".join(_parcel(p, dropship, i + 1, len(parcels)) for i, p in enumerate(parcels))
-    msg = f'<p class="pdt-msg">{_e(message)}</p>' if message else ""
+<p class="pdt-or">{_e(t("Or use your tracking number:", lang))} <a href="#" onclick="var n=prompt('{_e(t("Tracking number", lang)).replace("&#x27;", "")}');if(n)location.href='{_e(action)}?nums='+encodeURIComponent(n);return false">{_e(t("enter it here", lang))}</a></p>'''
+    body = "".join(_parcel(p, dropship, i + 1, len(parcels), lang) for i, p in enumerate(parcels))
+    msg = f'<p class="pdt-msg">{_e(t(message, lang))}</p>' if message else ""
     return f'''{STYLE}
-<div class="pdt">
-  <h1>Track your order</h1>
-  <p class="pdt-sub">Enter your order number and email to see where your parcel is.</p>
+<div class="pdt" lang="{lang}">
+  <h1>{_e(t("Track your order", lang))}</h1>
+  <p class="pdt-sub">{_e(t("Enter your order number and email to see where your parcel is.", lang))}</p>
   {form}{msg}{body}
 </div>'''

@@ -153,6 +153,7 @@ async function loadTracking() {
   $("pageStores").innerHTML = t.store_list.map((s) => `<div class="scm-page-row"><span>${esc(s.name)}</span>
     <label class="scm-pick"><input type="checkbox" data-drop="${s.id}"${t.dropship.includes(s.id) ? " checked" : ""}> Dropship mode</label>
     <label class="scm-pick" title="Send each tracking update to Shopify, so Shopify emails the customer when the parcel is out for delivery and delivered"><input type="checkbox" data-push="${s.id}"${(t.push || []).includes(s.id) ? " checked" : ""}> Tell Shopify (delivery emails)</label>
+    <select class="control scm-lang" data-lang="${s.id}" title="Language of the tracking page">${[["en","English"],["es","Español"],["fr","Français"]].map(([k, n]) => `<option value="${k}"${(t.langs?.[s.id] || "en") === k ? " selected" : ""}>${n}</option>`).join("")}</select>
     <a href="/proxy/track?shop=${encodeURIComponent(t.domains[s.id])}" target="_blank" rel="noopener">Preview page</a>
     <span class="hint" title="Customers who opened the tracking page from a link in a shipping email">${(t.visits?.[s.id]?.email_links) ? `${t.visits[s.id].email_links} from emails · last ${ago(t.visits[s.id].last)}` : "no email visits yet"}</span></div>`).join("");
   $("webhook").textContent = t.webhook;
@@ -167,7 +168,8 @@ $("copyHook").onclick = () => { navigator.clipboard?.writeText($("webhook").text
 $("saveTrack").onclick = async () => {
   const body = { stores: [...$("trackStores").querySelectorAll("input:checked")].map((i) => +i.value), from: $("trackFrom").value,
     dropship: [...$("pageStores").querySelectorAll("[data-drop]:checked")].map((i) => +i.dataset.drop),
-    push: [...$("pageStores").querySelectorAll("[data-push]:checked")].map((i) => +i.dataset.push) };
+    push: [...$("pageStores").querySelectorAll("[data-push]:checked")].map((i) => +i.dataset.push),
+    langs: Object.fromEntries([...$("pageStores").querySelectorAll("[data-lang]")].map((x) => [x.dataset.lang, x.value])) };
   const key = $("key").value.trim();
   if (key) {
     if (/\s/.test(key) || key.length < 20) { toast("That doesn't look like a 17TRACK key. Leave the box empty to keep the saved one.", true); return; }

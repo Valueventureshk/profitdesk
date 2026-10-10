@@ -839,8 +839,9 @@ body.read-only [data-write-only] { display: none !important; }
 .scm-pick { display: inline-flex; gap: 6px; align-items: center; }
 .scm-secret { -webkit-text-security: disc; font-family: "IBM Plex Mono", ui-monospace, monospace; }
 .scm-page-list { display: grid; gap: 6px; font-size: 13px; }
-.scm-page-row { display: grid; grid-template-columns: minmax(120px, 1fr) auto auto auto minmax(110px, auto); gap: 14px; align-items: center;
+.scm-page-row { display: grid; grid-template-columns: minmax(120px, 1fr) auto auto auto auto minmax(110px, auto); gap: 14px; align-items: center;
   padding: 6px 0; border-bottom: 1px solid var(--line-soft); }
+.scm-lang { font-size: 12px; padding: 4px 6px; }
 .scm-webhook { display: flex; gap: 8px; align-items: center; }
 .scm-webhook code { font-size: 12px; padding: 6px 8px; background: var(--line-soft); border-radius: 6px; overflow-wrap: anywhere; }
 @media (max-width: 700px) {

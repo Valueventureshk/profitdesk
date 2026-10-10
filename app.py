@@ -2505,8 +2505,9 @@ async def proxy_track(request: Request, order: str = None, email: str = None, nu
         v["last"] = datetime.now(timezone.utc).isoformat()
         db.set_setting(key, json.dumps(v))
     dropship = (db.get_setting(f"track_dropship:{store['id']}") or "1") == "1"
+    lang = db.get_setting(f"track_lang:{store['id']}") or "en"
     body = trackpage.page(store["name"].strip(), parcels, {"order": order, "email": email}, message, dropship,
-                          (query.get("path_prefix") or "/apps/track") if signed else "/proxy/track")
+                          (query.get("path_prefix") or "/apps/track") if signed else "/proxy/track", lang)
     if signed:
         return Response(body, media_type="application/liquid")
     # Owner preview, outside the store's theme.
@@ -2525,6 +2526,7 @@ async def api_tracking():
     cfg = _tracking_config()
     out = {"connected": bool(cfg["key"]), "stores": cfg["stores"], "from": cfg["from"],
            "push": sorted(_push_stores()),
+           "langs": {x["id"]: db.get_setting(f"track_lang:{x['id']}") or "en" for x in db.list_stores()},
            "visits": {x["id"]: json.loads(db.get_setting(f"track_visits:{x['id']}") or "{}") for x in db.list_stores()},
            "dropship": [x["id"] for x in db.list_stores()
                         if (db.get_setting(f"track_dropship:{x['id']}") or "1") == "1"],
@@ -2558,6 +2560,10 @@ async def api_tracking_save(payload: dict):
                 with db._conn() as con:
                     con.execute("UPDATE shipments SET pushed = status WHERE store_id = ?", (x["id"],))
             db.set_setting(f"scm_push:{x['id']}", "1" if x["id"] in on else "0")
+    if isinstance(payload.get("langs"), dict):
+        for sid, lang in payload["langs"].items():
+            if lang in ("en", "es", "fr"):
+                db.set_setting(f"track_lang:{int(sid)}", lang)
     if "dropship" in payload:
         on = {int(x) for x in payload["dropship"] or []}
         for x in db.list_stores():
