@@ -390,6 +390,14 @@ CREATE INDEX IF NOT EXISTS size_chart_rules_store ON size_chart_rules(store_id, 
 CREATE INDEX IF NOT EXISTS size_chart_rules_chart ON size_chart_rules(chart_id);
 
 -- Product Importer: one row per product per target store.
+CREATE TABLE IF NOT EXISTS mail_translations (
+    message_id  INTEGER NOT NULL,
+    lang        TEXT NOT NULL,
+    text        TEXT NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (message_id, lang)
+);
+
 CREATE TABLE IF NOT EXISTS widgets (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     token       TEXT NOT NULL UNIQUE,          -- the private read-only link

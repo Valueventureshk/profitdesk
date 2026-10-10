@@ -40,6 +40,73 @@ function when(iso) {
     : d.toLocaleDateString(undefined, { day: "numeric", month: "short" });
 }
 // Long links in emails (Gmail, tracking, Shopify) shown short but still clickable.
+// ---- Translate: any email into the team's language (saved on the server, so each email is paid for once)
+const TR_LANGS = ["English", "French", "Spanish", "German", "Italian", "Portuguese", "Dutch", "Arabic", "Chinese",
+                  "Hindi", "Tamil", "Sinhala", "Urdu", "Tagalog"];
+const trPref = (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } };
+const trSave = (k, v) => { try { localStorage.setItem(k, v); } catch { /* */ } };
+let trOriginal = new Map();          // message id -> original text
+
+function trBar() {
+  const lang = trPref("pdTrLang", "English");
+  return `<div class="tr-bar">
+    <button class="btn btn-sm btn-ghost" id="trAll">🌐 Translate all</button>
+    <select class="control" id="trLang" title="Translate into">${TR_LANGS.map((l) => `<option${l === lang ? " selected" : ""}>${l}</option>`).join("")}</select>
+    <label class="tr-auto" title="Translate every conversation as soon as you open it"><input type="checkbox" id="trAuto"${trPref("pdTrAuto", "") ? " checked" : ""}> Always</label>
+  </div>`;
+}
+const trButton = (id) => `<button class="tr-one" data-tr="${id}" title="Translate this email">Translate</button>`;
+
+async function translateMsgs(ids, quiet) {
+  ids = ids.filter((id) => !document.querySelector(`[data-mid="${id}"]`)?.classList.contains("translated"));
+  if (!ids.length) return;
+  const lang = $("trLang")?.value || trPref("pdTrLang", "English");
+  for (const id of ids) { const b = document.querySelector(`[data-tr="${id}"]`); if (b) b.textContent = "Translating…"; }
+  if ($("trAll")) $("trAll").textContent = "Translating…";
+  try {
+    const d = await api(`/api/inbox/translate?ids=${ids.join(",")}&lang=${encodeURIComponent(lang)}`);
+    for (const id of ids) {
+      const box = document.querySelector(`[data-mid="${id}"]`), t = d.translations[String(id)];
+      if (!box || t === undefined) continue;
+      box.querySelector(".msg-text").innerHTML = mailText(t);
+      box.classList.add("translated");
+      box.dataset.lang = lang;
+      const b = box.querySelector("[data-tr]");
+      if (b) b.textContent = "Show original";
+    }
+  } catch (e) {
+    if (!quiet) toast(e.message, true);
+    for (const id of ids) { const b = document.querySelector(`[data-tr="${id}"]`); if (b) b.textContent = "Translate"; }
+  } finally { if ($("trAll")) $("trAll").textContent = "🌐 Translate all"; }
+}
+function showOriginal(id) {
+  const box = document.querySelector(`[data-mid="${id}"]`);
+  if (!box) return;
+  box.querySelector(".msg-text").innerHTML = mailText(trOriginal.get(String(id)) || "");
+  box.classList.remove("translated");
+  const b = box.querySelector("[data-tr]");
+  if (b) b.textContent = "Translate";
+}
+function wireTranslate() {
+  const ids = [...document.querySelectorAll("#read [data-mid]")].map((x) => x.dataset.mid);
+  if ($("trLang")) $("trLang").onchange = () => {
+    trSave("pdTrLang", $("trLang").value);
+    const on = ids.filter((id) => document.querySelector(`[data-mid="${id}"]`).classList.contains("translated"));
+    on.forEach(showOriginal);
+    if (on.length) translateMsgs(on);
+  };
+  if ($("trAuto")) $("trAuto").onchange = () => { trSave("pdTrAuto", $("trAuto").checked ? "1" : ""); if ($("trAuto").checked) translateMsgs(ids); };
+  if ($("trAll")) $("trAll").onclick = () => {
+    const allOn = ids.every((id) => document.querySelector(`[data-mid="${id}"]`).classList.contains("translated"));
+    if (allOn) ids.forEach(showOriginal); else translateMsgs(ids);
+  };
+  for (const b of document.querySelectorAll("#read [data-tr]")) b.onclick = () => {
+    const box = b.closest("[data-mid]");
+    if (box.classList.contains("translated")) showOriginal(b.dataset.tr); else translateMsgs([b.dataset.tr]);
+  };
+  if (trPref("pdTrAuto", "")) translateMsgs(ids, true);
+}
+
 // The new part of an email, and the earlier conversation it quotes (shown small, folded).
 const ATTRIB = /(\bwrote\s*:|a écrit\s*:|escribió\s*:|schrieb\s*.*:|ha scritto\s*:|-----\s*original message\s*-----|^_{10,}$)/i;
 function splitQuote(text) {
@@ -162,8 +229,11 @@ async function openMail(id) {
       <button class="btn btn-sm btn-ghost" data-make="inquiry">Inquiry</button>
       <button class="btn btn-sm btn-ghost" data-make="legal">Legal</button>
     </div>
+    ${trBar()}
     ${m.attachments.length ? `<div class="mail-att">${m.attachments.map((a) => `📎 ${esc(a.name)}`).join(" · ")}</div>` : ""}
-    ${mailText(m.text)}`;
+    <div class="mail-one" data-mid="${m.id}"><div class="tr-onebar">${trButton(m.id)}</div><div class="msg-text">${mailText(m.text)}</div></div>`;
+  trOriginal = new Map([[String(m.id), m.text]]);
+  wireTranslate();
   for (const b of $("read").querySelectorAll("[data-make]")) {
     b.onclick = async () => {
       try {
@@ -186,10 +256,10 @@ async function openTicket(id) {
   const labels = (t.labels || "").split(",").filter(Boolean);
   const snoozed = t.snoozed_until && new Date(t.snoozed_until) > new Date();
   const thread = d.messages.map((m) => `
-    <div class="msg ${m.direction === "out" ? "out" : "in"}">
+    <div class="msg ${m.direction === "out" ? "out" : "in"}" data-mid="${m.id}">
       <div class="msg-head"><strong>${m.direction === "out" ? "You" : esc(m.from_name || m.from_addr)}</strong>
-        <span>${full(m.date)}</span></div>
-      ${mailText(m.text)}
+        <span>${trButton(m.id)} ${full(m.date)}</span></div>
+      <div class="msg-text">${mailText(m.text)}</div>
       ${m.attachments.length ? `<div class="mail-att">${m.attachments.map((a) => `📎 ${esc(a.name)}`).join(" · ")}</div>` : ""}
     </div>`).join("");
   $("read").innerHTML = `
@@ -198,6 +268,7 @@ async function openTicket(id) {
         <h2 class="mail-h">${esc(t.subject || "(no subject)")}</h2>
         <div class="mail-meta"><strong>${esc(t.customer_name || "")}</strong> &lt;${esc(t.customer_email)}&gt;
           <span>${esc(t.store)} · ${esc(t.mailbox)} · ${d.messages.length} emails</span></div>
+        ${trBar()}
         ${t.summary ? `<div class="tk-summary"><b>AI summary</b> ${esc(t.summary)}${t.orders ? ` · orders ${esc(t.orders)}` : ""}</div>` : ""}
         ${thread}
         <div class="reply-box">
@@ -243,6 +314,8 @@ async function openTicket(id) {
       </aside>
     </div>`;
   loadOrders(id);
+  trOriginal = new Map(d.messages.map((m) => [String(m.id), m.text]));
+  wireTranslate();
   if ($("tkDraft")) $("tkDraft").onclick = async () => {
     const b = $("tkDraft");
     b.disabled = true;

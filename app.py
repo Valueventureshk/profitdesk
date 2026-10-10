@@ -42,6 +42,7 @@ import invoices
 import mail_client
 import tickets
 import ai_brain
+import anthropic
 import ai_coach
 import reports
 import ai_chat
@@ -891,6 +892,51 @@ def api_inbox_message(message_id: int):
     m.pop("html", None)          # shown as plain text (safe)
     m.pop("ai", None)
     return m
+
+
+TRANSLATE_LANGS = ("English", "French", "Spanish", "German", "Italian", "Portuguese", "Dutch", "Arabic",
+                   "Chinese", "Hindi", "Tamil", "Sinhala", "Urdu", "Tagalog")
+
+
+@app.get("/api/inbox/translate")
+async def api_inbox_translate(ids: str, lang: str = "English"):
+    """Translations of these emails (saved, so each email is only translated once per language)."""
+    if lang not in TRANSLATE_LANGS:
+        raise HTTPException(400, "Pick a language from the list.")
+    wanted = [int(x) for x in ids.split(",") if x.strip().isdigit()][:60]
+    if not wanted:
+        return {"translations": {}}
+    marks = ",".join("?" * len(wanted))
+    with db._conn() as con:
+        done = {r[0]: r[1] for r in con.execute(
+            f"SELECT message_id, text FROM mail_translations WHERE lang = ? AND message_id IN ({marks})", (lang, *wanted))}
+        todo = [dict(r) for r in con.execute(
+            f"SELECT id, text FROM mail_messages WHERE id IN ({marks})", wanted) if r[0] not in done]
+    todo = [m for m in todo if (m["text"] or "").strip()]
+    if todo:
+        key = db.get_setting("anthropic_api_key")
+        if not key:
+            raise HTTPException(400, "Add the Anthropic API key in Settings → AI first.")
+        batch, size = [], 0
+        batches = []
+        for m in todo:                                # ~25k characters per AI call
+            if batch and size + len(m["text"]) > 25000:
+                batches.append(batch); batch, size = [], 0
+            batch.append(m); size += len(m["text"])
+        batches.append(batch)
+        for b in batches:
+            try:
+                out = await ai_brain.translate(key, [m["text"] for m in b], lang)
+            except anthropic.AuthenticationError:
+                raise HTTPException(400, "Anthropic didn't accept the API key (Settings → AI).")
+            except (anthropic.APIError, ValueError) as e:
+                raise HTTPException(400, f"Couldn't translate right now: {str(e)[:150]}")
+            with db._conn() as con:
+                for m, t in zip(b, out):
+                    con.execute("INSERT OR REPLACE INTO mail_translations (message_id, lang, text) VALUES (?, ?, ?)",
+                                (m["id"], lang, t))
+                    done[m["id"]] = t
+    return {"translations": {str(k): v for k, v in done.items()}}
 
 
 _TICKET_VIEWS = {

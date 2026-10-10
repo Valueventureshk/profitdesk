@@ -130,3 +130,38 @@ async def triage(api_key: str, msg: dict, store: str, candidates: list) -> dict:
         raise AIError("The AI's answer couldn't be read.") from e
     out["usage"] = {"in": resp.usage.input_tokens, "out": resp.usage.output_tokens}
     return out
+
+
+# ---------------------------------------------------------------- translation (Inbox "Translate")
+
+TRANSLATE_SYSTEM = """You translate customer-service emails for a team that reads {language}.
+Translate each email in the list into {language}. Rules:
+- Keep the meaning, tone and every detail: names, order numbers, tracking numbers, amounts, dates, links.
+- Keep the line breaks. Keep any ">" quote marks at the start of lines exactly where they are.
+- Translate the "On <date>, <name> wrote:" line too (keep the date and name).
+- If an email is already in {language}, return it unchanged.
+- Return exactly one translation per email, in the same order. No notes or explanations."""
+
+TRANSLATE_SCHEMA = {
+    "type": "object",
+    "properties": {"translations": {"type": "array", "items": {"type": "string"}}},
+    "required": ["translations"],
+    "additionalProperties": False,
+}
+
+
+async def translate(api_key: str, texts: list, language: str = "English") -> list:
+    """Translate several emails in one call. Returns a list the same length as texts."""
+    client = anthropic.AsyncAnthropic(api_key=api_key, max_retries=2, timeout=120)
+    payload = json.dumps([t[:12000] for t in texts], ensure_ascii=False)
+    resp = await client.messages.create(
+        model=MODEL, max_tokens=16000,
+        system=TRANSLATE_SYSTEM.format(language=language),
+        output_config={"effort": "low", "format": {"type": "json_schema", "schema": TRANSLATE_SCHEMA}},
+        messages=[{"role": "user", "content": f"Emails (JSON list):\n{payload}"}])
+    if resp.stop_reason == "refusal":
+        raise ValueError("The AI declined to translate this.")
+    out = json.loads(next((b.text for b in resp.content if b.type == "text"), "{}")).get("translations") or []
+    if len(out) != len(texts):
+        raise ValueError("The translation came back incomplete. Try again.")
+    return out
