@@ -113,7 +113,12 @@ async def check(refresh_token: str) -> str:
     if r.status_code == 400:
         return "ok"
     if "accessNotConfigured" in r.text or "has not been used in project" in r.text or "disabled" in r.text:
-        raise SendError("The Gmail API isn't switched on yet: open the Gmail API link in Settings → Support mailboxes and click Enable.")
+        try:
+            detail = r.json()["error"]["message"]
+        except Exception:
+            detail = r.text[:300]
+        raise SendError("The Gmail API isn't switched on yet: open the Gmail API link in Settings → Support mailboxes "
+                        f"and click Enable. (Google says: {detail[:300]})")
     if r.status_code in (401, 403):
-        raise SendError("Gmail refused this mailbox's sign-in. Click Sign in to send again.")
+        raise SendError(f"Gmail refused this mailbox's sign-in. Click Sign in to send again. ({r.text[:200]})")
     raise SendError(f"Unexpected answer from Gmail ({r.status_code}): {r.text[:200]}")
