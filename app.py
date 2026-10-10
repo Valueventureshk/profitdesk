@@ -1052,6 +1052,28 @@ async def api_ticket_orders(ticket_id: int):
         orders, _ = await _ticket_orders(dict(t))
     except ShopifyError as e:
         return {"orders": [], "error": str(e)}
+    # Each order's parcels as SCM sees them (17TRACK status, latest update)
+    store = next((x for x in db.list_stores() if x["id"] == t["store_id"]), None)
+    ids = [str(o["id"]) for o in orders]
+    by_order = defaultdict(list)
+    if ids and store:
+        with db._conn() as con:
+            rows = con.execute(
+                f"SELECT id, order_id, number, company, carrier_name, last_mile, last_mile_number, status, sub_status,"
+                f" last_event, last_event_at, last_location, eta_from, eta_to, delivered_at, transit_days, cancelled"
+                f" FROM shipments WHERE store_id = ? AND order_id IN ({','.join('?' * len(ids))}) ORDER BY id",
+                (t["store_id"], *ids)).fetchall()
+        for r in rows:
+            r = dict(r)
+            if r["number"]:
+                r["track17"] = f"https://t.17track.net/en#nums={r['number']}"
+                r["tracking_page"] = f"https://{store['shop_domain']}/apps/track?nums={r['number']}"
+            else:
+                r["status"] = "awaiting"
+            r["scm_url"] = f"/scm?open={r['id']}"
+            by_order[r["order_id"]].append(r)
+    for o in orders:
+        o["parcels"] = by_order.get(str(o["id"]), [])
     return {"orders": orders}
 
 

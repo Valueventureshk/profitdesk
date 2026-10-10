@@ -270,6 +270,35 @@ function payIcon(gateways) {
   return `<span class="pay" title="${esc(gateways.join(", "))}">${esc(gateways[0])}</span>`;
 }
 
+// A parcel as SCM sees it: status, tracking number (→ 17TRACK), latest checkpoint
+const PARCEL = {
+  awaiting: "Waiting for tracking", pending: "Pending", info_received: "Info received", in_transit: "In transit",
+  out_for_delivery: "Out for delivery", pickup: "Ready for pickup", delivered: "Delivered", exception: "Exception",
+  failed_attempt: "Failed attempt", expired: "Expired", untracked: "Not tracked",
+};
+function parcelBox(p) {
+  const day = (x) => x ? new Date(x).toLocaleDateString(undefined, { day: "numeric", month: "short" }) : "";
+  const carrier = p.carrier_name || p.company || "";
+  const eta = p.status !== "delivered" && p.eta_to ? `Expected by ${day(p.eta_to)}` : "";
+  return `<div class="ord-parcel">
+    <div class="ord-parcel-top"><span class="scm-chip st-${esc(p.status)}"><i></i>${esc(PARCEL[p.status] || p.status)}</span>
+      <a class="ord-scm" href="${esc(p.scm_url)}" target="_blank" rel="noopener" title="Open this order in SCM (notes, flags)">SCM ↗</a></div>
+    ${p.number ? `<div class="ord-num"><span>${esc(carrier || "Tracking")}</span>
+        <code title="Click to copy" data-copy="${esc(p.number)}">${esc(p.number)}</code></div>
+      <div class="ord-links"><a href="${esc(p.track17)}" target="_blank" rel="noopener">17TRACK ↗</a>
+        ${p.tracking_page ? `<a href="${esc(p.tracking_page)}" target="_blank" rel="noopener">Customer's page ↗</a>` : ""}</div>`
+      : `<div class="hint">The supplier hasn't added tracking yet.</div>`}
+    ${p.last_event ? `<div class="ord-event">${esc(p.last_event)}<small>${[p.last_location, day(p.last_event_at)].filter(Boolean).map(esc).join(" · ")}</small></div>` : ""}
+    ${p.status === "delivered" && p.delivered_at ? `<div class="hint">Delivered ${day(p.delivered_at)}${p.transit_days ? ` · ${Math.round(p.transit_days)} days in transit` : ""}</div>` : eta ? `<div class="hint">${esc(eta)}</div>` : ""}
+    ${p.last_mile_number && p.last_mile_number !== p.number ? `<div class="hint">Local carrier: ${esc(p.last_mile || "")} ${esc(p.last_mile_number)}</div>` : ""}
+  </div>`;
+}
+document.addEventListener("click", (e) => {
+  const c = e.target.closest("[data-copy]");
+  if (!c) return;
+  navigator.clipboard?.writeText(c.dataset.copy).then(() => toast("Tracking number copied."));
+});
+
 async function loadOrders(id) {
   let d;
   try { d = await api(`/api/inbox/tickets/${id}/orders`); }
@@ -286,7 +315,8 @@ async function loadOrders(id) {
         <span class="tk ${o.fulfillment === "FULFILLED" ? "tk-them" : "tk-us"}">${esc((o.fulfillment || "").toLowerCase().replace(/_/g, " "))}</span>
       </div>
       ${o.items.map((i) => `<div class="ord-item">${i.quantity}× ${esc(i.title)}${i.variant ? `<small>${esc(i.variant)}</small>` : ""}</div>`).join("")}
-      ${o.tracking.length ? o.tracking.map((t) => `<div class="ord-track">${esc(t.company || "Tracking")}:
+      ${o.parcels && o.parcels.length ? o.parcels.map(parcelBox).join("")
+        : o.tracking.length ? o.tracking.map((t) => `<div class="ord-track">${esc(t.company || "Tracking")}:
         ${t.url ? `<a href="${esc(t.url)}" target="_blank" rel="noopener">${esc(t.number || "track")} ↗</a>` : esc(t.number || "")}</div>`).join("")
         : `<div class="ord-track hint">No tracking yet</div>`}
       ${o.ship_to ? `<div class="ord-ship hint">Ships to ${esc(o.ship_to)}</div>` : ""}
@@ -415,6 +445,7 @@ function pollTraining() {
 function refresh() { loadCounts(); if (view !== "training") loadList(); }
 
 for (const b of $("nav").querySelectorAll("[data-view]")) {
+  b.title = [...b.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent).join("").trim();
   b.onclick = () => {
     view = b.dataset.view;
     for (const x of $("nav").querySelectorAll("[data-view]")) x.classList.toggle("on", x === b);
