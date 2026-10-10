@@ -2643,6 +2643,57 @@ async def _storefront_plan(store: dict, apply: bool) -> dict:
             "tracking_pages": sorted(track_pages), "actions": actions, "errors": errors}
 
 
+REDIRECT_DELETE = """
+mutation D($id: ID!) { urlRedirectDelete(id: $id) { deletedUrlRedirectId userErrors { field message } } }"""
+
+
+async def _storefront_revert(store: dict) -> dict:
+    """Undo the switch: menu links back to Parcel Panel, tracking pages republished, our redirects removed."""
+    client = ShopifyClient(store["shop_domain"], store["access_token"])
+    data = await client.gql(STOREFRONT_Q)
+    menus, pages = data["menus"]["nodes"], data["pages"]["nodes"]
+    done, errors = [], []
+
+    def walk(items):
+        for it in items:
+            yield it
+            yield from walk(it.get("items") or [])
+    for m in menus:
+        ours = [it for it in walk(m["items"]) if (it.get("url") or "").rstrip("/").endswith("/apps/track")]
+        if not ours:
+            continue
+        added = store["id"] in (8, 12)          # Perth Boutique, Beige Rue: the link was new
+
+        def change(it, new):
+            if (it.get("url") or "").rstrip("/").endswith("/apps/track"):
+                if "seguimiento" in it["title"].lower():
+                    new.update(type="HTTP", url="/pages/seguimiento-del-pedido")
+                else:
+                    new.update(type="HTTP", url="/apps/parcelpanel")
+            return new
+        items = _menu_input(m["items"], change)
+        if added:
+            items = [i for i in items if not (i.get("url") == "/apps/parcelpanel" and i["title"] in TRACK_TITLE.values())]
+            done.append(f"Menu '{m['title']}': removed the added tracking link")
+        else:
+            done.append(f"Menu '{m['title']}': {len(ours)} link(s) back to Parcel Panel")
+        r = await client.gql(MENU_UPDATE, {"id": m["id"], "title": m["title"], "handle": m["handle"], "items": items})
+        errors += [e["message"] for e in r["menuUpdate"]["userErrors"]]
+    redirects = (await client.gql('query { urlRedirects(first: 250, query: "target:/apps/track") { nodes { id path target } } }'))
+    for rd in redirects["urlRedirects"]["nodes"]:
+        if rd["target"].rstrip("/").endswith("/apps/track"):
+            r = await client.gql(REDIRECT_DELETE, {"id": rd["id"]})
+            errors += [e["message"] for e in r["urlRedirectDelete"]["userErrors"]]
+            done.append(f"Removed redirect {rd['path']}")
+            handle = rd["path"].rsplit("/", 1)[-1]
+            page = next((p for p in pages if p["handle"] == handle and not p["isPublished"]), None)
+            if page:
+                r = await client.gql(PAGE_UPDATE, {"id": page["id"], "page": {"isPublished": True}})
+                errors += [e["message"] for e in r["pageUpdate"]["userErrors"]]
+                done.append(f"Republished page {rd['path']}")
+    return {"store": store["name"].strip(), "actions": done, "errors": errors}
+
+
 @app.post("/api/storefront/tracking")
 async def api_storefront_tracking(payload: dict):
     """Owner: point each store's menus at the ProfitDesk tracking page (apply=false shows the plan)."""
@@ -2653,6 +2704,9 @@ async def api_storefront_tracking(payload: dict):
     out = []
     for x in stores:
         try:
+            if payload.get("revert"):
+                out.append(await _storefront_revert(x))
+                continue
             out.append(await _storefront_plan(x, apply))
         except Exception as e:
             out.append({"store": x["name"].strip(), "actions": [], "errors": [str(e)[:300]]})
