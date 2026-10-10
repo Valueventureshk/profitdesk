@@ -969,6 +969,8 @@ body.read-only [data-write-only] { display: none !important; }
   .pd-rail-who { font-size: 12px; color: #E3E3E3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
   .pd-rail-who small { display: block; color: #9A9A9A; font-size: 11px; }
   body.has-rail .section-menu { display: none; }
+  /* The dark sidebar already has Settings and Log out */
+  body.has-rail .sidebar #openSettings, body.has-rail .sidebar #logOut { display: none; }
 }
 
 :root[data-theme="dark"] {
