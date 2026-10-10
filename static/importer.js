@@ -298,7 +298,7 @@ function itemRows(items) {
       <span class="sub"><a href="${esc(i.source_url)}" target="_blank" rel="noopener">${esc((i.source_url || "").replace(/^https?:\/\//, "").slice(0, 60))}</a></span></td>
     <td>${esc(i.store)}</td>
     <td><span class="imp-st st-${i.status}">${STATUS[i.status] || i.status}</span>${i.error ? `<span class="sub">${esc(i.error)}</span>` : ""}</td>
-    <td>${i.admin_url ? `<a class="btn btn-sm btn-ghost" href="${esc(i.admin_url)}" target="_blank" rel="noopener">Open in Shopify</a>` : ""}</td></tr>`).join("")}</tbody>`;
+    <td class="imp-rowbtns">${i.product_id && i.status === "done" ? `<button class="btn btn-sm btn-primary" data-edit-store="${i.store_id}" data-edit-id="${esc(i.product_id)}">Edit</button>` : ""}${i.admin_url ? `<a class="btn btn-sm btn-ghost" href="${esc(i.admin_url)}" target="_blank" rel="noopener">Open in Shopify</a>` : ""}</td></tr>`).join("")}</tbody>`;
 }
 
 async function poll() {

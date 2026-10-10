@@ -322,3 +322,88 @@ PUBLISH = """
 mutation P($id: ID!, $input: [PublicationInput!]!) {
   publishablePublish(id: $id, input: $input) { userErrors { field message } }
 }"""
+
+
+# ---------------------------------------------------------------- edit an imported product (in ProfitDesk)
+
+PRODUCT_GET = """
+query P($id: ID!) { product(id: $id) { id title handle status descriptionHtml productType vendor tags
+  onlineStorePreviewUrl onlineStoreUrl options { name values }
+  media(first: 50) { nodes { id mediaContentType alt preview { image { url } } } }
+  variants(first: 100) { nodes { id title price compareAtPrice sku selectedOptions { name value } } } } }"""
+PRODUCT_UPDATE = """
+mutation U($product: ProductUpdateInput!, $media: [CreateMediaInput!]) {
+  productUpdate(product: $product, media: $media) { product { id status } userErrors { field message } } }"""
+VARIANTS_UPDATE = """
+mutation V($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+  productVariantsBulkUpdate(productId: $productId, variants: $variants) { userErrors { field message } } }"""
+MEDIA_REORDER = """
+mutation R($id: ID!, $moves: [MoveInput!]!) {
+  productReorderMedia(id: $id, moves: $moves) { job { id } mediaUserErrors { field message } } }"""
+MEDIA_REMOVE = """
+mutation F($files: [FileUpdateInput!]!) { fileUpdate(files: $files) { files { id } userErrors { field message } } }"""
+STAGED_UPLOAD = """
+mutation S($input: [StagedUploadInput!]!) {
+  stagedUploadsCreate(input: $input) { stagedTargets { url resourceUrl parameters { name value } } userErrors { field message } } }"""
+
+
+def errors(block: dict, key: str = "userErrors") -> str:
+    errs = (block or {}).get(key) or []
+    return "; ".join(e.get("message", "") for e in errs)
+
+
+REWRITE_SYSTEM = """You write product copy for a fashion and lifestyle Shopify store.
+Rewrite the product's title and description in {language}.
+
+Rules:
+- Use only facts found in the given title, description, options and product type. Never invent
+  materials, certifications, measurements, origins, reviews or guarantees.
+- Keep every size, measurement and care instruction that is in the original.
+- Title: short and appealing, at most 70 characters. {title_rule}
+- Description: clean HTML using only <p>, <h3>, <ul>, <li>, <strong> and <br>. No links, no images,
+  no inline styles, no emojis. A short opening paragraph, then a bullet list of key features.
+- Remove supplier language (factory, wholesale, "dropshipping", Chinese size notes, shop names).
+- Tone: {tone}."""
+
+REWRITE_SCHEMA = {
+    "type": "object",
+    "properties": {"title": {"type": "string"}, "description_html": {"type": "string"}},
+    "required": ["title", "description_html"],
+    "additionalProperties": False,
+}
+
+TONES = {"warm": "warm, elegant and reassuring", "short": "brief and punchy",
+         "premium": "premium and refined", "playful": "light and playful"}
+
+
+async def rewrite(api_key: str, title: str, description_html: str, extra: dict) -> dict:
+    """AI rewrite of title + description. Nothing is saved; the editor shows it for review."""
+    import json
+    import anthropic
+    text = re.sub(r"<[^>]+>", " ", description_html or "")
+    text = re.sub(r"\s+", " ", _html.unescape(text)).strip()[:6000]
+    keep = (extra.get("title_style") or "").strip()
+    title_rule = (f"Follow this naming style: {keep}." if keep else
+                  "If the original starts with a model name followed by ™, keep that name and the ™.")
+    system = REWRITE_SYSTEM.format(language=extra.get("language") or "English", title_rule=title_rule,
+                                   tone=TONES.get(extra.get("tone"), TONES["warm"]))
+    notes = (extra.get("instructions") or "").strip()
+    user = (f"Title: {title}\nProduct type: {extra.get('product_type') or ''}\n"
+            f"Options: {extra.get('options') or ''}\nDescription: {text}"
+            + (f"\n\nExtra instructions from the store owner: {notes}" if notes else ""))
+    client = anthropic.AsyncAnthropic(api_key=api_key, max_retries=2, timeout=90)
+    try:
+        resp = await client.messages.create(
+            model="claude-sonnet-5-5", max_tokens=3000, system=system,
+            output_config={"effort": "low", "format": {"type": "json_schema", "schema": REWRITE_SCHEMA}},
+            messages=[{"role": "user", "content": user}])
+    except anthropic.AuthenticationError as e:
+        raise ValueError("Anthropic didn't accept the API key (Settings → AI).") from e
+    except anthropic.APIStatusError as e:
+        raise ValueError(f"The AI couldn't rewrite this right now ({e.status_code}).") from e
+    except anthropic.APIConnectionError as e:
+        raise ValueError("Couldn't reach the AI.") from e
+    if resp.stop_reason == "refusal":
+        raise ValueError("The AI declined to rewrite this product.")
+    out = json.loads(next((b.text for b in resp.content if b.type == "text"), "{}"))
+    return {"title": (out.get("title") or "").strip(), "description_html": out.get("description_html") or ""}

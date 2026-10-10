@@ -17,6 +17,7 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime, time as clock, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import httpx
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -2930,7 +2931,7 @@ async def api_tracking_save(payload: dict):
 
 @app.get("/importer", response_class=HTMLResponse)
 def importer_page():
-    return _page("importer.html", ("importer.js", "nav.js", "styles.css", "chat.js"))
+    return _page("importer.html", ("importer.js", "product-edit.js", "nav.js", "styles.css", "chat.js"))
 
 
 def _importer_cfg() -> dict:
@@ -3172,6 +3173,195 @@ def api_importer_history(page: int = 1):
     for r in rows:
         r["store"] = names.get(r["store_id"], "")
     return {"items": rows, "total": total, "page": page, "pages": max(1, -(-total // 100))}
+
+
+# ---------------------------------------------------------------- Importer: edit a product in ProfitDesk
+
+def _imp_store(store_id) -> dict:
+    store = next((x for x in db.list_stores() if x["id"] == int(store_id or 0)), None)
+    if not store:
+        raise HTTPException(404, "Store not found.")
+    return store
+
+
+def _imp_gid(pid: str) -> str:
+    pid = str(pid or "")
+    if not re.fullmatch(r"gid://shopify/Product/\d+", pid):
+        raise HTTPException(400, "Unknown product.")
+    return pid
+
+
+async def _imp_gql(client, query: str, variables: dict, key: str, err_key: str = "userErrors") -> dict:
+    try:
+        data = (await client.gql(query, variables))[key]
+    except ShopifyError as e:
+        raise HTTPException(400, str(e)[:300])
+    msg = importer.errors(data, err_key)
+    if msg:
+        raise HTTPException(400, msg[:300])
+    return data
+
+
+@app.get("/api/importer/product")
+async def api_importer_product(store: int, id: str):
+    st = _imp_store(store)
+    gid = _imp_gid(id)
+    client = ShopifyClient(st["shop_domain"], st["access_token"])
+    try:
+        p = (await client.gql(importer.PRODUCT_GET, {"id": gid}))["product"]
+    except ShopifyError as e:
+        raise HTTPException(400, str(e)[:300])
+    if not p:
+        raise HTTPException(404, "This product is no longer in Shopify.")
+    with db._conn() as con:
+        r = con.execute("SELECT chart_id FROM size_chart_rules WHERE store_id = ? AND kind = 'product' AND value = ?",
+                        (st["id"], gid)).fetchone()
+        charts = [dict(x) for x in con.execute("SELECT id, name, status FROM size_charts ORDER BY name COLLATE NOCASE")]
+    lang = db.get_setting(f"track_lang:{st['id']}") or "en"
+    return {"product": p, "size_chart_id": r[0] if r else 0, "charts": charts,
+            "store": {"id": st["id"], "name": st["name"].strip(), "currency": st.get("currency"), "lang": lang,
+                      "language": LANG_NAME.get(lang, "English")},
+            "admin_url": f"https://{st['shop_domain']}/admin/products/{gid.rsplit('/', 1)[1]}"}
+
+
+@app.put("/api/importer/product")
+async def api_importer_product_save(payload: dict):
+    st = _imp_store(payload.get("store"))
+    gid = _imp_gid(payload.get("id"))
+    client = ShopifyClient(st["shop_domain"], st["access_token"])
+    prod = {"id": gid}
+    for k, f in (("title", "title"), ("description_html", "descriptionHtml"), ("product_type", "productType"),
+                 ("vendor", "vendor")):
+        if k in payload:
+            prod[f] = str(payload[k] or "")
+    if "tags" in payload:
+        prod["tags"] = [t.strip() for t in payload["tags"] if str(t).strip()][:250]
+    if payload.get("status") in ("ACTIVE", "DRAFT", "ARCHIVED"):
+        prod["status"] = payload["status"]
+    if prod.get("title") == "":
+        raise HTTPException(400, "The title can't be empty.")
+    if len(prod) > 1:
+        await _imp_gql(client, importer.PRODUCT_UPDATE, {"product": prod}, "productUpdate")
+    variants = []
+    for v in payload.get("variants") or []:
+        if not str(v.get("id", "")).startswith("gid://shopify/ProductVariant/"):
+            continue
+        try:
+            price = round(float(v["price"]), 2)
+        except (KeyError, TypeError, ValueError):
+            raise HTTPException(400, f"Check the price of {v.get('title') or 'a variant'}.")
+        cmp_ = v.get("compare_at")
+        cmp_ = round(float(cmp_), 2) if cmp_ not in (None, "", 0, "0") else None
+        variants.append({"id": v["id"], "price": f"{price:.2f}", "compareAtPrice": f"{cmp_:.2f}" if cmp_ else None})
+    if variants:
+        await _imp_gql(client, importer.VARIANTS_UPDATE, {"productId": gid, "variants": variants}, "productVariantsBulkUpdate")
+    if "size_chart_id" in payload:
+        cid = int(payload.get("size_chart_id") or 0)
+        with db._conn() as con:
+            con.execute("DELETE FROM size_chart_rules WHERE store_id = ? AND kind = 'product' AND value = ?", (st["id"], gid))
+            if cid:
+                con.execute("INSERT INTO size_chart_rules (chart_id, store_id, kind, value, label) VALUES (?, ?, 'product', ?, ?)",
+                            (cid, st["id"], gid, prod.get("title") or payload.get("title") or ""))
+        _sc_cache.clear()
+    if prod.get("title"):
+        with db._conn() as con:
+            con.execute("UPDATE import_items SET title = ? WHERE product_id = ? AND store_id = ?", (prod["title"], gid, st["id"]))
+    return await api_importer_product(st["id"], gid)
+
+
+@app.post("/api/importer/product/media")
+async def api_importer_media_add(request: Request):
+    """Add images: uploaded files (via Shopify's staged upload) and/or web addresses."""
+    form = await request.form()
+    st = _imp_store(form.get("store"))
+    gid = _imp_gid(form.get("id"))
+    client = ShopifyClient(st["shop_domain"], st["access_token"])
+    media = []
+    files = [f for f in form.getlist("files") if hasattr(f, "read")]
+    for f in files[:20]:
+        data = await f.read()
+        if len(data) > 20 * 1024 * 1024:
+            raise HTTPException(400, f"{f.filename} is bigger than 20 MB.")
+        mt = f.content_type if (f.content_type or "").startswith("image/") else "image/jpeg"
+        t = await _imp_gql(client, importer.STAGED_UPLOAD, {"input": [{
+            "filename": f.filename or "image.jpg", "mimeType": mt, "resource": "IMAGE", "httpMethod": "POST",
+            "fileSize": str(len(data))}]}, "stagedUploadsCreate")
+        target = t["stagedTargets"][0]
+        async with httpx.AsyncClient(timeout=120) as http:
+            up = await http.post(target["url"], data={x["name"]: x["value"] for x in target["parameters"]},
+                                 files={"file": (f.filename or "image.jpg", data, mt)})
+        if up.status_code >= 300:
+            raise HTTPException(400, f"Shopify didn't accept {f.filename} ({up.status_code}).")
+        media.append({"originalSource": target["resourceUrl"], "mediaContentType": "IMAGE"})
+    for u in (form.get("urls") or "").split():
+        if u.startswith("http"):
+            media.append({"originalSource": u, "mediaContentType": "IMAGE"})
+    if not media:
+        raise HTTPException(400, "Choose an image or paste an image link.")
+    await _imp_gql(client, importer.PRODUCT_UPDATE, {"product": {"id": gid}, "media": media}, "productUpdate")
+    return {"added": len(media)}
+
+
+@app.post("/api/importer/product/media/remove")
+async def api_importer_media_remove(payload: dict):
+    st = _imp_store(payload.get("store"))
+    gid = _imp_gid(payload.get("id"))
+    ids = [m for m in payload.get("media_ids") or [] if str(m).startswith("gid://shopify/")]
+    if not ids:
+        raise HTTPException(400, "No image chosen.")
+    client = ShopifyClient(st["shop_domain"], st["access_token"])
+    await _imp_gql(client, importer.MEDIA_REMOVE, {"files": [{"id": m, "referencesToRemove": [gid]} for m in ids]}, "fileUpdate")
+    return {"removed": len(ids)}
+
+
+@app.post("/api/importer/product/media/move")
+async def api_importer_media_move(payload: dict):
+    st = _imp_store(payload.get("store"))
+    gid = _imp_gid(payload.get("id"))
+    client = ShopifyClient(st["shop_domain"], st["access_token"])
+    await _imp_gql(client, importer.MEDIA_REORDER, {"id": gid, "moves": [
+        {"id": payload.get("media_id"), "newPosition": str(max(0, int(payload.get("position") or 0)))}]},
+        "productReorderMedia", "mediaUserErrors")
+    return {"ok": True}
+
+
+@app.post("/api/importer/product/rewrite")
+async def api_importer_rewrite(payload: dict):
+    key = db.get_setting("anthropic_api_key")
+    if not key:
+        raise HTTPException(400, "Add the Anthropic API key in Settings → AI first.")
+    try:
+        return await importer.rewrite(key, payload.get("title") or "", payload.get("description_html") or "", payload)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/importer/product/size-chart-ai")
+async def api_importer_size_chart_ai(payload: dict, request: Request):
+    """Read the chosen product images into a size chart and assign it to this product."""
+    st = _imp_store(payload.get("store"))
+    gid = _imp_gid(payload.get("id"))
+    urls = [u for u in payload.get("urls") or [] if str(u).startswith("http")][:6]
+    if not urls:
+        raise HTTPException(400, "Pick the image(s) that show the size chart.")
+    key = db.get_setting("anthropic_api_key")
+    if not key:
+        raise HTTPException(400, "Add the Anthropic API key in Settings → AI first.")
+    lang = LANG_NAME.get(db.get_setting(f"track_lang:{st['id']}") or "en", "English")
+    try:
+        res = await sizecharts.read_images(key, [("url", u) for u in urls], lang, "cm")
+    except sizecharts.AIError as e:
+        raise HTTPException(400, str(e))
+    if not res.get("found"):
+        raise HTTPException(400, "The AI didn't find a size chart in those images.")
+    user = (getattr(request.state, "user", None) or {}).get("email", "")
+    with db._conn() as con:
+        con.execute("DELETE FROM size_chart_rules WHERE store_id = ? AND kind = 'product' AND value = ?", (st["id"], gid))
+    name = (payload.get("name") or "").strip() or res.get("title") or "Size chart"
+    cid = _sc_save({"name": name, "status": "active", "blocks": sizecharts.blocks_from_ai(res), "source": "ai-import",
+                    "rules": [{"store_id": st["id"], "kind": "product", "value": gid, "label": payload.get("name") or ""}]},
+                   None, user)
+    return {"id": cid, "name": name}
 
 
 # ---------------------------------------------------------------- Size Charts desk
