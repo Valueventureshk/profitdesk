@@ -885,6 +885,12 @@ def api_inbox_labels(account: int = None):
                         "emails": counts.get(n, (0, 0))[1]} for n in names]}
 
 
+@app.get("/api/inbox/labels/debug")
+async def api_inbox_labels_debug(account: int):
+    acct = next((a for a in db.list_mail_accounts() if a["id"] == account), None)
+    return {"sample": await asyncio.to_thread(mail_labels.sample, acct["address"], acct["password"])}
+
+
 @app.post("/api/inbox/labels")
 async def api_inbox_label_change(payload: dict):
     """Add / remove a label on a ticket (its whole Gmail conversation) or a single email; also sets a colour."""
