@@ -3367,6 +3367,31 @@ async def _granted(store) -> set:
     return hit[1]
 
 
+WANTED_SCOPES = {
+    "read_orders", "read_all_orders", "write_orders", "write_fulfillments",
+    "write_merchant_managed_fulfillment_orders", "write_third_party_fulfillment_orders",
+    "write_assigned_fulfillment_orders", "write_products", "write_inventory", "read_locations",
+    "write_publications", "write_online_store_pages", "write_online_store_navigation", "write_content",
+    "write_themes", "write_files", "write_metaobjects", "write_metaobject_definitions", "write_discounts",
+    "write_pixels", "read_customer_events", "write_script_tags", "read_customers", "write_marketing_events",
+    "write_translations", "read_analytics", "read_shipping"}
+
+
+@app.get("/api/shopify/permissions")
+async def api_shopify_permissions():
+    """Which of the wanted permissions each store's app has actually been granted (fresh)."""
+    async def one(store):
+        _scopes.pop(store["id"], None)
+        got = await _granted(store)
+        # A write permission includes its read.
+        have = got | {"read_" + g[6:] for g in got if g.startswith("write_")}
+        return {"store": store["name"].strip(), "granted": len(WANTED_SCOPES & have),
+                "of": len(WANTED_SCOPES), "missing": sorted(WANTED_SCOPES - have),
+                "error": None if got else "Couldn't read this store's permissions"}
+    stores = [x for x in db.list_stores() if not demo.is_demo(x) and x.get("access_token")]
+    return {"stores": await asyncio.gather(*[one(x) for x in stores])}
+
+
 def _store_today(store) -> date:
     return _now_in(store).date()
 
