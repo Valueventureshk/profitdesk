@@ -1019,11 +1019,27 @@ async function renderMailboxes() {
     <div class="group-row">
       <div class="group-name"><strong>${esc(a.address)}</strong>
         <span>${esc(a.store || "No store")} · ${a.emails} emails · checked ${when(a.last_checked)}</span>
-        ${a.error ? `<span class="neg">${esc(a.error)}</span>` : ""}</div>
-      <button class="btn btn-sm btn-danger" data-remove-mail="${a.id}">Remove</button>
+        ${a.error ? `<span class="neg">${esc(a.error)}</span>` : ""}
+        <span class="${a.can_send ? "pos" : ""}">${a.can_send ? "✓ Can send replies from the Inbox" : "Replies: not signed in to send yet"}</span></div>
+      <div class="mb-btns">
+        ${a.can_send ? `<button class="btn btn-sm btn-ghost" data-gmail-out="${a.id}">Stop sending</button>`
+                     : `<a class="btn btn-sm btn-primary" href="/auth/gmail/start?account=${a.id}" target="_blank" rel="noopener">Sign in to send</a>`}
+        <button class="btn btn-sm btn-danger" data-remove-mail="${a.id}">Remove</button>
+      </div>
     </div>`).join("");
   const stores = (state.setup?.stores || []).map((x) => `<option value="${x.id}">${esc(x.name)}</option>`).join("");
   $("mailBox").innerHTML = `${rows || `<p class="hint">No mailboxes connected yet.</p>`}
+    ${r.accounts.length ? `<details class="advanced"${r.accounts.some((a) => a.can_send) ? "" : " open"}><summary>Replying from the Inbox: how to sign in</summary>
+      <ol class="wg-steps">
+        <li>Once only: switch on the <a href="${esc(r.gmail_api_link)}" target="_blank" rel="noopener"><b>Gmail API</b></a>
+          in your Google Cloud project (the one ProfitDesk's Google sign-in uses) → click <b>Enable</b>.</li>
+        <li>Click <b>Sign in to send</b> next to a mailbox. A Google tab opens.</li>
+        <li>Choose that mailbox's Google account (the same address). If Google says the app isn't verified,
+          click <b>Advanced</b> → <b>Go to ProfitDesk</b>. It only asks to <b>send email</b> on that address.</li>
+        <li>Click <b>Continue</b>. The tab says it's done; close it and this list shows ✓.</li>
+      </ol>
+      <p class="hint">Replies go out from the store's address, appear in that mailbox's Sent folder and stay in the
+        same Gmail conversation, exactly as if you typed them in Gmail.</p></details>` : ""}
     <details class="advanced"${r.accounts.length ? "" : " open"}><summary>Connect a mailbox</summary>
       <label class="field"><span>Store</span><select id="mbStore" class="control">${stores}</select></label>
       <label class="field"><span>Mailbox email</span><input id="mbAddress" type="email" autocomplete="off"
@@ -1046,6 +1062,13 @@ async function renderMailboxes() {
     } catch (e) { toast(e.message, true); }
     finally { b.disabled = false; b.textContent = "Connect mailbox"; }
   };
+  for (const b of $("mailBox").querySelectorAll("[data-gmail-out]")) b.onclick = async () => {
+    if (!confirm("Stop sending replies from this mailbox? You can sign in again any time.")) return;
+    await jsonPost(`/api/mail-accounts/${b.dataset.gmailOut}/gmail-signout`, {});
+    renderMailboxes();
+  };
+  // Back from the Google tab: refresh the ✓
+  if (!window.__mbFocus) { window.__mbFocus = true; window.addEventListener("focus", () => { if (!$("drawer").hidden) renderMailboxes(); }); }
   for (const b of $("mailBox").querySelectorAll("[data-remove-mail]")) {
     b.onclick = async () => {
       if (!confirm("Disconnect this mailbox? Its emails are removed from ProfitDesk (the mailbox itself isn't touched).")) return;

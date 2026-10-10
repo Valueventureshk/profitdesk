@@ -40,6 +40,7 @@ import expenses
 import cog
 import invoices
 import mail_client
+import gmail_send
 import tickets
 import ai_brain
 import anthropic
@@ -812,9 +813,14 @@ def api_mail_accounts():
     with db._conn() as con:
         counts = {r["account_id"]: r["n"] for r in con.execute(
             "SELECT account_id, COUNT(*) n FROM mail_messages GROUP BY account_id")}
-    return {"accounts": [{"id": a["id"], "address": a["address"], "store": stores.get(a["store_id"], ""),
+    cid = gads._cfg()[0] or ""
+    project = cid.split("-", 1)[0] if cid[:1].isdigit() else ""
+    return {"gmail_api_link": "https://console.cloud.google.com/apis/library/gmail.googleapis.com"
+                              + (f"?project={project}" if project else ""),
+            "accounts": [{"id": a["id"], "address": a["address"], "store": stores.get(a["store_id"], ""),
                           "store_id": a["store_id"], "last_checked": a["last_checked"],
-                          "error": a["last_error"], "emails": counts.get(a["id"], 0)}
+                          "error": a["last_error"], "emails": counts.get(a["id"], 0),
+                          "can_send": bool(a.get("gmail_token")), "send_since": a.get("gmail_at")}
                          for a in db.list_mail_accounts()]}
 
 
@@ -1008,6 +1014,66 @@ def _gmail_link(address: str, message_id: str) -> str:
     return f"https://mail.google.com/mail/u/{quote(address)}/#search/rfc822msgid%3A{quote(mid)}" if mid else ""
 
 
+@app.post("/api/inbox/tickets/{ticket_id}/reply")
+async def api_inbox_reply(ticket_id: int, payload: dict, request: Request):
+    """Send a reply from the store's mailbox through Gmail (it shows in Gmail's Sent and the same thread)."""
+    text = (payload.get("text") or "").strip()
+    if not text:
+        raise HTTPException(400, "Write the reply first.")
+    with db._conn() as con:
+        t = con.execute("SELECT * FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
+        if not t:
+            raise HTTPException(404, "That ticket no longer exists.")
+        acct = con.execute("SELECT * FROM mail_accounts WHERE id = ?", (t["account_id"],)).fetchone()
+        last = con.execute("SELECT message_id, refs, subject FROM mail_messages WHERE ticket_id = ? AND direction = 'in'"
+                           " ORDER BY date DESC LIMIT 1", (ticket_id,)).fetchone() or \
+            con.execute("SELECT message_id, refs, subject FROM mail_messages WHERE ticket_id = ? ORDER BY date DESC LIMIT 1",
+                        (ticket_id,)).fetchone()
+    if not acct or not acct["gmail_token"]:
+        raise HTTPException(400, "This mailbox isn't signed in for sending yet (Settings → Support mailboxes → Sign in to send).")
+    to = (t["customer_email"] or "").strip()
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", to):
+        raise HTTPException(400, "This ticket has no customer email address to reply to.")
+    store = next((x for x in db.list_stores() if x["id"] == t["store_id"]), None)
+    mid = (last["message_id"] if last else "") or ""
+    thread = await asyncio.to_thread(gmail_send.thread_id, acct["address"], acct["password"], mid)
+    try:
+        await gmail_send.send(acct["gmail_token"], acct["address"], (store or {}).get("name", "").strip(), to,
+                              (last["subject"] if last else "") or t["subject"] or "", text,
+                              in_reply_to=mid, references=(last["refs"] if last else "") or "", thread=thread)
+    except gmail_send.SendError as e:
+        raise HTTPException(400, str(e))
+    user = (getattr(request.state, "user", None) or {}).get("email", "")
+    print(f"Reply sent on ticket {ticket_id} by {user}", flush=True)
+
+    async def pick_up():                      # read it back from Sent so the ticket shows "we replied"
+        await asyncio.sleep(4)
+        a = next((x for x in db.list_mail_accounts() if x["id"] == acct["id"]), None)
+        if a:
+            await _read_mailbox(a)
+            await _sort_mail()
+    asyncio.create_task(pick_up())
+    return {"ok": True}
+
+
+@app.post("/api/inbox/translate-text")
+async def api_inbox_translate_text(payload: dict):
+    """Translate a reply before sending (e.g. written in English, sent in French)."""
+    lang = payload.get("lang") or "English"
+    if lang not in TRANSLATE_LANGS:
+        raise HTTPException(400, "Pick a language from the list.")
+    text = (payload.get("text") or "").strip()
+    if not text:
+        raise HTTPException(400, "Write the reply first.")
+    key = db.get_setting("anthropic_api_key")
+    if not key:
+        raise HTTPException(400, "Add the Anthropic API key in Settings → AI first.")
+    try:
+        return {"text": (await ai_brain.translate(key, [text[:12000]], lang))[0]}
+    except (anthropic.APIError, ValueError) as e:
+        raise HTTPException(400, f"Couldn't translate right now: {str(e)[:150]}")
+
+
 @app.get("/api/inbox/tickets/{ticket_id}")
 def api_inbox_ticket(ticket_id: int):
     with db._conn() as con:
@@ -1018,11 +1084,13 @@ def api_inbox_ticket(ticket_id: int):
         msgs = [dict(r) for r in con.execute(
             "SELECT id, direction, from_name, from_addr, to_addr, subject, date, text, attachments, message_id"
             " FROM mail_messages WHERE ticket_id = ? ORDER BY date", (ticket_id,))]
-        acct = con.execute("SELECT address FROM mail_accounts WHERE id = ?", (t["account_id"],)).fetchone()
+        acct = con.execute("SELECT address, gmail_token FROM mail_accounts WHERE id = ?", (t["account_id"],)).fetchone()
     for m in msgs:
         m["attachments"] = json.loads(m["attachments"] or "[]")
     t["store"] = _store_names().get(t["store_id"], "")
     t["mailbox"] = acct["address"] if acct else ""
+    t["can_send"] = bool(acct and acct["gmail_token"])
+    t["reply_lang"] = LANG_NAME.get(db.get_setting(f"track_lang:{t['store_id']}") or "en", "English")
     t["gmail_link"] = _gmail_link(t["mailbox"], msgs[-1]["message_id"]) if msgs else ""
     return {"ticket": t, "messages": msgs}
 
@@ -1789,6 +1857,30 @@ def api_google_app(payload: dict):
     return {"ok": True}
 
 
+_gmail_states: dict = {}      # sign-in state -> mailbox id
+
+
+@app.get("/auth/gmail/start", response_class=HTMLResponse)
+def gmail_start(account: int):
+    acct = next((a for a in db.list_mail_accounts() if a["id"] == account), None)
+    if not acct:
+        raise HTTPException(404, "Mailbox not found.")
+    state = secrets.token_urlsafe(24)
+    _gmail_states[state] = account
+    try:
+        return RedirectResponse(gmail_send.auth_url(GOOGLE_REDIRECT, state, acct["address"]))
+    except gmail_send.SendError as e:
+        return _closer(str(e))
+
+
+@app.post("/api/mail-accounts/{account_id}/gmail-signout")
+def api_mail_gmail_signout(account_id: int):
+    with db._conn() as con:
+        con.execute("UPDATE mail_accounts SET gmail_token = NULL, gmail_email = NULL, gmail_at = NULL WHERE id = ?",
+                    (account_id,))
+    return {"ok": True}
+
+
 @app.get("/auth/google/start")
 def google_start():
     state = secrets.token_urlsafe(24)
@@ -1802,6 +1894,22 @@ async def google_callback(request: Request):
     if params.get("error"):
         return _closer(f"Google sign-in was cancelled ({params['error']}).")
     state = params.get("state", "")
+    if state in _gmail_states:                       # a support mailbox signing in to send
+        aid = _gmail_states.pop(state)
+        acct = next((a for a in db.list_mail_accounts() if a["id"] == aid), None)
+        try:
+            token, email = await gads.exchange_code(params.get("code", ""), GOOGLE_REDIRECT)
+        except gads.GoogleAdsError as e:
+            return _closer(str(e))
+        if not acct:
+            return _closer("That mailbox was removed from ProfitDesk.")
+        if (email or "").lower() != acct["address"].lower():
+            return _closer(f"You signed in as {email}, but this mailbox is {acct['address']}. "
+                           f"Sign in again and choose {acct['address']}.")
+        with db._conn() as con:
+            con.execute("UPDATE mail_accounts SET gmail_token = ?, gmail_email = ?, gmail_at = datetime('now') WHERE id = ?",
+                        (token, email, aid))
+        return _closer(f"{email} can now send replies from ProfitDesk. You can close this tab.", ok=True)
     if state not in _google_states:
         return _closer("That sign-in link had expired. Start the connection again.")
     _google_states.discard(state)

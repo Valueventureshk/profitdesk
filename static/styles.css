@@ -711,6 +711,13 @@ body.read-only [data-write-only] { display: none !important; }
 .msg-head { display: flex; justify-content: space-between; gap: 10px; font-size: 12.5px; margin-bottom: 6px; }
 .msg-head span { color: var(--faint); }
 .msg .mail-body { font-size: 13.5px; }
+.reply-text { width: 100%; min-height: 140px; font: inherit; font-size: 14px; line-height: 1.5; resize: vertical; }
+.reply-bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.reply-tr { display: inline-flex; align-items: center; gap: 4px; }
+.reply-tr .control { width: auto; height: 30px; padding: 0 6px; font-size: 12.5px; }
+.reply-gap { flex: 1; }
+.reply-note { margin: 8px 0 0 !important; font-size: 12px; }
+.msg.sent-now { border-style: dashed; }
 .reply-box { border: 1px dashed var(--line); border-radius: 10px; padding: 12px; margin-top: 6px; }
 .reply-box .hint { margin: 0 0 8px; }
 .tk-side { border-left: 1px solid var(--line); padding-left: 16px; font-size: 13px; }
@@ -1120,6 +1127,7 @@ body.read-only [data-write-only] { display: none !important; }
 .wg-dlg::backdrop { background: rgba(15,23,42,.45); }
 .wg-dlg h3 { margin: 0 0 6px; }
 .wg-dlg textarea { width: 100%; height: 260px; font-family: ui-monospace, monospace; font-size: 11.5px; margin: 8px 0 12px; }
+.mb-btns { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 .wg-steps { margin: 8px 0; padding-left: 20px; font-size: 13px; line-height: 1.6; }
 
 /* ------------------------------------------------ Importer: product editor */

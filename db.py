@@ -477,6 +477,9 @@ _ADDED_COLUMNS = {
     ],
     "mail_accounts": [
         ("last_uid_sent", "INTEGER NOT NULL DEFAULT 0"),   # Sent folder, read for our replies
+        ("gmail_token", "TEXT"),                            # Google sign-in for sending (gmail.send only)
+        ("gmail_email", "TEXT"),
+        ("gmail_at", "TEXT"),
     ],
     "mail_messages": [
         ("direction", "TEXT NOT NULL DEFAULT 'in'"),       # in = from a customer, out = our reply
