@@ -4017,6 +4017,51 @@ WANTED_SCOPES = {
     "write_translations", "read_analytics", "read_shipping"}
 
 
+@app.get("/api/fees/paypal-check")
+async def api_paypal_check(store: int, days: int = 30):
+    """Owner check: a store's orders paid by PayPal, and whether each payment shows up in
+    the connected PayPal account (by Shopify payment id, or by amount within a day)."""
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
+    with db._conn() as con:
+        rows = [dict(r) for r in con.execute(
+            "SELECT order_name, payment_id, day, created, gateway, amount, fee_actual FROM order_fees"
+            " WHERE store_id = ? AND day >= ? AND lower(COALESCE(gateway, '')) LIKE '%paypal%' ORDER BY created DESC",
+            (store, since))]
+    feed = []
+    for c in db.list_cash_connections():
+        if c["provider"] == "paypal":
+            try:
+                feed += await paypal.transactions(c["client_id"], c["secret"], days=days + 2)
+            except Exception as e:
+                return {"error": str(e)}
+    pay_in = [t for t in feed if (t.get("transaction_event_code") or "").startswith("T00")
+              and float((t.get("transaction_amount") or {}).get("value") or 0) > 0]
+    by_invoice = {t.get("invoice_id"): t for t in pay_in if t.get("invoice_id")}
+    for r in rows:
+        hit = by_invoice.get(r["payment_id"])
+        how = "payment id" if hit else None
+        if not hit:
+            t0 = datetime.fromisoformat(r["created"].replace("Z", "+00:00"))
+            for t in pay_in:
+                amt = float((t.get("transaction_amount") or {}).get("value") or 0)
+                when = t.get("transaction_initiation_date")
+                try:
+                    tw = datetime.fromisoformat(when.replace("Z", "+00:00").replace("+0000", "+00:00"))
+                except Exception:
+                    continue
+                if abs(amt - r["amount"]) < 0.02 and abs((tw - t0).total_seconds()) < 86400:
+                    hit, how = t, "same amount, same day"
+                    break
+        r["in_connected_paypal"] = bool(hit)
+        r["matched_by"] = how
+        if hit:
+            r["paypal_invoice_id"] = hit.get("invoice_id")
+            r["paypal_txn"] = hit.get("transaction_id")
+    return {"store": _store_names().get(store), "days": days, "paypal_orders": len(rows),
+            "found_in_connected_paypal": sum(r["in_connected_paypal"] for r in rows), "orders": rows,
+            "connected_paypal_payments": len(pay_in)}
+
+
 @app.get("/api/shopify/permissions")
 async def api_shopify_permissions():
     """Which of the wanted permissions each store's app has actually been granted (fresh)."""
