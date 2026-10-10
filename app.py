@@ -185,9 +185,12 @@ def _shopify_launch(request: Request):
 @app.middleware("http")
 async def _require_login(request: Request, call_next):
     path = request.url.path
+    if path.startswith(("/proxy", "/apps")):
+        db.set_setting("proxy_seen", json.dumps({"at": datetime.now(timezone.utc).isoformat(), "path": path,
+                                                 "query": sorted(request.query_params.keys())}))
     user = auth.user_for(request.cookies.get(auth.SESSION_COOKIE))
     request.state.user = user
-    if path in _OPEN or path.startswith(("/static/", "/proxy/")):
+    if path in _OPEN or path.startswith(("/static/", "/proxy/", "/apps/")) or path == "/proxy":
         return await call_next(request)
     launched = _shopify_launch(request)
     if launched:
@@ -2477,7 +2480,9 @@ def _find_parcels(store_id: int, order: str, email: str, nums: str) -> tuple:
 
 
 @app.get("/proxy/track")
-async def proxy_track(request: Request, order: str = None, email: str = None, nums: str = None):
+@app.get("/proxy/track/")
+@app.get("/proxy/track/{rest:path}")
+async def proxy_track(request: Request, order: str = None, email: str = None, nums: str = None, rest: str = ""):
     """The customer tracking page. Reached through each store's Shopify app proxy
     (store.com/apps/track), which signs the request; owners can preview it directly."""
     from fastapi.responses import Response
@@ -2660,6 +2665,7 @@ async def api_tracking():
     out = {"connected": bool(cfg["key"]), "stores": cfg["stores"], "from": cfg["from"],
            "push": sorted(_push_stores()),
            "proxy_last": json.loads(db.get_setting("proxy_last") or "{}"),
+           "proxy_seen": json.loads(db.get_setting("proxy_seen") or "{}"),
            "langs": {x["id"]: db.get_setting(f"track_lang:{x['id']}") or "en" for x in db.list_stores()},
            "visits": {x["id"]: json.loads(db.get_setting(f"track_visits:{x['id']}") or "{}") for x in db.list_stores()},
            "dropship": [x["id"] for x in db.list_stores()
