@@ -99,7 +99,12 @@ file and have it work.
   Sign in to send; token in `mail_accounts.gmail_token`; needs the Gmail API enabled in the Google
   Cloud project). Replies go through the Gmail API into the same Gmail thread (thread id found over
   IMAP via X-GM-THRID), then are read back from Sent like any Gmail reply. Translate: `ai_brain.translate`
-  (Haiku), saved in `mail_translations`; only each email's new part (`ai_brain.new_part`). AI key = setting
+  (Haiku), saved in `mail_translations`; only each email's new part (`ai_brain.new_part`).
+  Labels: Gmail labels two-way over IMAP (`mail_labels.py`, X-GM-LABELS, whole thread), synced in
+  `_mail_loop`; tables `mail_tags`, `mail_message_tags`, `tag_colors`; AI suggests (`ai_brain.suggest_labels`,
+  `mail_messages.tag_suggest`), staff confirm. Attachments: fetched from Gmail when first opened (whole email in
+  one trip, max 3 at once), kept on the volume in `<DB dir>/attachments/<message id>/` for 60 days unopened;
+  previews are JPEG (Pillow + pillow-heif for iPhone HEIC); only images/PDF open inline, the rest download. AI key = setting
   `anthropic_api_key` (owner pastes it in Settings → AI). Tickets only for emails from
   setting `tickets_from` (default 8 Oct 2026 HK). Team can override: close, reopen,
   snooze, escalate, relabel, "not a customer email".
