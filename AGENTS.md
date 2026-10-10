@@ -64,6 +64,8 @@ file and have it work.
 | `tickets.py` | Turns sorted emails into tickets; our Gmail replies set "we replied last" |
 | `static/inbox.html` `inbox.js` | Inbox desk: mail views, SCM/CS tickets, records, AI training |
 | `ai_coach.py` | Learns a playbook from past replies + SOPs; drafts replies (Claude Sonnet 5.5) |
+| `sizecharts.py` `static/sizecharts.*` | Size Charts desk: Panda/Kiwi import, block editor, AI chart from image (Sonnet), "Find my size" advisor (Haiku) |
+| `static/sizechart-widget.js` | Storefront size chart pop-up, added to each store as a ScriptTag; data via the app proxy `/apps/track/sizechart` |
 | `reports.py` `static/reports.*` | Reports desk: CSV downloads built from the desks' own figures (no AI) |
 | `ai_chat.py` `static/chat.js` | Chat button on every desk: Sonnet 5.5 calls the app's tools, never invents figures |
 | `expenses.py` `static/expenses.*` | Expenses desk: actual payments out of Airwallex + PayPal by category; owner's picks in `expense_rules`, AI suggestions (Haiku) |
@@ -123,6 +125,12 @@ file and have it work.
   Ashton's app is under another Shopify login, not done yet).
   Store permissions: shopify_client.SCOPES (27, see SHOPIFY-APP-RELEASE.md), check
   /api/shopify/permissions; opening the app from Shopify admin asks for missing ones.
+- Size Charts desk (desk `sizecharts`): charts in `size_charts` (blocks JSON), who sees them in
+  `size_chart_rules` (product > collection > tag > type > vendor > all, per store, optional countries).
+  Turning a store on in Display settings installs the ScriptTag; the widget asks the app proxy
+  (`/proxy/track/sizechart`, so stores need the App proxy). cm→in converts measurement columns only.
+  Product Importer setting `size_chart_mode`: none / chart (assign one) / ai (read the source's
+  size-chart image, one chart per source product shared by all target stores).
 - Business clock is Hong Kong (`CASH_TIMEZONE`). Each store has its own clock;
   "today" is the furthest-ahead store's date.
 
