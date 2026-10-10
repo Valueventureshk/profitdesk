@@ -3304,8 +3304,8 @@ async def widget_data(token: str):
         "items": [{"key": k, "label": info[k][0], "format": info[k][1], "good": info[k][2],
                    "value": d["totals"].get(k), "delta": (d.get("delta") or {}).get(k)} for k in w["metrics"]],
         "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "open_url": f"{BASE_URL}/?" + "&".join(x for x in (f"store={w['scope']}" if w["scope"] != "all" else "",
-                                                           f"range={p}" if p != "today" else "") if x),
+        "open_url": (f"{BASE_URL}/?" + "&".join(x for x in (f"store={w['scope']}" if w["scope"] != "all" else "",
+                                                            f"range={p}" if p != "today" else "") if x)).rstrip("?"),
     }
     _widget_cache[token] = (time.time(), payload)
     return payload
