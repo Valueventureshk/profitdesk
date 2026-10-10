@@ -66,6 +66,7 @@ file and have it work.
 | `ai_coach.py` | Learns a playbook from past replies + SOPs; drafts replies (Claude Sonnet 5.5) |
 | `reports.py` `static/reports.*` | Reports desk: CSV downloads built from the desks' own figures (no AI) |
 | `ai_chat.py` `static/chat.js` | Chat button on every desk: Sonnet 5.5 calls the app's tools, never invents figures |
+| `expenses.py` `static/expenses.*` | Expenses desk: actual payments out of Airwallex + PayPal by category; owner's picks in `expense_rules`, AI suggestions (Haiku) |
 | `static/cash.html` `cash.js` `nav.js` | Cash flow page, section menu |
 | `static/index.html` `styles.css` `app.js` | The dashboard |
 | `seed_demo.py` | Generates fake data for testing |
@@ -98,6 +99,10 @@ file and have it work.
   `cash_snapshots` (one row per day). Shown in Reports, report type `cash_snapshots`,
   chat tool `get_cash_history`. Days before 10 Oct 2026 have none; the chat falls back
   to the statement (`get_cash_statement`), which only rebuilds available + receivable.
+- Expenses desk (desk `expenses`): reads movements via statement.py, nets card holds per
+  card transaction, skips moves between own accounts. Unknown payees go to "To sort";
+  the owner's pick is saved per payee key and applies to past and future payments.
+  Conversion cost is the only computed line (legs at today's rate).
 - Business clock is Hong Kong (`CASH_TIMEZONE`). Each store has its own clock;
   "today" is the furthest-ahead store's date.
 

@@ -285,6 +285,23 @@ CREATE TABLE IF NOT EXISTS cash_snapshots (
     data       TEXT NOT NULL
 );
 
+-- Expenses desk: the owner's category picks. key = a payee ("payee:pgs tech
+-- limited", "merchant:canva") or one transaction ("tx:<id>"). Suggestions are
+-- the AI's guesses for payees nobody has picked yet.
+CREATE TABLE IF NOT EXISTS expense_rules (
+    key        TEXT PRIMARY KEY,
+    category   TEXT NOT NULL,
+    name       TEXT,
+    set_by     TEXT,
+    set_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS expense_suggestions (
+    key        TEXT PRIMARY KEY,
+    category   TEXT NOT NULL,
+    reason     TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- Small app-wide preferences, e.g. the currency the dashboard shows.
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
@@ -944,6 +961,34 @@ def cash_snapshots(start: str = "0000", end: str = "9999") -> list:
                            (start, end)).fetchall()
     return [{"day": r["day"], "taken_at": r["taken_at"], "currency": r["currency"], **json.loads(r["data"])}
             for r in rows]
+
+
+# ---------------------------------------------------------------- expenses
+
+def expense_rules() -> list:
+    with _conn() as con:
+        return [dict(r) for r in con.execute("SELECT * FROM expense_rules ORDER BY set_at")]
+
+
+def set_expense_rule(key: str, category: str, name: str, by: str):
+    with _conn() as con:
+        if category:
+            con.execute("INSERT INTO expense_rules (key, category, name, set_by) VALUES (?, ?, ?, ?)"
+                        " ON CONFLICT(key) DO UPDATE SET category = excluded.category, name = excluded.name,"
+                        " set_by = excluded.set_by, set_at = datetime('now')", (key, category, name, by))
+        else:
+            con.execute("DELETE FROM expense_rules WHERE key = ?", (key,))
+
+
+def expense_suggestions() -> dict:
+    with _conn() as con:
+        return {r["key"]: dict(r) for r in con.execute("SELECT * FROM expense_suggestions")}
+
+
+def save_expense_suggestions(picks: list):
+    with _conn() as con:
+        con.executemany("INSERT OR REPLACE INTO expense_suggestions (key, category, reason) VALUES (?, ?, ?)",
+                        [(p["key"], p["category"], p.get("reason", "")) for p in picks])
 
 
 # ---------------------------------------------------------------- settings

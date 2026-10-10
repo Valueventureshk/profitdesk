@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ProfitDesk · Expenses</title>
+<script>try{var t=localStorage.getItem("pdTheme")||(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");document.documentElement.dataset.theme=t;}catch(e){}</script>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<div class="cash-page">
+  <header class="cash-top">
+    <div class="brand" data-section-menu title="Switch section">
+      <span class="brand-mark">PD</span>
+      <span class="brand-name">ProfitDesk</span>
+    </div>
+    <div class="crumb">
+      <h1>Expenses</h1>
+      <p id="sub">Every payment that left Airwallex and PayPal. Actual figures, nothing estimated.</p>
+    </div>
+    <div class="controls">
+      <select id="currencySelect" class="control" title="Show every figure in this currency"></select>
+      <button id="refresh" class="btn btn-ghost">Refresh</button>
+    </div>
+  </header>
+
+  <main class="content">
+    <div class="exp-periods" id="periods">
+      <button data-p="today">Today</button>
+      <button data-p="yesterday">Yesterday</button>
+      <button data-p="month" class="on">Month so far</button>
+      <button data-p="last_month">Last month</button>
+      <button data-p="custom">Custom</button>
+      <span class="exp-custom" id="customBox" hidden>
+        <input type="date" id="from" class="control"> – <input type="date" id="to" class="control">
+        <button class="btn btn-sm btn-primary" id="go">Show</button>
+      </span>
+    </div>
+    <div id="problems" class="warnings"></div>
+
+    <section class="panel exp-sort" id="sortPanel" hidden>
+      <div class="panel-head"><h2>To sort</h2><span class="hint" id="sortNote"></span></div>
+      <p class="hint exp-help">Pick what each payment is. Your pick applies to every past and future
+        payment to the same payee, and the AI uses your picks to suggest the next ones.</p>
+      <div id="sortList"></div>
+    </section>
+
+    <section id="cards" class="cards exp-cards"><div class="card"><div class="card-label">Loading…</div>
+      <div class="card-note">Reading Airwallex and PayPal (takes a few seconds)</div></div></section>
+
+    <section class="panel" id="detailPanel" hidden>
+      <div class="panel-head"><h2 id="detailTitle"></h2><button class="btn btn-sm btn-ghost" id="detailClose">Close</button></div>
+      <div class="table-wrap"><table class="table" id="detail"></table></div>
+    </section>
+
+    <section class="panel" id="daysPanel" hidden>
+      <div class="panel-head"><h2>Day by day</h2><span class="hint" id="daysNote"></span></div>
+      <div class="table-wrap"><table class="table" id="days"></table></div>
+    </section>
+  </main>
+</div>
+<div id="toast" class="toast" hidden></div>
+<script src="/static/nav.js"></script>
+<script src="/static/chat.js"></script>
+<script src="/static/expenses.js"></script>
+</body>
+</html>

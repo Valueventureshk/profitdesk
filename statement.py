@@ -122,7 +122,8 @@ def airwallex_moves(label: str, rows: list, cards: list) -> list:
         amount, net, fee = _num(t.get("amount")), _num(t.get("net")), _num(t.get("fee"))
         desc = (t.get("description") or "").strip()
         status = t.get("status")
-        base = {"time": when, "currency": cur, "source": f"Airwallex · {label}"}
+        base = {"time": when, "currency": cur, "source": f"Airwallex · {label}",
+                "id": t.get("id") or _f(t, "source_id"), "sid": _f(t, "source_id"), "desc": desc}
         if not when or status in ("FAILED",):
             continue
 
@@ -200,7 +201,9 @@ def paypal_moves(label: str, rows: list) -> list:
             continue
         who = ((d.get("payer_info") or {}).get("payer_name") or {}).get("alternate_full_name") or ""
         domain = ((d.get("payer_info") or {}).get("email_address") or "").split("@")[-1]
-        base = {"time": when, "currency": cur, "source": f"PayPal · {label}"}
+        base = {"time": when, "currency": cur, "source": f"PayPal · {label}",
+                "id": t.get("transaction_id"), "desc": (t.get("transaction_subject") or t.get("transaction_note") or "")[:120],
+                "who": who or domain}
 
         if code.startswith(PP_INTERNAL) or code in PP_DISPUTE_HOLD:
             if code == "T2104" or code == "T2102":

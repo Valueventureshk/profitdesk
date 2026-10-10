@@ -42,6 +42,9 @@ TOOLS = [
           "and closing 'available + receivable' (closing = at the end of the last day), money in and out, fees, "
           "moves between accounts. Works for any past day, but only gives available + receivable, not "
           "the other cards.", _RANGE, ["start", "end"]),
+    _tool("get_expenses", "Actual payments out of Airwallex and PayPal for a period, by category (supplier "
+          "payments, Meta ads, Google Ads, subscriptions, processing fees, refunds, chargebacks, salaries, "
+          "other), with the biggest payees and what is still unsorted.", _RANGE, ["start", "end"]),
     _tool("get_cog", "COG for a period: sales, COG, COG %, how much is from invoices vs history vs estimates, "
           "and the products with the highest cost share.",
           {**_RANGE, "store": {"type": "string", "description": "all or a store id"}}, ["start", "end", "store"]),

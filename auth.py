@@ -64,7 +64,7 @@ def has_users() -> bool:
 
 
 ROLES = ("owner", "write", "read")
-DESKS = ("profit", "cash", "cog", "inbox", "reports")
+DESKS = ("profit", "cash", "cog", "inbox", "reports", "expenses")
 
 
 def clean_access(role: str, desks) -> tuple:

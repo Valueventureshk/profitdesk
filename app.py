@@ -30,6 +30,7 @@ import auth
 import cashflow
 import statement
 import adbills
+import expenses
 import cog
 import invoices
 import mail_client
@@ -102,13 +103,15 @@ _DESK_PATHS = {
     "cog": ("/cog", "/api/cog", "/api/invoices"),
     "inbox": ("/inbox", "/api/inbox"),
     "reports": ("/reports", "/api/reports"),
+    "expenses": ("/expenses", "/api/expenses"),
 }
-_DESK_HOME = {"profit": "/", "cash": "/cash", "cog": "/cog", "inbox": "/inbox", "reports": "/reports"}
+_DESK_HOME = {"profit": "/", "cash": "/cash", "cog": "/cog", "inbox": "/inbox", "reports": "/reports",
+             "expenses": "/expenses"}
 # Shared by every desk's pages: the user's own details and the dropdown lists.
 _EVERYONE = {"/api/me", "/api/me/password", "/api/logout", "/change-password",
              "/api/setup", "/api/chat"}
 # What "read & write" people may change (owners may change anything).
-_WRITE_OK = ("/api/invoices", "/api/cog/sync", "/api/inbox")
+_WRITE_OK = ("/api/invoices", "/api/cog/sync", "/api/inbox", "/api/expenses")
 # What anyone with the desk may do, read-only people included (it changes nothing).
 _ANY_OK = ("/api/reports",)
 
@@ -1357,6 +1360,15 @@ async def _chat_tool(name: str, args: dict, user: dict) -> dict:
         st = await api_cash_statement(start=args["start"], end=args["end"], currency=cur)
         return _round({k: st.get(k) for k in ("start", "end", "currency", "opening", "closing", "change",
                                               "sections", "checks")})
+    if name == "get_expenses":
+        _need(user, "expenses")
+        e = await api_expenses(period="custom", start=args["start"], end=args["end"], currency=cur)
+        return _round({"currency": e["currency"], "start": e["start"], "end": e["end"], "total": e["total"],
+                       "unsorted": e["unsorted"],
+                       "categories": [{"name": c["name"], "total": c["total"], "payments": c["count"],
+                                       "top": [{"name": l["name"], "total": l["total"]} for l in c["lines"][:5]]}
+                                      for c in e["categories"] if c["count"] and c["key"] != "ignore"],
+                       "to_sort": [{"name": x["name"], "total": x["total"]} for x in e["to_sort"][:10]]})
     if name == "get_cog":
         _need(user, "cog")
         stores = {x["id"]: x for x in db.list_stores() if not demo.is_demo(x)}
@@ -1983,6 +1995,135 @@ async def api_cash_statement(start: str, end: str = None, currency: str = None):
     out = statement.build(moves, st["factor"], st["summary"]["position"], t0, t1, now,
                           shopify=by_gateway if shop_ok else None, ad_spend=ad_spend)
     return {"currency": st["base"], "problems": problems, **out}
+
+
+# ---------------------------------------------------------------- expenses desk
+
+@app.get("/expenses", response_class=HTMLResponse)
+def expenses_page():
+    return _page("expenses.html", ("expenses.js", "nav.js", "styles.css", "chat.js"))
+
+
+_exp_cache: dict = {}
+_suggesting: set = set()
+
+
+async def _expense_moves(since: datetime, until: datetime) -> tuple:
+    """Every Airwallex and PayPal movement in [since, until), paired like the statement.
+    Kept for 3 minutes per window. Returns (moves, problems)."""
+    ck = (since.isoformat(timespec="minutes"), until.isoformat(timespec="minutes")[:15])
+    hit = _exp_cache.get(ck)
+    if hit and time.time() - hit[0] < 180:
+        return hit[1], hit[2]
+    now = datetime.now(CASH_TZ)
+
+    async def moves_for(c):
+        if c["provider"] == "airwallex":
+            rows, cards = await asyncio.gather(
+                awx.transactions(c["client_id"], c["secret"], since, until, c["account_id"]),
+                awx.card_transactions(c["client_id"], c["secret"], since - timedelta(days=7), c["account_id"]))
+            return statement.airwallex_moves(c["label"], rows, cards)
+        if c["provider"] == "paypal":
+            rows = await paypal.transactions(c["client_id"], c["secret"], days=(now - since).days + 1,
+                                             fields="transaction_info,payer_info", full=True)
+            return [m for m in statement.paypal_moves(c["label"], rows) if since <= m["time"] < until]
+        return []
+
+    conns = db.list_cash_connections()
+    got = await asyncio.gather(*[moves_for(c) for c in conns], return_exceptions=True)
+    moves, problems = [], []
+    for c, g in zip(conns, got):
+        if isinstance(g, Exception):
+            problems.append(f"{c['label']}: {g}")
+        else:
+            moves.extend(g)
+    statement._pair_transfers(moves)
+    statement._pair_own(moves)
+    _exp_cache.clear()
+    _exp_cache[ck] = (time.time(), moves, problems)
+    return moves, problems
+
+
+def _period(period: str, start: str, end: str) -> tuple:
+    """Named period (today, yesterday, month, last_month, custom) -> first and last day."""
+    today = datetime.now(CASH_TZ).date()
+    if period == "today":
+        return today, today
+    if period == "yesterday":
+        return today - timedelta(days=1), today - timedelta(days=1)
+    if period == "last_month":
+        last = today.replace(day=1) - timedelta(days=1)
+        return last.replace(day=1), last
+    if period == "custom" and start:
+        try:
+            d0, d1 = date.fromisoformat(start), date.fromisoformat(end or start)
+        except ValueError:
+            raise HTTPException(400, "Pick a start and end date.")
+        d0, d1 = min(d0, d1), min(max(d0, d1), today)
+        if (today - d0).days > 400:
+            raise HTTPException(400, "Expenses go back up to about 13 months.")
+        return d0, d1
+    return today.replace(day=1), today
+
+
+@app.get("/api/expenses")
+async def api_expenses(period: str = "month", start: str = None, end: str = None, currency: str = None):
+    d0, d1 = _period(period, start, end)
+    t0 = datetime.combine(d0, clock.min, CASH_TZ)
+    t1 = datetime.combine(d1 + timedelta(days=1), clock.min, CASH_TZ)
+    now = datetime.now(CASH_TZ)
+    if not db.list_cash_connections():
+        raise HTTPException(400, "Connect Airwallex or PayPal first (Cash flow → Settings).")
+    since, until = expenses.window(t0, t1, now)
+    moves, problems = await _expense_moves(since, until)
+    base = (currency or _display_currency()).upper()
+    codes = {m["currency"] for m in moves if m.get("currency")} | \
+            {l["currency"] for m in moves for l in m.get("legs", [])}
+    table = await fx.table(base) if codes - {base} else None
+    factor = (lambda code: fx.factor(table, code, base)) if table else (lambda code: 1.0)
+
+    rules = db.expense_rules()
+    items = expenses.apply_rules(expenses.classify(moves, factor), {r["key"]: r["category"] for r in rules})
+    out = expenses.summarize(items, factor, t0, t1, CASH_TZ, base)
+    hints = db.expense_suggestions()
+    for s in out["to_sort"]:
+        h = hints.get(s["key"])
+        s["suggestion"] = {"category": h["category"], "reason": h["reason"]} if h else None
+
+    missing = [s for s in out["to_sort"] if not s["suggestion"]]
+    api_key = db.get_setting("anthropic_api_key")
+    if missing and api_key and not _suggesting:
+        _suggesting.add(1)
+        asyncio.create_task(_suggest_expenses(api_key, missing, rules))
+    return {**out, "start": d0.isoformat(), "end": d1.isoformat(), "period": period,
+            "today": now.date().isoformat(), "live": d1 >= now.date(), "problems": problems,
+            "suggesting": bool(_suggesting), "category_list": [{"key": k, "name": n} for k, n in expenses.CATEGORIES],
+            "fx": None if not table else {"date": table.get("date")}}
+
+
+async def _suggest_expenses(api_key, missing, rules):
+    try:
+        db.save_expense_suggestions(await expenses.suggest(api_key, missing, rules))
+    except Exception as e:
+        print(f"Expense suggestions failed: {e}")
+    finally:
+        _suggesting.clear()
+
+
+@app.post("/api/expenses/sort")
+def api_expense_sort(payload: dict, request: Request):
+    """The owner's pick for a payee (or one transaction). Applies to every payment to it."""
+    key, category = (payload.get("key") or "").strip(), payload.get("category") or ""
+    if not key or (category and category not in expenses.NAMES):
+        raise HTTPException(400, "Pick a category.")
+    user = getattr(request.state, "user", None) or {}
+    db.set_expense_rule(key, category, payload.get("name") or "", user.get("email", ""))
+    return {"ok": True}
+
+
+@app.get("/api/expenses/rules")
+def api_expense_rules():
+    return {"rules": db.expense_rules(), "categories": [{"key": k, "name": n} for k, n in expenses.CATEGORIES]}
 
 
 @app.post("/api/cash/airwallex")
