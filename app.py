@@ -2962,6 +2962,26 @@ async def api_mail_gmail_check(account_id: int):
     return {"ok": True}
 
 
+@app.post("/api/mail-accounts/{account_id}/test-send")
+async def api_mail_test_send(account_id: int, payload: dict):
+    """Send one short test email from a mailbox (owner, Settings), to prove sending really works."""
+    acct = next((a for a in db.list_mail_accounts() if a["id"] == account_id), None)
+    to = (payload.get("to") or "").strip()
+    if not acct or not acct.get("gmail_token"):
+        raise HTTPException(400, "This mailbox isn't signed in to send yet.")
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", to):
+        raise HTTPException(400, "Type the address to send the test to.")
+    store = next((x for x in db.list_stores() if x["id"] == acct["store_id"]), None)
+    try:
+        await gmail_send.send(acct["gmail_token"], acct["address"], (store or {}).get("name", "").strip(), to,
+                              "ProfitDesk test email",
+                              f"This is a test from ProfitDesk, sent from {acct['address']}.\n\n"
+                              "If you can read this, replies from the Inbox will reach customers from this address.")
+    except gmail_send.SendError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True}
+
+
 @app.post("/api/mail-accounts/{account_id}/gmail-signout")
 def api_mail_gmail_signout(account_id: int):
     with db._conn() as con:

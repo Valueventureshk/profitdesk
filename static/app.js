@@ -1099,6 +1099,7 @@ async function renderMailboxes() {
         <label class="mb-ask"><input type="checkbox" data-auto-ask="${a.id}"${a.auto_ask ? " checked" : ""}${a.can_send ? "" : " disabled"}>
           When we can't find a customer's order, the AI replies asking for their order number, name and checkout email (once per ticket)</label></div>
       <div class="mb-btns">
+        ${a.can_send ? `<button class="btn btn-sm btn-ghost" data-test-send="${a.id}">Send a test email</button>` : ""}
         ${a.can_send ? `<button class="btn btn-sm btn-ghost" data-gmail-out="${a.id}">Stop sending</button>`
                      : `<a class="btn btn-sm btn-primary" href="/auth/gmail/start?account=${a.id}" target="_blank" rel="noopener">Sign in to send</a>`}
         <button class="btn btn-sm btn-danger" data-remove-mail="${a.id}">Remove</button>
@@ -1144,6 +1145,14 @@ async function renderMailboxes() {
     try { await jsonPost(`/api/mail-accounts/${c.dataset.autoAsk}/settings`, { auto_ask: c.checked });
           toast(c.checked ? "On: customers whose order we can't find get asked for their order number." : "Off."); }
     catch (e) { toast(e.message, true); c.checked = !c.checked; }
+  };
+  for (const b of $("mailBox").querySelectorAll("[data-test-send]")) b.onclick = async () => {
+    const to = prompt("Send a test email to which address?");
+    if (!to) return;
+    b.disabled = true;
+    try { await jsonPost(`/api/mail-accounts/${b.dataset.testSend}/test-send`, { to }); toast(`Test email sent to ${to}. Check that inbox (and spam).`); }
+    catch (e) { toast(e.message, true); }
+    b.disabled = false;
   };
   for (const b of $("mailBox").querySelectorAll("[data-gmail-out]")) b.onclick = async () => {
     if (!confirm("Stop sending replies from this mailbox? You can sign in again any time.")) return;
