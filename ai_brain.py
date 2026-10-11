@@ -231,3 +231,26 @@ async def suggest_labels(api_key: str, msg: dict, names: list, examples: list) -
         output_config={"effort": "low", "format": {"type": "json_schema", "schema": LABEL_SCHEMA}},
         messages=[{"role": "user", "content": f"Subject: {msg['subject']}\n\n{new_part(msg['text'] or '')[:3000]}"}])
     return json.loads(next((b.text for b in resp.content if b.type == "text"), "{}")).get("labels") or []
+
+
+# ---------------------------------------------------------------- ask for the order number
+
+ASK_SYSTEM = """You write the first reply of an online store's customer care team to a customer whose order we can't find.
+Write a short, warm email (max 80 words) in the customer's language that:
+- thanks them and says we want to help with their message (mention its topic in a few words),
+- asks for their order number (it starts with # and is in their order confirmation email), the full name and the email address used at checkout,
+- says we'll get back to them as soon as we have it.
+No promises about refunds, delivery or anything else. No placeholders like [Name]: greet them by first name if given, else a neutral greeting.
+Sign off with: "{signature}". Return only the email body."""
+
+
+async def ask_order(api_key: str, msg: dict, signature: str = "Customer Care Team") -> str:
+    client = anthropic.AsyncAnthropic(api_key=api_key, max_retries=3, timeout=60)
+    try:
+        resp = await client.messages.create(
+            model=MODEL, max_tokens=600, system=ASK_SYSTEM.format(signature=signature),
+            messages=[{"role": "user", "content": f"From: {msg.get('from_name') or ''}\nSubject: {msg.get('subject') or ''}"
+                                                  f"\n\n{new_part(msg.get('text') or '')[:3000]}"}])
+    except anthropic.APIError as e:
+        raise AIError(f"Couldn't write the order-number request ({type(e).__name__}).") from e
+    return next((b.text for b in resp.content if b.type == "text"), "").strip()

@@ -1298,7 +1298,13 @@ async def _sort_mail():
         _ai_state["error"] = "Add the Anthropic API key in Settings → AI to start sorting emails."
         return
     try:
-        got = await tickets.process(key)
+        got = await tickets.process(key, finder=_customer_orders)
+        for tid, mid in got.get("ask") or []:
+            try:
+                await _ask_order_number(key, tid, mid)
+            except Exception as e:                   # a failed ask never stops the sorting
+                _ai_state["ask_error"] = f"Ticket {tid}: {str(e)[:150]}"
+        got["ask"] = len(got.get("ask") or [])
         _ai_state.update(error=None, last=got, at=time.time())
         tot = _ai_state.setdefault("total", {"in": 0, "out": 0})
         tot["in"] += got["tokens_in"]
@@ -1308,6 +1314,54 @@ async def _sort_mail():
     except Exception as e:
         _ai_state["error"] = f"Sorting failed ({type(e).__name__}: {str(e)[:120]})"
         print(f"Sorting emails failed: {e}", flush=True)
+
+
+def _customer_orders(email: str, orders: list) -> tuple:
+    """(store id, [order names]) a customer email is about: from the order numbers in it (each store's
+    order tag), else the customer's latest orders by email address (SCM parcels)."""
+    tags = _cog.get("tags") or {}
+    sid, names = None, []
+    for o in orders or []:
+        k = cog.order_key(o)
+        s2 = tags.get(cog.tag_of(k)) if cog.tag_of(k) else None
+        if s2:
+            sid = sid or s2
+            names.append("#" + k)
+    if names or not email:
+        return sid, names
+    with db._conn() as con:
+        rows = con.execute("SELECT store_id, order_name FROM shipments WHERE lower(email) = ? AND order_name IS NOT NULL"
+                           " GROUP BY store_id, order_name ORDER BY MAX(order_at) DESC LIMIT 3", (email.lower(),)).fetchall()
+    return (rows[0][0] if rows else None), [r[1] for r in rows]
+
+
+async def _ask_order_number(api_key: str, ticket_id: int, message_id: int):
+    """We can't tell which order a new customer email is about: the AI writes one short reply asking
+    for the order number, full name and checkout email, sent from the same mailbox and thread."""
+    with db._conn() as con:
+        t = con.execute("SELECT * FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
+        if not t or t["auto_asked"]:
+            return
+    m = db.mail_get(message_id)
+    acct = next((a for a in db.list_mail_accounts() if a["id"] == t["account_id"]), None)
+    if not m or not acct:
+        return
+    store = next((x for x in db.list_stores() if x["id"] == t["store_id"]), None)
+    sig = f"{store['name'].strip()} Customer Care" if store else "Customer Care Team"
+    text = await ai_brain.ask_order(api_key, m, sig)
+    if not text:
+        return
+    with db._conn() as con:                          # mark first, so it can never go twice
+        con.execute("UPDATE tickets SET auto_asked = ? WHERE id = ?", (datetime.now(timezone.utc).isoformat(), ticket_id))
+    await _send_reply(acct, (m["from_addr"] or "").strip(), m["subject"], text, m["message_id"], m.get("refs"),
+                      t["store_id"])
+
+
+@app.post("/api/mail-accounts/{account_id}/settings")
+def api_mail_account_settings(account_id: int, payload: dict):
+    with db._conn() as con:
+        con.execute("UPDATE mail_accounts SET auto_ask = ? WHERE id = ?", (1 if payload.get("auto_ask") else 0, account_id))
+    return {"ok": True}
 
 
 async def _mail_loop():
@@ -1628,7 +1682,8 @@ def api_mail_accounts():
             "accounts": [{"id": a["id"], "address": a["address"], "store": stores.get(a["store_id"], ""),
                           "store_id": a["store_id"], "last_checked": a["last_checked"],
                           "error": a["last_error"], "emails": counts.get(a["id"], 0),
-                          "can_send": bool(a.get("gmail_token")), "send_since": a.get("gmail_at")}
+                          "can_send": bool(a.get("gmail_token")), "send_since": a.get("gmail_at"),
+                          "auto_ask": bool(a.get("auto_ask"))}
                          for a in db.list_mail_accounts()]}
 
 

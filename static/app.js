@@ -1093,9 +1093,11 @@ async function renderMailboxes() {
   const rows = r.accounts.map((a) => `
     <div class="group-row">
       <div class="group-name"><strong>${esc(a.address)}</strong>
-        <span>${esc(a.store || "No store")} · ${a.emails} emails · checked ${when(a.last_checked)}</span>
+        <span>${esc(a.store || "All stores (company email)")} · ${a.emails} emails · checked ${when(a.last_checked)}</span>
         ${a.error ? `<span class="neg">${esc(a.error)}</span>` : ""}
-        <span class="${a.can_send ? "pos" : ""}">${a.can_send ? "✓ Can send replies from the Inbox" : "Replies: not signed in to send yet"}</span></div>
+        <span class="${a.can_send ? "pos" : ""}">${a.can_send ? "✓ Can send replies from the Inbox" : "Replies: not signed in to send yet"}</span>
+        <label class="mb-ask"><input type="checkbox" data-auto-ask="${a.id}"${a.auto_ask ? " checked" : ""}${a.can_send ? "" : " disabled"}>
+          When we can't find a customer's order, the AI replies asking for their order number, name and checkout email (once per ticket)</label></div>
       <div class="mb-btns">
         ${a.can_send ? `<button class="btn btn-sm btn-ghost" data-gmail-out="${a.id}">Stop sending</button>`
                      : `<a class="btn btn-sm btn-primary" href="/auth/gmail/start?account=${a.id}" target="_blank" rel="noopener">Sign in to send</a>`}
@@ -1116,7 +1118,8 @@ async function renderMailboxes() {
       <p class="hint">Replies go out from the store's address, appear in that mailbox's Sent folder and stay in the
         same Gmail conversation, exactly as if you typed them in Gmail.</p></details>` : ""}
     <details class="advanced"${r.accounts.length ? "" : " open"}><summary>Connect a mailbox</summary>
-      <label class="field"><span>Store</span><select id="mbStore" class="control">${stores}</select></label>
+      <label class="field"><span>Store</span><select id="mbStore" class="control">${stores}
+        <option value="">All stores (company email, e.g. the Shopify / PayPal / Airwallex login)</option></select></label>
       <label class="field"><span>Mailbox email</span><input id="mbAddress" type="email" autocomplete="off"
         placeholder="support@yourstore.com"></label>
       <label class="field"><span>App password (16 letters from Google)</span>
@@ -1136,6 +1139,11 @@ async function renderMailboxes() {
       renderMailboxes();
     } catch (e) { toast(e.message, true); }
     finally { b.disabled = false; b.textContent = "Connect mailbox"; }
+  };
+  for (const c of $("mailBox").querySelectorAll("[data-auto-ask]")) c.onchange = async () => {
+    try { await jsonPost(`/api/mail-accounts/${c.dataset.autoAsk}/settings`, { auto_ask: c.checked });
+          toast(c.checked ? "On: customers whose order we can't find get asked for their order number." : "Off."); }
+    catch (e) { toast(e.message, true); c.checked = !c.checked; }
   };
   for (const b of $("mailBox").querySelectorAll("[data-gmail-out]")) b.onclick = async () => {
     if (!confirm("Stop sending replies from this mailbox? You can sign in again any time.")) return;

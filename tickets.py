@@ -63,9 +63,14 @@ def _merge(a: str, b) -> str:
     return ",".join(dict.fromkeys(items))
 
 
-async def process(api_key: str, limit: int = 150) -> dict:
+async def process(api_key: str, limit: int = 150, finder=None) -> dict:
     """Sort new emails into tickets. Returns counts; raises ai_brain.AIError when
-    the AI can't be used (emails are then left for the next run)."""
+    the AI can't be used (emails are then left for the next run).
+
+    finder(customer email, order numbers the AI read) -> (store id, [order names]): the store and
+    orders a customer email is about. A mailbox for every store (company email) gets its tickets'
+    store this way. New customer tickets with no order found go in done["ask"] (mailboxes with
+    "ask for the order number" on, emails from the last 2 days only)."""
     start = db.get_setting("tickets_from") or "2026-10-07T16:00:00+00:00"
     stores = {x["id"]: x["name"].strip() for x in db.list_stores()}
     with db._conn() as con:
@@ -73,7 +78,9 @@ async def process(api_key: str, limit: int = 150) -> dict:
         todo = [dict(r) for r in con.execute(
             "SELECT * FROM mail_messages WHERE processed = 0 AND date >= ? ORDER BY date LIMIT ?",
             (start, limit))]
-    done = {"replies": 0, "sorted": 0, "tickets": 0, "closed": 0, "other": 0, "tokens_in": 0, "tokens_out": 0}
+    done = {"replies": 0, "sorted": 0, "tickets": 0, "closed": 0, "other": 0, "tokens_in": 0, "tokens_out": 0,
+            "ask": []}
+    recent = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
     for msg in todo:
         acct = accounts.get(msg["account_id"])
         if not acct:
@@ -124,6 +131,10 @@ async def process(api_key: str, limit: int = 150) -> dict:
             labels = ans.get("labels") or [] if kind == "support" else []
             if tid:
                 t = dict(con.execute("SELECT * FROM tickets WHERE id = ?", (tid,)).fetchone())
+                if finder and not t["store_id"] and ans.get("orders"):
+                    sid, _ = finder(t["customer_email"] or "", ans.get("orders"))
+                    if sid:
+                        con.execute("UPDATE tickets SET store_id = ? WHERE id = ?", (sid, tid))
                 status = "closed" if ans.get("resolves") else "open"
                 con.execute(
                     "UPDATE tickets SET labels = ?, summary = ?, orders = ?, status = ?, waiting = ?,"
@@ -142,14 +153,23 @@ async def process(api_key: str, limit: int = 150) -> dict:
                     con.execute("UPDATE mail_messages SET processed = 1, category = ?, labels = ?, ai = ?"
                                 " WHERE id = ?", (cat, fields["labels"], fields["ai"], msg["id"]))
                     continue
+                store_id, orders = acct["store_id"], list(ans.get("orders") or [])
+                if finder:
+                    sid, names = finder((msg["from_addr"] or "").lower(), orders)
+                    store_id = store_id or sid
+                    if not orders:
+                        orders = names
                 tid = con.execute(
                     "INSERT INTO tickets (account_id, store_id, kind, labels, customer_email, customer_name,"
                     " subject, summary, orders, status, waiting, last_message_at, created_at)"
                     " VALUES (?,?,?,?,?,?,?,?,?, 'open', 'us', ?, ?)",
-                    (msg["account_id"], acct["store_id"], kind, ",".join(labels),
+                    (msg["account_id"], store_id, kind, ",".join(labels),
                      (msg["from_addr"] or "").lower(), msg["from_name"], msg["subject"],
-                     ans.get("summary"), ",".join(ans.get("orders") or []), msg["date"], msg["date"])).lastrowid
+                     ans.get("summary"), ",".join(orders), msg["date"], msg["date"])).lastrowid
                 done["tickets"] += 1
+                if cat == "customer" and not orders and acct.get("auto_ask") and acct.get("gmail_token") \
+                        and (msg["date"] or "") >= recent:
+                    done["ask"].append((tid, msg["id"]))
             if ans.get("resolves") and tid:
                 done["closed"] += 1
             _attach(con, msg["id"], tid, **fields)

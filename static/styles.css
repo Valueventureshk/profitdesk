@@ -1566,3 +1566,4 @@ html[data-theme="dark"] .dsp-prov.paypal { color: #8DB4FF; }
 #invDetail > :not(.panel-head):not(.table-wrap) { margin-left: 16px; margin-right: 16px; }
 .sup-card, .dsp-case, #invDetail { padding-bottom: 14px; }
 .sup-card > .panel-head + *, .dsp-case > .panel-head + *, #invDetail > .panel-head + * { margin-top: 12px; }
+.mb-ask { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; color: var(--muted); margin-top: 4px; }

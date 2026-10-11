@@ -513,6 +513,7 @@ _ADDED_COLUMNS = {
         ("handler", "TEXT"),          # who on the team is handling it (name shown to everyone)
         ("handler_email", "TEXT"),
         ("handler_at", "TEXT"),
+        ("auto_asked", "TEXT"),       # when the AI asked the customer for their order number
     ],
     "invoices": [
         ("file_ext", "TEXT"),        # the original file is kept: <DB dir>/invoice_files/<id>.<ext>
@@ -551,6 +552,7 @@ _ADDED_COLUMNS = {
     ],
     "mail_accounts": [
         ("last_uid_sent", "INTEGER NOT NULL DEFAULT 0"),   # Sent folder, read for our replies
+        ("auto_ask", "INTEGER NOT NULL DEFAULT 0"),         # reply asking for the order number when none is found
         ("gmail_token", "TEXT"),                            # Google sign-in for sending (gmail.send only)
         ("gmail_email", "TEXT"),
         ("gmail_at", "TEXT"),

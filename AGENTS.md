@@ -113,6 +113,10 @@ file and have it work.
   `anthropic_api_key` (owner pastes it in Settings → AI). Tickets only for emails from
   setting `tickets_from` (default 8 Oct 2026 HK). Team can override: close, reopen,
   snooze, escalate, relabel, "not a customer email".
+  A mailbox with no store ("All stores", the company email) gets each ticket's store from the order
+  numbers in the email (store order tags) or the customer's email in SCM parcels (`_customer_orders`).
+  Per mailbox `auto_ask`: a new customer ticket (email < 2 days old) with no order found gets one AI
+  reply (Haiku, customer's language) asking for order number, name and checkout email (`tickets.auto_asked`).
 - Cash at end of day: `_snapshot_loop` saves the Cash flow cards at 23:59 HK into
   `cash_snapshots` (one row per day). Shown in Reports, report type `cash_snapshots`,
   chat tool `get_cash_history`. Days before 10 Oct 2026 have none; the chat falls back
