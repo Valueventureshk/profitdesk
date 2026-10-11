@@ -5623,7 +5623,8 @@ async def _product_info(store, pids: list) -> dict:
     for i in range(0, len(ids), 100):
         try:
             got = await client.gql(PRODUCT_INFO, {"ids": ids[i:i + 100]})
-        except Exception:
+        except Exception as e:
+            _gdesk_cache["_info_error"] = f"{type(e).__name__}: {str(e)[:300]}"
             continue
         for n in got.get("nodes") or []:
             if not n:
@@ -5681,7 +5682,9 @@ async def api_googleads(store: int = 0, fresh: int = 0, min_spend: float = None)
                             fee_rate, today.isoformat(), min_spend)
     out.update(store=st["id"], currency=st["currency"], google_currency=gcur, fee_rate=fee_rate, min_spend=min_spend,
                today=today.isoformat(), shop=st["shop_domain"],
-               missing_product_ids=not any(l.get("product_id") for l in lines))
+               missing_product_ids=not any(l.get("product_id") for l in lines),
+               info_error=None if info else _gdesk_cache.get("_info_error"),
+               sample_items=[r["item_id"] for r in rows[:3]] if not info else [])
     _gdesk_cache[key] = (time.time(), out)
     return {**out, "stores": listing, "cached_at": time.time()}
 
