@@ -1100,6 +1100,7 @@ async function renderMailboxes() {
         <label class="mb-ask"><input type="checkbox" data-auto-ask="${a.id}"${a.auto_ask ? " checked" : ""}${a.can_send ? "" : " disabled"}>
           When we can't find a customer's order, the AI replies asking for their order number, name and checkout email (once per ticket)</label></div>
       <div class="mb-btns">
+        ${a.can_send ? `<a class="btn btn-sm btn-ghost" href="/auth/gmail/start?account=${a.id}" target="_blank" rel="noopener" title="Renew this mailbox's Google sign-in">Sign in again</a>` : ""}
         ${a.can_send ? `<button class="btn btn-sm btn-ghost" data-test-send="${a.id}">Send a test email</button>` : ""}
         ${a.can_send ? `<button class="btn btn-sm btn-ghost" data-gmail-out="${a.id}">Stop sending</button>`
                      : `<a class="btn btn-sm btn-primary" href="/auth/gmail/start?account=${a.id}" target="_blank" rel="noopener">Sign in to send</a>`}
