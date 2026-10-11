@@ -504,7 +504,7 @@ def index(request: Request):
         if domain and shop.verify_hmac(params, _shopify_app(domain)):
             return RedirectResponse(f"/auth/shopify/start?shop_domain={domain}")
 
-    return _page("index.html", ("app.js", "nav.js", "styles.css", "chat.js"))
+    return _page("index.html", ("app.js", "nav.js", "styles.css", "skin.css", "chat.js"))
 
 
 _stamps: dict = {}
@@ -538,7 +538,7 @@ def _page(filename: str, assets) -> HTMLResponse:
 
 @app.get("/cog", response_class=HTMLResponse)
 def cog_page():
-    return _page("cog.html", ("cog.js", "nav.js", "styles.css", "chat.js"))
+    return _page("cog.html", ("cog.js", "nav.js", "styles.css", "skin.css", "chat.js"))
 
 
 @app.put("/api/cog/sheet")
@@ -1182,7 +1182,7 @@ async def _suggest_labels():
 
 @app.get("/inbox", response_class=HTMLResponse)
 def inbox_page():
-    return _page("inbox.html", ("inbox.js", "nav.js", "styles.css", "chat.js"))
+    return _page("inbox.html", ("inbox.js", "nav.js", "styles.css", "skin.css", "chat.js"))
 
 
 @app.get("/api/mail-accounts")
@@ -2005,7 +2005,7 @@ async def _make_report(kind: str, start: str = None, end: str = None, scope: str
 
 @app.get("/reports", response_class=HTMLResponse)
 def reports_page():
-    return _page("reports.html", ("reports.js", "nav.js", "styles.css", "chat.js"))
+    return _page("reports.html", ("reports.js", "nav.js", "styles.css", "skin.css", "chat.js"))
 
 
 @app.get("/api/reports")
@@ -2579,7 +2579,7 @@ CASH_TZ = ZoneInfo(os.getenv("CASH_TIMEZONE", "Asia/Hong_Kong"))  # the business
 
 @app.get("/cash", response_class=HTMLResponse)
 def cash_page():
-    return _page("cash.html", ("cash.js", "nav.js", "styles.css", "chat.js"))
+    return _page("cash.html", ("cash.js", "nav.js", "styles.css", "skin.css", "chat.js"))
 
 
 _ads_cache: dict = {}
@@ -2867,7 +2867,7 @@ async def api_cash_statement(start: str, end: str = None, currency: str = None):
 
 @app.get("/expenses", response_class=HTMLResponse)
 def expenses_page():
-    return _page("expenses.html", ("expenses.js", "nav.js", "styles.css", "chat.js"))
+    return _page("expenses.html", ("expenses.js", "nav.js", "styles.css", "skin.css", "chat.js"))
 
 
 _exp_cache: dict = {}
@@ -2996,7 +2996,7 @@ def api_expense_rules():
 
 @app.get("/scm", response_class=HTMLResponse)
 def scm_page():
-    return _page("scm.html", ("scm.js", "nav.js", "styles.css", "chat.js"))
+    return _page("scm.html", ("scm.js", "nav.js", "styles.css", "skin.css", "chat.js"))
 
 
 SCM_VIEWS = {
@@ -3738,7 +3738,7 @@ async def api_tracking_save(payload: dict):
 
 @app.get("/importer", response_class=HTMLResponse)
 def importer_page():
-    return _page("importer.html", ("importer.js", "product-edit.js", "nav.js", "styles.css", "chat.js"))
+    return _page("importer.html", ("importer.js", "product-edit.js", "nav.js", "styles.css", "skin.css", "chat.js"))
 
 
 def _importer_cfg() -> dict:
@@ -4333,7 +4333,7 @@ async def api_importer_size_chart_ai(request: Request):
 
 @app.get("/sizecharts", response_class=HTMLResponse)
 def sizecharts_page():
-    return _page("sizecharts.html", ("sizecharts.js", "garments.js", "nav.js", "styles.css", "chat.js"))
+    return _page("sizecharts.html", ("sizecharts.js", "garments.js", "nav.js", "styles.css", "skin.css", "chat.js"))
 
 
 SC_DEFAULTS = {"enabled": False, "display": "button", "label": "", "prefix": "", "suffix": "", "icon": "ruler",

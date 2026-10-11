@@ -103,6 +103,7 @@ window.PDUrl = {
     settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>',
     theme: '<path d="M20 14.5A8 8 0 019.5 4a8 8 0 1010.5 10.5z"/>',
     logout: '<path d="M14 4h5v16h-5M10 8l-4 4 4 4M6 12h10"/>',
+    skin: '<path d="M12 3l2.2 5.6L20 9.2l-4.4 3.8L17 19l-5-3.1L7 19l1.4-6L4 9.2l5.8-.6z"/>',
     fold: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16M15 10l-2 2 2 2"/>',
   };
   const svg = (k) => `<svg viewBox="0 0 24 24" aria-hidden="true">${ICON[k] || ""}</svg>`;
@@ -123,6 +124,7 @@ window.PDUrl = {
       <div class="pd-rail-foot">
         <button class="pd-rail-item" data-rail-fold title="Make the sidebar narrower or wider">${svg("fold")}<span>Collapse sidebar</span></button>
         ${me.role === "owner" ? `<a class="pd-rail-item" href="/?settings=1" data-rail-settings>${svg("settings")}<span>Settings</span></a>` : ""}
+        <button class="pd-rail-item" data-rail-skin title="Switch between the new design and the classic one">${svg("skin")}<span>${document.documentElement.classList.contains("skin-new") ? "New look: on" : "New look: off"}</span></button>
         <button class="pd-rail-item" data-rail-theme>${svg("theme")}<span>${dark() ? "Day mode" : "Night mode"}</span></button>
         <button class="pd-rail-item" data-rail-out>${svg("logout")}<span>Log out</span></button>
         <div class="pd-rail-user"><span class="pd-rail-avatar">${(me.email || "?").slice(0, 2).toUpperCase()}</span>
@@ -142,6 +144,13 @@ window.PDUrl = {
       document.body.classList.toggle("rail-slim", folded);
       try { localStorage.setItem(foldKey, folded ? "slim" : "full"); } catch { /* */ }
       window.dispatchEvent(new Event("resize"));
+    };
+    rail.querySelector("[data-rail-skin]").onclick = (e) => {
+      const on = !document.documentElement.classList.contains("skin-new");
+      document.documentElement.classList.toggle("skin-new", on);
+      try { localStorage.setItem("pdSkin", on ? "new" : "classic"); } catch { /* private mode */ }
+      e.currentTarget.querySelector("span").textContent = on ? "New look: on" : "New look: off";
+      e.currentTarget.dataset.tip = e.currentTarget.querySelector("span").textContent;
     };
     rail.querySelector("[data-rail-theme]").onclick = (e) => {
       const next = dark() ? "light" : "dark";

@@ -1,0 +1,155 @@
+/* ProfitDesk "New look" skin (desktop only), from the ProfitDesk 2 design blueprints.
+   Day mode = Concept B "Canvas" (light, cobalt).  Night mode = Concept A "Command" (dark, citron).
+   Styling only: nothing here changes what the app does or calculates. Turn it off with the
+   "New look" switch in the sidebar (html.skin-new is then not set and none of this applies).
+   To remove completely: delete this file and its <link> tags. */
+
+@media (min-width: 1100px) {
+
+/* ------------------------------------------------ tokens */
+html.skin-new {
+  --bg: #F6F7F4; --panel: #FFFFFF; --ink: #161E34; --muted: #7D89A0; --faint: #AAB3C2;
+  --line: #E4E7EF; --line-soft: #F1F3F8;
+  --up: #0CA68A; --down: #D75365; --accent: #485DF5; --sales: #5676EF; --spend: #AAB3C2; --tint: #EDF0FF;
+  --radius: 16px;
+  --shadow: 0 1px 2px rgba(22, 30, 52, .04), 0 10px 30px rgba(22, 30, 52, .045);
+  --font: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --sk-card-radius: 20px; --sk-control-radius: 12px;
+  --sk-primary: #485DF5; --sk-primary-ink: #FFFFFF; --sk-primary-hover: #3A4FE6;
+  --sk-feature-bg: #161E34; --sk-feature-ink: #FFFFFF; --sk-feature-muted: #AAB3C2;
+  --sk-rail-bg: #FFFFFF; --sk-rail-ink: #4A5670; --sk-rail-on-bg: #EDF0FF; --sk-rail-on-ink: #485DF5;
+  --sk-rail-hover: #F3F5FB; --sk-rail-line: #E4E7EF; --sk-mark-bg: #161E34; --sk-mark-ink: #FFFFFF;
+  --sk-warm: #F2A766; --sk-good-bg: rgba(12, 166, 138, .1); --sk-bad-bg: rgba(215, 83, 101, .1);
+}
+html.skin-new[data-theme="dark"] {
+  --bg: #091019; --panel: #141F2B; --ink: #F2F7FA; --muted: #90A3B4; --faint: #607A91;
+  --line: #29394B; --line-soft: #1B2A38;
+  --up: #41D7B0; --down: #FF7D8E; --accent: #B6F36A; --sales: #7EA7FF; --spend: #607A91; --tint: rgba(182, 243, 106, .08);
+  --radius: 14px;
+  --shadow: 0 1px 0 rgba(255, 255, 255, .02), 0 12px 30px rgba(0, 0, 0, .25);
+  --sk-card-radius: 14px; --sk-control-radius: 9px;
+  --sk-primary: #B6F36A; --sk-primary-ink: #0B1420; --sk-primary-hover: #C6F78A;
+  --sk-feature-bg: linear-gradient(160deg, #1B2A38 0%, #141F2B 100%); --sk-feature-ink: #F2F7FA; --sk-feature-muted: #90A3B4;
+  --sk-rail-bg: #101924; --sk-rail-ink: #90A3B4; --sk-rail-on-bg: rgba(182, 243, 106, .1); --sk-rail-on-ink: #B6F36A;
+  --sk-rail-hover: #1B2A38; --sk-rail-line: #1E2C3B; --sk-mark-bg: #B6F36A; --sk-mark-ink: #0B1420;
+  --sk-warm: #F8BB69; --sk-good-bg: rgba(65, 215, 176, .12); --sk-bad-bg: rgba(255, 125, 142, .12);
+}
+
+html.skin-new body { font-family: var(--font); background: var(--bg); letter-spacing: -0.006em;
+  font-feature-settings: "tnum" 1, "cv11" 1; }
+
+/* ------------------------------------------------ sidebar */
+html.skin-new .pd-rail { background: var(--sk-rail-bg); color: var(--sk-rail-ink); border-right: 1px solid var(--sk-rail-line);
+  width: 236px; padding: 18px 12px; }
+html.skin-new body.has-rail { padding-left: 236px; }
+html.skin-new body.rail-slim .pd-rail { width: 70px; padding: 18px 10px; }
+html.skin-new body.rail-slim.has-rail { padding-left: 70px; }
+html.skin-new .pd-rail-brand { color: var(--ink); font-size: 17px; font-weight: 700; letter-spacing: -.02em; padding: 2px 10px 22px; }
+html.skin-new .pd-rail-brand .brand-mark { background: var(--sk-mark-bg); color: var(--sk-mark-ink); width: 34px; height: 34px;
+  border-radius: 10px; font-size: 13px; }
+html.skin-new .pd-rail-item { color: var(--sk-rail-ink); border-radius: 10px; padding: 9px 12px; font-size: 13.5px; }
+html.skin-new .pd-rail-item svg { opacity: .9; }
+html.skin-new .pd-rail-item:hover { background: var(--sk-rail-hover); color: var(--ink); }
+html.skin-new .pd-rail-item.on { background: var(--sk-rail-on-bg); color: var(--sk-rail-on-ink); box-shadow: none; font-weight: 600; }
+html.skin-new .pd-rail-foot { border-top-color: var(--sk-rail-line); }
+html.skin-new .pd-rail-who { color: var(--ink); }
+html.skin-new .pd-rail-who small { color: var(--muted); }
+html.skin-new .pd-rail-avatar { background: var(--sk-primary); color: var(--sk-primary-ink); border-radius: 50%; }
+html.skin-new body.rail-slim .pd-rail-item:hover::after { background: var(--ink); color: var(--panel); }
+
+/* ------------------------------------------------ page headers */
+html.skin-new .topbar, html.skin-new .cash-top { background: var(--bg); border-bottom: 1px solid var(--line); padding: 18px 32px; }
+html.skin-new .crumb h1, html.skin-new .cash-top .crumb h1 { font-size: 22px; font-weight: 700; letter-spacing: -.02em; }
+html.skin-new .crumb p { color: var(--muted); font-size: 12.5px; }
+html.skin-new .content { padding: 24px 32px 48px; gap: 20px; }
+html.skin-new .scm-pages { background: var(--panel); border: 1px solid var(--line); border-radius: var(--sk-control-radius); padding: 4px; }
+html.skin-new .scm-pages button { border-radius: calc(var(--sk-control-radius) - 3px); }
+html.skin-new .scm-pages button.on { background: var(--tint); color: var(--accent); box-shadow: none; }
+html.skin-new[data-theme="dark"] .scm-pages button.on { color: var(--accent); }
+
+/* ------------------------------------------------ controls and buttons */
+html.skin-new .btn { border-radius: var(--sk-control-radius); font-weight: 600; border-color: var(--line); background: var(--panel); }
+html.skin-new .btn:hover { background: var(--line-soft); border-color: var(--line); }
+html.skin-new .btn-primary { background: var(--sk-primary); border-color: var(--sk-primary); color: var(--sk-primary-ink); }
+html.skin-new .btn-primary:hover { background: var(--sk-primary-hover); border-color: var(--sk-primary-hover); color: var(--sk-primary-ink); }
+html.skin-new .btn-ghost { background: var(--panel); }
+html.skin-new .control, html.skin-new .field input { border-radius: var(--sk-control-radius); border-color: var(--line);
+  background-color: var(--panel); color: var(--ink); }
+html.skin-new .control:focus, html.skin-new .field input:focus { outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+html.skin-new[data-theme="dark"] .control { background-color: #101924; }
+html.skin-new :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ------------------------------------------------ cards and panels */
+html.skin-new .card { border-radius: var(--sk-card-radius); border-color: var(--line); padding: 18px 20px 12px; box-shadow: var(--shadow); }
+html.skin-new .card-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .09em; color: var(--muted); }
+html.skin-new .card-label .chip { text-transform: none; letter-spacing: 0; }
+html.skin-new .card-value { font-size: 32px; font-weight: 750; letter-spacing: -.035em; margin-top: 10px; }
+html.skin-new .card-note { color: var(--muted); }
+html.skin-new .chip { border-radius: 999px; padding: 3px 9px; font-weight: 700; }
+html.skin-new .chip.up { background: var(--sk-good-bg); color: var(--up); }
+html.skin-new .chip.down { background: var(--sk-bad-bg); color: var(--down); }
+html.skin-new .panel { border-radius: var(--sk-card-radius); border-color: var(--line); box-shadow: var(--shadow); }
+html.skin-new .panel-head h2, html.skin-new .panel h2 { font-size: 17px; font-weight: 700; letter-spacing: -.015em; }
+
+/* the feature card (Net Profit): navy in Canvas, raised graphite in Command */
+html.skin-new .card.feature { background: var(--sk-feature-bg); border-color: transparent; color: var(--sk-feature-ink); }
+html.skin-new .card.feature .card-label, html.skin-new .card.feature .card-note { color: var(--sk-feature-muted); }
+html.skin-new .card.feature .card-value { color: var(--sk-feature-ink); }
+html.skin-new .card.feature.loss { background: var(--sk-feature-bg); }
+html.skin-new .card.feature.loss .card-value { color: #FF9AA8; }
+html.skin-new[data-theme="dark"] .card.feature { border: 1px solid rgba(182, 243, 106, .25); }
+html.skin-new .card.feature .chip.up { background: rgba(65, 215, 176, .16); color: #5EE6C1; }
+html.skin-new .card.feature .chip.down { background: rgba(255, 125, 142, .16); color: #FF9AA8; }
+
+/* ------------------------------------------------ profit dashboard: arrangement only (same cards, same order in the page) */
+/* card order in the page: 1 Sales · 2 Ad spend · 3 ROAS · 4 COG · 5 Net profit · 6 Net margin · 7 Fees · 8 Orders */
+html.skin-new #app .cards { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+/* Canvas: Revenue hero + navy Net Profit, then the rest */
+html.skin-new:not([data-theme="dark"]) #app .cards > .card:nth-child(1) { grid-column: span 2; grid-row: span 2; order: 1; }
+html.skin-new:not([data-theme="dark"]) #app .cards > .card:nth-child(5) { grid-column: span 2; grid-row: span 2; order: 2; }
+html.skin-new:not([data-theme="dark"]) #app .cards > .card:nth-child(n+2):nth-child(-n+4) { order: 3; }
+html.skin-new:not([data-theme="dark"]) #app .cards > .card:nth-child(6) { order: 4; }
+html.skin-new:not([data-theme="dark"]) #app .cards > .card:nth-child(7),
+html.skin-new:not([data-theme="dark"]) #app .cards > .card:nth-child(8) { order: 5; grid-column: span 2; }
+/* Command: Net Profit panel first, Sales / Ad spend / ROAS / Orders beside it */
+html.skin-new[data-theme="dark"] #app .cards > .card:nth-child(5) { grid-column: span 2; grid-row: span 2; order: 0; }
+html.skin-new[data-theme="dark"] #app .cards > .card:nth-child(1) { order: 1; }
+html.skin-new[data-theme="dark"] #app .cards > .card:nth-child(2) { order: 2; }
+html.skin-new[data-theme="dark"] #app .cards > .card:nth-child(3) { order: 3; }
+html.skin-new[data-theme="dark"] #app .cards > .card:nth-child(8) { order: 4; }
+html.skin-new[data-theme="dark"] #app .cards > .card:nth-child(4) { order: 5; }
+html.skin-new[data-theme="dark"] #app .cards > .card:nth-child(6) { order: 6; }
+html.skin-new[data-theme="dark"] #app .cards > .card:nth-child(7) { order: 7; grid-column: span 2; }
+/* big hero numbers */
+html.skin-new #app .cards > .card:nth-child(1) .card-value,
+html.skin-new #app .cards > .card:nth-child(5) .card-value { font-size: 52px; letter-spacing: -.045em; margin-top: 14px; }
+html.skin-new[data-theme="dark"] #app .cards > .card:nth-child(1) .card-value { font-size: 32px; letter-spacing: -.035em; margin-top: 10px; }
+html.skin-new:not([data-theme="dark"]) #app .cards > .card:nth-child(1) .spark { height: 90px; }
+html.skin-new #app .cards > .card:nth-child(5) .spark { height: 70px; }
+
+/* ------------------------------------------------ tables */
+html.skin-new .table th { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .09em; color: var(--muted);
+  border-bottom: 1px solid var(--line); background: transparent; }
+html.skin-new .table td { border-bottom-color: var(--line-soft); }
+html.skin-new .table tbody tr:hover { background: var(--line-soft); }
+html.skin-new .pos, html.skin-new .table .pos { color: var(--up); }
+html.skin-new .neg, html.skin-new .table .neg { color: var(--down); }
+
+/* ------------------------------------------------ status pills and notices */
+html.skin-new .warn { border-radius: 12px; }
+html.skin-new .notice { border-radius: 12px; }
+html.skin-new .nav-item.on { background: var(--tint); color: var(--accent); }
+html.skin-new .tk { border-radius: 999px; }
+
+/* ------------------------------------------------ chat button and panel */
+html.skin-new .pd-chat-btn { background: var(--sk-primary); color: var(--sk-primary-ink); border-radius: 14px; font-weight: 700;
+  box-shadow: 0 10px 30px rgba(22, 30, 52, .2); }
+html.skin-new .pd-chat { border-radius: 20px; border-color: var(--line); background: var(--panel); }
+
+/* ------------------------------------------------ drawers, dialogs, toasts */
+html.skin-new .drawer-panel { background: var(--bg); }
+html.skin-new dialog { border-radius: var(--sk-card-radius); }
+html.skin-new .toast { border-radius: 12px; }
+
+}
