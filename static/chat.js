@@ -55,9 +55,30 @@
     log.innerHTML = (history.length ? history : [{ role: "assistant",
       content: "Ask me about profit, cash flow, COG, the support inbox, or ask for a report to download." }])
       .map((m) => `<div class="pd-msg ${m.role}">${m.role === "user" ? esc(m.content) : md(m.content)}
-        ${(m.links || []).map((l) => `<a class="btn btn-sm btn-ghost pd-dl" href="${esc(l.url)}">⬇ ${esc(l.title)}</a>`).join("")}</div>`)
+        ${(m.links || []).map((l) => `<a class="btn btn-sm btn-ghost pd-dl" href="${esc(l.url)}">⬇ ${esc(l.title)}</a>`).join("")}
+        ${(m.actions || []).map((a) => `<div class="pd-act${a.done ? " done" : ""}"><b>${esc(a.title)}</b><span>${esc(a.detail)}</span>
+          ${a.done ? `<em>${esc(a.done)}</em>` : `<span class="pd-act-btns"><button class="btn btn-sm btn-primary" data-act-ok="${esc(a.id)}">Confirm</button>
+            <button class="btn btn-sm btn-ghost" data-act-no="${esc(a.id)}">Cancel</button></span>`}</div>`).join("")}</div>`)
       .join("") + (pending ? `<div class="pd-msg assistant pd-wait">Thinking…</div>` : "");
     log.scrollTop = log.scrollHeight;
+    for (const b of log.querySelectorAll("[data-act-ok],[data-act-no]")) b.onclick = () => decide(b);
+  }
+  // The assistant only proposes; nothing changes until the person clicks Confirm here.
+  async function decide(b) {
+    const id = b.dataset.actOk || b.dataset.actNo, ok = !!b.dataset.actOk;
+    const msg = history.find((m) => (m.actions || []).some((a) => a.id === id));
+    const a = msg && msg.actions.find((x) => x.id === id);
+    b.closest(".pd-act-btns").innerHTML = `<em>${ok ? "Working…" : "Cancelling…"}</em>`;
+    try {
+      const r = await fetch(`/api/chat/actions/${encodeURIComponent(id)}`, { method: "POST",
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirm: ok }) });
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(body.error || "That didn't work.");
+      if (a) a.done = body.text;
+      if (ok) window.dispatchEvent(new Event("pd-changed"));
+    } catch (err) { if (a) a.done = `⚠ ${err.message}`; }
+    save();
+    draw();
   }
   function save() { try { sessionStorage.setItem(KEY, JSON.stringify(history.slice(-20))); } catch { /* ignore */ } }
 
@@ -79,7 +100,7 @@
         body: JSON.stringify({ messages: history.map((m) => ({ role: m.role, content: m.content })) }) });
       const body = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(body.error || "The assistant couldn't answer.");
-      history.push({ role: "assistant", content: body.text, links: body.links });
+      history.push({ role: "assistant", content: body.text, links: body.links, actions: body.actions });
     } catch (err) {
       history.push({ role: "assistant", content: `⚠ ${err.message}` });
     }

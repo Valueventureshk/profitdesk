@@ -50,6 +50,21 @@ TOOLS = [
           {**_RANGE, "store": {"type": "string", "description": "all or a store id"}}, ["start", "end", "store"]),
     _tool("get_inbox", "Support inbox: tickets waiting on us, SCM / CS / inquiry counts, escalated, and the "
           "oldest tickets waiting with their AI summaries.", {}, []),
+    _tool("get_price_changes", "Invoice price changes still to decide in the COG desk: product, store, old and "
+          "new cost (USD), cheaper or dearer, 'to decide' or 'checking' with the supplier, how many orders.",
+          {"direction": {"type": "string", "enum": ["all", "down", "up"], "description": "down = cheaper"},
+           "store": {"type": "string", "description": "all or a store id"},
+           "product_contains": {"type": "string", "description": "part of a product name, or empty"}},
+          ["direction", "store", "product_contains"]),
+    _tool("propose_price_decision", "Owners only. Propose a decision on invoice price changes: use_new (new price "
+          "becomes the product's cost and re-costs its orders), checking (asked the supplier), keep_old (supplier "
+          "corrected it). This does NOT change anything: it shows the person a Confirm button. Say clearly that "
+          "they need to click Confirm. Use direction down for 'cheaper than history'.",
+          {"action": {"type": "string", "enum": ["use_new", "checking", "keep_old"]},
+           "direction": {"type": "string", "enum": ["all", "down", "up"]},
+           "store": {"type": "string", "description": "all or a store id"},
+           "product_contains": {"type": "string", "description": "part of a product name, or empty for all"}},
+          ["action", "direction", "store", "product_contains"]),
     _tool("create_report", "Make a downloadable spreadsheet (CSV) in the Reports desk and return its link. "
           "Types: profit_daily, profit_stores, cog_orders, invoices, cash_statement, tickets, ad_bills, "
           "cash_snapshots (cash at end of each day).",
@@ -65,7 +80,8 @@ Today is {today} (Hong Kong time). "Today", "yesterday", "last week" (the 7 days
 Money is in {currency} unless a tool says otherwise; write amounts with their currency (e.g. A$1,234 for AUD, US$ for USD). Keep answers short and plain: lead with the answer, then the key numbers. Use a small table when comparing several stores or days.
 For cash on a past day, prefer get_cash_history; if that day has no snapshot, use get_cash_statement and say only "available + receivable" can be rebuilt for it.
 When someone asks for a document, file, export, spreadsheet or report, use create_report and give the download link as a Markdown link.
-If a tool says the person has no access, tell them which desk they'd need."""
+If a tool says the person has no access, tell them which desk they'd need.
+You can propose changes with the propose_ tools (owners only). They never change anything themselves: the person sees the action with a Confirm button. Before proposing, check the list (e.g. get_price_changes) and say what will change. Never claim something was done until they confirm."""
 
 
 class ChatError(RuntimeError):
@@ -78,7 +94,7 @@ async def reply(api_key: str, history: list, run_tool, today: str, currency: str
     client = anthropic.AsyncAnthropic(api_key=api_key, max_retries=3, timeout=180)
     messages = [{"role": m["role"], "content": m["content"]} for m in history[-12:]
                 if m.get("content") and m.get("role") in ("user", "assistant")]
-    links = []
+    links, actions = [], []
     for _ in range(8):
         try:
             resp = await client.beta.messages.create(
@@ -94,10 +110,10 @@ async def reply(api_key: str, history: list, run_tool, today: str, currency: str
         except anthropic.APIConnectionError as e:
             raise ChatError("Couldn't reach Anthropic.") from e
         if resp.stop_reason == "refusal":
-            return {"text": "I can't help with that one.", "links": links}
+            return {"text": "I can't help with that one.", "links": links, "actions": actions}
         if resp.stop_reason != "tool_use":
             text = "".join(b.text for b in resp.content if b.type == "text").strip()
-            return {"text": text or "(no answer)", "links": links}
+            return {"text": text or "(no answer)", "links": links, "actions": actions}
         messages.append({"role": "assistant", "content": resp.content})
         results = []
         for b in resp.content:
@@ -107,10 +123,12 @@ async def reply(api_key: str, history: list, run_tool, today: str, currency: str
                 out = await run_tool(b.name, b.input)
                 if b.name == "create_report" and out.get("download"):
                     links.append({"title": out.get("title"), "url": out["download"]})
+                if out.get("proposed_action"):
+                    actions.append(out["proposed_action"])
                 results.append({"type": "tool_result", "tool_use_id": b.id,
                                  "content": json.dumps(out, default=str)[:30000]})
             except Exception as e:
                 results.append({"type": "tool_result", "tool_use_id": b.id, "is_error": True,
                                 "content": str(getattr(e, "detail", None) or e)[:500]})
         messages.append({"role": "user", "content": results})
-    return {"text": "That took too many steps. Try a more specific question.", "links": links}
+    return {"text": "That took too many steps. Try a more specific question.", "links": links, "actions": actions}

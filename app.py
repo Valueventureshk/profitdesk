@@ -750,11 +750,18 @@ async def api_invoice_change_decide(payload: dict, request: Request):
     """use_new: the new price becomes the product's cost (future orders too).
     checking: asked the supplier; the old price stays for other orders meanwhile.
     keep_old: supplier says it was a mistake; these orders cost the old price (a corrected invoice replaces them)."""
-    action = payload.get("action")
-    lines = [(int(a), int(b)) for a, b in payload.get("lines") or []]
+    lines = payload.get("lines") or []
+    if payload.get("direction") in ("up", "down") and not lines:      # bulk: every cheaper / dearer one
+        lines = [ln for g in api_invoice_changes()["changes"]
+                 if g["direction"] == payload["direction"] and g["state"] != "checking" for ln in g["lines"]]
+    user = (getattr(request.state, "user", None) or {}).get("email", "")
+    return await _decide_prices(payload.get("action"), lines, user)
+
+
+async def _decide_prices(action: str, lines: list, user: str) -> dict:
+    lines = [(int(a), int(b)) for a, b in lines or []]
     if action not in ("use_new", "checking", "keep_old", "undo") or not lines:
         raise HTTPException(400, "Pick what to do.")
-    user = (getattr(request.state, "user", None) or {}).get("email", "")
     stores, names = set(), set()
     with db._conn() as con:
         for iid, no in lines:
@@ -782,7 +789,7 @@ async def api_invoice_change_decide(payload: dict, request: Request):
                         names.add((r["store_id"], o[0]))
     for sid in stores:
         await _recost(sid, {n for s2, n in names if s2 == sid})
-    return {"ok": True, "recosted": len(names)}
+    return {"ok": True, "lines": len(lines), "recosted": len(names)}
 
 
 @app.post("/api/invoices/{invoice_id}/approve/{line_no}")
@@ -2057,8 +2064,76 @@ def _round(o):
     return o
 
 
+_chat_actions: dict = {}      # pending action id -> {user, kind, lines/args, title, detail, at}
+
+
+def _price_groups(direction: str = "all", store: str = "all", contains: str = "") -> list:
+    out = []
+    for g in api_invoice_changes()["changes"]:
+        if direction in ("up", "down") and g["direction"] != direction:
+            continue
+        if store not in ("", "all", None) and str(g["store_id"]) != str(store):
+            continue
+        if contains and contains.lower() not in (g["product"] or "").lower():
+            continue
+        out.append(g)
+    return out
+
+
+def _propose(user: dict, kind: str, title: str, detail: str, payload: dict) -> dict:
+    """Actions are never run by the AI: it proposes, the person clicks Confirm."""
+    aid = secrets.token_urlsafe(9)
+    _chat_actions[aid] = {"user": (user or {}).get("email"), "kind": kind, "payload": payload, "title": title,
+                          "detail": detail, "at": time.time()}
+    for k in [k for k, v in _chat_actions.items() if time.time() - v["at"] > 3600]:
+        _chat_actions.pop(k, None)
+    return {"proposed_action": {"id": aid, "title": title, "detail": detail},
+            "note": "Not done yet. The person must click Confirm in the chat."}
+
+
+@app.post("/api/chat/actions/{action_id}")
+async def api_chat_action(action_id: str, payload: dict, request: Request):
+    user = getattr(request.state, "user", None) or {}
+    a = _chat_actions.get(action_id)
+    if not a or a["user"] != user.get("email"):
+        raise HTTPException(404, "That action has expired. Ask again.")
+    if payload.get("confirm") is not True:
+        _chat_actions.pop(action_id, None)
+        return {"ok": True, "text": "Cancelled. Nothing was changed."}
+    if user.get("role") != "owner":
+        raise HTTPException(403, "Only owners can confirm actions.")
+    _chat_actions.pop(action_id, None)
+    if a["kind"] == "price_decision":
+        r = await _decide_prices(a["payload"]["action"], a["payload"]["lines"], user.get("email", ""))
+        return {"ok": True, "text": f"Done: {r['lines']} invoice lines updated, {r['recosted']} orders re-costed."}
+    raise HTTPException(400, "Unknown action.")
+
+
 async def _chat_tool(name: str, args: dict, user: dict) -> dict:
     cur = _display_currency()
+    if name == "get_price_changes":
+        _need(user, "cog")
+        groups = _price_groups(args.get("direction") or "all", args.get("store") or "all", args.get("product_contains") or "")
+        return {"count": len(groups), "lines": sum(len(g["lines"]) for g in groups),
+                "changes": [{"store": g["store"], "product": g["product"], "old_usd": g["old"], "new_usd": g["new"],
+                             "direction": g["direction"], "state": g["state"] or "to decide", "orders": len(g["orders"])}
+                            for g in groups[:60]]}
+    if name == "propose_price_decision":
+        if (user or {}).get("role") != "owner":
+            return {"error": "Only owners can change prices from the chat. Use the COG desk."}
+        groups = _price_groups(args.get("direction") or "all", args.get("store") or "all", args.get("product_contains") or "")
+        groups = [g for g in groups if not (args["action"] == "checking" and g["state"] == "checking")]
+        if not groups:
+            return {"error": "No price changes match that."}
+        lines = [ln for g in groups for ln in g["lines"]]
+        label = {"use_new": "Use the new price", "checking": "Mark as checking with supplier",
+                 "keep_old": "Keep the old price (supplier corrected)"}[args["action"]]
+        up = sum(1 for g in groups if g["direction"] == "up")
+        detail = (f"{len(groups)} products ({len(groups) - up} cheaper, {up} dearer), {len(lines)} invoice lines. "
+                  + "; ".join(f"{g['product'][:40]} {g['old']}→{g['new']}" for g in groups[:5])
+                  + (" …" if len(groups) > 5 else ""))
+        return _propose(user, "price_decision", f"{label}: {len(groups)} products", detail,
+                        {"action": args["action"], "lines": lines})
     if name == "list_stores":
         return {"stores": [{"id": x["id"], "name": x["name"].strip(), "currency": x["currency"]}
                            for x in db.list_stores() if not demo.is_demo(x)],

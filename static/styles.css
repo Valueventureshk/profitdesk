@@ -1463,3 +1463,13 @@ tr.pc-checking td { background: rgba(245,158,11,.05); }
 [data-theme="dark"] .tk-handler { color: #C4B5FD; }
 .tk-handler-box { display: grid; gap: 6px; font-size: 13px; margin-bottom: 6px; }
 .tk-taken { font-size: 12.5px; padding: 8px 12px; border-radius: 8px; background: rgba(124,58,237,.08); border: 1px solid rgba(124,58,237,.25); margin: 0 0 10px; }
+
+/* Chat: proposed actions need a click */
+.pd-act { margin-top: 8px; border: 1px solid var(--line); border-left: 3px solid #B45309; border-radius: 10px; padding: 9px 11px;
+  display: grid; gap: 4px; background: var(--panel); font-size: 12.5px; }
+.pd-act span { color: var(--muted); }
+.pd-act.done { border-left-color: var(--up); }
+.pd-act em { font-style: normal; font-weight: 600; color: var(--ink); }
+.pd-act-btns { display: flex; gap: 6px; margin-top: 4px; }
+.pc-bulk { display: flex; gap: 6px; flex-wrap: wrap; }
+.pc-tip { margin: -4px 0 8px; }

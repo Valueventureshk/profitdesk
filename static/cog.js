@@ -183,8 +183,14 @@ async function loadPriceChanges() {
   if (!d.changes.length) return;
   const pct = (g) => (g.old ? `${g.new < g.old ? "−" : "+"}${Math.abs(Math.round((g.new - g.old) / g.old * 100))}%` : "");
   const when = (t) => (t ? new Date(t.replace(" ", "T") + "Z").toLocaleDateString(undefined, { day: "numeric", month: "short" }) : "");
+  const nDown = d.changes.filter((g) => g.direction === "down" && g.state !== "checking").length;
+  const nUp = d.changes.filter((g) => g.direction === "up" && g.state !== "checking").length;
   box.innerHTML = `<div class="panel-head"><h2>Price changes to decide <span class="hint">(${d.changes.length})</span></h2>
-      <span class="hint">Cheaper: use the new price. Dearer: check with the supplier first.</span></div>
+      <span class="pc-bulk" data-write-only>
+        ${nDown ? `<button class="btn btn-sm btn-primary" data-bulk="use_new|down">Use new price for all ${nDown} cheaper</button>` : ""}
+        ${nUp ? `<button class="btn btn-sm btn-ghost" data-bulk="checking|up">Mark all ${nUp} dearer as checking</button>` : ""}
+      </span></div>
+    <p class="hint pc-tip">Cheaper: use the new price. Dearer: check with the supplier first.</p>
     <div class="table-wrap"><table class="table pc-table"><thead><tr><th>Product</th><th>Before</th><th>Now</th><th>Orders</th><th></th></tr></thead><tbody>
     ${d.changes.map((g, i) => {
       const down = g.direction === "down";
@@ -205,6 +211,21 @@ async function loadPriceChanges() {
         <td class="hint" title="${esc(g.orders.join(", "))}">${g.orders.length} · ${esc(g.orders.slice(0, 3).join(", "))}${g.orders.length > 3 ? "…" : ""}</td>
         <td class="pc-btns" data-write-only>${btns}</td></tr>`;
     }).join("")}</tbody></table></div>`;
+  for (const b of box.querySelectorAll("[data-bulk]")) b.onclick = async () => {
+    const [action, direction] = b.dataset.bulk.split("|");
+    const n = direction === "down" ? nDown : nUp;
+    if (!confirm(action === "use_new" ? `Use the new (lower) price for all ${n} cheaper products? Their orders are re-costed.`
+                                      : `Mark all ${n} dearer products as "checking with supplier"?`)) return;
+    b.disabled = true; b.textContent = "Working…";
+    try {
+      const r = await api("/api/invoices/changes", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, direction }) });
+      toast(action === "use_new" ? `New prices saved: ${r.lines} lines, ${r.recosted} orders re-costed.` : `${r.lines} lines marked as checking.`);
+      productsCache = {};
+      loadPriceChanges();
+      loadInvoices();
+    } catch (e) { toast(e.message, true); b.disabled = false; }
+  };
   for (const b of box.querySelectorAll("[data-pc]")) b.onclick = async () => {
     const g = d.changes[+b.dataset.pc];
     b.disabled = true;
@@ -405,3 +426,5 @@ $("refresh").onclick = async () => {
   loadInvoices();
   if (tab) tab.click();
 })();
+
+window.addEventListener("pd-changed", () => { if (typeof loadPriceChanges === "function") { productsCache = {}; loadPriceChanges(); loadInvoices(); } });
