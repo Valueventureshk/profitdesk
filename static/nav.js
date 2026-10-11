@@ -27,6 +27,7 @@ window.PDUrl = {
     { href: "/importer", desk: "importer", label: "Product Importer", note: "Copy products from any Shopify store" },
     { href: "/sizecharts", desk: "sizecharts", label: "Size Charts", note: "Size charts for every store, with AI" },
     { href: "/expenses", desk: "expenses", label: "Expenses", note: "Every payment out, by category" },
+    { href: "/disputes", desk: "disputes", label: "Disputes", note: "PayPal cases and card chargebacks" },
   ];
 
   // Who's logged in: only their desks show in the menu; owner-only and
@@ -35,8 +36,15 @@ window.PDUrl = {
   const ready = fetch("/api/me").then((r) => (r.ok ? r.json() : null)).then((m) => {
     me = m;
     if (!m) return;
+    // this page's desk decides what shows: View hides change buttons, below Manage hides
+    // the desk's sensitive actions (data-manage-only)
+    const path = location.pathname.replace(/\/$/, "") || "/";
+    const desk = (SECTIONS.find((x) => x.href === path) || {}).desk;
+    const lvl = m.role === "owner" ? "manage" : ((m.access || {})[desk] || "view");
     document.body.classList.toggle("not-owner", m.role !== "owner");
-    document.body.classList.toggle("read-only", m.role === "read");
+    document.body.classList.toggle("read-only", lvl === "view");
+    document.body.classList.toggle("not-manager", lvl !== "manage");
+    window.pdLevel = lvl;
   }).catch(() => {});
   window.pdMe = () => ready.then(() => me);
 
@@ -100,6 +108,7 @@ window.PDUrl = {
     "/reports": '<path d="M5 3h10l4 4v14H5z"/><path d="M14 3v5h5M9 13h6M9 17h6"/>',
     "/importer": '<path d="M12 3v12M7 10l5 5 5-5"/><path d="M4 17v3h16v-3"/>',
     "/sizecharts": '<path d="M3 15l12-12 6 6-12 12z"/><path d="M7 11l2 2M10 8l2 2M13 5l2 2"/>',
+    "/disputes": '<path d="M12 3l8 4v5c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V7z"/><path d="M12 8v5M12 16v.01"/>',
     settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>',
     theme: '<path d="M20 14.5A8 8 0 019.5 4a8 8 0 1010.5 10.5z"/>',
     logout: '<path d="M14 4h5v16h-5M10 8l-4 4 4 4M6 12h10"/>',
@@ -128,7 +137,7 @@ window.PDUrl = {
         <button class="pd-rail-item" data-rail-theme>${svg("theme")}<span>${dark() ? "Day mode" : "Night mode"}</span></button>
         <button class="pd-rail-item" data-rail-out>${svg("logout")}<span>Log out</span></button>
         <div class="pd-rail-user"><span class="pd-rail-avatar">${(me.email || "?").slice(0, 2).toUpperCase()}</span>
-          <span class="pd-rail-who">${me.email || ""}<small>${me.role === "owner" ? "Owner" : me.role === "write" ? "Read & write" : "Read only"}</small></span></div>
+          <span class="pd-rail-who">${me.email || ""}<small>${me.role === "owner" ? "Owner" : Object.values(me.access || {}).includes("manage") ? "Manager" : "Team"}</small></span></div>
       </div>`;
     // Folded = icons only. The Inbox starts folded (it needs the width); each choice is remembered.
     const foldKey = here === "/inbox" ? "pdRailInbox" : "pdRail";

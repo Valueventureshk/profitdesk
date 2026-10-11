@@ -432,7 +432,7 @@ async function loadSuppliers() {
   };
 
   $("supList").innerHTML = d.suppliers.map((s, n) => {
-    const opening = `<form class="sup-open" data-open="${n}" data-owner-only>
+    const opening = `<form class="sup-open" data-open="${n}" data-manage-only>
         <label>Opening date <input type="date" class="control" name="date" value="${esc(s.opening_date || "")}" max="${esc(d.today)}" required></label>
         <label>Owed to ${esc(s.supplier)} that morning (USD) <input type="number" step="0.01" class="control" name="amount" value="${s.set ? s.opening : ""}" placeholder="0.00" required></label>
         <label>Note <input class="control" name="note" placeholder="e.g. from their statement of 1 Oct"></label>
@@ -462,7 +462,7 @@ async function loadSuppliers() {
             <span class="sub">${usd(s.invoiced)} invoiced · ${usd(s.not_invoiced)} not invoiced yet${s.estimated ? ` · <span class="est">${usd(s.estimated)} estimated</span>` : ""}</span></div><i>−</i>
           <div><span class="hint">Paid since · ${s.payments.length}</span><b>${usd(s.paid)}</b></div><i>=</i>
           <div><span class="hint">Owed now</span><b>${usd(s.owed)}</b></div></div>
-          <details class="sup-change" data-owner-only><summary class="hint">Change the opening balance</summary>${opening}</details>`
+          <details class="sup-change" data-manage-only><summary class="hint">Change the opening balance</summary>${opening}</details>`
         : `<div class="warn">Set the opening balance to start this account: the date to count from and what you owed ${esc(s.supplier)} that morning.</div>${opening}`}
       ${late}
       ${s.stores.length ? `<div class="table-wrap"><table class="table sup-stores"><thead><tr><th>Store</th><th>Fulfilled orders</th><th>COG</th><th>Not invoiced yet</th></tr></thead><tbody>

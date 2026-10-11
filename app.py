@@ -125,15 +125,16 @@ _DESK_PATHS = {
     "scm": ("/scm", "/api/scm"),
     "importer": ("/importer", "/api/importer"),
     "sizecharts": ("/sizecharts", "/api/sizecharts"),
+    "disputes": ("/disputes", "/api/disputes"),
 }
 _DESK_HOME = {"profit": "/", "cash": "/cash", "cog": "/cog", "inbox": "/inbox", "reports": "/reports",
              "expenses": "/expenses", "scm": "/scm", "importer": "/importer",
-             "sizecharts": "/sizecharts"}
+             "sizecharts": "/sizecharts", "disputes": "/disputes"}
 # Shared by every desk's pages: the user's own details and the dropdown lists.
 _EVERYONE = {"/api/me", "/api/me/password", "/api/logout", "/change-password",
              "/api/setup", "/api/chat"}
 # What "read & write" people may change (owners may change anything).
-_WRITE_OK = ("/api/invoices", "/api/suppliers/payee", "/api/cog/sync", "/api/inbox", "/api/expenses", "/api/scm", "/api/importer", "/api/sizecharts")
+_WRITE_OK = ("/api/invoices", "/api/suppliers/payee", "/api/disputes", "/api/cog/sync", "/api/inbox", "/api/expenses", "/api/scm", "/api/importer", "/api/sizecharts")
 # What anyone with the desk may do, read-only people included (it changes nothing).
 _ANY_OK = ("/api/reports",)
 
@@ -157,17 +158,27 @@ def _denied(request: Request, user: dict):
         return RedirectResponse("/change-password", status_code=303)
     if user.get("role", "owner") == "owner" or path in _EVERYONE:
         return None
-    desks = [d for d in (user.get("desks") or "").split(",") if d]
+    access = auth.access_of(user)
     desk = _desk_of(path)
-    if desk is None or desk not in desks:
+    if desk is None or desk not in access:
         if is_api:
             return JSONResponse({"error": "You don't have access to that."}, status_code=403)
-        return RedirectResponse(_DESK_HOME.get(desks[0] if desks else "", "/change-password"),
-                                status_code=303)
-    if method not in ("GET", "HEAD") and not any(path.startswith(p) for p in _ANY_OK) and not (
-            user.get("role") == "write" and any(path.startswith(p) for p in _WRITE_OK)):
-        return JSONResponse({"error": "Your access is view-only for this."}, status_code=403)
+        first = next((d for d in auth.DESKS if d in access), "")
+        return RedirectResponse(_DESK_HOME.get(first, "/change-password"), status_code=303)
+    if method in ("GET", "HEAD") or any(path.startswith(p) for p in _ANY_OK):
+        return None
+    # daily work (Work level) is what _WRITE_OK lists; anything else changing a desk is Manage
+    need = "work" if any(path.startswith(p) for p in _WRITE_OK) else "manage"
+    if not auth.at_least(user, desk, need):
+        return JSONResponse({"error": "Your access is view-only for this." if need == "work"
+                             else "That needs Manage access to this desk."}, status_code=403)
     return None
+
+
+def _need_level(request: Request, desk: str, need: str = "manage"):
+    """Inside a route: sensitive actions (refunds, accepting a dispute...) need Manage."""
+    if not auth.at_least(getattr(request.state, "user", None) or {}, desk, need):
+        raise HTTPException(403, "That needs Manage access to this desk. Ask a manager or the owner.")
 
 
 def _shopify_launch(request: Request):
@@ -302,7 +313,7 @@ def api_first_user(payload: dict, request: Request):
         raise HTTPException(400, "ProfitDesk already has an owner. Log in instead.")
     _check_setup_code(payload.get("setup_code"))
     try:
-        auth.create_user(payload.get("email"), payload.get("name"), payload.get("password"))
+        auth.create_user(payload.get("email"), payload.get("name"), payload.get("password"), "owner")
         token = auth.log_in(payload.get("email"), payload.get("password"), _client_ip(request))
     except auth.AuthError as e:
         raise HTTPException(400, str(e))
@@ -368,8 +379,8 @@ def api_logout(request: Request):
 def api_me(request: Request):
     """Who's logged in and what they may use (to show only their desks)."""
     me = dict(request.state.user)
-    me["desks"] = [d for d in (me.get("desks") or "").split(",") if d] \
-        if me.get("role") != "owner" else list(auth.DESKS)
+    me["access"] = auth.access_of(me)
+    me["desks"] = [d for d in auth.DESKS if d in me["access"]]
     return me
 
 
@@ -377,7 +388,8 @@ def api_me(request: Request):
 def api_users(request: Request):
     users = db.list_users()
     for u in users:
-        u["desks"] = [d for d in (u.get("desks") or "").split(",") if d]
+        u["access"] = auth.access_of(u)
+        u["desks"] = [d for d in auth.DESKS if d in u["access"]]
     return {"me": request.state.user, "users": users}
 
 
@@ -390,7 +402,8 @@ def api_add_user(payload: dict):
     payload = {**payload, "name": first[:40]}
     try:
         uid = auth.create_user(payload.get("email"), payload.get("name"), payload.get("password"),
-                               payload.get("role"), payload.get("desks"), temporary=True)
+                               payload.get("role"), payload.get("desks"), temporary=True,
+                               access=payload.get("access"))
     except auth.AuthError as e:
         raise HTTPException(400, str(e))
     return {"id": uid}
@@ -402,14 +415,16 @@ def api_update_user(user_id: int, payload: dict, request: Request):
     if not user:
         raise HTTPException(404, "That person no longer exists.")
     try:
-        role, desks = auth.clean_access(payload.get("role", user["role"]),
-                                        payload.get("desks", (user["desks"] or "").split(",")))
+        role, desks, access = auth.clean_access(
+            payload.get("role", user["role"]), payload.get("desks", (user["desks"] or "").split(",")),
+            payload.get("access") if "access" in payload or payload.get("role") == "owner"
+            else (auth.access_of(user) if user["role"] != "owner" else None))
         if user_id == request.state.user["id"] and role != "owner":
             raise auth.AuthError("You can't take owner access away from yourself.")
         if user["role"] == "owner" and role != "owner" and \
                 sum(1 for u in db.list_users() if u["role"] == "owner") <= 1:
             raise auth.AuthError("ProfitDesk needs at least one owner.")
-        db.set_user_access(user_id, role, desks, (payload.get("name") or "").strip() or None)
+        db.set_user_access(user_id, role, desks, (payload.get("name") or "").strip() or None, access)
         if payload.get("password"):
             auth.reset_password(user_id, payload["password"])
     except auth.AuthError as e:
@@ -2359,9 +2374,9 @@ async def api_learn(payload: dict):
 # ---------------------------------------------------------------- reports desk
 
 def _user_desks(user: dict) -> list:
-    if not user or user.get("role", "owner") == "owner":
+    if not user:
         return list(auth.DESKS)
-    return [d for d in (user.get("desks") or "").split(",") if d]
+    return list(auth.access_of(user))
 
 
 async def _make_report(kind: str, start: str = None, end: str = None, scope: str = "all",
@@ -2517,8 +2532,8 @@ async def api_chat_action(action_id: str, payload: dict, request: Request):
     if payload.get("confirm") is not True:
         _chat_actions.pop(action_id, None)
         return {"ok": True, "text": "Cancelled. Nothing was changed."}
-    if user.get("role") != "owner":
-        raise HTTPException(403, "Only owners can confirm actions.")
+    if not auth.at_least(user, "cog", "work"):
+        raise HTTPException(403, "You need Work access to the COG desk to confirm this.")
     _chat_actions.pop(action_id, None)
     if a["kind"] == "price_decision":
         r = await _decide_prices(a["payload"]["action"], a["payload"]["lines"], user.get("email", ""))
@@ -2536,8 +2551,8 @@ async def _chat_tool(name: str, args: dict, user: dict) -> dict:
                              "direction": g["direction"], "state": g["state"] or "to decide", "orders": len(g["orders"])}
                             for g in groups[:60]]}
     if name == "propose_price_decision":
-        if (user or {}).get("role") != "owner":
-            return {"error": "Only owners can change prices from the chat. Use the COG desk."}
+        if not auth.at_least(user or {}, "cog", "work"):
+            return {"error": "Changing prices needs Work access to the COG desk."}
         groups = _price_groups(args.get("direction") or "all", args.get("store") or "all", args.get("product_contains") or "")
         groups = [g for g in groups if not (args["action"] == "checking" and g["state"] == "checking")]
         if not groups:
@@ -3614,7 +3629,7 @@ def api_scm_delete_note(note_id: int, request: Request):
         n = con.execute("SELECT author FROM scm_notes WHERE id = ?", (note_id,)).fetchone()
         if not n:
             raise HTTPException(404, "That note no longer exists.")
-        if user.get("role") != "owner" and n["author"] not in (user.get("name"), user.get("email")):
+        if not auth.at_least(user, "scm", "manage") and n["author"] not in (user.get("name"), user.get("email")):
             raise HTTPException(403, "Only the person who wrote a note (or an owner) can delete it.")
         con.execute("DELETE FROM scm_notes WHERE id = ?", (note_id,))
     return {"ok": True}

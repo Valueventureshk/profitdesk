@@ -787,27 +787,53 @@ async function openGroupSettings() {
 
 /* ------------------------------------------------ people */
 
-const LEVELS = { owner: "Owner (everything, incl. Settings)", write: "Read & write", read: "Read only" };
-const DESK_NAMES = { profit: "Profit dashboard", cash: "Cash flow", cog: "COG + Products", inbox: "Inbox", reports: "Reports", expenses: "Expenses", scm: "SCM", importer: "Product Importer", sizecharts: "Size Charts" };
+const DESK_NAMES = { profit: "Profit dashboard", cash: "Cash flow", cog: "COG + Products", inbox: "Inbox", scm: "SCM",
+  disputes: "Disputes", expenses: "Expenses", reports: "Reports", importer: "Product Importer", sizecharts: "Size Charts" };
+const LVL_NAMES = { "": "No access", view: "View", work: "Work", manage: "Manage" };
+const LVL_HELP = "View = see only · Work = the daily tasks (reply, upload, approve prices, answer disputes) · " +
+  "Manage = also the desk's sensitive actions (refund or accept a dispute, supplier opening balances, AI training)";
+const PRESETS = {
+  manager: ["Manager", Object.fromEntries(Object.keys(DESK_NAMES).map((d) => [d, "manage"]))],
+  va: ["VA (Inbox + SCM)", { inbox: "work", scm: "work" }],
+  cs: ["Customer service (Inbox, SCM, Disputes)", { inbox: "work", scm: "work", disputes: "work" }],
+  viewer: ["Viewer (see everything)", Object.fromEntries(Object.keys(DESK_NAMES).map((d) => [d, "view"]))],
+};
 
-function accessFields(prefix, role = "read", desks = ["profit"]) {
-  return `<label class="field"><span>Access level</span>
-      <select id="${prefix}Role" class="control">${Object.entries(LEVELS).map(([k, v]) =>
-        `<option value="${k}"${k === role ? " selected" : ""}>${v}</option>`).join("")}</select></label>
-    <div class="field" id="${prefix}DeskBox"${role === "owner" ? " hidden" : ""}><span>Desks they can open</span>
-      <div class="desk-picks">${Object.entries(DESK_NAMES).map(([k, v]) => `
-        <label><input type="checkbox" data-desk="${k}"${desks.includes(k) ? " checked" : ""}> ${v}</label>`).join("")}</div></div>`;
+function accessFields(prefix, role = "staff", access = {}) {
+  return `<label class="field"><span>Access</span>
+      <select id="${prefix}Role" class="control">
+        <option value="staff"${role !== "owner" ? " selected" : ""}>Team member: pick each desk below</option>
+        <option value="owner"${role === "owner" ? " selected" : ""}>Owner: everything, incl. Settings, connections and people</option></select></label>
+    <div class="field" id="${prefix}DeskBox"${role === "owner" ? " hidden" : ""}>
+      <span>Start from <span class="preset-picks">${Object.entries(PRESETS).map(([k, [n]]) =>
+        `<button type="button" class="btn btn-sm btn-ghost" data-preset="${k}">${n}</button>`).join("")}</span></span>
+      <div class="desk-levels">${Object.entries(DESK_NAMES).map(([k, v]) => `
+        <label><span>${v}</span><select class="control" data-desk="${k}">${Object.entries(LVL_NAMES).map(([lv, ln]) =>
+          `<option value="${lv}"${(access[k] || "") === lv ? " selected" : ""}>${ln}</option>`).join("")}</select></label>`).join("")}</div>
+      <p class="hint">${LVL_HELP}</p></div>`;
 }
 
 function readAccess(prefix) {
   const role = $(prefix + "Role").value;
-  const desks = [...document.querySelectorAll(`#${prefix}DeskBox [data-desk]`)]
-    .filter((c) => c.checked).map((c) => c.dataset.desk);
-  return { role, desks };
+  const access = {};
+  for (const sel of document.querySelectorAll(`#${prefix}DeskBox [data-desk]`)) if (sel.value) access[sel.dataset.desk] = sel.value;
+  return { role, access };
 }
 
 function wireAccess(prefix) {
   $(prefix + "Role").onchange = () => { $(prefix + "DeskBox").hidden = $(prefix + "Role").value === "owner"; };
+  for (const b of $(prefix + "DeskBox").querySelectorAll("[data-preset]")) b.onclick = () => {
+    const pick = PRESETS[b.dataset.preset][1];
+    for (const sel of $(prefix + "DeskBox").querySelectorAll("[data-desk]")) sel.value = pick[sel.dataset.desk] || "";
+  };
+}
+
+function accessSummary(u) {
+  if (u.role === "owner") return "Owner";
+  const by = { manage: [], work: [], view: [] };
+  for (const [d, lv] of Object.entries(u.access || {})) by[lv]?.push(DESK_NAMES[d] || d);
+  return [["Manages", by.manage], ["Works in", by.work], ["Views", by.view]]
+    .filter(([, l]) => l.length).map(([t, l]) => `${t} ${l.join(", ")}`).join(" · ");
 }
 
 async function renderPeople() {
@@ -817,8 +843,7 @@ async function renderPeople() {
     <div class="person">
       <div class="group-row">
         <div class="group-name"><strong>${esc(u.name || u.email)}${u.id === r.me.id ? " (you)" : ""}</strong>
-          <span>${esc(u.email)} · ${esc((LEVELS[u.role] || u.role).split(" (")[0])}${u.role === "owner" ? ""
-            : " · " + u.desks.map((d) => DESK_NAMES[d] || d).join(", ")}${u.must_change ? " · hasn't logged in yet" : ""}</span></div>
+          <span>${esc(u.email)} · ${esc(accessSummary(u))}${u.must_change ? " · hasn't logged in yet" : ""}</span></div>
         <button class="btn btn-sm btn-ghost" data-edit-user="${u.id}">Edit</button>
         ${u.id === r.me.id ? "" : `<button class="btn btn-sm btn-danger" data-remove-user="${u.id}">Remove</button>`}
       </div>
@@ -867,7 +892,7 @@ async function renderPeople() {
       const box = $("edit" + u.id);
       if (!box.hidden) { box.hidden = true; return; }
       const p = "ed" + u.id;
-      box.innerHTML = `${accessFields(p, u.role, u.desks)}
+      box.innerHTML = `${accessFields(p, u.role, u.access)}
         <label class="field"><span>New temporary password (only to reset it)</span>
           <input id="${p}Pass" type="text" autocomplete="off" placeholder="Leave empty to keep their password"></label>
         <button class="btn btn-primary btn-block" id="${p}Save">Save</button>`;

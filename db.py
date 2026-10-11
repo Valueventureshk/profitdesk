@@ -548,6 +548,7 @@ _ADDED_COLUMNS = {
         ("role", "TEXT NOT NULL DEFAULT 'owner'"),   # owner | write | read
         ("desks", "TEXT NOT NULL DEFAULT 'profit,cash,cog'"),
         ("must_change", "INTEGER NOT NULL DEFAULT 0"),  # temporary password: change at first login
+        ("access", "TEXT"),          # JSON {desk: view | work | manage}; empty = from role + desks
     ],
 }
 
@@ -1044,7 +1045,7 @@ def delete_group(group_id: int):
 def list_users():
     with _conn() as con:
         return [dict(r) for r in con.execute(
-            "SELECT id, email, name, role, desks, must_change, created_at FROM users ORDER BY id")]
+            "SELECT id, email, name, role, desks, access, must_change, created_at FROM users ORDER BY id")]
 
 
 def get_user(user_id: int):
@@ -1060,12 +1061,12 @@ def get_user_by_email(email: str):
 
 
 def create_user(email: str, name: str, password_hash: str, role: str = "owner",
-                desks: str = "profit,cash,cog", must_change: bool = False) -> int:
+                desks: str = "profit,cash,cog", must_change: bool = False, access: str = None) -> int:
     with _conn() as con:
         return con.execute(
-            "INSERT INTO users (email, name, password_hash, role, desks, must_change)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
-            (email, name, password_hash, role, desks, int(must_change)),
+            "INSERT INTO users (email, name, password_hash, role, desks, must_change, access)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (email, name, password_hash, role, desks, int(must_change), access),
         ).lastrowid
 
 
@@ -1075,10 +1076,10 @@ def set_user_password(user_id: int, password_hash: str, must_change: bool = Fals
                     (password_hash, int(must_change), user_id))
 
 
-def set_user_access(user_id: int, role: str, desks: str, name: str = None):
+def set_user_access(user_id: int, role: str, desks: str, name: str = None, access: str = None):
     with _conn() as con:
-        con.execute("UPDATE users SET role = ?, desks = ?, name = COALESCE(?, name) WHERE id = ?",
-                    (role, desks, name, user_id))
+        con.execute("UPDATE users SET role = ?, desks = ?, access = ?, name = COALESCE(?, name) WHERE id = ?",
+                    (role, desks, access, name, user_id))
 
 
 def delete_user(user_id: int):
@@ -1099,7 +1100,7 @@ def create_session(token_hash: str, user_id: int, expires_at: float):
 def get_session_user(token_hash: str, now: float):
     with _conn() as con:
         row = con.execute(
-            "SELECT u.id, u.email, u.name, u.role, u.desks, u.must_change"
+            "SELECT u.id, u.email, u.name, u.role, u.desks, u.access, u.must_change"
             " FROM sessions s JOIN users u ON u.id = s.user_id"
             " WHERE s.token_hash = ? AND s.expires_at > ?",
             (token_hash, now),

@@ -8,6 +8,7 @@ out for 15 minutes.
 """
 import hashlib
 import hmac
+import json
 import re
 import secrets
 import time
@@ -63,29 +64,62 @@ def has_users() -> bool:
     return bool(db.list_users())
 
 
-ROLES = ("owner", "write", "read")
-DESKS = ("profit", "cash", "cog", "inbox", "reports", "expenses", "scm", "importer", "sizecharts")
+ROLES = ("owner", "staff", "write", "read")       # write / read: before per-desk levels
+DESKS = ("profit", "cash", "cog", "inbox", "reports", "expenses", "scm", "importer", "sizecharts", "disputes")
+LEVELS = ("view", "work", "manage")                # each desk: see it / do the daily work / its sensitive actions
+_RANK = {None: 0, "view": 1, "work": 2, "manage": 3}
 
 
-def clean_access(role: str, desks) -> tuple:
-    role = (role or "read").strip().lower()
+def access_of(user: dict) -> dict:
+    """{desk: level} for a user. Owners manage everything. People added before per-desk levels:
+    read & write = work on their desks, read only = view."""
+    if not user:
+        return {}
+    if user.get("role", "owner") == "owner":
+        return {d: "manage" for d in DESKS}
+    if user.get("access"):
+        try:
+            got = json.loads(user["access"])
+            return {d: v for d, v in got.items() if d in DESKS and v in LEVELS}
+        except ValueError:
+            pass
+    lvl = "work" if user.get("role") == "write" else "view"
+    return {d: lvl for d in (user.get("desks") or "").split(",") if d in DESKS}
+
+
+def level(user: dict, desk: str):
+    return access_of(user).get(desk)
+
+
+def at_least(user: dict, desk: str, need: str) -> bool:
+    return _RANK[level(user, desk)] >= _RANK[need]
+
+
+def clean_access(role: str, desks=None, access=None) -> tuple:
+    """(role, desks csv, access JSON or None). New people are "staff" with a level per desk."""
+    role = (role or "staff").strip().lower()
     if role not in ROLES:
         raise AuthError("Pick an access level.")
-    picked = [d for d in DESKS if d in (desks or [])] if role != "owner" else list(DESKS)
-    if not picked:
+    if role == "owner":
+        return role, ",".join(DESKS), None
+    if access is None:                               # old form: one level for the ticked desks
+        lvl = "work" if role == "write" else "view"
+        access = {d: lvl for d in DESKS if d in (desks or [])}
+    access = {d: v for d, v in (access or {}).items() if d in DESKS and v in LEVELS}
+    if not access:
         raise AuthError("Give them at least one desk.")
-    return role, ",".join(picked)
+    return "staff", ",".join(d for d in DESKS if d in access), json.dumps(access)
 
 
-def create_user(email: str, name: str, password: str, role: str = "owner",
-                desks=DESKS, temporary: bool = False) -> int:
+def create_user(email: str, name: str, password: str, role: str = "staff",
+                desks=None, temporary: bool = False, access=None) -> int:
     email = _clean_email(email)
     _check_new_password(password)
     if db.get_user_by_email(email):
         raise AuthError("Someone with that email already has an account.")
-    role, desk_list = clean_access(role, desks)
+    role, desk_list, acc = clean_access(role, desks, access)
     return db.create_user(email, (name or "").strip() or email.split("@")[0],
-                          hash_password(password), role, desk_list, temporary)
+                          hash_password(password), role, desk_list, temporary, acc)
 
 
 def change_password(user_id: int, current: str, new: str):

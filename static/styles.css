@@ -617,6 +617,7 @@ td.inv-status .btn { margin-top: 4px; }
 /* Access levels: hidden for people without that access (the server enforces it too). */
 body.not-owner [data-owner-only] { display: none !important; }
 body.read-only [data-write-only] { display: none !important; }
+body.not-manager [data-manage-only] { display: none !important; }
 
 .person { border-bottom: 1px solid var(--line-soft); }
 .person-edit { padding: 4px 0 12px; }
@@ -1521,3 +1522,9 @@ tr.pc-checking td { background: rgba(245,158,11,.05); }
 .sup-h { font-size: 13px; margin: 16px 0 6px; }
 .sup-all { display: block; margin-top: 4px; }
 .sup-card + .sup-card { margin-top: 16px; }
+
+/* People: a level per desk */
+.desk-levels { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 8px 14px; margin: 8px 0; }
+.desk-levels label { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 13px; }
+.desk-levels select { width: 118px; }
+.preset-picks { display: inline-flex; flex-wrap: wrap; gap: 6px; margin-left: 6px; }
