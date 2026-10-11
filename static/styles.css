@@ -1470,7 +1470,8 @@ html { transition: background-color .2s ease; }
 .pc-dir { font-size: 11.5px; font-weight: 600; margin-left: 4px; }
 .pc-dir.down { color: var(--up); }
 .pc-dir.up { color: #B45309; }
-.pc-btns { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; align-items: center; }
+td.pc-btns { display: table-cell; text-align: right; }
+td.pc-btns .btn, td.pc-btns .pc-state { display: inline-block; margin: 2px 0 2px 4px; }
 .pc-warn { background: #B45309; border-color: #B45309; }
 .pc-state { font-size: 11.5px; font-weight: 600; color: #B45309; background: rgba(245,158,11,.12); border-radius: 999px; padding: 2px 8px; }
 tr.pc-checking td { background: rgba(245,158,11,.05); }
