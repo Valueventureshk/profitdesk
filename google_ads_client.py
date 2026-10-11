@@ -230,7 +230,7 @@ async def spend_until_hour(refresh_token, customer_id, login_cid, day, hour):
     )
     async with httpx.AsyncClient(timeout=60) as client:
         rows = await _search(client, version, str(customer_id).replace("-", ""),
-                             query, _headers(access, dev_token, login_cid))
+                             query, _headers(access, dev_token, login_cid or customer_id))
     return sum(
         int(r.get("metrics", {}).get("costMicros", 0)) / 1_000_000
         for r in rows
@@ -249,7 +249,7 @@ async def daily_spend(refresh_token, customer_id, login_cid, start, end):
     )
     async with httpx.AsyncClient(timeout=60) as client:
         rows = await _search(client, version, str(customer_id).replace("-", ""),
-                             query, _headers(access, dev_token, login_cid))
+                             query, _headers(access, dev_token, login_cid or customer_id))
 
     spend = {}
     for row in rows:
