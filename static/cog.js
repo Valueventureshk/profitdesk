@@ -150,11 +150,13 @@ async function loadProducts() {
 /* ------------------------------------------------ invoices */
 
 const STATUS = {
+  superseded: ["catalog", "Replaced"],
   ok: ["ok", "Matches"], new: ["new", "First invoice"], changed: ["changed", "Price changed"],
   duplicate: ["bad", "Already invoiced"], unmatched: ["bad", "No matching order"],
 };
 
 async function loadInvoices() {
+  loadPriceChanges();
   let d;
   try { d = await api("/api/invoices"); } catch (e) { toast(e.message, true); return; }
   $("invBadge").hidden = !d.to_check;
@@ -172,6 +174,54 @@ async function loadInvoices() {
   for (const tr of $("invList").querySelectorAll("[data-inv]")) tr.onclick = () => showInvoice(tr.dataset.inv);
 }
 
+// Price changes across all invoices, one row per store + product + new price
+async function loadPriceChanges() {
+  let d;
+  try { d = await api("/api/invoices/changes"); } catch { return; }
+  const box = $("priceChanges");
+  box.hidden = !d.changes.length;
+  if (!d.changes.length) return;
+  const pct = (g) => (g.old ? `${g.new < g.old ? "−" : "+"}${Math.abs(Math.round((g.new - g.old) / g.old * 100))}%` : "");
+  const when = (t) => (t ? new Date(t.replace(" ", "T") + "Z").toLocaleDateString(undefined, { day: "numeric", month: "short" }) : "");
+  box.innerHTML = `<div class="panel-head"><h2>Price changes to decide <span class="hint">(${d.changes.length})</span></h2>
+      <span class="hint">Cheaper: use the new price. Dearer: check with the supplier first.</span></div>
+    <div class="table-wrap"><table class="table pc-table"><thead><tr><th>Product</th><th>Before</th><th>Now</th><th>Orders</th><th></th></tr></thead><tbody>
+    ${d.changes.map((g, i) => {
+      const down = g.direction === "down";
+      const btns = g.state === "checking"
+        ? `<span class="pc-state">Checking with supplier${g.check_by ? ` · ${esc(g.check_by.split("@")[0])}` : ""} ${when(g.check_at)}</span>
+           <button class="btn btn-sm btn-primary" data-pc="${i}" data-act="use_new">Supplier confirmed: use new price</button>
+           <button class="btn btn-sm btn-ghost" data-pc="${i}" data-act="keep_old">Supplier corrected it: keep old price</button>
+           <button class="btn btn-sm btn-ghost" data-pc="${i}" data-act="undo" title="Not checking any more">Undo</button>`
+        : down
+          ? `<button class="btn btn-sm btn-primary" data-pc="${i}" data-act="use_new">Use new price</button>
+             <button class="btn btn-sm btn-ghost" data-pc="${i}" data-act="checking">Check with supplier</button>`
+          : `<button class="btn btn-sm btn-primary pc-warn" data-pc="${i}" data-act="checking">Check with supplier</button>
+             <button class="btn btn-sm btn-ghost" data-pc="${i}" data-act="use_new">Use new price</button>`;
+      return `<tr class="${g.state === "checking" ? "pc-checking" : ""}">
+        <td class="name">${esc(g.product)}<span class="sub">${esc(g.store)}</span></td>
+        <td>${g.old !== null && g.old !== undefined ? money(g.old, "USD") : "—"}</td>
+        <td><b>${money(g.new, "USD")}</b> <span class="pc-dir ${down ? "down" : "up"}">${down ? "▼" : "▲"} ${pct(g)}</span></td>
+        <td class="hint" title="${esc(g.orders.join(", "))}">${g.orders.length} · ${esc(g.orders.slice(0, 3).join(", "))}${g.orders.length > 3 ? "…" : ""}</td>
+        <td class="pc-btns" data-write-only>${btns}</td></tr>`;
+    }).join("")}</tbody></table></div>`;
+  for (const b of box.querySelectorAll("[data-pc]")) b.onclick = async () => {
+    const g = d.changes[+b.dataset.pc];
+    b.disabled = true;
+    try {
+      const r = await api("/api/invoices/changes", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: b.dataset.act, lines: g.lines }) });
+      toast({ use_new: `New price saved for ${g.product.slice(0, 40)}. ${r.recosted} orders re-costed.`,
+              checking: "Marked: checking with supplier. Other orders keep the old price meanwhile.",
+              keep_old: "Kept the old price for these orders. A corrected invoice will replace this one.",
+              undo: "Back to undecided." }[b.dataset.act]);
+      productsCache = {};
+      loadPriceChanges();
+      loadInvoices();
+    } catch (e) { toast(e.message, true); b.disabled = false; }
+  };
+}
+
 async function showInvoice(id) {
   let d;
   try { d = await api(`/api/invoices/${id}`); } catch (e) { toast(e.message, true); return; }
@@ -179,8 +229,9 @@ async function showInvoice(id) {
   const rows = d.lines.map((l) => {
     const [cls, label] = STATUS[l.status] || ["bad", l.status];
     const approve = l.status === "changed" && !l.approved_at
-      ? `<button class="btn btn-sm btn-primary" data-write-only data-approve="${l.line_no}">Checked with supplier — use new price</button>`
-      : (l.approved_at ? `<span class="hint">Approved${l.approved_by ? " by " + esc(l.approved_by) : ""}</span>` : "");
+      ? (l.check_state === "kept" ? `<span class="hint">Old price kept (supplier corrected)</span>`
+         : `<span class="hint">${l.check_state === "checking" ? "Checking with supplier · " : ""}Decide in “Price changes to decide” above</span>`)
+      : (l.approved_at ? `<span class="hint">New price used${l.approved_by ? " · " + esc(l.approved_by.split("@")[0]) : ""}</span>` : "");
     return `<tr><td class="name">${esc(l.order_name || l.order_key)}<span class="sub">${esc(l.title)}</span>
         ${l.product && l.product !== l.title ? `<span class="sub">→ ${esc(l.product)}</span>` : ""}</td>
       <td>${money(l.amount, "USD")}</td>

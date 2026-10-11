@@ -673,11 +673,26 @@ async def api_invoice_upload(request: Request, filename: str = "invoice"):
         start = (date.today() - timedelta(days=150)).isoformat()
         for r in db.cog_lines(list(sids), start, date.today().isoformat()):
             order_lines.setdefault((r["store_id"], cog.order_key(r["order_name"])), []).append(r)
-    invoiced = {(l["store_id"], l["order_key"], cog.norm(l["product"] or "")): l["number"]
-                for l in db.invoice_lines() if l["status"] not in ("unmatched", "duplicate")}
+    queried = {}          # lines whose price is still being checked: a corrected invoice replaces them
+    invoiced = {}
+    for l in db.invoice_lines():
+        if l["status"] in ("unmatched", "duplicate", "superseded"):
+            continue
+        key = (l["store_id"], l["order_key"], cog.norm(l["product"] or ""))
+        if l["status"] == "changed" and not l["approved_at"]:
+            queried[key] = (l["invoice_id"], l["line_no"])
+        else:
+            invoiced[key] = l["number"]
     checked = invoices.check(inv, store_of, order_lines, catalog, invoiced)
     user = (getattr(request.state, "user", None) or {}).get("email", "")
     iid = db.save_invoice(inv, checked, filename[:120], user)
+    with db._conn() as con:
+        for l in checked["lines"]:
+            key = (l.get("store_id"), l.get("order") , cog.norm(l.get("product") or ""))
+            old = queried.get(key)
+            if old and l.get("status") not in ("unmatched", "duplicate"):
+                con.execute("UPDATE invoice_lines SET status = 'superseded', note = ? WHERE invoice_id = ? AND line_no = ?",
+                            (f"Replaced by invoice {inv['number'] or '?'}", old[0], old[1]))
     for sid in sids:
         names = {l["order_name"] for l in checked["lines"] if l.get("order_name") and l["store_id"] == sid}
         await _recost(sid, names)
@@ -706,6 +721,68 @@ def api_invoice(invoice_id: int):
     stores = {x["id"]: x["name"].strip() for x in db.list_stores()}
     inv["store"] = stores.get(inv["store_id"], "Several / unknown")
     return {"invoice": inv, "lines": db.invoice_lines(invoice_id)}
+
+
+@app.get("/api/invoices/changes")
+def api_invoice_changes():
+    """Every price change still to decide, one row per store + product + new price."""
+    stores = {x["id"]: x["name"].strip() for x in db.list_stores()}
+    groups = {}
+    for l in db.invoice_lines():
+        if l["status"] != "changed" or l["approved_at"] or l.get("check_state") == "kept":
+            continue
+        k = (l["store_id"], l["product"], round(l["amount"], 2))
+        g = groups.setdefault(k, {"store_id": l["store_id"], "store": stores.get(l["store_id"], "?"), "product": l["product"],
+                                  "new": round(l["amount"], 2), "old": l["previous"], "lines": [], "orders": [],
+                                  "state": l.get("check_state") or "", "check_by": l.get("check_by"), "check_at": l.get("check_at")})
+        g["lines"].append([l["invoice_id"], l["line_no"]])
+        g["orders"].append(l["order_name"] or l["order_key"])
+        if l.get("check_state") == "checking":
+            g.update(state="checking", check_by=l.get("check_by"), check_at=l.get("check_at"))
+    out = sorted(groups.values(), key=lambda g: (g["state"] == "checking", (g["new"] or 0) < (g["old"] or 0), g["store"]))
+    for g in out:
+        g["direction"] = "down" if g["old"] is not None and g["new"] < g["old"] else "up"
+    return {"changes": out}
+
+
+@app.post("/api/invoices/changes")
+async def api_invoice_change_decide(payload: dict, request: Request):
+    """use_new: the new price becomes the product's cost (future orders too).
+    checking: asked the supplier; the old price stays for other orders meanwhile.
+    keep_old: supplier says it was a mistake; these orders cost the old price (a corrected invoice replaces them)."""
+    action = payload.get("action")
+    lines = [(int(a), int(b)) for a, b in payload.get("lines") or []]
+    if action not in ("use_new", "checking", "keep_old", "undo") or not lines:
+        raise HTTPException(400, "Pick what to do.")
+    user = (getattr(request.state, "user", None) or {}).get("email", "")
+    stores, names = set(), set()
+    with db._conn() as con:
+        for iid, no in lines:
+            if action == "use_new":
+                con.execute("UPDATE invoice_lines SET approved_by = ?, approved_at = datetime('now'), check_state = NULL"
+                            " WHERE invoice_id = ? AND line_no = ?", (user, iid, no))
+            elif action == "undo":
+                con.execute("UPDATE invoice_lines SET check_state = NULL, check_by = NULL, check_at = NULL"
+                            " WHERE invoice_id = ? AND line_no = ?", (iid, no))
+            else:
+                con.execute("UPDATE invoice_lines SET check_state = ?, check_by = ?, check_at = datetime('now')"
+                            " WHERE invoice_id = ? AND line_no = ?",
+                            ("checking" if action == "checking" else "kept", user, iid, no))
+            r = con.execute("SELECT store_id, order_name, product FROM invoice_lines WHERE invoice_id = ? AND line_no = ?",
+                            (iid, no)).fetchone()
+            if r and r["store_id"]:
+                stores.add(r["store_id"])
+                if r["order_name"]:
+                    names.add((r["store_id"], r["order_name"]))
+                if action == "use_new" and r["product"]:
+                    # every order of this product not on an invoice yet takes the new price
+                    for o in con.execute("SELECT DISTINCT order_name FROM cog_lines WHERE store_id = ? AND product = ?"
+                                         " AND source IN ('catalog', 'estimate') AND day >= date('now', '-90 day')",
+                                         (r["store_id"], r["product"])):
+                        names.add((r["store_id"], o[0]))
+    for sid in stores:
+        await _recost(sid, {n for s2, n in names if s2 == sid})
+    return {"ok": True, "recosted": len(names)}
 
 
 @app.post("/api/invoices/{invoice_id}/approve/{line_no}")
@@ -1460,6 +1537,10 @@ async def api_inbox_reply(ticket_id: int, request: Request):
     except gmail_send.SendError as e:
         raise HTTPException(400, str(e))
     _recent_replies[ticket_id] = (time.time(), user)
+    u = getattr(request.state, "user", None) or {}
+    with db._conn() as con:
+        con.execute("UPDATE tickets SET handler = ?, handler_email = ?, handler_at = ? WHERE id = ? AND handler IS NULL",
+                    (_display_name(u), u.get("email"), datetime.now(timezone.utc).isoformat(), ticket_id))
     print(f"Reply sent on ticket {ticket_id} by {user}", flush=True)
 
     async def pick_up():                      # read it back from Sent so the ticket shows "we replied"
@@ -1491,7 +1572,7 @@ async def api_inbox_translate_text(payload: dict):
 
 
 @app.get("/api/inbox/tickets/{ticket_id}")
-def api_inbox_ticket(ticket_id: int):
+def api_inbox_ticket(ticket_id: int, request: Request):
     with db._conn() as con:
         t = con.execute("SELECT * FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
         if not t:
@@ -1506,12 +1587,18 @@ def api_inbox_ticket(ticket_id: int):
     t["store"] = _store_names().get(t["store_id"], "")
     t["mailbox"] = acct["address"] if acct else ""
     t["can_send"] = bool(acct and acct["gmail_token"])
+    t["me"] = (getattr(request.state, "user", None) or {}).get("email")
     t.update(_label_info(t["account_id"], [m["id"] for m in msgs], [m for m in msgs if m["direction"] == "in"][-1:]))
     for m in msgs:
         m.pop("tag_suggest", None)
     t["reply_lang"] = LANG_NAME.get(db.get_setting(f"track_lang:{t['store_id']}") or "en", "English")
     t["gmail_link"] = _gmail_link(t["mailbox"], msgs[-1]["message_id"]) if msgs else ""
     return {"ticket": t, "messages": msgs}
+
+
+def _display_name(u: dict) -> str:
+    name = (u.get("name") or "").strip()
+    return name or (u.get("email") or "team").split("@")[0].replace(".", " ").title()
 
 
 @app.post("/api/inbox/tickets/{ticket_id}")
@@ -1553,6 +1640,14 @@ def api_inbox_ticket_action(ticket_id: int, payload: dict, request: Request):
             if kind not in ("support", "inquiry", "legal"):
                 raise HTTPException(400, "Unknown ticket type.")
             con.execute("UPDATE tickets SET kind = ? WHERE id = ?", (kind, ticket_id))
+        elif act in ("claim", "release"):
+            u = getattr(request.state, "user", None) or {}
+            if act == "claim":
+                con.execute("UPDATE tickets SET handler = ?, handler_email = ?, handler_at = ? WHERE id = ?",
+                            (_display_name(u), u.get("email"), now, ticket_id))
+            else:
+                con.execute("UPDATE tickets SET handler = NULL, handler_email = NULL, handler_at = NULL WHERE id = ?",
+                            (ticket_id,))
         elif act == "not_customer":
             con.execute("UPDATE mail_messages SET category = 'other', ticket_id = NULL WHERE ticket_id = ?",
                         (ticket_id,))

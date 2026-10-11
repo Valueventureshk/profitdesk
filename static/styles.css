@@ -1447,3 +1447,19 @@ html { transition: background-color .2s ease; }
 @media (prefers-reduced-motion: reduce) {
   .set-body, .set-inner, .set-chev { transition: none; }
 }
+
+/* COG: price changes to decide */
+.pc-table td { vertical-align: middle; }
+.pc-dir { font-size: 11.5px; font-weight: 600; margin-left: 4px; }
+.pc-dir.down { color: var(--up); }
+.pc-dir.up { color: #B45309; }
+.pc-btns { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; align-items: center; }
+.pc-warn { background: #B45309; border-color: #B45309; }
+.pc-state { font-size: 11.5px; font-weight: 600; color: #B45309; background: rgba(245,158,11,.12); border-radius: 999px; padding: 2px 8px; }
+tr.pc-checking td { background: rgba(245,158,11,.05); }
+
+/* Inbox: who's handling */
+.tk-handler { background: rgba(124,58,237,.1); color: #6D28D9; }
+[data-theme="dark"] .tk-handler { color: #C4B5FD; }
+.tk-handler-box { display: grid; gap: 6px; font-size: 13px; margin-bottom: 6px; }
+.tk-taken { font-size: 12.5px; padding: 8px 12px; border-radius: 8px; background: rgba(124,58,237,.08); border: 1px solid rgba(124,58,237,.25); margin: 0 0 10px; }

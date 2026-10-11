@@ -181,9 +181,11 @@ class Catalog:
         They are this order's real cost, ahead of the sheet. A changed price only
         becomes the product's cost for other orders once someone approves it."""
         for l in lines:
-            if not l.get("store_id") or not l.get("product") or l["status"] in ("unmatched", "duplicate"):
+            if not l.get("store_id") or not l.get("product") or l["status"] in ("unmatched", "duplicate", "superseded"):
                 continue
-            entry = {"order": l["order_key"], "product": l["product"], "cog": l["amount"],
+            # "kept": the supplier said the higher price was a mistake, so this order costs the old price
+            charged = l["previous"] if l.get("check_state") == "kept" and l.get("previous") is not None else l["amount"]
+            entry = {"order": l["order_key"], "product": l["product"], "cog": charged,
                      "supplier": l.get("supplier") or "", "day": l.get("date"),
                      "invoice": l.get("number") or "invoice"}
             self.inv_by_order[(l["store_id"], l["order_key"])].append(entry)

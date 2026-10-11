@@ -32,12 +32,18 @@ function toast(msg, bad = false) {
   toastTimer = setTimeout(() => { el.hidden = true; }, bad ? 6000 : 2500);
 }
 
+// "1 min ago" … "59 min ago", "1 hour ago" … "23 hours ago", "1 day ago" … "3 days ago", then the date
 function when(iso) {
   if (!iso) return "";
   const d = new Date(iso);
-  return d.toDateString() === new Date().toDateString()
-    ? d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
-    : d.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+  const mins = Math.floor((Date.now() - d.getTime()) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} min ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs} hour${hrs === 1 ? "" : "s"} ago`;
+  const days = Math.floor(hrs / 24);
+  if (days <= 3) return `${days} day${days === 1 ? "" : "s"} ago`;
+  return d.toLocaleDateString(undefined, { day: "numeric", month: "short", ...(d.getFullYear() !== new Date().getFullYear() ? { year: "numeric" } : {}) });
 }
 // Long links in emails (Gmail, tracking, Shopify) shown short but still clickable.
 // ---- Translate: any email into the team's language (saved on the server, so each email is paid for once)
@@ -332,7 +338,7 @@ const ticketRow = (t) => `
         <span class="mail-top"><strong>${esc(t.customer_name || t.customer_email)}</strong>
           <small>${when(t.status === "closed" ? t.closed_at : t.last_message_at)}</small></span>
         <span class="mail-subj">${esc(t.summary || t.subject || "(no subject)")}</span>
-        <span class="mail-tags">${chips(t)}${tagChips(t.tags)}<span class="mail-store">${esc(t.store)} · ${t.emails} email${t.emails === 1 ? "" : "s"}</span></span>
+        <span class="mail-tags">${t.handler ? `<span class="tk tk-handler" title="Handling this ticket">👤 ${esc(t.handler)}</span>` : ""}${chips(t)}${tagChips(t.tags)}<span class="mail-store">${esc(t.store)} · ${t.emails} email${t.emails === 1 ? "" : "s"}</span></span>
       </button>`;
 
 async function loadList() {
@@ -487,6 +493,7 @@ async function openTicket(id) {
         <h2 class="mail-h">${esc(t.subject || "(no subject)")}</h2>
         <div class="mail-meta"><strong>${esc(t.customer_name || "")}</strong> &lt;${esc(t.customer_email)}&gt;
           <span>${esc(t.store)} · ${esc(t.mailbox)} · ${d.messages.length} emails</span></div>
+        ${t.handler && t.handler_email !== t.me ? `<div class="tk-taken">👤 <b>${esc(t.handler)}</b> is handling this ticket (${when(t.handler_at)}). Check with them before replying.</div>` : ""}
         ${trBar()}
         ${t.summary ? `<div class="tk-summary"><b>AI summary</b> ${esc(t.summary)}${t.orders ? ` · orders ${esc(t.orders)}` : ""}</div>` : ""}
         ${thread}
@@ -504,6 +511,13 @@ async function openTicket(id) {
           ${t.status === "open"
             ? `<button class="btn btn-primary btn-block" data-act="close">Close ticket</button>`
             : `<button class="btn btn-ghost btn-block" data-act="reopen">Reopen</button>`}
+          <div class="tk-side-label">Handling</div>
+          <div class="tk-handler-box">${t.handler
+            ? `<b>👤 ${esc(t.handler)}</b>${t.handler_email === t.me ? " (you)" : ""} <span class="hint">· ${when(t.handler_at)}</span>
+               <div data-write-only>${t.handler_email === t.me
+                 ? `<button class="btn btn-sm btn-ghost" data-act="release">Hand it back</button>`
+                 : `<button class="btn btn-sm btn-ghost" data-act="claim">Take over</button>`}</div>`
+            : `<span class="hint">Nobody yet</span> <button class="btn btn-sm btn-primary" data-act="claim" data-write-only>I'll handle this</button>`}</div>
           <div class="tk-side-label">Labels</div>
           <div class="tg-box" id="tgBox"></div>
           <div class="tk-side-label">Type</div>
@@ -542,6 +556,11 @@ async function openTicket(id) {
       if (a === "close") return act({ action: "close" }, "Ticket closed.");
       if (a === "reopen") return act({ action: "reopen" }, "Ticket reopened.");
       if (a === "wake") return act({ action: "wake" }, "Back in the list.");
+      if (a === "claim") {
+        if (t.handler && t.handler_email !== t.me && !confirm(`${t.handler} is handling this ticket. Take it over?`)) return;
+        return act({ action: "claim" }, "You're handling this ticket.");
+      }
+      if (a === "release") return act({ action: "release" }, "Handed back. Anyone can pick it up.");
       if (a === "snooze") {
         if (!$("tkSnooze").value) return toast("Pick a date first.", true);
         return act({ action: "snooze", until: $("tkSnooze").value }, "Snoozed.");

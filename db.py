@@ -475,6 +475,16 @@ def _conn():
 
 # Columns added after the first release. Older databases get them on startup.
 _ADDED_COLUMNS = {
+    "tickets": [
+        ("handler", "TEXT"),          # who on the team is handling it (name shown to everyone)
+        ("handler_email", "TEXT"),
+        ("handler_at", "TEXT"),
+    ],
+    "invoice_lines": [
+        ("check_state", "TEXT"),     # checking (asked the supplier) | kept (supplier corrected: old price stands)
+        ("check_by", "TEXT"),
+        ("check_at", "TEXT"),
+    ],
     "shipments": [("province", "TEXT"), ("fulfillment_gid", "TEXT"), ("pushed", "TEXT NOT NULL DEFAULT ''"),
                   ("push_error", "TEXT")],
     "stores": [
