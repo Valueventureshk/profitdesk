@@ -1528,3 +1528,30 @@ tr.pc-checking td { background: rgba(245,158,11,.05); }
 .desk-levels label { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 13px; }
 .desk-levels select { width: 118px; }
 .preset-picks { display: inline-flex; flex-wrap: wrap; gap: 6px; margin-left: 6px; }
+
+/* Disputes desk */
+.dsp-tabs b { font-weight: 600; margin-left: 4px; font-family: "IBM Plex Mono", monospace; }
+.dsp-list tr.on td { background: color-mix(in srgb, var(--spend) 8%, transparent); }
+.dsp-list .logo, .dsp-case h2 .logo { width: 16px; height: 16px; vertical-align: -3px; }
+.dsp-stake { font-size: 20px; }
+.dsp-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin: 12px 0; }
+@media (max-width: 860px) { .dsp-grid { grid-template-columns: 1fr; } }
+.dsp-grid h3, .dsp-case h3 { font-size: 13px; margin: 12px 0 6px; }
+.dsp-order, .dsp-parcel { border: 1px solid var(--rule); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; font-size: 13px; }
+.dsp-parcel a { margin-left: 6px; font-size: 12px; }
+.dsp-scan { font-size: 12px; color: var(--revenue); margin-top: 2px; }
+.dsp-msg { border-radius: 8px; padding: 8px 12px; margin-bottom: 8px; font-size: 13px; border: 1px solid var(--rule); }
+.dsp-msg.customer { background: color-mix(in srgb, var(--profit) 8%, transparent); }
+.dsp-msg.paypal, .dsp-msg.bank { background: color-mix(in srgb, var(--spend) 8%, transparent); }
+.dsp-msg .hint { margin-left: 6px; }
+.dsp-ai { margin: 12px 0; }
+.dsp-ai .notice { margin-top: 10px; }
+.dsp-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; margin: 12px 0; }
+.dsp-form { flex-basis: 100%; display: flex; flex-direction: column; gap: 8px; border: 1px solid var(--rule); border-radius: 8px; padding: 12px; }
+.dsp-form.danger { border-color: var(--loss); }
+.dsp-form h4 { margin: 0; font-size: 14px; }
+.dsp-form label { display: flex; flex-direction: column; gap: 4px; }
+.dsp-form label:has(input[type=checkbox]) { flex-direction: row; align-items: center; }
+.dsp-form textarea { width: 100%; font: inherit; }
+.dsp-link { display: inline-flex; gap: 6px; margin-left: 8px; }
+.dsp-log { font-size: 12px; margin: 3px 0; }

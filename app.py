@@ -42,6 +42,7 @@ import cog
 import invoices
 import invoice_ai
 import suppliers
+import disputes
 import mail_client
 import gmail_send
 import mail_labels
@@ -3296,6 +3297,389 @@ async def api_cash_statement(start: str, end: str = None, currency: str = None):
 
 
 # ---------------------------------------------------------------- expenses desk
+
+# ---------------------------------------------------------------- disputes desk
+
+@app.get("/disputes", response_class=HTMLResponse)
+def disputes_page():
+    return _page("disputes.html", ("disputes.js", "nav.js", "styles.css", "skin.css", "chat.js"))
+
+
+_disp = {"at": 0.0, "problems": []}
+_disp_lock = asyncio.Lock()
+
+
+def _who(request: Request) -> str:
+    u = getattr(request.state, "user", None) or {}
+    return u.get("name") or u.get("email") or "?"
+
+
+async def _disputes_refresh(force: bool = False) -> list:
+    """Read every PayPal and Airwallex account's disputes (5-minute cache). Open PayPal cases are
+    read in full (deadline, messages, what's allowed); closed ones only when opened."""
+    async with _disp_lock:
+        if not force and time.time() - _disp["at"] < 300:
+            return _disp["problems"]
+        problems = []
+        since = datetime.now(timezone.utc) - timedelta(days=200)
+        sem = asyncio.Semaphore(5)
+
+        async def paypal_one(c, row):
+            known = db.get_dispute(f"pp:{c['id']}:{row.get('dispute_id')}")
+            old = json.loads(known["data"]) if known else {}
+            if old.get("updated") == row.get("update_time") and old.get("full"):
+                return
+            case = disputes.from_paypal(row, c)
+            if case["state"] != "closed":
+                async with sem:
+                    try:
+                        case = disputes.from_paypal(await paypal.dispute(c["client_id"], c["secret"], row["dispute_id"]), c)
+                    except paypal.PayPalError:
+                        pass
+            db.save_dispute(case)
+
+        async def one(c):
+            try:
+                if c["provider"] == "paypal":
+                    rows = await paypal.disputes(c["client_id"], c["secret"], since)
+                    await asyncio.gather(*(paypal_one(c, r) for r in rows))
+                elif c["provider"] == "airwallex":
+                    for d in await awx.disputes(c["client_id"], c["secret"], c.get("account_id")):
+                        db.save_dispute(disputes.from_airwallex(d, c))
+            except (paypal.PayPalError, awx.AirwallexError) as e:
+                problems.append(f"{c['label']}: {e}")
+        await asyncio.gather(*(one(c) for c in db.list_cash_connections()))
+        for row in db.list_disputes():
+            if not row["order_name"]:
+                try:
+                    found = await _dispute_order(json.loads(row["data"]))
+                except Exception:
+                    found = None
+                if found:
+                    db.link_dispute(row["key"], *found)
+        _disp.update(at=time.time(), problems=problems)
+        return problems
+
+
+async def _dispute_order(case: dict):
+    """(store id, order name) of the Shopify order a case is about, or None: by payment id, then by
+    order number, then by amount within 3 hours of the payment."""
+    ids = [x for x in (case.get("txn_id"), case.get("invoice")) if x]
+    with db._conn() as con:
+        for i in ids:
+            r = con.execute("SELECT store_id, order_name FROM order_fees WHERE payment_id = ? LIMIT 1", (i,)).fetchone()
+            if r:
+                return r[0], r[1]
+        if case.get("invoice"):
+            key = cog.order_key(case["invoice"])
+            if cog.tag_of(key):
+                r = con.execute("SELECT store_id, order_name FROM cog_lines WHERE order_name IN (?, ?) LIMIT 1",
+                                (key, "#" + key)).fetchone()
+                if r:
+                    return r[0], r[1]
+    when, amount = case.get("txn_time"), case.get("txn_amount") or case.get("amount")
+    if case["provider"] == "airwallex" and case.get("txn_id") and not when:
+        c = next((x for x in db.list_cash_connections() if x["id"] == case["conn_id"]), None)
+        if c:
+            pi = await awx.payment_intent(c["client_id"], c["secret"], case["txn_id"], c.get("account_id"))
+            when = pi.get("created_at")
+            if pi.get("merchant_order_id") and pi["merchant_order_id"] != case.get("invoice"):
+                return await _dispute_order({**case, "invoice": pi["merchant_order_id"], "txn_time": when,
+                                             "txn_id": ""})
+    if not when or not amount:
+        return None
+    try:
+        t = datetime.fromisoformat(when.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    gw = "%paypal%" if case["provider"] == "paypal" else "%airwallex%"
+    with db._conn() as con:
+        rows = con.execute("SELECT store_id, order_name, created FROM order_fees WHERE lower(gateway) LIKE ?"
+                           " AND abs(amount - ?) < 0.011 AND created BETWEEN ? AND ?",
+                           (gw, amount, (t - timedelta(hours=3)).isoformat()[:19],
+                            (t + timedelta(hours=3)).isoformat()[:19])).fetchall()
+    return (rows[0][0], rows[0][1]) if len(rows) == 1 else None
+
+
+def _dispute_context(store_id, order_name) -> dict:
+    """What ProfitDesk knows about the order: products, parcels + scans, emails with the customer."""
+    if not order_name:
+        return {}
+    stores = {x["id"]: x for x in db.list_stores()}
+    st = stores.get(store_id) or {}
+    with db._conn() as con:
+        lines = [dict(r) for r in con.execute(
+            "SELECT product, quantity, subtotal, created FROM cog_lines WHERE store_id = ? AND order_name = ?"
+            " ORDER BY line_no", (store_id, order_name))]
+        paid = con.execute("SELECT SUM(amount) FROM order_fees WHERE store_id = ? AND order_name = ?",
+                           (store_id, order_name)).fetchone()[0]
+        ships = [dict(r) for r in con.execute(
+            "SELECT number, company, tracking_url, fulfilled_at, status, sub_status, delivered_at, customer, email,"
+            " city, country, destination, events, order_at FROM shipments WHERE store_id = ? AND order_name = ?",
+            (store_id, order_name))]
+    first = ships[0] if ships else {}
+    order = {"name": order_name, "store": (st.get("name") or "").strip(), "currency": st.get("currency") or "",
+             "created": (lines[0]["created"] if lines else first.get("order_at")) or "",
+             "total": paid or sum(l["subtotal"] or 0 for l in lines),
+             "customer": first.get("customer") or "", "email": first.get("email") or "",
+             "city": first.get("city") or "", "country": first.get("country") or "",
+             "items": [{"product": l["product"], "qty": l["quantity"]} for l in lines]}
+    shipments = []
+    for s in ships:
+        if not s["number"]:
+            continue
+        ev = json.loads(s.pop("events") or "[]")
+        shipments.append({**s, "events": [{"time": e.get("time"), "location": e.get("location"),
+                                            "desc": e.get("text")} for e in ev]})
+    emails = []
+    if order["email"] or order_name:
+        with db._conn() as con:
+            tids = [r[0] for r in con.execute(
+                "SELECT id FROM tickets WHERE (customer_email = ? AND ? != '') OR orders LIKE ?",
+                (order["email"].lower(), order["email"], f"%{order_name.lstrip('#')}%"))]
+            if tids:
+                marks = ",".join("?" * len(tids))
+                for m in con.execute(f"SELECT date, direction, text FROM mail_messages WHERE ticket_id IN ({marks})"
+                                     " ORDER BY date", tids):
+                    emails.append({"at": m["date"], "direction": m["direction"],
+                                   "text": ai_brain.new_part(m["text"] or "")[:3000]})
+    return {"order": order, "shipments": shipments, "emails": emails, "refunds": []}
+
+
+def _case_out(row: dict, request: Request = None) -> dict:
+    case = json.loads(row["data"])
+    case.update(store_id=row["store_id"], order_name=row["order_name"], linked_by=row["link_by"],
+                days_left=disputes.days_left(case.get("due")))
+    stores = {x["id"]: x["name"].strip() for x in db.list_stores()}
+    case["store"] = stores.get(row["store_id"], "")
+    if request is not None:
+        u = request.state.user
+        case["can"] = {a: auth.at_least(u, "disputes", disputes.ACTIONS[a][1]) for a in case["actions"]}
+    case["action_names"] = {a: disputes.ACTIONS[a][0] for a in case["actions"]}
+    return case
+
+
+@app.get("/api/disputes")
+async def api_disputes(refresh: int = 0):
+    problems = await _disputes_refresh(bool(refresh))
+    cases = [_case_out(r) for r in db.list_disputes()]
+    for c in cases:
+        c.pop("messages", None)
+    order = {"respond": 0, "waiting": 1, "review": 2, "closed": 3}
+    cases.sort(key=lambda c: (order.get(c["state"], 4), c.get("due") or "9999", c.get("updated") or ""), reverse=False)
+    closed = [c for c in cases if c["state"] == "closed"]
+    closed.sort(key=lambda c: c.get("updated") or "", reverse=True)
+    cases = [c for c in cases if c["state"] != "closed"] + closed
+    counts = defaultdict(int)
+    at_stake = defaultdict(float)
+    for c in cases:
+        counts[c["state"]] += 1
+        if c["state"] != "closed":
+            at_stake[c["currency"]] += c["amount"]
+    return {"cases": cases, "counts": counts, "at_stake": at_stake, "problems": problems,
+            "connected": any(c["provider"] in ("paypal", "airwallex") for c in db.list_cash_connections())}
+
+
+async def _dispute_conn(key: str):
+    row = db.get_dispute(key)
+    if not row:
+        raise HTTPException(404, "That case isn't in the list any more. Refresh.")
+    case = json.loads(row["data"])
+    c = next((x for x in db.list_cash_connections() if x["id"] == case["conn_id"]), None)
+    if not c:
+        raise HTTPException(400, "The account this case belongs to isn't connected any more.")
+    return row, case, c
+
+
+async def _dispute_fresh(key: str) -> dict:
+    """Re-read one case from PayPal / Airwallex now (after an action, or when opened)."""
+    row, case, c = await _dispute_conn(key)
+    try:
+        if case["provider"] == "paypal":
+            case = disputes.from_paypal(await paypal.dispute(c["client_id"], c["secret"], case["id"]), c)
+        else:
+            case = disputes.from_airwallex(await awx.dispute(c["client_id"], c["secret"], case["id"], c.get("account_id")), c)
+    except (paypal.PayPalError, awx.AirwallexError) as e:
+        raise HTTPException(400, str(e))
+    db.save_dispute(case)
+    return db.get_dispute(key)
+
+
+@app.get("/api/disputes/case")
+async def api_dispute(key: str, request: Request):
+    row = await _dispute_fresh(key)
+    if not row["order_name"]:
+        found = await _dispute_order(json.loads(row["data"]))
+        if found:
+            db.link_dispute(key, *found)
+            row = db.get_dispute(key)
+    case = _case_out(row, request)
+    ctx = _dispute_context(row["store_id"], row["order_name"])
+    case["context"] = ctx
+    case["log"] = db.dispute_log(key)
+    case["has_ai"] = bool(db.get_setting("anthropic_api_key"))
+    return case
+
+
+@app.post("/api/disputes/link")
+async def api_dispute_link(payload: dict, request: Request):
+    """Link a case to its order by hand (order number, e.g. #BR2342)."""
+    key, name = payload.get("key") or "", (payload.get("order") or "").strip()
+    if not db.get_dispute(key):
+        raise HTTPException(404, "That case isn't in the list any more.")
+    k = cog.order_key(name)
+    with db._conn() as con:
+        r = con.execute("SELECT store_id, order_name FROM cog_lines WHERE order_name IN (?, ?) LIMIT 1",
+                        (k, "#" + k)).fetchone()
+    if not r:
+        raise HTTPException(400, f"No order {name} in any store (orders of the last ~5 months).")
+    db.link_dispute(key, r[0], r[1], _who(request))
+    db.log_dispute(key, _who(request), "Linked order", r[1])
+    return {"ok": True}
+
+
+@app.get("/api/disputes/pack")
+async def api_dispute_pack(key: str, page: int = 0):
+    """The evidence pack, as it will be sent: PDF (PayPal) or PNG pages (Airwallex)."""
+    row = db.get_dispute(key)
+    if not row:
+        raise HTTPException(404, "That case isn't in the list any more.")
+    case = json.loads(row["data"])
+    lines = disputes.pack_lines(case, _dispute_context(row["store_id"], row["order_name"]))
+    title = f"Evidence · {case['reason']} · {row['order_name'] or case['id']}"
+    if case["provider"] == "paypal":
+        return Response(disputes.pack_pdf(title, lines), media_type="application/pdf",
+                        headers={"Content-Disposition": f'inline; filename="evidence {case["id"]}.pdf"'})
+    pngs = disputes.pack_pngs(title, lines)
+    return Response(pngs[min(page, len(pngs) - 1)], media_type="image/png")
+
+
+@app.post("/api/disputes/draft")
+async def api_dispute_draft(payload: dict):
+    key = db.get_setting("anthropic_api_key")
+    if not key:
+        raise HTTPException(400, "Add the Anthropic API key in Settings → AI first.")
+    row = db.get_dispute(payload.get("key") or "")
+    if not row:
+        raise HTTPException(404, "That case isn't in the list any more.")
+    case = json.loads(row["data"])
+    lines = disputes.pack_lines(case, _dispute_context(row["store_id"], row["order_name"]))
+    try:
+        return await disputes.draft(key, case, lines)
+    except RuntimeError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/disputes/act")
+async def api_dispute_act(request: Request):
+    """Do one thing on a case. Form fields: key, action, note, message, amount, offer_type,
+    accept_type, evidence_type, tracking (yes/no), pack (yes/no) + files."""
+    form = await request.form()
+    key, action = form.get("key") or "", form.get("action") or ""
+    if action not in disputes.ACTIONS:
+        raise HTTPException(400, "Pick what to do.")
+    _need_level(request, "disputes", disputes.ACTIONS[action][1])
+    row, case, c = await _dispute_conn(key)
+    if action not in case["actions"]:
+        raise HTTPException(400, "That isn't possible on this case right now (refresh to see what is).")
+    note = (form.get("note") or "").strip()[:2000]
+    files = []
+    for f in form.getlist("files"):
+        if hasattr(f, "read"):
+            data = await f.read()
+            if data:
+                if len(data) > 10 * 1024 * 1024:
+                    raise HTTPException(400, f"{f.filename} is over 10 MB.")
+                ext = (f.filename.rsplit(".", 1)[-1] or "bin").lower()
+                files.append((disputes.safe_name(f.filename, ext), data, f.content_type or "application/octet-stream"))
+    ctx = _dispute_context(row["store_id"], row["order_name"])
+    lines = disputes.pack_lines(case, ctx)
+    title = f"Evidence · {case['reason']} · {row['order_name'] or case['id']}"
+    with_pack = form.get("pack") == "yes" and bool(ctx)
+    try:
+        if case["provider"] == "paypal":
+            body = {}
+            if action == "send-message":
+                if not (form.get("message") or "").strip():
+                    raise HTTPException(400, "Type the message.")
+                body = {"message": form.get("message").strip()[:2000]}
+            elif action in ("provide-evidence", "appeal"):
+                if with_pack:
+                    files.insert(0, (disputes.safe_name(f"Evidence {row['order_name'] or case['id']}", "pdf"),
+                                     disputes.pack_pdf(title, lines), "application/pdf"))
+                ev = {"evidence_type": form.get("evidence_type") or "OTHER", "notes": note or "See the attached evidence."}
+                if form.get("tracking") == "yes" and ctx.get("shipments"):
+                    ev["evidence_type"] = "PROOF_OF_FULFILLMENT"
+                    ev["evidence_info"] = {"tracking_info": [{"carrier_name": "OTHER", "carrier_name_other": (s["company"] or "Carrier")[:60],
+                                                              "tracking_url": s.get("tracking_url") or None,
+                                                              "tracking_number": s["number"]} for s in ctx["shipments"][:5]]}
+                    for t in ev["evidence_info"]["tracking_info"]:
+                        if not t["tracking_url"]:
+                            t.pop("tracking_url")
+                if files:
+                    ev["documents"] = [{"name": n} for n, _, _ in files]
+                body = {"evidences": [ev]}
+            elif action == "provide-supporting-info":
+                if with_pack:
+                    files.insert(0, (disputes.safe_name(f"Evidence {row['order_name'] or case['id']}", "pdf"),
+                                     disputes.pack_pdf(title, lines), "application/pdf"))
+                body = {"notes": note or "See the attached evidence."}
+            elif action == "make-offer":
+                body = {"note": note or "Offer to resolve.", "offer_type": form.get("offer_type") or "REFUND"}
+                if form.get("amount"):
+                    body["offer_amount"] = {"currency_code": case["currency"], "value": f"{float(form.get('amount')):.2f}"}
+            elif action == "accept-claim":
+                body = {"note": note or "Accepted."}
+                if form.get("accept_type"):
+                    body["accept_claim_type"] = form.get("accept_type")
+                if form.get("amount") and form.get("accept_type") == "PARTIAL_REFUND":
+                    body["refund_amount"] = {"currency_code": case["currency"], "value": f"{float(form.get('amount')):.2f}"}
+            elif action == "acknowledge-return-item":
+                body = {"note": note or "Return received."}
+                if form.get("ack_type"):
+                    body["acknowledgement_type"] = form.get("ack_type")
+            else:                                        # escalate, accept-offer, deny-offer
+                body = {"note": note or action.replace("-", " ").capitalize()}
+            await paypal.dispute_action(c["client_id"], c["secret"], case["id"], action, body, files)
+        else:
+            if action == "accept":
+                await awx.dispute_action(c["client_id"], c["secret"], case["id"], "accept",
+                                         {"reason": form.get("accept_reason") or "OTHERS", "description": note,
+                                          "accepted_by": _who(request)}, c.get("account_id"))
+            else:                                        # challenge
+                imgs = [(f"evidence-{n + 1}.png", png, "image/png") for n, png in
+                        enumerate(disputes.pack_pngs(title, lines))] if with_pack else []
+                ids = [await awx.upload_file(c["client_id"], c["secret"], n, d, t, c.get("account_id"))
+                       for n, d, t in imgs + files]
+                body = {"challenged_by": _who(request), "product_type": "PHYSICAL_GOODS",
+                        "product_description": ", ".join(f"{i['qty']} x {i['product']}" for i in
+                                                         (ctx.get("order") or {}).get("items") or [])[:500] or "Physical goods",
+                        "reason": form.get("challenge_reason") or "OTHER_REASONS"}
+                if ids:
+                    body["supporting_documents"] = {"documents": [{"type": "PRIMARY", "file_ids": ids,
+                                                                   "description": (note or "Order, shipping and tracking evidence")[:500]}]}
+                ship = (ctx.get("shipments") or [None])[0]
+                if ship and case["stage"] == "Information request":
+                    body["delivery_info"] = {k: v for k, v in {"tracking_number": ship["number"],
+                                             "shipping_company": ship["company"], "shipped_at": ship["fulfilled_at"],
+                                             "delivered_at": ship.get("delivered_at")}.items() if v}
+                await awx.dispute_action(c["client_id"], c["secret"], case["id"], "challenge", body, c.get("account_id"))
+    except (paypal.PayPalError, awx.AirwallexError) as e:
+        db.log_dispute(key, _who(request), f"{disputes.ACTIONS[action][0]} (failed)", str(e))
+        raise HTTPException(400, str(e))
+    detail = form.get("message") or note
+    if files:
+        detail += f" · files: {', '.join(n for n, _, _ in files)}"
+    if form.get("amount"):
+        detail += f" · {form.get('amount')} {case['currency']}"
+    db.log_dispute(key, _who(request), disputes.ACTIONS[action][0], detail.strip(" ·"))
+    _disp["at"] = 0
+    try:
+        await _dispute_fresh(key)
+    except HTTPException:
+        pass
+    return {"ok": True}
+
 
 @app.get("/expenses", response_class=HTMLResponse)
 def expenses_page():

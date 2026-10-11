@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ProfitDesk · Disputes</title>
+<script>try{var t=localStorage.getItem("pdTheme")||(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");document.documentElement.dataset.theme=t;if((localStorage.getItem("pdSkin")||"new")==="new")document.documentElement.classList.add("skin-new");}catch(e){}</script>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;650;700&display=swap">
+<link rel="stylesheet" href="/static/styles.css">
+<link rel="stylesheet" href="/static/skin.css">
+</head>
+<body>
+<div class="cash-page">
+  <header class="cash-top">
+    <div class="brand" data-section-menu title="Switch section">
+      <span class="brand-mark">PD</span>
+      <span class="brand-name">ProfitDesk</span>
+    </div>
+    <div class="crumb">
+      <h1>Disputes</h1>
+      <p id="sub">PayPal inquiries, claims and chargebacks, and Airwallex card chargebacks.</p>
+    </div>
+    <div class="controls">
+      <button id="refresh" class="btn btn-ghost">Refresh</button>
+    </div>
+  </header>
+
+  <main class="content">
+    <div id="problems" class="warnings"></div>
+    <section id="cards" class="cards"></section>
+    <div class="exp-periods dsp-tabs" id="tabs">
+      <button data-s="respond" class="on">Needs our response <b data-n="respond"></b></button>
+      <button data-s="waiting">Waiting on customer <b data-n="waiting"></b></button>
+      <button data-s="review">PayPal / bank deciding <b data-n="review"></b></button>
+      <button data-s="closed">Closed <b data-n="closed"></b></button>
+    </div>
+    <section class="panel">
+      <div class="table-wrap"><table class="table dsp-list" id="list"><tbody><tr><td class="hint">Reading PayPal and Airwallex…</td></tr></tbody></table></div>
+    </section>
+    <section class="panel dsp-case" id="case" hidden></section>
+  </main>
+</div>
+<div id="toast" class="toast" hidden></div>
+<script src="/static/nav.js"></script>
+<script src="/static/chat.js"></script>
+<script src="/static/disputes.js"></script>
+</body>
+</html>

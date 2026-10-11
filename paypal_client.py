@@ -205,3 +205,95 @@ def payment_fees(rows: list) -> dict:
                                 "currency": amt.get("currency_code"), "amount": _amount(amt),
                                 "time": t.get("transaction_initiation_date")}
     return out
+
+
+# ---------------------------------------------------------------- disputes (Disputes desk)
+# Needs the "Disputes" feature (Customer disputes) ticked on the REST app at developer.paypal.com.
+
+def _dispute_error(r: httpx.Response, what: str) -> PayPalError:
+    if r.status_code == 403:
+        return PayPalError("PayPal refused access to disputes. On developer.paypal.com → Apps & Credentials → "
+                           "this app → Features, tick \"Disputes\", save, wait a few minutes and try again.")
+    try:
+        body = r.json()
+        details = "; ".join(f"{d.get('field', '')} {d.get('issue', '')}".strip() for d in body.get("details") or [])
+        msg = body.get("message") or body.get("name") or r.text[:200]
+        if details:
+            msg += f" ({details})"
+    except ValueError:
+        msg = r.text[:200]
+    return PayPalError(f"PayPal said no to {what}: {msg}")
+
+
+async def disputes(client_id: str, secret: str, since: datetime) -> list:
+    """Every dispute (inquiry, claim, chargeback) updated since `since`, newest first (summary rows)."""
+    out, token_page = [], None
+    async with httpx.AsyncClient(timeout=60) as client:
+        token = await _token(client, client_id, secret)
+        for _ in range(40):
+            params = {"page_size": 50, "update_time_after": since.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")}
+            if token_page:
+                params["next_page_token"] = token_page
+            r = await client.get(f"{API}/v1/customer/disputes", params=params,
+                                 headers={"Authorization": f"Bearer {token}"})
+            if r.status_code >= 400:
+                raise _dispute_error(r, "the list of disputes")
+            body = r.json()
+            out += body.get("items") or []
+            nxt = next((l.get("href") for l in body.get("links") or [] if l.get("rel") == "next"), None)
+            token_page = None
+            if nxt and "next_page_token=" in nxt:
+                token_page = nxt.split("next_page_token=")[1].split("&")[0]
+            if not token_page:
+                break
+    return out
+
+
+async def dispute(client_id: str, secret: str, dispute_id: str) -> dict:
+    async with httpx.AsyncClient(timeout=60) as client:
+        token = await _token(client, client_id, secret)
+        r = await client.get(f"{API}/v1/customer/disputes/{dispute_id}",
+                             headers={"Authorization": f"Bearer {token}"})
+        if r.status_code >= 400:
+            raise _dispute_error(r, "this dispute")
+        return r.json()
+
+
+# action -> (path, file part name). JSON body alone, or multipart: "input" (the JSON) + files.
+DISPUTE_ACTIONS = {
+    "send-message": "message_document",
+    "provide-evidence": "evidence-file",
+    "provide-supporting-info": "supporting document",
+    "appeal": "evidence-file",
+    "accept-claim": "accept-claim-document",
+    "make-offer": None,
+    "escalate": None,
+    "acknowledge-return-item": "acknowledgement_document",
+    "accept-offer": None,
+    "deny-offer": None,
+}
+
+
+async def dispute_action(client_id: str, secret: str, dispute_id: str, action: str, body: dict,
+                         files: list = None) -> dict:
+    """POST one dispute action. files: [(filename, bytes, content type)]."""
+    if action not in DISPUTE_ACTIONS:
+        raise PayPalError("Unknown dispute action.")
+    part = DISPUTE_ACTIONS[action]
+    async with httpx.AsyncClient(timeout=120) as client:
+        token = await _token(client, client_id, secret)
+        url = f"{API}/v1/customer/disputes/{dispute_id}/{action}"
+        head = {"Authorization": f"Bearer {token}"}
+        if files and part:
+            import json as _json
+            multipart = [("input", (None, _json.dumps(body), "application/json"))]
+            multipart += [(part, (name, data, ctype)) for name, data, ctype in files]
+            r = await client.post(url, headers=head, files=multipart)
+        else:
+            r = await client.post(url, headers=head, json=body)
+        if r.status_code >= 400:
+            raise _dispute_error(r, action.replace("-", " "))
+        try:
+            return r.json()
+        except ValueError:
+            return {}

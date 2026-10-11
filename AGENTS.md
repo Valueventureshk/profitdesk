@@ -58,6 +58,7 @@ file and have it work.
 | `statement.py` | The statement pop-up: opening → movements → closing, sales check |
 | `adbills.py` | Ads payable: Meta balance, Google spend since its last card charge |
 | `cog.py` | **COG engine**: orders sheet → per-store product costs → cost of every order line |
+| `disputes.py` `static/disputes.*` | **Disputes desk**: PayPal cases + Airwallex chargebacks in one shape, order evidence pack (PDF/PNG, bundled Noto Sans in `assets/`), AI draft (Sonnet), actions |
 | `suppliers.py` | **Supplier accounts**: opening + fulfilled orders' COG − Airwallex payments = owed; invoice expected vs invoiced (COG page → Suppliers) |
 | `invoices.py` `invoice_ai.py` | Supplier invoices: read (PDF/Excel), match to orders, price + bundle check; AI second reading |
 | `static/cog.html` `cog.js` | COG + Products Monitor page (Check COG, Products) |
@@ -90,11 +91,13 @@ file and have it work.
   `.env` (Shopify/Google client ids and secrets, API versions). Values never in chat.
 - To check the live app, use a browser where the owner is logged in and call the
   app's own `/api/...` routes. Don't use the owner's personal Chrome without asking.
-- People and access (`users.role`, `users.desks`): owner (everything, incl. Settings,
-  connections, people, backups), write (work in their desks: upload invoices,
-  approve prices, refresh COG), read (view only). Desks: profit, cash, cog. Enforced in
-  the login middleware (`_denied`, `_DESK_PATHS`, `_WRITE_OK`); pages hide
-  `data-owner-only` / `data-write-only` elements to match. New people get a temporary
+- People and access: owner (everything, incl. Settings, connections, people, backups) or staff
+  with a level per desk in `users.access` JSON (`auth.access_of`; people from before keep
+  write→Work, read→View). View = GET only; Work = what `_WRITE_OK` lists; Manage = every other
+  change on that desk, plus `_need_level(request, desk, "manage")` inside routes (e.g. dispute
+  refunds/accepts/offers). Presets in People: Manager, VA (Inbox+SCM), Customer service, Viewer.
+  Pages hide `data-write-only` (View), `data-manage-only` (below Manage, for the page's desk),
+  `data-owner-only` (connections/settings). New people get a temporary
   password and must choose their own at first login (`/change-password`).
 - Inbox: mailboxes are read every 2 min. Replying (Railway Hobby blocks SMTP): each mailbox
   signs in once with Google for gmail.send only (`gmail_send.py`, Settings → Support mailboxes →
@@ -142,6 +145,12 @@ file and have it work.
   (`/proxy/track/sizechart`, so stores need the App proxy). cm→in converts measurement columns only.
   Product Importer setting `size_chart_mode`: none / chart (assign one) / ai (read the source's
   size-chart image, one chart per source product shared by all target stores).
+- Disputes desk (desk `disputes`, `/disputes`): reads each PayPal / Airwallex connection's disputes
+  (5-min cache, open PayPal cases read in full) into `disputes`; team actions in `dispute_log`.
+  Order found by payment id (order_fees), order number, or amount within 3 h; else link by hand.
+  Actions only as PayPal's links / Airwallex's status allow (`disputes.ACTIONS`, with the level each
+  needs). PayPal needs the app's "Disputes" feature; Airwallex key needs Payment disputes + File upload.
+  PayPal multipart: part "input" (JSON) + file parts named per the spec (evidence-file, message_document...).
 - Business clock is Hong Kong (`CASH_TIMEZONE`). Each store has its own clock;
   "today" is the furthest-ahead store's date.
 

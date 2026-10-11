@@ -288,6 +288,26 @@ CREATE TABLE IF NOT EXISTS cash_snapshots (
 -- Expenses desk: the owner's category picks. key = a payee ("payee:pgs tech
 -- limited", "merchant:canva") or one transaction ("tx:<id>"). Suggestions are
 -- the AI's guesses for payees nobody has picked yet.
+CREATE TABLE IF NOT EXISTS disputes (
+    key        TEXT PRIMARY KEY,         -- pp:<connection>:<id> | awx:<connection>:<id>
+    provider   TEXT NOT NULL,
+    state      TEXT,                     -- respond | waiting | review | closed
+    due        TEXT,
+    data       TEXT NOT NULL,            -- the case in the desk's shape (disputes.py)
+    store_id   INTEGER,                  -- the Shopify order it's about, once found
+    order_name TEXT,
+    link_by    TEXT,                     -- someone linked the order by hand
+    fetched_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS dispute_log (
+    id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    key    TEXT NOT NULL,
+    at     TEXT NOT NULL DEFAULT (datetime('now')),
+    who    TEXT,
+    action TEXT NOT NULL,
+    detail TEXT
+);
+CREATE INDEX IF NOT EXISTS dispute_log_key ON dispute_log (key);
 CREATE TABLE IF NOT EXISTS supplier_accounts (
     name           TEXT PRIMARY KEY,     -- as on the orders sheet / invoices (Dayone, Graypop...)
     opening_date   TEXT,                 -- business clock: the account counts from this day
@@ -1468,3 +1488,40 @@ def set_supplier_payee(key: str, supplier, user: str):
         else:
             con.execute("INSERT OR REPLACE INTO supplier_payees (key, supplier, set_by, set_at)"
                         " VALUES (?,?,?,datetime('now'))", (key, supplier, user))
+
+
+def save_dispute(case: dict):
+    import json
+    with _conn() as con:
+        con.execute("INSERT INTO disputes (key, provider, state, due, data, fetched_at) VALUES (?,?,?,?,?,datetime('now'))"
+                    " ON CONFLICT(key) DO UPDATE SET state = excluded.state, due = excluded.due,"
+                    " data = excluded.data, fetched_at = excluded.fetched_at",
+                    (case["key"], case["provider"], case["state"], case.get("due"), json.dumps(case)))
+
+
+def list_disputes() -> list:
+    with _conn() as con:
+        return [dict(r) for r in con.execute("SELECT * FROM disputes")]
+
+
+def get_dispute(key: str):
+    with _conn() as con:
+        r = con.execute("SELECT * FROM disputes WHERE key = ?", (key,)).fetchone()
+    return dict(r) if r else None
+
+
+def link_dispute(key: str, store_id, order_name, by: str = None):
+    with _conn() as con:
+        con.execute("UPDATE disputes SET store_id = ?, order_name = ?, link_by = ? WHERE key = ?",
+                    (store_id, order_name, by, key))
+
+
+def log_dispute(key: str, who: str, action: str, detail: str = ""):
+    with _conn() as con:
+        con.execute("INSERT INTO dispute_log (key, who, action, detail) VALUES (?,?,?,?)",
+                    (key, who, action, (detail or "")[:4000]))
+
+
+def dispute_log(key: str) -> list:
+    with _conn() as con:
+        return [dict(r) for r in con.execute("SELECT * FROM dispute_log WHERE key = ? ORDER BY id DESC", (key,))]

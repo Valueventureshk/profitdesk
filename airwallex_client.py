@@ -228,3 +228,88 @@ async def payment_fees(client_id: str, api_key: str, since: datetime, account_id
             except AirwallexError:
                 continue
     return {order_of[s]: v for s, v in by_attempt.items() if s in order_of}
+
+
+# ---------------------------------------------------------------- disputes (Disputes desk)
+# Card chargebacks on payments taken through Airwallex. The API key needs Payment disputes
+# (view + edit) and File upload.
+
+FILES_API = "https://files.airwallex.com"
+
+
+def _dispute_error(r: httpx.Response, what: str) -> AirwallexError:
+    if r.status_code in (401, 403):
+        return AirwallexError("Airwallex refused access to disputes. Give the API key Payment disputes "
+                              "(view and edit) and File upload access, in Airwallex → Developer → API keys.")
+    try:
+        body = r.json()
+        msg = body.get("message") or body.get("code") or r.text[:200]
+    except ValueError:
+        msg = r.text[:200]
+    return AirwallexError(f"Airwallex said no to {what}: {msg}")
+
+
+async def disputes(client_id: str, api_key: str, account_id: str = None, pages: int = 10) -> list:
+    """Payment disputes on this account, newest first."""
+    out = []
+    async with httpx.AsyncClient(timeout=60) as client:
+        token = await _token(client, client_id, api_key, account_id)
+        params = {"page_size": 100}
+        for _ in range(pages):
+            r = await client.get(f"{API}/api/v1/pa/payment_disputes", params=params,
+                                 headers={"Authorization": f"Bearer {token}"})
+            if r.status_code >= 400:
+                raise _dispute_error(r, "the list of disputes")
+            body = r.json()
+            out += body.get("items") or []
+            nxt = body.get("page_after")
+            if not nxt or not body.get("items"):
+                break
+            params = {"page_size": 100, "page": nxt}
+    return out
+
+
+async def dispute(client_id: str, api_key: str, dispute_id: str, account_id: str = None) -> dict:
+    async with httpx.AsyncClient(timeout=60) as client:
+        token = await _token(client, client_id, api_key, account_id)
+        r = await client.get(f"{API}/api/v1/pa/payment_disputes/{dispute_id}",
+                             headers={"Authorization": f"Bearer {token}"})
+        if r.status_code >= 400:
+            raise _dispute_error(r, "this dispute")
+        return r.json()
+
+
+async def payment_intent(client_id: str, api_key: str, intent_id: str, account_id: str = None) -> dict:
+    async with httpx.AsyncClient(timeout=60) as client:
+        token = await _token(client, client_id, api_key, account_id)
+        r = await client.get(f"{API}/api/v1/pa/payment_intents/{intent_id}",
+                             headers={"Authorization": f"Bearer {token}"})
+        return r.json() if r.status_code < 400 else {}
+
+
+async def upload_file(client_id: str, api_key: str, name: str, data: bytes, ctype: str,
+                      account_id: str = None) -> str:
+    """Upload one evidence file; returns its file_id."""
+    async with httpx.AsyncClient(timeout=120) as client:
+        token = await _token(client, client_id, api_key, account_id)
+        r = await client.post(f"{FILES_API}/api/v1/files/upload", headers={"Authorization": f"Bearer {token}"},
+                              files={"file": (name[-50:], data, ctype)}, data={"notes": name[:50]})
+        if r.status_code >= 400:
+            raise _dispute_error(r, f"uploading {name}")
+        return r.json().get("file_id")
+
+
+async def dispute_action(client_id: str, api_key: str, dispute_id: str, action: str, body: dict,
+                         account_id: str = None) -> dict:
+    """action: accept | challenge. A fresh request_id makes each call safe to retry."""
+    if action not in ("accept", "challenge"):
+        raise AirwallexError("Unknown dispute action.")
+    import uuid
+    async with httpx.AsyncClient(timeout=120) as client:
+        token = await _token(client, client_id, api_key, account_id)
+        r = await client.post(f"{API}/api/v1/pa/payment_disputes/{dispute_id}/{action}",
+                              headers={"Authorization": f"Bearer {token}"},
+                              json={"request_id": str(uuid.uuid4()), **body})
+        if r.status_code >= 400:
+            raise _dispute_error(r, action)
+        return r.json()
