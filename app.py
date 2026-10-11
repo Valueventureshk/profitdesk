@@ -873,6 +873,8 @@ async def _ai_check_invoice(iid: int):
         await _recost_invoice(iid)                   # its lines are left out until someone decides
     else:
         db.set_invoice_ai(iid, "agreed", cost)
+        if inv.get("ai_check") == "review" or "was on hold" in (inv.get("ai_note") or ""):   # count it again
+            await _recost_invoice(iid)
 
 
 @app.post("/api/invoices/{invoice_id:int}/review")
@@ -884,7 +886,10 @@ async def api_invoice_review(invoice_id: int, payload: dict):
         raise HTTPException(404, "That invoice no longer exists.")
     use = payload.get("use")
     if use == "recheck":
-        db.set_invoice_ai(invoice_id, "pending", "Queued")
+        db.set_invoice_ai(invoice_id, "pending", "Queued", json.loads(inv["review"]) if inv.get("review") else None)
+        if inv.get("ai_check") == "review":
+            with db._conn() as con:                  # remember it was on hold, so clearing it re-costs
+                con.execute("UPDATE invoices SET ai_note = 'Queued (was on hold)' WHERE id = ?", (invoice_id,))
         asyncio.create_task(_ai_check_invoice(invoice_id))
         return {"ok": True}
     if use == "file":
