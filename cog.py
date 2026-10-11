@@ -49,6 +49,10 @@ def base_name(name: str) -> str:
     or is short, like "Black" or "XL")."""
     parts = (name or "").rsplit(" - ", 1)
     if len(parts) == 2 and ("/" in parts[1] or len(parts[1].strip()) <= 20):
+        # sizes with a dash of their own: "Shoes - Black / Women 9 - Men 8" -> "Shoes"
+        more = parts[0].rsplit(" - ", 1)
+        if "/" not in parts[1] and len(more) == 2 and "/" in more[1]:
+            return norm(more[0])
         return norm(parts[0])
     return norm(name)
 
