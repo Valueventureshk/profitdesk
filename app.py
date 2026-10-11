@@ -3040,6 +3040,35 @@ def api_google_sheet(payload: dict):
     return {"ok": True, "sheet_id": sid}
 
 
+@app.get("/api/google/compare")
+async def api_google_compare(days: int = 7):
+    """Owner check before switching stores from the Sheet to the Google Ads API: each linked store's
+    daily spend both ways (store clock days, before any Google tax)."""
+    auth = db.get_google_auth()
+    if not auth:
+        raise HTTPException(400, "Google isn't connected.")
+    end = date.today() - timedelta(days=1)
+    start = end - timedelta(days=max(1, min(days, 30)) - 1)
+    out = []
+
+    async def one(st):
+        row = {"store": st["name"].strip(), "account": st["google_account_name"] or st["google_customer_id"],
+               "source": st["google_source"] or "api"}
+        try:
+            row["sheet"] = await gsheet.daily_spend(auth["refresh_token"], st["google_customer_id"], start.isoformat(),
+                                                    end.isoformat(), st["timezone"])
+        except Exception as e:
+            row["sheet_error"] = str(e)[:160]
+        try:
+            row["api"] = await gads.daily_spend(auth["refresh_token"], st["google_customer_id"], st["google_login_cid"],
+                                                start.isoformat(), end.isoformat())
+        except Exception as e:
+            row["api_error"] = str(e)[:200]
+        out.append(row)
+    await asyncio.gather(*(one(x) for x in db.list_stores() if x.get("google_customer_id") and not demo.is_demo(x)))
+    return {"start": start.isoformat(), "end": end.isoformat(), "stores": sorted(out, key=lambda r: r["store"])}
+
+
 @app.post("/api/google/disconnect")
 def api_google_disconnect():
     db.clear_google_auth()
