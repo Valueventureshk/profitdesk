@@ -93,10 +93,14 @@ def parse(text: str) -> dict:
     }
 
 
-def _status(amount: float, units: float, known) -> dict:
-    """ok / changed / new for an invoice line, by price per item."""
+def _status(amount: float, units: float, known, any_known=None, tier: int = 1) -> dict:
+    """ok / changed / new for an invoice line, by price per item, against earlier prices for the
+    same bundle size (tier = how many of the product were in the order)."""
     unit = amount / (units or 1)
     each = f" each ({units:g} items, {amount:.2f} USD)" if units > 1 else ""
+    if known is None and any_known is not None:
+        return {"status": "new", "previous": None,
+                "note": f"First price for {tier} per order: {unit:.2f} USD each (other quantities: {any_known[1]:.2f})"}
     if known is None:
         return {"status": "new", "previous": None, "note": "First invoice for this product" + (each and f" ·{each}")}
     if abs(known[1] - unit) > 0.05:
@@ -146,8 +150,12 @@ def check(inv: dict, store_of, order_lines: dict, catalog, invoiced: dict) -> di
             row.update(status="duplicate", note=f"Already on invoice {invoiced[key]}")
             out.append(row)
             continue
+        tier = sum((c["quantity"] or 1) for c in candidates
+                   if cog.base_name(c["product"]) == cog.base_name(best["product"])) or 1
         row.update(status="pending", _line=(best["order_name"], best["line_no"]), _qty=best["quantity"] or 1,
-                   _known=catalog.latest(sid, best["product"]) if catalog else None)
+                   tier=tier,
+                   _known=catalog.latest_for(sid, best["product"], tier) if catalog else None,
+                   _any=catalog.latest(sid, best["product"]) if catalog else None)
         out.append(row)
 
     # One invoice line can be for several items (2 pairs = one $26 line). Prices are compared
@@ -161,7 +169,7 @@ def check(inv: dict, store_of, order_lines: dict, catalog, invoiced: dict) -> di
             r.setdefault("units", 1.0)
             continue
         r["units"] = max(1.0, r["_qty"] / per_line[r["_line"]])
-        r.update(_status(r["amount"], r["units"], r.pop("_known")))
+        r.update(_status(r["amount"], r["units"], r.pop("_known"), r.pop("_any"), r["tier"]))
         r.pop("_line", None)
         r.pop("_qty", None)
 

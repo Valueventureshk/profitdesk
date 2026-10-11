@@ -487,6 +487,7 @@ _ADDED_COLUMNS = {
     ],
     "invoice_lines": [
         ("units", "REAL NOT NULL DEFAULT 1"),   # items this line is for (one line can bill 2 pairs)
+        ("tier", "INTEGER"),                    # how many of the product were in the order (bundle size)
         ("check_state", "TEXT"),     # checking (asked the supplier) | kept (supplier corrected: old price stands)
         ("check_by", "TEXT"),
         ("check_at", "TEXT"),
@@ -769,9 +770,9 @@ def save_invoice(inv: dict, checked: dict, filename: str, user: str) -> int:
              filename, user, json.dumps(checked["missing"]))).lastrowid
         con.executemany(
             "INSERT INTO invoice_lines (invoice_id, line_no, order_key, order_name, store_id, title,"
-            " product, amount, status, previous, note, units) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            " product, amount, status, previous, note, units, tier) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [(iid, l["line_no"], l["order"], l.get("order_name"), l["store_id"], l["title"],
-              l["product"], l["amount"], l["status"], l["previous"], l["note"], l.get("units") or 1.0)
+              l["product"], l["amount"], l["status"], l["previous"], l["note"], l.get("units") or 1.0, l.get("tier"))
              for l in checked["lines"]])
     return iid
 

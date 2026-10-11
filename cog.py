@@ -168,13 +168,21 @@ class Catalog:
                 continue
             r["store"] = sid
             self.by_order[(sid, r["order"])].append(r)
-            if r["cog"] and r["cog"] > 0:
-                entry = (r["seq"], r["cog"], r["supplier"], r["day"])
-                self.exact[(sid, norm(r["product"]))].append(entry)
-                self.base[(sid, base_name(r["product"]))].append(entry)
-                if r["subtotal"] and r["subtotal"] > 0:
-                    self.store_cog[sid] += r["cog"]
-                    self.store_sales[sid] += r["subtotal"]
+        # Suppliers price by bundle size (1 pair $16.30, 2 pairs $13 each), so every price is kept
+        # with its tier: how many of that product were in the order (one sheet row per item).
+        tier = defaultdict(int)
+        for (sid, order), rs in self.by_order.items():
+            for r in rs:
+                tier[(sid, order, base_name(r["product"]))] += 1
+        for (sid, order), rs in self.by_order.items():
+            for r in rs:
+                if r["cog"] and r["cog"] > 0:
+                    entry = (r["seq"], r["cog"], r["supplier"], r["day"], tier[(sid, order, base_name(r["product"]))])
+                    self.exact[(sid, norm(r["product"]))].append(entry)
+                    self.base[(sid, base_name(r["product"]))].append(entry)
+                    if r["subtotal"] and r["subtotal"] > 0:
+                        self.store_cog[sid] += r["cog"]
+                        self.store_sales[sid] += r["subtotal"]
 
     def add_invoices(self, lines: list):
         """Uploaded invoice lines (db.invoice_lines with number/date/supplier).
@@ -193,9 +201,18 @@ class Catalog:
             self.inv_by_order[(l["store_id"], l["order_key"])].append(entry)
             if l["status"] != "changed" or l.get("approved_at"):
                 hist = (10 ** 9 + int(l["invoice_id"]) * 1000 + int(l["line_no"]),
-                        l["amount"] / units, entry["supplier"], entry["day"])      # price per item
+                        l["amount"] / units, entry["supplier"], entry["day"],      # price per item
+                        int(l.get("tier") or round(units)))
                 self.exact[(l["store_id"], norm(l["product"]))].append(hist)
                 self.base[(l["store_id"], base_name(l["product"]))].append(hist)
+
+    def latest_for(self, store, product, tier):
+        """Latest price per item for this bundle size (how many in the order), or None."""
+        for hist in (self.exact.get((store, norm(product))), self.base.get((store, base_name(product)))):
+            same = [h for h in hist or [] if len(h) > 4 and h[4] == tier]
+            if same:
+                return max(same)
+        return None
 
     def latest(self, store, product):
         hist = self.exact.get((store, norm(product)))
@@ -269,8 +286,10 @@ def cost_order(order: dict, store, catalog: Catalog, usd_to_store: float) -> lis
                 line["note"] = f"{len(picked)} sheet row(s) for {qty} items"
             out.append(line)
             continue
-        # 2. the product's latest known cost in this store
-        known = catalog.latest(store, name)
+        # 2. the product's latest known cost in this store, for this bundle size if seen before
+        tier_n = sum(max(x["quantity"], 1) for x in order["lines"]
+                     if base_name(f"{x['title']} - {x['variant']}" if x["variant"] else x["title"]) == base_name(name))
+        known = catalog.latest_for(store, name, tier_n) or catalog.latest(store, name)
         if known:
             line.update(cost=known[1] * qty, source="catalog", supplier=known[2],
                         note=f"Last cost {known[1]:.2f} USD ({known[3] or 'earlier'})")

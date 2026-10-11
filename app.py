@@ -812,6 +812,9 @@ async def api_invoice_recheck():
     with db._conn() as con:
         qty = {(r[0], r[1], r[2]): r[3] for r in con.execute(
             "SELECT store_id, order_name, product, SUM(quantity) FROM cog_lines GROUP BY store_id, order_name, product")}
+    tiers = defaultdict(int)                        # how many of a product (any variant) were in the order
+    for (sid, oname, prod), q in qty.items():
+        tiers[(sid, oname, cog.base_name(prod or ""))] += int(q or 1)
     per = {}
     for l in lines:
         if l["status"] not in ("unmatched", "duplicate", "superseded") and l.get("product"):
@@ -827,16 +830,18 @@ async def api_invoice_recheck():
             continue
         q = qty.get((l["store_id"], l["order_name"], l["product"])) or 1
         units = max(1.0, q / per[(l["invoice_id"], l["store_id"], l["order_name"], l["product"])])
-        st = invoices._status(l["amount"], units, catalog.latest(l["store_id"], l["product"]))
+        tier = tiers.get((l["store_id"], l["order_name"], cog.base_name(l["product"]))) or int(round(units))
+        st = invoices._status(l["amount"], units, catalog.latest_for(l["store_id"], l["product"], tier),
+                              catalog.latest(l["store_id"], l["product"]), tier)
         if st["status"] != "changed" and l["status"] == "changed":
             changed["now_ok"] += 1
         if st["status"] == "changed":
             changed["still_changed"] += 1
         with db._conn() as con:
-            con.execute("UPDATE invoice_lines SET units = ?, status = ?, previous = ?, note = ? WHERE invoice_id = ? AND line_no = ?",
-                        (units, st["status"], st["previous"], st["note"], l["invoice_id"], l["line_no"]))
+            con.execute("UPDATE invoice_lines SET units = ?, tier = ?, status = ?, previous = ?, note = ? WHERE invoice_id = ? AND line_no = ?",
+                        (units, tier, st["status"], st["previous"], st["note"], l["invoice_id"], l["line_no"]))
         changed["lines"] += 1
-        catalog.add_invoices([{**l, **st, "units": units}])
+        catalog.add_invoices([{**l, **st, "units": units, "tier": tier}])
         touched[l["store_id"]].add(l["order_name"])
     _cog.pop("catalog", None)
     _cog["catalog"] = catalog
