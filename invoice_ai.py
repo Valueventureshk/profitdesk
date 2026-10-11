@@ -60,15 +60,26 @@ class AIError(RuntimeError):
     pass
 
 
+PRIVATE = re.compile(r"phone|street|address|zip|postal|e-?mail|city|^shipping name$|^name$|tracking", re.I)
+
+
 def _xlsx_cells(data: bytes) -> str:
+    """Every sheet's rows as tab-separated text, without empty columns (some exports carry hundreds)
+    or the customer's personal details (name, phone, address), which the AI doesn't need."""
     import openpyxl
     wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True, read_only=True)
     out = []
     for ws in wb.worksheets:
+        rows = [["" if v is None else str(v).strip() for v in r] for r in ws.iter_rows(values_only=True)]
+        rows = [r for r in rows if any(r)]
+        if not rows:
+            continue
+        width = max(len(r) for r in rows)
+        rows = [r + [""] * (width - len(r)) for r in rows]
+        head = rows[0]
+        keep = [c for c in range(width) if any(r[c] for r in rows) and not PRIVATE.search(head[c] or "")]
         out.append(f"## Sheet {ws.title}")
-        for row in ws.iter_rows(values_only=True):
-            if any(v not in (None, "") for v in row):
-                out.append("\t".join("" if v is None else str(v) for v in row))
+        out += ["\t".join(r[c] for c in keep) for r in rows]
     return "\n".join(out)
 
 
@@ -77,11 +88,12 @@ async def read(api_key: str, data: bytes, filename: str = "") -> dict:
     if data[:4] == b"%PDF":
         content = [{"type": "document", "source": {"type": "base64", "media_type": "application/pdf",
                                                    "data": base64.b64encode(data).decode()}}]
-    elif data[:2] == b"PK":
-        content = [{"type": "text", "text": f"Excel invoice {filename}, every non-empty row (tab separated):\n\n"
-                                            + _xlsx_cells(data)[:400000]}]
     else:
-        content = [{"type": "text", "text": f"Invoice {filename}:\n\n" + data.decode("utf-8", "ignore")[:400000]}]
+        body = _xlsx_cells(data) if data[:2] == b"PK" else data.decode("utf-8", "ignore")
+        if len(body) > 400000:                       # never let it read half a file
+            raise AIError("The file is too big for one AI reading.")
+        content = [{"type": "text", "text": (f"Excel invoice {filename}, every non-empty row (tab separated):\n\n"
+                                             if data[:2] == b"PK" else f"Invoice {filename}:\n\n") + body}]
     content.append({"type": "text", "text": "Read this invoice."})
     client = anthropic.AsyncAnthropic(api_key=api_key, max_retries=3, timeout=600)
     messages = [{"role": "user", "content": content}]
