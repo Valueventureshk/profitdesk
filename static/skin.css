@@ -121,6 +121,10 @@ html.skin-new[data-theme="dark"] #app .cards > .card:nth-child(8) { order: 4; }
 html.skin-new[data-theme="dark"] #app .cards > .card:nth-child(4) { order: 5; }
 html.skin-new[data-theme="dark"] #app .cards > .card:nth-child(6) { order: 6; }
 html.skin-new[data-theme="dark"] #app .cards > .card:nth-child(7) { order: 7; grid-column: span 2; }
+/* the wide "Net available" card: right under the heroes (Canvas), under the matrix (Command) */
+html.skin-new:not([data-theme="dark"]) #app .cards > .card:nth-child(9) { order: 2; }
+html.skin-new[data-theme="dark"] #app .cards > .card:nth-child(9) { order: 8; }
+html.skin-new #app .cards { grid-auto-flow: row dense; }
 /* big hero numbers */
 html.skin-new #app .cards > .card:nth-child(1) .card-value,
 html.skin-new #app .cards > .card:nth-child(5) .card-value { font-size: 52px; letter-spacing: -.045em; margin-top: 14px; }
