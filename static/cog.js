@@ -391,6 +391,111 @@ async function showInvoice(id) {
   $("invDetail").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
+/* ------------------------------------------------ suppliers */
+
+let supData = null;
+
+async function loadSuppliers() {
+  let d;
+  try { d = await api("/api/suppliers"); } catch (e) { $("supList").innerHTML = `<div class="warn">${esc(e.message)}</div>`; return; }
+  supData = d;
+  const usd = (v) => money(v, "USD");
+  const day = (iso) => (iso ? niceDate(iso) : "—");
+  const names = d.names;
+  const pick = (sel) => `<option value="">Choose supplier…</option>${names.map((n) => `<option${n === sel ? " selected" : ""}>${esc(n)}</option>`).join("")}
+      <option value="__none">Not a supplier payment</option>`;
+  $("supBadge").hidden = !d.to_assign.length;
+  $("supBadge").textContent = d.to_assign.length;
+  $("supAssign").innerHTML = (d.problems || []).map((p) => `<div class="warn">${esc(p)}</div>`).join("") + (d.to_assign.length ? `
+    <section class="panel sup-assign"><div class="panel-head"><h2>Supplier payments to assign <span class="hint">(${d.to_assign.length})</span></h2></div>
+      <p class="hint">Payments filed under “Supplier payments” in Expenses since ${day(d.payments_from)}. Say which supplier each went to;
+        tick “every payment to this payee” when the payee is always the same supplier.</p>
+      <div class="table-wrap"><table class="table"><thead><tr><th>Date</th><th>Paid to</th><th>Amount</th><th>Supplier</th><th></th></tr></thead><tbody>
+      ${d.to_assign.map((p, i) => `<tr><td>${day(p.day)}</td><td class="name">${esc(p.name)}${p.detail ? `<span class="sub">${esc(p.detail)}</span>` : ""}</td>
+        <td>${money(p.amount, p.currency)}${p.currency !== "USD" ? `<span class="sub">${usd(p.usd)}</span>` : ""}</td>
+        <td data-owner-only><select class="control" data-pay="${i}">${pick("")}</select>
+          <label class="hint sup-all"><input type="checkbox" data-all="${i}"${p.key.startsWith("payee:") ? " checked" : ""}> every payment to this payee</label></td>
+        <td data-owner-only><button class="btn btn-sm btn-primary" data-save="${i}">Save</button></td></tr>`).join("")}
+      </tbody></table></div></section>` : "");
+  for (const b of $("supAssign").querySelectorAll("[data-save]")) b.onclick = async () => {
+    const i = +b.dataset.save, p = d.to_assign[i];
+    const v = $("supAssign").querySelector(`[data-pay="${i}"]`).value;
+    if (!v) { toast("Choose the supplier first.", true); return; }
+    const all = $("supAssign").querySelector(`[data-all="${i}"]`).checked;
+    b.disabled = true;
+    try {
+      await api("/api/suppliers/payee", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: all ? p.key : "tx:" + p.id, supplier: v === "__none" ? "" : v }) });
+      toast("Saved.");
+      loadSuppliers();
+    } catch (e) { toast(e.message, true); b.disabled = false; }
+  };
+
+  $("supList").innerHTML = d.suppliers.map((s, n) => {
+    const opening = `<form class="sup-open" data-open="${n}" data-owner-only>
+        <label>Opening date <input type="date" class="control" name="date" value="${esc(s.opening_date || "")}" max="${esc(d.today)}" required></label>
+        <label>Owed to ${esc(s.supplier)} that morning (USD) <input type="number" step="0.01" class="control" name="amount" value="${s.set ? s.opening : ""}" placeholder="0.00" required></label>
+        <label>Note <input class="control" name="note" placeholder="e.g. from their statement of 1 Oct"></label>
+        <button class="btn btn-sm btn-primary">Save opening</button>
+        <span class="hint">Negative if they held a credit of yours.</span></form>`;
+    const invRows = s.invoices.map((i) => `<tr class="clickable" data-inv="${i.id}"><td>${day(i.date)}</td>
+        <td class="name">#${esc(i.number || "—")}<span class="sub">${esc(i.store)}</span></td>
+        <td>${usd(i.total)}</td><td>${usd(i.expected)}</td>
+        <td class="${Math.abs(i.difference) >= 0.01 ? "est" : ""}">${i.difference > 0 ? "+" : ""}${usd(i.difference)}</td>
+        <td>${i.matches ? `<span class="src invoice">Matches</span>`
+          : `<span class="src bad">${i.issues.length} to check</span><span class="sub">${esc(i.issues.slice(0, 3).join(" · "))}${i.issues.length > 3 ? " …" : ""}</span>`}</td></tr>`).join("");
+    const pays = s.payments.map((p) => `<tr><td>${day(p.day)}</td><td class="name">${esc(p.name)}</td>
+        <td>${money(p.amount, p.currency)}</td><td>${usd(p.usd)}</td>
+        <td data-owner-only><button class="btn btn-sm btn-ghost" data-unpay="${esc(p.by_payment ? "tx:" + p.id : p.key)}"
+          title="${p.by_payment ? "Assign this payment again" : "Assign payments to this payee again"}">Change</button></td></tr>`).join("");
+    const late = s.late_count ? `<details class="sup-late"><summary><span class="src catalog">${s.late_count} orders</span>
+        fulfilled over 14 days ago and on no invoice yet · ${usd(s.late_cost)}</summary>
+        <div class="table-wrap"><table class="table"><thead><tr><th>Fulfilled</th><th>Order</th><th>Store</th><th>Items</th><th>Expected COG</th></tr></thead><tbody>
+        ${s.late.map((o) => `<tr><td>${day(o.day)}</td><td class="name">${esc(o.order)}</td><td>${esc(o.store)}</td><td>${o.items}</td><td>${usd(o.cost)}</td></tr>`).join("")}
+        </tbody></table></div><p class="hint">Ask ${esc(s.supplier)} whether these will be on the next invoice.</p></details>` : "";
+    return `<section class="panel sup-card">
+      <div class="panel-head"><h2>${esc(s.supplier)}</h2>
+        <div class="sup-owed"><span class="hint">Owed now</span><b>${s.set ? usd(s.owed) : "—"}</b></div></div>
+      ${s.set ? `<div class="sup-eq">
+          <div><span class="hint">Opening ${day(s.opening_date)}</span><b>${usd(s.opening)}</b></div><i>+</i>
+          <div><span class="hint">Fulfilled since · ${s.orders} orders</span><b>${usd(s.fulfilled)}</b>
+            <span class="sub">${usd(s.invoiced)} invoiced · ${usd(s.not_invoiced)} not invoiced yet${s.estimated ? ` · <span class="est">${usd(s.estimated)} estimated</span>` : ""}</span></div><i>−</i>
+          <div><span class="hint">Paid since · ${s.payments.length}</span><b>${usd(s.paid)}</b></div><i>=</i>
+          <div><span class="hint">Owed now</span><b>${usd(s.owed)}</b></div></div>
+          <details class="sup-change" data-owner-only><summary class="hint">Change the opening balance</summary>${opening}</details>`
+        : `<div class="warn">Set the opening balance to start this account: the date to count from and what you owed ${esc(s.supplier)} that morning.</div>${opening}`}
+      ${late}
+      ${s.stores.length ? `<div class="table-wrap"><table class="table sup-stores"><thead><tr><th>Store</th><th>Fulfilled orders</th><th>COG</th><th>Not invoiced yet</th></tr></thead><tbody>
+        ${s.stores.map((x) => `<tr><td class="name">${esc(x.store)}</td><td>${x.orders}</td><td>${usd(x.cost)}</td><td>${usd(x.not_invoiced)}</td></tr>`).join("")}</tbody></table></div>` : ""}
+      ${invRows ? `<h3 class="sup-h">Invoices since ${day(s.opening_date)}</h3><div class="table-wrap"><table class="table"><thead><tr><th>Date</th><th>Invoice</th>
+        <th>Invoiced</th><th title="ProfitDesk's own costing of the same orders: single prices, bundles at singles less the usual discount">Expected</th><th>Difference</th><th>Check</th></tr></thead><tbody>${invRows}</tbody></table></div>` : ""}
+      ${pays ? `<h3 class="sup-h">Payments since ${day(s.opening_date)}</h3><div class="table-wrap"><table class="table"><thead><tr><th>Date</th><th>Paid to</th><th>Amount</th><th>USD</th><th></th></tr></thead><tbody>${pays}</tbody></table></div>` : ""}
+    </section>`;
+  }).join("") || `<p class="hint">No supplier orders yet.</p>`;
+
+  for (const f of $("supList").querySelectorAll("[data-open]")) f.onsubmit = async (e) => {
+    e.preventDefault();
+    const s = d.suppliers[+f.dataset.open], fd = new FormData(f);
+    try {
+      await api("/api/suppliers/opening", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ supplier: s.supplier, date: fd.get("date"), amount: fd.get("amount"), note: fd.get("note") }) });
+      toast(`Opening balance saved for ${s.supplier}.`);
+      loadSuppliers();
+    } catch (err) { toast(err.message, true); }
+  };
+  for (const b of $("supList").querySelectorAll("[data-unpay]")) b.onclick = async () => {
+    try {
+      await api("/api/suppliers/payee", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: b.dataset.unpay, supplier: null }) });
+      loadSuppliers();
+    } catch (e) { toast(e.message, true); }
+  };
+  for (const tr of $("supList").querySelectorAll("[data-inv]")) tr.onclick = () => {
+    document.querySelector('.cog-tab[data-tab="invoices"]').click();
+    showInvoice(tr.dataset.inv);
+  };
+}
+
 const INV_OK = /\.(pdf|xlsx|csv|txt)$/i;
 
 // Everything inside dropped folders (and their sub-folders), like dragging the whole "INVOICES" folder.
@@ -474,6 +579,8 @@ for (const b of document.querySelectorAll(".cog-tab")) {
     $("checkView").hidden = b.dataset.tab !== "check";
     $("productsView").hidden = b.dataset.tab !== "products";
     $("invoicesView").hidden = b.dataset.tab !== "invoices";
+    $("suppliersView").hidden = b.dataset.tab !== "suppliers";
+    if (b.dataset.tab === "suppliers") loadSuppliers();
     if (b.dataset.tab === "products") loadProducts();
     if (b.dataset.tab === "invoices") loadInvoices();
   };

@@ -1505,3 +1505,19 @@ tr.pc-checking td { background: rgba(245,158,11,.05); }
 .inv-ai { margin: 0 0 12px; }
 .ai-ok { font-size: 11px; color: var(--profit); white-space: nowrap; }
 .bundle-off { white-space: normal; font-size: 11px; }
+
+/* COG: supplier accounts */
+.sup-intro { margin: 0 0 14px; max-width: 760px; }
+.sup-owed { text-align: right; }
+.sup-owed b { display: block; font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; font-size: 24px; }
+.sup-eq { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin: 4px 0 12px; }
+.sup-eq > div { display: flex; flex-direction: column; }
+.sup-eq b { font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; font-size: 17px; }
+.sup-eq i { font-style: normal; color: var(--revenue); font-size: 18px; }
+.sup-eq .sub { font-size: 11px; color: var(--revenue); }
+.sup-open { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin: 10px 0; }
+.sup-open label { display: flex; flex-direction: column; font-size: 12px; gap: 4px; }
+.sup-change summary, .sup-late summary { cursor: pointer; margin: 6px 0; }
+.sup-h { font-size: 13px; margin: 16px 0 6px; }
+.sup-all { display: block; margin-top: 4px; }
+.sup-card + .sup-card { margin-top: 16px; }

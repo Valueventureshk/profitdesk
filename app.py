@@ -41,6 +41,7 @@ import expenses
 import cog
 import invoices
 import invoice_ai
+import suppliers
 import mail_client
 import gmail_send
 import mail_labels
@@ -117,7 +118,7 @@ _OPEN = {"/login", "/api/login", "/api/logout", "/api/first-user", "/api/first-r
 _DESK_PATHS = {
     "profit": ("/", "/api/dashboard", "/api/history"),
     "cash": ("/cash", "/api/cash"),
-    "cog": ("/cog", "/api/cog", "/api/invoices"),
+    "cog": ("/cog", "/api/cog", "/api/invoices", "/api/suppliers"),
     "inbox": ("/inbox", "/api/inbox"),
     "reports": ("/reports", "/api/reports"),
     "expenses": ("/expenses", "/api/expenses"),
@@ -926,6 +927,110 @@ async def api_invoice_ai_check_all():
         await asyncio.gather(*(_ai_check_invoice(i) for i in todo))
     asyncio.create_task(run())
     return {"ok": True, "queued": len(todo)}
+
+
+@app.get("/api/suppliers")
+async def api_suppliers():
+    """Every supplier's account: opening + fulfilled orders' COG - payments = owed now."""
+    accounts = db.supplier_accounts()
+    today = datetime.now(CASH_TZ).date()
+    starts = [a["opening_date"] for a in accounts.values() if a.get("opening_date")]
+    since_day = min([date.fromisoformat(d) for d in starts] + [today - timedelta(days=60)])
+    stores = {x["id"]: x["name"].strip() for x in db.list_stores()}
+    with db._conn() as con:
+        lines = [dict(r) for r in con.execute(
+            "SELECT store_id, order_name, supplier, source, cost_usd, quantity, cancelled FROM cog_lines"
+            " WHERE day >= ?", ((since_day - timedelta(days=45)).isoformat(),))]
+        fulfilled = {(r[0], r[1]): r[2] for r in con.execute(
+            "SELECT store_id, order_name, MIN(fulfilled_at) FROM shipments WHERE fulfilled_at IS NOT NULL"
+            " AND fulfilled_at != '' GROUP BY store_id, order_name")}
+    on_invoice = set()
+    inv_lines = defaultdict(list)
+    for l in db.invoice_lines():
+        inv_lines[l["invoice_id"]].append(l)
+        if l["status"] not in ("unmatched", "duplicate", "superseded") and l.get("ai_check") != "review":
+            on_invoice.add((l["store_id"], cog.order_key(l["order_key"])))
+    for l in lines:
+        l["on_invoice"] = (l["store_id"], cog.order_key(l["order_name"])) in on_invoice
+    orders = suppliers.fulfilled_orders(lines, fulfilled, CASH_TZ)
+
+    # payments: what the Expenses desk files under "Supplier payments", told apart by payee
+    payments, to_assign, problems = [], [], []
+    if db.list_cash_connections():
+        t0 = datetime.combine(since_day, clock.min, CASH_TZ)
+        moves, problems = await _expense_moves(t0, datetime.now(CASH_TZ) + timedelta(minutes=1))
+        table = await fx.table("USD")
+        factor = (lambda code: fx.factor(table, code, "USD")) if table else (lambda code: 1.0)
+        rules = {r["key"]: r["category"] for r in db.expense_rules()}
+        payees = db.supplier_payees()
+        for it in expenses.apply_rules(expenses.classify(moves, factor), rules):
+            if it["category"] != "supplier" or it["amount"] <= 0:
+                continue
+            p = {"id": it["id"], "key": it["key"], "name": it["name"], "detail": it["detail"],
+                 "time": it["time"].isoformat(), "day": it["time"].astimezone(CASH_TZ).date().isoformat(),
+                 "amount": it["amount"], "currency": it["currency"],
+                 "usd": it["amount"] * factor(it["currency"])}
+            who = payees.get("tx:" + str(it["id"]), payees.get(it["key"]))
+            if who is None:
+                to_assign.append(p)
+            elif who:
+                payments.append({**p, "supplier": who, "by_payment": ("tx:" + str(it["id"])) in payees})
+
+    catalog = await _catalog()
+    rate_of = lambda sid, n: catalog.bundle_rate(sid, n)[0] if catalog else 0.0
+    invs = defaultdict(list)
+    for i in db.list_invoices():
+        i["missing_list"] = json.loads(i["missing"] or "[]")
+        chk = suppliers.invoice_check(i, inv_lines.get(i["id"], []), rate_of)
+        invs[i["supplier"] or "Unknown supplier"].append({
+            "id": i["id"], "number": i["number"], "date": i["date"], "store": stores.get(i["store_id"], "Several"),
+            "total": i["total"], "ai_check": i.get("ai_check"), **chk})
+
+    names = set(accounts) | {o["supplier"] for o in orders} | set(invs)
+    out = []
+    for name in sorted(names, key=lambda n: (n == "Unknown supplier", n.lower())):
+        acct = accounts.get(name) or {"name": name}
+        led = suppliers.ledger(acct, [o for o in orders if o["supplier"] == name],
+                               [p for p in payments if p["supplier"] == name], invs.get(name, []), today.isoformat())
+        led["stores"] = [{"store": stores.get(sid, "?"), **v} for sid, v in
+                         sorted(led["stores"].items(), key=lambda kv: -kv[1]["cost"])]
+        for o in led["late"]:
+            o["store"] = stores.get(o["store_id"], "?")
+        out.append(led)
+    return {"suppliers": out, "to_assign": sorted(to_assign, key=lambda p: p["time"], reverse=True),
+            "names": sorted(n for n in names if n != "Unknown supplier"), "today": today.isoformat(),
+            "problems": problems, "payments_from": since_day.isoformat()}
+
+
+@app.post("/api/suppliers/opening")
+async def api_supplier_opening(payload: dict, request: Request):
+    """Owner sets a supplier's opening balance: what was owed to them on a date (USD)."""
+    name = (payload.get("supplier") or "").strip()
+    try:
+        day = date.fromisoformat(payload.get("date") or "")
+        amount = float(payload.get("amount"))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "Pick the date and type the amount owed that day (0 if nothing).")
+    if not name:
+        raise HTTPException(400, "Which supplier?")
+    if day > datetime.now(CASH_TZ).date() or (datetime.now(CASH_TZ).date() - day).days > 380:
+        raise HTTPException(400, "The opening date must be within the last year.")
+    user = (getattr(request.state, "user", None) or {}).get("email", "")
+    db.set_supplier_account(name, day.isoformat(), amount, (payload.get("note") or "")[:300], user)
+    return {"ok": True}
+
+
+@app.post("/api/suppliers/payee")
+async def api_supplier_payee(payload: dict, request: Request):
+    """Which supplier a payment (or every payment to that payee) went to. supplier '' = not a
+    supplier; null = forget the choice."""
+    key = (payload.get("key") or "").strip()
+    if not key:
+        raise HTTPException(400, "Which payment?")
+    sup = payload.get("supplier")
+    user = (getattr(request.state, "user", None) or {}).get("email", "")
+    db.set_supplier_payee(key, sup.strip() if isinstance(sup, str) else None, user)
+    return {"ok": True}
 
 
 @app.get("/api/invoices")

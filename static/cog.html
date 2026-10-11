@@ -33,6 +33,7 @@
       <button class="cog-tab on" data-tab="check" role="tab">Check COG</button>
       <button class="cog-tab" data-tab="invoices" role="tab">Invoices <span id="invBadge" class="tab-badge" hidden></span></button>
       <button class="cog-tab" data-tab="products" role="tab">Products</button>
+      <button class="cog-tab" data-tab="suppliers" role="tab">Suppliers <span id="supBadge" class="tab-badge" hidden></span></button>
     </div>
 
     <section id="checkView">
@@ -77,6 +78,14 @@
         <div class="arc-bar" id="invArchiveBar"></div>
         <div class="table-wrap"><table class="table" id="invList"></table></div>
       </section>
+    </section>
+
+    <section id="suppliersView" hidden>
+      <p class="hint sup-intro">What you owe each supplier right now: the opening balance, plus the COG of every
+        order they fulfilled since, minus what you paid them (Airwallex). Each invoice is checked against
+        ProfitDesk's own costing of the same orders.</p>
+      <div id="supAssign"></div>
+      <div id="supList"><p class="hint">Loading…</p></div>
     </section>
 
     <section id="productsView" hidden>

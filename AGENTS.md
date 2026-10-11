@@ -58,6 +58,7 @@ file and have it work.
 | `statement.py` | The statement pop-up: opening → movements → closing, sales check |
 | `adbills.py` | Ads payable: Meta balance, Google spend since its last card charge |
 | `cog.py` | **COG engine**: orders sheet → per-store product costs → cost of every order line |
+| `suppliers.py` | **Supplier accounts**: opening + fulfilled orders' COG − Airwallex payments = owed; invoice expected vs invoiced (COG page → Suppliers) |
 | `invoices.py` `invoice_ai.py` | Supplier invoices: read (PDF/Excel), match to orders, price + bundle check; AI second reading |
 | `static/cog.html` `cog.js` | COG + Products Monitor page (Check COG, Products) |
 | `mail_client.py` | Store support mailboxes over IMAP (app password): Inbox + Sent, read-only |
@@ -182,6 +183,13 @@ COG rules (replaced the old per-store "Other costs %", which is no longer used):
   differ → `review` and its lines are left out of all costs until a person picks a reading on the
   invoice (first reading / AI's reading / ask again). Files the normal reader can't read are read by
   the AI alone (`ai_only`) when its orders add up to the printed total.
+- Supplier accounts (`suppliers.py`, `/api/suppliers`, COG → Suppliers): per supplier, all stores.
+  Owner sets the opening (date + USD owed that morning, `supplier_accounts`). Orders count when
+  fulfilled (first `shipments.fulfilled_at`, HK clock) at their cog_lines cost; lines without a
+  supplier go to the store's usual one. Payments = Expenses items in category "supplier", assigned
+  to a supplier per payee or per payment (`supplier_payees`, '' = not a supplier). Invoice check:
+  expected = single prices (bundles: singles less the usual discount); "matches" = no price to decide,
+  nothing unmatched/billed twice/missing, AI agrees. Orders fulfilled 14+ days ago on no invoice are listed.
 - Next steps planned: invoice upload (AI reading) with price-change flags and
   approval, supplier payments ledger from Airwallex payouts, write cost to Shopify
   "Cost per item" (needs read_products, read_inventory, write_inventory).

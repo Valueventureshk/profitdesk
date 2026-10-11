@@ -288,6 +288,20 @@ CREATE TABLE IF NOT EXISTS cash_snapshots (
 -- Expenses desk: the owner's category picks. key = a payee ("payee:pgs tech
 -- limited", "merchant:canva") or one transaction ("tx:<id>"). Suggestions are
 -- the AI's guesses for payees nobody has picked yet.
+CREATE TABLE IF NOT EXISTS supplier_accounts (
+    name           TEXT PRIMARY KEY,     -- as on the orders sheet / invoices (Dayone, Graypop...)
+    opening_date   TEXT,                 -- business clock: the account counts from this day
+    opening_amount REAL NOT NULL DEFAULT 0,   -- USD owed to them that morning (negative = credit)
+    note           TEXT,
+    set_by         TEXT,
+    set_at         TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS supplier_payees (
+    key        TEXT PRIMARY KEY,         -- an Expenses payee key, or tx:<id> for one payment
+    supplier   TEXT NOT NULL,            -- '' = not a supplier payment
+    set_by     TEXT,
+    set_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
 CREATE TABLE IF NOT EXISTS expense_rules (
     key        TEXT PRIMARY KEY,
     category   TEXT NOT NULL,
@@ -1425,3 +1439,31 @@ def clear_google_auth():
             "UPDATE stores SET google_customer_id = NULL, google_login_cid = NULL,"
             " google_account_name = NULL"
         )
+
+
+def supplier_accounts() -> dict:
+    with _conn() as con:
+        return {r["name"]: dict(r) for r in con.execute("SELECT * FROM supplier_accounts")}
+
+
+def set_supplier_account(name: str, opening_date: str, amount: float, note: str, user: str):
+    with _conn() as con:
+        con.execute("INSERT INTO supplier_accounts (name, opening_date, opening_amount, note, set_by, set_at)"
+                    " VALUES (?,?,?,?,?,datetime('now')) ON CONFLICT(name) DO UPDATE SET"
+                    " opening_date = excluded.opening_date, opening_amount = excluded.opening_amount,"
+                    " note = excluded.note, set_by = excluded.set_by, set_at = excluded.set_at",
+                    (name, opening_date, amount, note, user))
+
+
+def supplier_payees() -> dict:
+    with _conn() as con:
+        return {r["key"]: r["supplier"] for r in con.execute("SELECT key, supplier FROM supplier_payees")}
+
+
+def set_supplier_payee(key: str, supplier, user: str):
+    with _conn() as con:
+        if supplier is None:
+            con.execute("DELETE FROM supplier_payees WHERE key = ?", (key,))
+        else:
+            con.execute("INSERT OR REPLACE INTO supplier_payees (key, supplier, set_by, set_at)"
+                        " VALUES (?,?,?,datetime('now'))", (key, supplier, user))
