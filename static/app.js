@@ -261,15 +261,25 @@ function renderFxNote(d) {
 }
 
 // Desktop with the dark sidebar: the store list column goes; its two dropdowns sit in the top bar.
+// Phones and narrow windows keep them in the store row, as before.
+const WIDE = window.matchMedia("(min-width: 1100px)");
 function placePickers() {
-  if (!document.body.classList.contains("has-rail") || $("topPicks")) return;
-  const box = document.createElement("span");
-  box.id = "topPicks";
-  box.className = "top-picks";
-  box.append($("viewPick"), $("storePick"));
-  document.querySelector(".topbar .controls").prepend(box);
+  const top = document.body.classList.contains("has-rail") && WIDE.matches;
+  let box = $("topPicks");
+  if (top && !box) {
+    box = document.createElement("span");
+    box.id = "topPicks";
+    box.className = "top-picks";
+    document.querySelector(".topbar .controls").prepend(box);
+  }
+  if (top && box.childElementCount < 2) box.append($("viewPick"), $("storePick"));
+  if (!top && box) {
+    $("storeNav").after($("viewPick"), $("storePick"));
+    box.remove();
+  }
 }
 window.addEventListener("pd-rail", placePickers);
+WIDE.addEventListener("change", placePickers);
 
 function renderNav() {
   placePickers();
