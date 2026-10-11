@@ -58,6 +58,7 @@ file and have it work.
 | `statement.py` | The statement pop-up: opening → movements → closing, sales check |
 | `adbills.py` | Ads payable: Meta balance, Google spend since its last card charge |
 | `cog.py` | **COG engine**: orders sheet → per-store product costs → cost of every order line |
+| `google_desk.py` `static/googleads.*` | Apps → **Google Ads**: Google product report (shopping_performance_view) grouped per Shopify product with variants, vs Shopify sales / COG / fees, 7/14/30 days, breakeven ROAS + verdicts |
 | `recordings.py` `static/recordings.*` `static/recorder.js` | Apps → **Session Recordings**: rrweb recorder (ScriptTag, off by default per store), chunks via app proxy `/apps/track/rec` → `<DB dir>/recordings/`, replay with rrweb-player |
 | `disputes.py` `static/disputes.*` | **Disputes desk**: PayPal cases + Airwallex chargebacks in one shape, order evidence pack (PDF/PNG, bundled Noto Sans in `assets/`), AI draft (Sonnet), actions |
 | `suppliers.py` | **Supplier accounts**: opening + fulfilled orders' COG − Airwallex payments = owed; invoice expected vs invoiced (COG page → Suppliers) |

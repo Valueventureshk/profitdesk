@@ -44,6 +44,7 @@ import invoice_ai
 import suppliers
 import disputes
 import recordings
+import google_desk
 import mail_client
 import gmail_send
 import mail_labels
@@ -129,11 +130,12 @@ _DESK_PATHS = {
     "sizecharts": ("/sizecharts", "/api/sizecharts"),
     "disputes": ("/disputes", "/api/disputes"),
     "recordings": ("/recordings", "/api/recordings"),
+    "googleads": ("/googleads", "/api/googleads"),
 }
 _DESK_HOME = {"profit": "/", "cash": "/cash", "cog": "/cog", "inbox": "/inbox", "reports": "/reports",
              "expenses": "/expenses", "scm": "/scm", "importer": "/importer",
              "sizecharts": "/sizecharts", "disputes": "/disputes",
-             "recordings": "/recordings"}
+             "recordings": "/recordings", "googleads": "/googleads"}
 # Shared by every desk's pages: the user's own details and the dropdown lists.
 _EVERYONE = {"/api/me", "/api/me/password", "/api/logout", "/change-password",
              "/api/setup", "/api/chat"}
@@ -5599,6 +5601,99 @@ async def _sc_script(store, on: bool) -> str:
     except Exception as e:
         return str(e)[:200]
     return ""
+
+
+# ---------------------------------------------------------------- Apps → Google Ads desk
+
+@app.get("/googleads", response_class=HTMLResponse)
+def googleads_page():
+    return _page("googleads.html", ("googleads.js", "nav.js", "styles.css", "skin.css", "chat.js"))
+
+
+_gdesk_cache: dict = {}
+PRODUCT_INFO = """query($ids: [ID!]!) { nodes(ids: $ids) { ... on Product { legacyResourceId title handle status
+  featuredImage { url(transform: {maxWidth: 120}) }
+  variants(first: 100) { nodes { legacyResourceId title price image { url(transform: {maxWidth: 120}) } } } } } }"""
+
+
+async def _product_info(store, pids: list) -> dict:
+    client = ShopifyClient(store["shop_domain"], store["access_token"])
+    out = {}
+    ids = [f"gid://shopify/Product/{p}" for p in pids if p.isdigit()]
+    for i in range(0, len(ids), 100):
+        try:
+            got = await client.gql(PRODUCT_INFO, {"ids": ids[i:i + 100]})
+        except Exception:
+            continue
+        for n in got.get("nodes") or []:
+            if not n:
+                continue
+            out[str(n["legacyResourceId"])] = {
+                "title": n["title"], "handle": n["handle"], "status": (n.get("status") or "").title(),
+                "image": (n.get("featuredImage") or {}).get("url"),
+                "variants": {str(v["legacyResourceId"]): {"title": v["title"], "price": float(v["price"] or 0) or None,
+                                                          "image": (v.get("image") or {}).get("url")}
+                             for v in (n.get("variants") or {}).get("nodes") or []}}
+    return out
+
+
+@app.get("/api/googleads")
+async def api_googleads(store: int = 0, fresh: int = 0, min_spend: float = None):
+    """One store's Google products for 7 / 14 / 30 days, one row per Shopify product (google_desk.py)."""
+    stores = [x for x in db.list_stores() if x.get("google_customer_id") and not demo.is_demo(x)]
+    listing = [{"id": x["id"], "name": x["name"].strip(), "currency": x["currency"],
+                "direct": x.get("google_source") != "sheet"} for x in stores]
+    st = next((x for x in stores if x["id"] == store), None) or next((x for x in stores if x.get("google_source") != "sheet"), None)
+    if not st:
+        return {"stores": listing, "error": "No store reads Google Ads directly yet."}
+    if st.get("google_source") == "sheet":
+        return {"stores": listing, "store": st["id"],
+                "error": f"{st['name'].strip()}'s ad account isn't readable directly yet: give shop.valueventures@gmail.com "
+                         "access to it in Google Ads, then switch it from the Sheet."}
+    min_spend = min_spend if min_spend is not None else float(db.get_setting(f"gads_min:{st['id']}") or 25)
+    key = (st["id"], min_spend)
+    hit = _gdesk_cache.get(key)
+    if hit and not fresh and time.time() - hit[0] < 1200:
+        return {**hit[1], "stores": listing, "cached_at": hit[0]}
+    auth = db.get_google_auth()
+    if not auth:
+        raise HTTPException(400, "Google isn't connected (Settings → Google Ads).")
+    today = _now_in(st).date()
+    start = today - timedelta(days=29)
+    try:
+        rows, gcur = await gads.product_report(auth["refresh_token"], st["google_customer_id"], st["google_login_cid"],
+                                               start.isoformat(), today.isoformat())
+    except gads.GoogleAdsError as e:
+        raise HTTPException(400, str(e))
+    with db._conn() as con:
+        lines = [dict(r) for r in con.execute(
+            "SELECT day, product, variant_id, product_id, quantity, subtotal, cost_usd, cancelled FROM cog_lines"
+            " WHERE store_id = ? AND day >= ?", (st["id"], start.isoformat()))]
+        fee = con.execute("SELECT SUM(COALESCE(fee_actual, fee_est)), SUM(amount) FROM order_fees"
+                          " WHERE store_id = ? AND day >= ?", (st["id"], start.isoformat())).fetchone()
+    fee_rate = (fee[0] / fee[1]) if fee and fee[1] else 0.0
+    pids = {google_desk.parse_item(r["item_id"])[0] for r in rows}
+    pids |= {str(l["product_id"] or "").rsplit("/", 1)[-1] for l in lines if l.get("product_id")}
+    info = await _product_info(st, sorted(p for p in pids if p))
+    table = await fx.table(st["currency"])
+    f = lambda c: fx.factor(table, c, st["currency"]) if table and c else 1.0
+    out = google_desk.build(rows, f(gcur or st.get("google_currency") or st["currency"]), lines, f("USD"), info,
+                            fee_rate, today.isoformat(), min_spend)
+    out.update(store=st["id"], currency=st["currency"], google_currency=gcur, fee_rate=fee_rate, min_spend=min_spend,
+               today=today.isoformat(), shop=st["shop_domain"],
+               missing_product_ids=not any(l.get("product_id") for l in lines))
+    _gdesk_cache[key] = (time.time(), out)
+    return {**out, "stores": listing, "cached_at": time.time()}
+
+
+@app.put("/api/googleads/settings/{store_id}")
+def api_googleads_settings(store_id: int, payload: dict):
+    try:
+        v = max(0.0, min(10000.0, float(payload.get("min_spend"))))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "Type the minimum spend.")
+    db.set_setting(f"gads_min:{store_id}", str(v))
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------- Apps → Session Recordings

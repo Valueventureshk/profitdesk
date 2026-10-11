@@ -555,7 +555,7 @@ _ADDED_COLUMNS = {
         ("check_by", "TEXT"),
         ("check_at", "TEXT"),
     ],
-    "cog_lines": [("single_usd", "REAL")],     # the line at single-item prices (bundles show their discount)
+    "cog_lines": [("single_usd", "REAL"), ("product_id", "TEXT")],   # product_id: Shopify product GID     # the line at single-item prices (bundles show their discount)
     "shipments": [("province", "TEXT"), ("fulfillment_gid", "TEXT"), ("pushed", "TEXT NOT NULL DEFAULT ''"),
                   ("push_error", "TEXT")],
     "stores": [
@@ -755,11 +755,12 @@ def replace_cog_lines(store_id: int, start: str, end: str, rows: list):
                     (store_id, start, end))
         con.executemany(
             "INSERT OR REPLACE INTO cog_lines (store_id, order_name, line_no, day, created, cancelled,"
-            " fulfillment, product, sku, variant_id, quantity, subtotal, cost_usd, source, supplier, note, single_usd)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " fulfillment, product, sku, variant_id, quantity, subtotal, cost_usd, source, supplier, note, single_usd, product_id)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [(store_id, r["order"], r["line_no"], r["day"], r["created"], int(r["cancelled"]),
               r.get("fulfillment"), r["product"], r.get("sku"), r.get("variant_id"), r["quantity"],
-              r["subtotal"], r.get("cost"), r.get("source"), r.get("supplier"), r.get("note"), r.get("single"))
+              r["subtotal"], r.get("cost"), r.get("source"), r.get("supplier"), r.get("note"), r.get("single"),
+              r.get("product_id"))
              for r in rows])
 
 

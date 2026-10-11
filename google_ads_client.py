@@ -260,3 +260,30 @@ async def daily_spend(refresh_token, customer_id, login_cid, start, end, store_t
         if start <= d <= end:
             spend[d] = spend.get(d, 0.0) + c
     return spend
+
+
+# ---------------------------------------------------------------- Google Ads desk (Apps)
+
+async def product_report(refresh_token, customer_id, login_cid, start, end):
+    """Every Shopping / Performance Max product's daily figures (account's own days):
+    [{date, item_id, title, impressions, clicks, cost, conversions, value}] plus the account currency.
+    One request (pages of 10,000 rows) whatever the number of products."""
+    _, _, dev_token, version = _cfg()
+    access = await _access_token(refresh_token)
+    query = ("SELECT customer.currency_code, segments.date, segments.product_item_id, segments.product_title, "
+             "metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.conversions, metrics.conversions_value "
+             f"FROM shopping_performance_view WHERE segments.date BETWEEN '{start}' AND '{end}'")
+    cid = str(customer_id).replace("-", "")
+    async with httpx.AsyncClient(timeout=120) as client:
+        rows = await _search(client, version, cid, query, _headers(access, dev_token, login_cid or customer_id))
+    out, currency = [], ""
+    for r in rows:
+        seg, m = r.get("segments", {}), r.get("metrics", {})
+        currency = currency or (r.get("customer") or {}).get("currencyCode", "")
+        out.append({"date": seg.get("date"), "item_id": seg.get("productItemId") or "",
+                    "title": seg.get("productTitle") or "",
+                    "impressions": int(m.get("impressions", 0) or 0), "clicks": int(m.get("clicks", 0) or 0),
+                    "cost": int(m.get("costMicros", 0) or 0) / 1_000_000,
+                    "conversions": float(m.get("conversions", 0) or 0),
+                    "value": float(m.get("conversionsValue", 0) or 0)})
+    return out, currency

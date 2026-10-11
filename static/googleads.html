@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ProfitDesk · Google Ads</title>
+<script>try{var t=localStorage.getItem("pdTheme")||(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");document.documentElement.dataset.theme=t;if((localStorage.getItem("pdSkin")||"new")==="new")document.documentElement.classList.add("skin-new");}catch(e){}</script>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;650;700&display=swap">
+<link rel="stylesheet" href="/static/styles.css">
+<link rel="stylesheet" href="/static/skin.css">
+</head>
+<body>
+<div class="cash-page">
+  <header class="cash-top">
+    <div class="brand" data-section-menu title="Switch section">
+      <span class="brand-mark">PD</span>
+      <span class="brand-name">ProfitDesk</span>
+    </div>
+    <div class="crumb">
+      <h1>Google Ads</h1>
+      <p id="sub">Every product's Google results next to its real Shopify sales, COG and profit.</p>
+    </div>
+    <div class="controls">
+      <select id="store" class="control"></select>
+      <button id="refresh" class="btn btn-ghost">Refresh</button>
+    </div>
+  </header>
+
+  <main class="content">
+    <div id="problems" class="warnings"></div>
+    <section id="cards" class="cards gd-cards"></section>
+    <section class="panel gd-panel">
+      <div class="panel-head"><h2>Product performance <span class="hint" id="count"></span></h2>
+        <span class="gd-tools">
+          <span class="exp-periods gd-win" id="win"><button data-w="7">7 days</button><button data-w="14">14 days</button><button data-w="30" class="on">30 days</button></span>
+          <input id="q" class="control" type="search" placeholder="Search products">
+          <select id="verdict" class="control"><option value="">Every verdict</option><option value="scale">Scale</option><option value="keep">Keep</option><option value="watch">Watch</option><option value="cut">Cut</option><option value="learning">Learning</option></select>
+          <select id="status" class="control"><option value="">Any status</option><option value="Active">Active</option><option value="Draft">Draft</option><option value="Archived">Archived</option></select>
+          <button class="btn btn-sm btn-ghost" id="csv">⬇ Export CSV</button>
+        </span></div>
+      <div class="table-wrap gd-wrap"><table class="table gd-table" id="table"><tbody><tr><td class="hint">Loading…</td></tr></tbody></table></div>
+      <div class="gd-more" id="more"></div>
+      <details class="gd-help"><summary class="hint">How these numbers work</summary><div class="hint" id="help"></div></details>
+    </section>
+    <div class="rec-modal" id="vModal" hidden><div class="rec-box gd-vbox"><div class="rec-head"><b id="vTitle">Variants</b>
+      <span><span class="exp-periods gd-win" id="vWin"><button data-w="7">7 days</button><button data-w="14">14 days</button><button data-w="30" class="on">30 days</button></span>
+      <button class="btn btn-sm btn-ghost" id="vClose">Close</button></span></div>
+      <section class="cards gd-cards" id="vCards"></section>
+      <div class="table-wrap"><table class="table gd-table" id="vTable"></table></div></div></div>
+  </main>
+</div>
+<div id="toast" class="toast" hidden></div>
+<script src="/static/nav.js"></script>
+<script src="/static/chat.js"></script>
+<script src="/static/googleads.js"></script>
+</body>
+</html>
