@@ -1453,7 +1453,20 @@ html { transition: background-color .2s ease; }
 }
 
 /* COG: price changes to decide */
+.pc-table { table-layout: fixed; width: 100%; }
 .pc-table td { vertical-align: middle; }
+.pc-table th:nth-child(1), .pc-table td:nth-child(1) { width: 36%; }
+.pc-table th:nth-child(2), .pc-table td:nth-child(2) { width: 10%; }
+.pc-table th:nth-child(3), .pc-table td:nth-child(3) { width: 15%; }
+.pc-table th:nth-child(4), .pc-table td:nth-child(4) { width: 14%; }
+.pc-table th:nth-child(5), .pc-table td:nth-child(5) { width: 25%; }
+.pc-table td.name { white-space: normal; line-height: 1.35; }
+.pc-table td.name { display: table-cell; }
+.pc-table td.name > :first-child, .pc-table td.name { overflow-wrap: anywhere; }
+.pc-table td:nth-child(4) { white-space: normal; overflow: hidden; text-overflow: ellipsis; font-size: 12px; }
+.pc-table td:nth-child(2), .pc-table td:nth-child(3) { white-space: nowrap; }
+.pc-table td.pc-btns { white-space: normal; }
+.pc-table .pc-btns .btn { white-space: nowrap; }
 .pc-dir { font-size: 11.5px; font-weight: 600; margin-left: 4px; }
 .pc-dir.down { color: var(--up); }
 .pc-dir.up { color: #B45309; }
