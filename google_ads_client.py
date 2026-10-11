@@ -152,7 +152,7 @@ async def _search(client, version, customer_id, query, headers):
     url = f"https://googleads.googleapis.com/{version}/customers/{customer_id}/googleAds:search"
     rows, page = [], None
     while True:
-        body = {"query": query, "pageSize": 10000}
+        body = {"query": query}                     # Google fixes the page size (10,000 rows)
         if page:
             body["pageToken"] = page
         r = await client.post(url, headers=headers, json=body)

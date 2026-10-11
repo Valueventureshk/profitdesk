@@ -3063,7 +3063,7 @@ async def api_google_compare(days: int = 7):
             row["api"] = await gads.daily_spend(auth["refresh_token"], st["google_customer_id"], st["google_login_cid"],
                                                 start.isoformat(), end.isoformat())
         except Exception as e:
-            row["api_error"] = str(e)[:200]
+            row["api_error"] = str(e)[:600]
         out.append(row)
     await asyncio.gather(*(one(x) for x in db.list_stores() if x.get("google_customer_id") and not demo.is_demo(x)))
     return {"start": start.isoformat(), "end": end.isoformat(), "stores": sorted(out, key=lambda r: r["store"])}
