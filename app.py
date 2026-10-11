@@ -803,6 +803,51 @@ def api_invoice(invoice_id: int):
     return {"invoice": inv, "lines": db.invoice_lines(invoice_id)}
 
 
+@app.post("/api/invoices/recheck")
+async def api_invoice_recheck():
+    """Re-check every uploaded invoice line in date order with prices per item (a line can be for
+    several items), rebuild the product cost history, and re-cost the orders. Decisions already
+    made (use new price / checking / keep old) stay."""
+    lines = db.invoice_lines()
+    with db._conn() as con:
+        qty = {(r[0], r[1], r[2]): r[3] for r in con.execute(
+            "SELECT store_id, order_name, product, SUM(quantity) FROM cog_lines GROUP BY store_id, order_name, product")}
+    per = {}
+    for l in lines:
+        if l["status"] not in ("unmatched", "duplicate", "superseded") and l.get("product"):
+            k = (l["invoice_id"], l["store_id"], l["order_name"], l["product"])
+            per[k] = per.get(k, 0) + 1
+    if not _cog.get("tags"):
+        _cog["tags"] = cog.store_tags(db.store_order_names())
+    catalog = cog.Catalog(await _cog_rows(), _cog["tags"])
+    changed = {"lines": 0, "now_ok": 0, "still_changed": 0}
+    touched = defaultdict(set)
+    for l in sorted(lines, key=lambda x: (x.get("date") or "", x["invoice_id"], x["line_no"])):
+        if l["status"] in ("unmatched", "duplicate", "superseded") or not l.get("product"):
+            continue
+        q = qty.get((l["store_id"], l["order_name"], l["product"])) or 1
+        units = max(1.0, q / per[(l["invoice_id"], l["store_id"], l["order_name"], l["product"])])
+        st = invoices._status(l["amount"], units, catalog.latest(l["store_id"], l["product"]))
+        if st["status"] != "changed" and l["status"] == "changed":
+            changed["now_ok"] += 1
+        if st["status"] == "changed":
+            changed["still_changed"] += 1
+        with db._conn() as con:
+            con.execute("UPDATE invoice_lines SET units = ?, status = ?, previous = ?, note = ? WHERE invoice_id = ? AND line_no = ?",
+                        (units, st["status"], st["previous"], st["note"], l["invoice_id"], l["line_no"]))
+        changed["lines"] += 1
+        catalog.add_invoices([{**l, **st, "units": units}])
+        touched[l["store_id"]].add(l["order_name"])
+    _cog.pop("catalog", None)
+    _cog["catalog"] = catalog
+    with db._conn() as con:                         # every order costed from history or estimates too
+        for sid, name in con.execute("SELECT DISTINCT store_id, order_name FROM cog_lines WHERE day >= date('now', '-150 day')"):
+            touched[sid].add(name)
+    for sid, names in touched.items():
+        await _recost(sid, names)
+    return {"ok": True, **changed, "orders": sum(len(v) for v in touched.values())}
+
+
 @app.get("/api/invoices/changes")
 def api_invoice_changes():
     """Every price change still to decide, one row per store + product + new price."""
@@ -811,9 +856,10 @@ def api_invoice_changes():
     for l in db.invoice_lines():
         if l["status"] != "changed" or l["approved_at"] or l.get("check_state") == "kept":
             continue
-        k = (l["store_id"], l["product"], round(l["amount"], 2))
+        unit = round(l["amount"] / (l.get("units") or 1), 2)          # per item
+        k = (l["store_id"], l["product"], unit)
         g = groups.setdefault(k, {"store_id": l["store_id"], "store": stores.get(l["store_id"], "?"), "product": l["product"],
-                                  "new": round(l["amount"], 2), "old": l["previous"], "lines": [], "orders": [],
+                                  "new": unit, "old": l["previous"], "lines": [], "orders": [],
                                   "state": l.get("check_state") or "", "check_by": l.get("check_by"), "check_at": l.get("check_at")})
         g["lines"].append([l["invoice_id"], l["line_no"]])
         g["orders"].append(l["order_name"] or l["order_key"])

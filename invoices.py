@@ -93,6 +93,17 @@ def parse(text: str) -> dict:
     }
 
 
+def _status(amount: float, units: float, known) -> dict:
+    """ok / changed / new for an invoice line, by price per item."""
+    unit = amount / (units or 1)
+    each = f" each ({units:g} items, {amount:.2f} USD)" if units > 1 else ""
+    if known is None:
+        return {"status": "new", "previous": None, "note": "First invoice for this product" + (each and f" ·{each}")}
+    if abs(known[1] - unit) > 0.05:
+        return {"status": "changed", "previous": known[1], "note": f"Was {known[1]:.2f} USD, now {unit:.2f} USD{each}"}
+    return {"status": "ok", "previous": known[1], "note": each.strip()}
+
+
 def check(inv: dict, store_of, order_lines: dict, catalog, invoiced: dict) -> dict:
     """Match and flag every line.
 
@@ -135,15 +146,24 @@ def check(inv: dict, store_of, order_lines: dict, catalog, invoiced: dict) -> di
             row.update(status="duplicate", note=f"Already on invoice {invoiced[key]}")
             out.append(row)
             continue
-        known = catalog.latest(sid, best["product"]) if catalog else None
-        if known is None:
-            row.update(status="new", note="First invoice for this product")
-        elif abs(known[1] - l["amount"]) > 0.05:
-            row.update(status="changed", previous=known[1],
-                       note=f"Was {known[1]:.2f} USD, now {l['amount']:.2f} USD")
-        else:
-            row.update(status="ok", previous=known[1])
+        row.update(status="pending", _line=(best["order_name"], best["line_no"]), _qty=best["quantity"] or 1,
+                   _known=catalog.latest(sid, best["product"]) if catalog else None)
         out.append(row)
+
+    # One invoice line can be for several items (2 pairs = one $26 line). Prices are compared
+    # per item: an order line of 2 billed on 1 invoice line means that line covers 2 items.
+    per_line = {}
+    for r in out:
+        if r.get("status") == "pending":
+            per_line[r["_line"]] = per_line.get(r["_line"], 0) + 1
+    for r in out:
+        if r.get("status") != "pending":
+            r.setdefault("units", 1.0)
+            continue
+        r["units"] = max(1.0, r["_qty"] / per_line[r["_line"]])
+        r.update(_status(r["amount"], r["units"], r.pop("_known")))
+        r.pop("_line", None)
+        r.pop("_qty", None)
 
     # Fulfilled orders inside the invoice's order range that it doesn't include.
     missing = []
