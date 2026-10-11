@@ -26,6 +26,7 @@ from datetime import datetime
 import cog
 
 LINE_RE = re.compile(r"^\s*#?([A-Z&]{0,5}\d{3,8}[A-Z&]{0,4})\s+(.+?)\s+(?:US)?\$\s*([\d,]+\.?\d*)\s*$")
+START_RE = re.compile(r"^\s*#?[A-Z&]{0,5}\d{3,8}[A-Z&]{0,4}\s+\S")
 SUPPLIERS = {"dayone": "Dayone", "graypop": "Graypop", "winwin": "WinWin"}
 
 
@@ -54,7 +55,27 @@ def parse(text: str) -> dict:
     total = re.search(r"total amount\s*\$?\s*([\d,]+\.?\d*)", text, re.I) or \
         re.search(r"total\s*[:：]\s*\$?\s*([\d,]+\.?\d*)", text, re.I)
     lines = []
+    # Long product names wrap: "TM13241 Elune™ - Baskets ... mesh" / "respirant" / "$13.70".
+    # Join a line that starts with an order number but has no price yet with the lines after it.
+    rows, pending = [], None
     for raw in text.splitlines():
+        if pending is not None:
+            if START_RE.match(raw) or re.search(r"total", raw, re.I):
+                rows.append(pending)                 # never found its price: leave it as it was
+                pending = None
+            else:
+                pending = f"{pending.rstrip()} {raw.strip()}"
+                if LINE_RE.match(pending):
+                    rows.append(pending)
+                    pending = None
+                continue
+        if START_RE.match(raw) and not LINE_RE.match(raw):
+            pending = raw
+            continue
+        rows.append(raw)
+    if pending is not None:
+        rows.append(pending)
+    for raw in rows:
         m = LINE_RE.match(raw)
         if m:
             lines.append({"order": cog.order_key(m.group(1)), "title": m.group(2).strip(),
@@ -147,3 +168,72 @@ def check(inv: dict, store_of, order_lines: dict, catalog, invoiced: dict) -> di
     return {"lines": out, "missing": missing, "counts": counts,
             "store_id": next(iter(stores)) if len(stores) == 1 else None,
             "sum": round(sum(l["amount"] for l in inv["lines"]), 2)}
+
+
+def xlsx_text(data: bytes, filename: str = "") -> str:
+    """Graypop's Excel invoice (one row per item; the order's cost, after discount, in `total_price`
+    on its first row) turned into the same one-line-per-item text as a Dayone PDF. An order's cost
+    is shared across its items by quantity."""
+    try:
+        import openpyxl
+    except ImportError as e:
+        raise InvoiceError("Excel reading isn't installed on the server yet.") from e
+    try:
+        ws = openpyxl.load_workbook(io.BytesIO(data), data_only=True, read_only=True).worksheets[0]
+        rows = [list(r) for r in ws.iter_rows(values_only=True)]
+    except Exception as e:
+        raise InvoiceError(f"Couldn't open that Excel file ({type(e).__name__}).") from e
+    if not rows:
+        raise InvoiceError("That Excel file is empty.")
+    head = [str(h or "").strip().lower() for h in rows[0]]
+
+    def col(*names):
+        return next((head.index(n) for n in names if n in head), None)
+    c_order, c_name, c_var = col("order number", "order"), col("lineitem name", "product"), col("variants", "variant")
+    c_qty, c_total = col("lineitem quantity", "quantity"), col("total_price", "total price", "amount")
+    c_when = col("payment dated", "date")
+    if c_order is None or c_name is None or c_total is None:
+        raise InvoiceError("This Excel file doesn't have Order number, Lineitem name and total_price columns.")
+    orders, order_list, when = {}, [], ""
+    for r in rows[1:]:
+        r = r + [None] * (len(head) - len(r))
+        oid = str(r[c_order] or "").strip()
+        if not oid or not re.match(r"^#?[A-Z&]{0,5}\d{3,8}[A-Z&]{0,4}$", oid):
+            continue
+        if oid not in orders:
+            orders[oid] = {"total": None, "items": []}
+            order_list.append(oid)
+        if r[c_total] not in (None, ""):
+            try:
+                orders[oid]["total"] = (orders[oid]["total"] or 0) + float(r[c_total])
+            except (TypeError, ValueError):
+                pass
+        name = str(r[c_name] or "").strip()
+        var = str(r[c_var] or "").strip() if c_var is not None else ""
+        if var.startswith("__"):                     # bundle-app codes, not a real variant
+            var = ""
+        try:
+            qty = max(1, int(float(r[c_qty] or 1))) if c_qty is not None else 1
+        except (TypeError, ValueError):
+            qty = 1
+        orders[oid]["items"].append((f"{name} - {var}" if var else name, qty))
+        if c_when is not None and r[c_when]:
+            when = max(when, str(r[c_when])[:10])
+    lines, total = [], 0.0
+    for oid in order_list:
+        o = orders[oid]
+        if o["total"] is None or not o["items"]:
+            continue
+        total += o["total"]
+        units = sum(q for _, q in o["items"])
+        left = round(o["total"], 2)
+        for i, (name, q) in enumerate(o["items"]):
+            amt = left if i == len(o["items"]) - 1 else round(o["total"] * q / units, 2)
+            left = round(left - amt, 2)
+            lines.append(f"{oid} {name.replace('$', '')} ${amt:.2f}")
+    if not lines:
+        raise InvoiceError("No orders with a cost found in that Excel file.")
+    stem = re.sub(r"\.xlsx?$", "", re.sub(r"^\$[\d.,]+-", "", filename.rsplit("/", 1)[-1]), flags=re.I).strip()
+    date_line = f"Invoice date: {when.replace('-', '/')}\n" if re.match(r"\d{4}-\d{2}-\d{2}", when) else ""
+    return (f"Graypop\nInvoice # {re.sub(r'[^A-Za-z0-9-]', '-', stem)[:60] or 'excel'}\n{date_line}"
+            + "\n".join(lines) + f"\nTotal amount ${total:.2f}\n")

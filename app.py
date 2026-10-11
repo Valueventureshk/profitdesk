@@ -644,14 +644,19 @@ async def api_cog_day(start: str, end: str = None, store: str = "all", currency:
 
 @app.post("/api/invoices")
 async def api_invoice_upload(request: Request, filename: str = "invoice"):
-    """Upload one supplier invoice (PDF, or text/CSV with one line per item)."""
+    """Upload one supplier invoice (PDF, Excel, or text/CSV with one line per item)."""
     data = await request.body()
     if not data:
         raise HTTPException(400, "That file is empty.")
     if len(data) > 15 * 1024 * 1024:
         raise HTTPException(400, "That file is too big (15 MB max).")
     try:
-        text = invoices.pdf_text(data) if data[:4] == b"%PDF" else data.decode("utf-8", "ignore")
+        if data[:4] == b"%PDF":
+            text = invoices.pdf_text(data)
+        elif data[:2] == b"PK":                        # Excel (.xlsx), e.g. Graypop's invoices
+            text = invoices.xlsx_text(data, filename)
+        else:
+            text = data.decode("utf-8", "ignore")
         inv = invoices.parse(text)
     except invoices.InvoiceError as e:
         raise HTTPException(400, str(e))

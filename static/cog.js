@@ -221,34 +221,77 @@ async function showInvoice(id) {
   $("invDetail").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
+const INV_OK = /\.(pdf|xlsx|csv|txt)$/i;
+
+// Everything inside dropped folders (and their sub-folders), like dragging the whole "INVOICES" folder.
+async function filesFromDrop(dt) {
+  const out = [];
+  const walk = async (entry) => {
+    if (!entry) return;
+    if (entry.isFile) {
+      const f = await new Promise((res) => entry.file(res, () => res(null)));
+      if (f) out.push(f);
+    } else if (entry.isDirectory) {
+      const reader = entry.createReader();
+      for (;;) {
+        const batch = await new Promise((res) => reader.readEntries(res, () => res([])));
+        if (!batch.length) break;
+        for (const e of batch) await walk(e);
+      }
+    }
+  };
+  const entries = [...(dt.items || [])].map((i) => (i.webkitGetAsEntry ? i.webkitGetAsEntry() : null));
+  if (entries.some(Boolean)) { for (const e of entries) await walk(e); }
+  else out.push(...dt.files);
+  return out;
+}
+
 async function uploadInvoices(files) {
-  for (const f of files) {
-    $("invResult").innerHTML = `<div class="hint">Reading ${esc(f.name)}…</div>`;
+  files = files.filter((f) => INV_OK.test(f.name) && !f.name.startsWith("."));
+  if (!files.length) { $("invResult").innerHTML = `<div class="warn">No PDF, Excel or CSV invoices in what you dropped.</div>`; return; }
+  const one = files.length === 1;
+  const done = { ok: 0, dup: 0, bad: [], lines: 0, total: 0, changed: 0, newp: 0, problems: 0 };
+  let last = null;
+  for (const [i, f] of files.entries()) {
+    $("invResult").innerHTML = `<div class="hint">${one ? "" : `${i + 1} of ${files.length} · `}Reading ${esc(f.name)}…</div>`;
     try {
       const r = await api(`/api/invoices?filename=${encodeURIComponent(f.name)}`,
                           { method: "POST", body: await f.arrayBuffer() });
       const c = r.counts;
-      const off = Math.abs(r.sum - r.total) >= 0.01
-        ? ` <span class="est">Lines add up to ${money(r.sum, "USD")}, not the invoice total ${money(r.total, "USD")}.</span>` : "";
-      $("invResult").innerHTML = `<div class="notice ok">${esc(r.supplier)} #${esc(r.number)}: ${r.lines} lines,
-        ${money(r.total, "USD")}. ${c.ok || 0} match · ${c.new || 0} first time · ${c.changed || 0} price changes ·
-        ${(c.unmatched || 0) + (c.duplicate || 0)} problems · ${r.missing} fulfilled orders missing.${off}</div>`;
-      await loadInvoices();
-      showInvoice(r.id);
+      done.ok++; done.lines += r.lines; done.total += r.total;
+      done.changed += c.changed || 0; done.newp += c.new || 0; done.problems += (c.unmatched || 0) + (c.duplicate || 0);
+      last = r;
+      if (one) {
+        const off = Math.abs(r.sum - r.total) >= 0.01
+          ? ` <span class="est">Lines add up to ${money(r.sum, "USD")}, not the invoice total ${money(r.total, "USD")}.</span>` : "";
+        $("invResult").innerHTML = `<div class="notice ok">${esc(r.supplier)} #${esc(r.number)}: ${r.lines} lines,
+          ${money(r.total, "USD")}. ${c.ok || 0} match · ${c.new || 0} first time · ${c.changed || 0} price changes ·
+          ${(c.unmatched || 0) + (c.duplicate || 0)} problems · ${r.missing} fulfilled orders missing.${off}</div>`;
+      }
     } catch (e) {
-      $("invResult").innerHTML = `<div class="warn">${esc(f.name)}: ${esc(e.message)}</div>`;
+      if (/already uploaded/i.test(e.message)) done.dup++;
+      else done.bad.push(`${f.name}: ${e.message}`);
+      if (one) $("invResult").innerHTML = `<div class="warn">${esc(f.name)}: ${esc(e.message)}</div>`;
     }
   }
+  await loadInvoices();
+  if (one) { if (last) showInvoice(last.id); return; }
+  $("invResult").innerHTML = `<div class="notice ${done.bad.length ? "" : "ok"}"><b>${done.ok} invoices added</b>
+      (${done.lines} lines, ${money(done.total, "USD")})${done.dup ? ` · ${done.dup} were already uploaded` : ""}.
+      ${done.changed} price changes to check · ${done.newp} first-time products · ${done.problems} lines need a look.
+      Order costs are updated from these invoices now.</div>
+    ${done.bad.length ? `<div class="warn">Couldn't read ${done.bad.length}:<br>${done.bad.map(esc).join("<br>")}</div>` : ""}`;
 }
 
 $("invFile").onchange = (e) => { uploadInvoices([...e.target.files]); e.target.value = ""; };
+if ($("invFolder")) $("invFolder").onchange = (e) => { uploadInvoices([...e.target.files]); e.target.value = ""; };
 const drop = $("drop");
 drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
 drop.addEventListener("dragleave", () => drop.classList.remove("over"));
-drop.addEventListener("drop", (e) => {
+drop.addEventListener("drop", async (e) => {
   e.preventDefault();
   drop.classList.remove("over");
-  uploadInvoices([...e.dataTransfer.files]);
+  uploadInvoices(await filesFromDrop(e.dataTransfer));
 });
 
 /* ------------------------------------------------ wiring */

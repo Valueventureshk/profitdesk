@@ -63,10 +63,11 @@
 
     <section id="invoicesView" hidden>
       <label class="drop" id="drop" data-write-only>
-        <input type="file" id="invFile" accept=".pdf,.csv,.txt" multiple hidden>
-        <strong>Drop supplier invoices here</strong>
-        <span>or click to choose · PDF (Dayone) · one store per invoice</span>
+        <input type="file" id="invFile" accept=".pdf,.xlsx,.csv,.txt" multiple hidden>
+        <strong>Drop supplier invoices here, or a whole folder of them</strong>
+        <span>or click to choose files · PDF (Dayone) · Excel (Graypop) · sub-folders per store are fine</span>
       </label>
+      <label class="btn btn-ghost btn-sm inv-folder" data-write-only>📁 Choose a folder<input type="file" id="invFolder" webkitdirectory multiple hidden></label>
       <div id="invResult"></div>
       <section class="panel" id="invDetail" hidden></section>
       <section class="panel">
