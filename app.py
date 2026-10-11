@@ -3061,12 +3061,24 @@ async def api_google_compare(days: int = 7):
             row["sheet_error"] = str(e)[:160]
         try:
             row["api"] = await gads.daily_spend(auth["refresh_token"], st["google_customer_id"], st["google_login_cid"],
-                                                start.isoformat(), end.isoformat())
+                                                start.isoformat(), end.isoformat(), st["timezone"])
         except Exception as e:
             row["api_error"] = str(e)[:600]
         out.append(row)
     await asyncio.gather(*(one(x) for x in db.list_stores() if x.get("google_customer_id") and not demo.is_demo(x)))
     return {"start": start.isoformat(), "end": end.isoformat(), "stores": sorted(out, key=lambda r: r["store"])}
+
+
+@app.post("/api/google/source")
+def api_google_source(payload: dict):
+    """Owner: read a store's Google spend straight from Google ("api") or from the script's Sheet."""
+    sid, src = int(payload.get("store_id") or 0), payload.get("source")
+    if src not in ("api", "sheet"):
+        raise HTTPException(400, "Pick api or sheet.")
+    with db._conn() as con:
+        con.execute("UPDATE stores SET google_source = ? WHERE id = ?", ("sheet" if src == "sheet" else None, sid))
+    _cache.clear()
+    return {"ok": True}
 
 
 @app.post("/api/google/disconnect")
@@ -6417,7 +6429,7 @@ async def _store_window(store, start, end, auth, meta_auth):
         else:
             got = await gads.daily_spend(
                 auth["refresh_token"], store["google_customer_id"],
-                store["google_login_cid"], start, end_for_api,
+                store["google_login_cid"], start, end_for_api, store["timezone"],
             )
         return {d: metrics.with_google_tax(v, store["google_tax_pct"]) for d, v in got.items()}
 
@@ -7003,7 +7015,7 @@ async def _same_time_yesterday(store, day, auth, meta_auth):
                                                 day, now.hour, store["timezone"])
         else:
             got = await gads.spend_until_hour(auth["refresh_token"], store["google_customer_id"],
-                                              store["google_login_cid"], day, now.hour)
+                                              store["google_login_cid"], day, now.hour, store["timezone"])
         return metrics.with_google_tax(got, store["google_tax_pct"])
 
     async def meta_spend():

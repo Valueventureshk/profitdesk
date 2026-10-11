@@ -218,42 +218,45 @@ async def list_accounts(refresh_token: str):
     return accounts
 
 
-async def spend_until_hour(refresh_token, customer_id, login_cid, day, hour):
-    """One day's spend from midnight to the end of `hour` (0-23), in the ad
-    account's timezone. Google reports by the hour, so this is as fine as it gets."""
+async def _hourly(refresh_token, customer_id, login_cid, start, end, store_tz):
+    """[(store-clock datetime, cost)] for each hour Google reports between start and end (store days).
+    Google reports in the ad account's own time zone, so a day either side is read and shifted."""
+    from datetime import date as _date, datetime as _dt, timedelta as _td
+    from zoneinfo import ZoneInfo
     _, _, dev_token, version = _cfg()
-
     access = await _access_token(refresh_token)
-    query = (
-        "SELECT segments.hour, metrics.cost_micros FROM customer "
-        f"WHERE segments.date = '{day}'"
-    )
+    lo = (_date.fromisoformat(start) - _td(days=1)).isoformat()
+    hi = (_date.fromisoformat(end) + _td(days=1)).isoformat()
+    query = ("SELECT customer.time_zone, segments.date, segments.hour, metrics.cost_micros FROM customer "
+             f"WHERE segments.date BETWEEN '{lo}' AND '{hi}'")
+    cid = str(customer_id).replace("-", "")
     async with httpx.AsyncClient(timeout=60) as client:
-        rows = await _search(client, version, str(customer_id).replace("-", ""),
-                             query, _headers(access, dev_token, login_cid or customer_id))
-    return sum(
-        int(r.get("metrics", {}).get("costMicros", 0)) / 1_000_000
-        for r in rows
-        if int(r.get("segments", {}).get("hour", 99)) <= hour
-    )
+        rows = await _search(client, version, cid, query, _headers(access, dev_token, login_cid or customer_id))
+    out = []
+    for r in rows:
+        seg = r.get("segments", {})
+        tz = ZoneInfo((r.get("customer") or {}).get("timeZone") or "UTC")
+        try:
+            t = _dt.fromisoformat(seg["date"]).replace(hour=int(seg.get("hour", 0)), tzinfo=tz)
+        except (KeyError, ValueError):
+            continue
+        out.append((t.astimezone(ZoneInfo(store_tz)) if store_tz else t,
+                    int(r.get("metrics", {}).get("costMicros", 0)) / 1_000_000))
+    return out
 
 
-async def daily_spend(refresh_token, customer_id, login_cid, start, end):
-    """Account-level cost per day. Spend is the only thing we take from Google."""
-    _, _, dev_token, version = _cfg()
+async def spend_until_hour(refresh_token, customer_id, login_cid, day, hour, store_tz=None):
+    """One store day's spend from midnight to the end of `hour` (0-23), on the store's clock
+    (Google reports by the hour, so this is as fine as it gets)."""
+    rows = await _hourly(refresh_token, customer_id, login_cid, day, day, store_tz)
+    return sum(c for t, c in rows if t.date().isoformat() == day and t.hour <= hour)
 
-    access = await _access_token(refresh_token)
-    query = (
-        "SELECT segments.date, metrics.cost_micros FROM customer "
-        f"WHERE segments.date BETWEEN '{start}' AND '{end}'"
-    )
-    async with httpx.AsyncClient(timeout=60) as client:
-        rows = await _search(client, version, str(customer_id).replace("-", ""),
-                             query, _headers(access, dev_token, login_cid or customer_id))
 
+async def daily_spend(refresh_token, customer_id, login_cid, start, end, store_tz=None):
+    """Account-level cost per store day. Spend is the only thing we take from Google."""
     spend = {}
-    for row in rows:
-        d = row.get("segments", {}).get("date")
-        if d:
-            spend[d] = int(row.get("metrics", {}).get("costMicros", 0)) / 1_000_000
+    for t, c in await _hourly(refresh_token, customer_id, login_cid, start, end, store_tz):
+        d = t.date().isoformat()
+        if start <= d <= end:
+            spend[d] = spend.get(d, 0.0) + c
     return spend
