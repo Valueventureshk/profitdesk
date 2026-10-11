@@ -480,6 +480,11 @@ _ADDED_COLUMNS = {
         ("handler_email", "TEXT"),
         ("handler_at", "TEXT"),
     ],
+    "invoices": [
+        ("file_ext", "TEXT"),        # the original file is kept: <DB dir>/invoice_files/<id>.<ext>
+        ("file_size", "INTEGER"),
+        ("file_at", "TEXT"),
+    ],
     "invoice_lines": [
         ("check_state", "TEXT"),     # checking (asked the supplier) | kept (supplier corrected: old price stands)
         ("check_by", "TEXT"),

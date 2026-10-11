@@ -155,22 +155,61 @@ const STATUS = {
   duplicate: ["bad", "Already invoiced"], unmatched: ["bad", "No matching order"],
 };
 
+// Invoice archive: every uploaded invoice by its invoice date, with the original file to download
+let invAll = [];
 async function loadInvoices() {
   loadPriceChanges();
   let d;
   try { d = await api("/api/invoices"); } catch (e) { toast(e.message, true); return; }
   $("invBadge").hidden = !d.to_check;
   $("invBadge").textContent = d.to_check;
-  $("invCount").textContent = `${d.invoices.length} invoices`;
-  $("invList").innerHTML = d.invoices.length ? `<thead><tr><th>Date</th><th>Invoice</th><th>Store</th>
-      <th>Lines</th><th>Total</th><th>To check</th></tr></thead><tbody>${d.invoices.map((i) => `
+  invAll = d.invoices;
+  const keep = (id) => $(id)?.value || "";
+  const was = { from: keep("arcFrom"), to: keep("arcTo"), store: keep("arcStore"), sup: keep("arcSup") };
+  const storesSeen = [...new Map(invAll.filter((i) => i.store_id).map((i) => [String(i.store_id), i.store])).entries()];
+  const sups = [...new Set(invAll.map((i) => i.supplier).filter(Boolean))].sort();
+  $("invArchiveBar").innerHTML = `
+    <label>From <input type="date" class="control" id="arcFrom" value="${esc(was.from)}"></label>
+    <label>To <input type="date" class="control" id="arcTo" value="${esc(was.to)}"></label>
+    <select class="control" id="arcStore"><option value="">All stores</option>${storesSeen.map(([id, n]) => `<option value="${esc(id)}"${was.store === id ? " selected" : ""}>${esc(n)}</option>`).join("")}</select>
+    <select class="control" id="arcSup"><option value="">All suppliers</option>${sups.map((x) => `<option${was.sup === x ? " selected" : ""}>${esc(x)}</option>`).join("")}</select>
+    <a class="btn btn-sm btn-primary" id="arcZip">⬇ Download all (zip)</a>`;
+  for (const id of ["arcFrom", "arcTo", "arcStore", "arcSup"]) $(id).onchange = drawArchive;
+  drawArchive();
+}
+
+function drawArchive() {
+  const from = $("arcFrom").value, to = $("arcTo").value, st = $("arcStore").value, sup = $("arcSup").value;
+  const list = invAll.filter((i) => (!from || (i.date || "") >= from) && (!to || (i.date || "") <= to)
+    && (!st || String(i.store_id) === st) && (!sup || i.supplier === sup));
+  const q = new URLSearchParams({ start: from, end: to, store: st, supplier: sup });
+  $("arcZip").href = `/api/invoices/archive?${q}`;
+  const files = list.filter((i) => i.file_ext).length;
+  const total = list.reduce((n, i) => n + (i.total || 0), 0);
+  $("invCount").textContent = `${list.length} invoices · ${money(total, "USD")} · ${files} files kept`;
+  if (!list.length) { $("invList").innerHTML = `<tbody><tr><td class="hint">No invoices match.</td></tr></tbody>`; return; }
+  const months = new Map();
+  for (const i of list) {
+    const m = (i.date || "undated").slice(0, 7);
+    if (!months.has(m)) months.set(m, []);
+    months.get(m).push(i);
+  }
+  const monthName = (m) => (m === "undated" ? "No date" : new Date(m + "-01T12:00:00").toLocaleDateString(undefined, { month: "long", year: "numeric" }));
+  $("invList").innerHTML = `<thead><tr><th>Invoice date</th><th>Invoice</th><th>Store</th>
+      <th>Lines</th><th>Total</th><th>To check</th><th>File</th></tr></thead>` + [...months.entries()].map(([m, rows]) => `
+    <tbody><tr class="arc-month"><td colspan="7">${esc(monthName(m))} <span class="hint">· ${rows.length} invoices · ${money(rows.reduce((n, i) => n + (i.total || 0), 0), "USD")}</span></td></tr>
+    ${rows.map((i) => `
     <tr class="clickable" data-inv="${i.id}"><td>${i.date ? niceDate(i.date) : "—"}</td>
       <td class="name">${esc(i.supplier || "?")} #${esc(i.number || "—")}<span class="sub">${esc(i.filename || "")}</span></td>
       <td>${esc(i.store)}</td><td>${i.lines}</td><td>${money(i.total, "USD")}</td>
       <td>${[i.to_check ? `<span class="src changed">${i.to_check} price change${i.to_check === 1 ? "" : "s"}</span>` : "",
              i.problems ? `<span class="src bad">${i.problems} unmatched</span>` : "",
-             i.missing ? `<span class="src catalog">${i.missing} missing</span>` : ""].join(" ") || "✓"}</td></tr>`).join("")}</tbody>`
-    : `<tbody><tr><td class="hint">No invoices uploaded yet.</td></tr></tbody>`;
+             i.missing ? `<span class="src catalog">${i.missing} missing</span>` : ""].join(" ") || "✓"}</td>
+      <td onclick="event.stopPropagation()">${i.file_ext
+        ? `<a class="btn btn-sm btn-ghost" href="/api/invoices/${i.id}/file" target="_blank" rel="noopener" title="Open the original">${i.file_ext.toUpperCase()}</a>
+           <a class="btn btn-sm btn-ghost" href="/api/invoices/${i.id}/file?download=1" title="Download">⬇</a>`
+        : `<span class="hint" title="Uploaded before files were kept: upload it again to attach the file">not kept</span>`}</td></tr>`).join("")}
+    </tbody>`).join("");
   for (const tr of $("invList").querySelectorAll("[data-inv]")) tr.onclick = () => showInvoice(tr.dataset.inv);
 }
 
@@ -329,6 +368,7 @@ async function uploadInvoices(files) {
     try {
       const r = await api(`/api/invoices?filename=${encodeURIComponent(f.name)}`,
                           { method: "POST", body: await f.arrayBuffer() });
+      if (r.attached) { done.attached = (done.attached || 0) + 1; if (one) $("invResult").innerHTML = `<div class="notice ok">${esc(f.name)}: this invoice was already uploaded; its file is now kept in the archive.</div>`; continue; }
       const c = r.counts;
       done.ok++; done.lines += r.lines; done.total += r.total;
       done.changed += c.changed || 0; done.newp += c.new || 0; done.problems += (c.unmatched || 0) + (c.duplicate || 0);
@@ -349,7 +389,7 @@ async function uploadInvoices(files) {
   await loadInvoices();
   if (one) { if (last) showInvoice(last.id); return; }
   $("invResult").innerHTML = `<div class="notice ${done.bad.length ? "" : "ok"}"><b>${done.ok} invoices added</b>
-      (${done.lines} lines, ${money(done.total, "USD")})${done.dup ? ` · ${done.dup} were already uploaded` : ""}.
+      (${done.lines} lines, ${money(done.total, "USD")})${done.attached ? ` · ${done.attached} earlier invoices now have their file kept` : ""}${done.dup ? ` · ${done.dup} were already uploaded` : ""}.
       ${done.changed} price changes to check · ${done.newp} first-time products · ${done.problems} lines need a look.
       Order costs are updated from these invoices now.</div>
     ${done.bad.length ? `<div class="warn">Couldn't read ${done.bad.length}:<br>${done.bad.map(esc).join("<br>")}</div>` : ""}`;

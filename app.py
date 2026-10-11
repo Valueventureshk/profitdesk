@@ -646,6 +646,76 @@ async def api_cog_day(start: str, end: str = None, store: str = "all", currency:
     }
 
 
+INVOICE_DIR = os.path.join(os.path.dirname(os.path.abspath(db.DB_PATH)), "invoice_files")
+INVOICE_TYPES = {"pdf": "application/pdf", "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                 "csv": "text/csv", "txt": "text/plain"}
+
+
+def _save_invoice_file(iid: int, data: bytes, filename: str):
+    """Keep the original invoice (for audits and the accountant), next to the database."""
+    ext = "pdf" if data[:4] == b"%PDF" else "xlsx" if data[:2] == b"PK" else \
+        ("csv" if filename.lower().endswith(".csv") else "txt")
+    os.makedirs(INVOICE_DIR, exist_ok=True)
+    with open(os.path.join(INVOICE_DIR, f"{iid}.{ext}"), "wb") as f:
+        f.write(data)
+    with db._conn() as con:
+        con.execute("UPDATE invoices SET file_ext = ?, file_size = ?, file_at = datetime('now') WHERE id = ?",
+                    (ext, len(data), iid))
+
+
+def _invoice_file_name(inv: dict, stores: dict) -> str:
+    store = re.sub(r"[^\w &.-]", "", stores.get(inv["store_id"], "Several stores")).strip()
+    sup = re.sub(r"[^\w &.-]", "", inv.get("supplier") or "Supplier").strip()
+    num = re.sub(r"[^\w-]", "", inv.get("number") or str(inv["id"]))
+    return f"{inv.get('date') or 'undated'} · {store} · {sup} #{num}.{inv.get('file_ext') or 'pdf'}"
+
+
+@app.get("/api/invoices/{invoice_id:int}/file")
+def api_invoice_file(invoice_id: int, download: int = 0):
+    inv = db.get_invoice(invoice_id)
+    if not inv or not inv.get("file_ext"):
+        raise HTTPException(404, "The original file of this invoice wasn't kept (it was uploaded before files were "
+                                 "stored). Upload it again to attach it.")
+    path = os.path.join(INVOICE_DIR, f"{invoice_id}.{inv['file_ext']}")
+    if not os.path.exists(path):
+        raise HTTPException(404, "The file is missing from storage. Upload the invoice again to attach it.")
+    from urllib.parse import quote
+    stores = {x["id"]: x["name"].strip() for x in db.list_stores()}
+    name = _invoice_file_name(inv, stores)
+    with open(path, "rb") as f:
+        data = f.read()
+    inline = inv["file_ext"] == "pdf" and not download
+    return Response(data, media_type=INVOICE_TYPES.get(inv["file_ext"], "application/octet-stream") if inline
+                    else "application/octet-stream",
+                    headers={"Content-Disposition": f"{'inline' if inline else 'attachment'}; filename*=UTF-8''{quote(name)}",
+                             "X-Content-Type-Options": "nosniff"})
+
+
+@app.get("/api/invoices/archive")
+def api_invoice_archive(start: str = "", end: str = "", store: str = "", supplier: str = ""):
+    """Every kept invoice file in the period (by invoice date), as one zip for the accountant."""
+    import io
+    import zipfile
+    from urllib.parse import quote
+    stores = {x["id"]: x["name"].strip() for x in db.list_stores()}
+    picked = [i for i in db.list_invoices() if i.get("file_ext")
+              and (not start or (i["date"] or "") >= start) and (not end or (i["date"] or "") <= end)
+              and (not store or str(i["store_id"]) == store) and (not supplier or (i["supplier"] or "") == supplier)]
+    if not picked:
+        raise HTTPException(404, "No kept invoice files match. (Invoices uploaded before files were stored need "
+                                 "uploading again.)")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for i in sorted(picked, key=lambda x: (x["date"] or "", x["id"])):
+            path = os.path.join(INVOICE_DIR, f"{i['id']}.{i['file_ext']}")
+            if os.path.exists(path):
+                month = (i["date"] or "undated")[:7]
+                z.write(path, f"{month}/{_invoice_file_name(i, stores)}")
+    name = f"Invoices {start or 'all'} to {end or 'today'}.zip"
+    return Response(buf.getvalue(), media_type="application/zip",
+                    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}"})
+
+
 @app.post("/api/invoices")
 async def api_invoice_upload(request: Request, filename: str = "invoice"):
     """Upload one supplier invoice (PDF, Excel, or text/CSV with one line per item)."""
@@ -667,6 +737,11 @@ async def api_invoice_upload(request: Request, filename: str = "invoice"):
     for old in db.list_invoices():
         if old["number"] and old["number"] == inv["number"] and old["supplier"] == inv["supplier"] \
                 and abs((old["total"] or 0) - inv["total"]) < 0.01:
+            if not old.get("file_ext"):          # uploaded before files were kept: keep this copy now
+                _save_invoice_file(old["id"], data, filename)
+                return {"ok": True, "attached": True, "id": old["id"], "supplier": inv["supplier"],
+                        "number": inv["number"], "lines": len(inv["lines"]), "total": inv["total"],
+                        "sum": inv["total"], "counts": {}, "missing": 0}
             raise HTTPException(400, f"Invoice {inv['number']} from {inv['supplier']} is already uploaded.")
     catalog = await _catalog()
     tags = _cog.get("tags") or {}
@@ -690,6 +765,7 @@ async def api_invoice_upload(request: Request, filename: str = "invoice"):
     checked = invoices.check(inv, store_of, order_lines, catalog, invoiced)
     user = (getattr(request.state, "user", None) or {}).get("email", "")
     iid = db.save_invoice(inv, checked, filename[:120], user)
+    _save_invoice_file(iid, data, filename)
     with db._conn() as con:
         for l in checked["lines"]:
             key = (l.get("store_id"), l.get("order") , cog.norm(l.get("product") or ""))
@@ -813,6 +889,11 @@ async def api_invoice_delete(invoice_id: int):
     inv = db.get_invoice(invoice_id)
     names = {l["order_name"] for l in db.invoice_lines(invoice_id) if l["order_name"]}
     db.delete_invoice(invoice_id)
+    if inv and inv.get("file_ext"):
+        try:
+            os.remove(os.path.join(INVOICE_DIR, f"{invoice_id}.{inv['file_ext']}"))
+        except OSError:
+            pass
     if inv and inv["store_id"]:
         await _recost(inv["store_id"], names)
     return {"ok": True}
