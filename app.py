@@ -5639,12 +5639,12 @@ async def _product_info(store, pids: list) -> dict:
 
 
 @app.get("/api/googleads")
-async def api_googleads(store: int = 0, fresh: int = 0, min_spend: float = None):
+async def api_googleads(store: str = "", fresh: int = 0, min_spend: float = None):
     """One store's Google products for 7 / 14 / 30 days, one row per Shopify product (google_desk.py)."""
     stores = [x for x in db.list_stores() if x.get("google_customer_id") and not demo.is_demo(x)]
     listing = [{"id": x["id"], "name": x["name"].strip(), "currency": x["currency"],
                 "direct": x.get("google_source") != "sheet"} for x in stores]
-    st = next((x for x in stores if x["id"] == store), None) or next((x for x in stores if x.get("google_source") != "sheet"), None)
+    st = next((x for x in stores if str(x["id"]) == store), None) or next((x for x in stores if x.get("google_source") != "sheet"), None)
     if not st:
         return {"stores": listing, "error": "No store reads Google Ads directly yet."}
     if st.get("google_source") == "sheet":

@@ -20,7 +20,7 @@ async function api(path, options) {
   let body = {};
   try { body = await r.json(); } catch { /* empty */ }
   if (r.status === 401 && body.login) { location.href = "/login?next=/googleads"; throw new Error("Log in again."); }
-  if (!r.ok) throw new Error(body.error || body.detail || `Request failed (${r.status})`);
+  if (!r.ok) throw new Error(body.error || (typeof body.detail === "string" ? body.detail : "") || `Request failed (${r.status})`);
   return body;
 }
 let toastTimer;
@@ -47,7 +47,7 @@ async function load(fresh = false) {
   $("refresh").disabled = true;
   $("sub").textContent = "Reading Google Ads and Shopify…";
   try { data = await api(`/api/googleads?store=${encodeURIComponent(store)}${fresh ? "&fresh=1" : ""}`); }
-  catch (e) { toast(e.message, true); $("refresh").disabled = false; $("sub").textContent = e.message; return; }
+  catch (e) { const m = typeof e.message === "string" ? e.message : "Couldn't load Google Ads."; toast(m, true); $("refresh").disabled = false; $("sub").textContent = m; return; }
   $("refresh").disabled = false;
   if (!$("store").options.length || fresh === "stores") {
     $("store").innerHTML = data.stores.map((s) => `<option value="${s.id}"${s.direct ? "" : " disabled"}>${esc(s.name)}${s.direct ? "" : " (needs access)"}</option>`).join("");
