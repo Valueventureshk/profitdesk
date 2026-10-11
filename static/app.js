@@ -1366,7 +1366,23 @@ function renderGoogleBox() {
     <button id="gSheetSave" class="btn btn-ghost btn-block">Save Sheet link</button>
     <p class="hint">Until Google approves direct access, a small script in each Google Ads
       account copies its spend into this Sheet every hour. The script is in the ProfitDesk
-      folder as <code>google-ads-script.js</code>.</p>`;
+      folder as <code>google-ads-script.js</code>.</p>
+    <details class="advanced" id="gKeysBox"><summary>Change Google sign-in keys</summary>
+      <p class="hint">From Google Cloud → Google Auth Platform → Clients. Redirect URI: <code>${esc(g.redirect_uri || "")}</code>.
+        After saving, click <b>Sign in again</b> above; store links stay as they are.</p>
+      <label class="field"><span>Client ID</span>
+        <input id="gClientId2" type="text" placeholder="…apps.googleusercontent.com" autocomplete="off"></label>
+      <label class="field"><span>Client secret</span>
+        <input id="gClientSecret2" type="password" placeholder="GOCSPX-…" autocomplete="off"></label>
+      <button id="gSave2" class="btn btn-primary btn-block">Save new keys</button></details>`;
+  $("gSave2").onclick = async () => {
+    try {
+      await jsonPost("/api/google/app", { client_id: $("gClientId2").value, client_secret: $("gClientSecret2").value });
+      toast("New Google keys saved. Now click “Sign in again”.");
+      $("gKeysBox").open = false;
+    } catch (e) { toast(e.message, true); }
+  };
+  if (PDUrl.get("gkeys")) { $("gKeysBox").open = true; $("gKeysBox").scrollIntoView({ block: "center" }); }
   $("googleAgain").onclick = () => popup("/auth/google/start");
   $("gSheetSave").onclick = async () => {
     try {
