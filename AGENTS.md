@@ -156,6 +156,15 @@ file and have it work.
   Actions only as PayPal's links / Airwallex's status allow (`disputes.ACTIONS`, with the level each
   needs). PayPal needs the app's "Disputes" feature; Airwallex key needs Payment disputes + File upload.
   PayPal multipart: part "input" (JSON) + file parts named per the spec (evidence-file, message_document...).
+- Google sign-in keys (OAuth client, setting `google_client_id/secret`, changeable in Settings → Google
+  Ads → Change Google sign-in keys) come from Google Cloud project "My First Project"
+  (dark-smile-511222-t3) owned by info@tendance-montreal.com: it has Google Ads API **Explorer**
+  access (2,880 ops/day on real accounts; Basic needs brand verification + an owned domain).
+  APIs on: Google Ads, Sheets, Gmail. Consent screen "ProfitDesk", published (unverified warning).
+  Google login connected in ProfitDesk = shop.valueventures@gmail.com (sees the ad accounts).
+  Per store `google_source`: NULL = direct API (hourly, shifted to the store clock), "sheet" = the
+  script's Sheet. `/api/google/compare` checks both. ZAVA + Revionel stay on the Sheet until
+  shop.valueventures@gmail.com gets access to those ad accounts.
 - Business clock is Hong Kong (`CASH_TIMEZONE`). Each store has its own clock;
   "today" is the furthest-ahead store's date.
 
