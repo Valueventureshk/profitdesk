@@ -134,6 +134,20 @@ def _headers(access_token, dev_token, login_cid=None):
     return h
 
 
+def _why(r) -> str:
+    """Google's own reason (errors[].message + error code), not the generic wrapper text."""
+    try:
+        err = r.json().get("error", {})
+        out = []
+        for d in err.get("details") or []:
+            for e in d.get("errors") or []:
+                code = "".join(f"{k}={v}" for k, v in (e.get("errorCode") or {}).items())
+                out.append(f"{e.get('message', '')} ({code})".strip())
+        return "; ".join(out)[:500] or err.get("message", "")[:300]
+    except ValueError:
+        return r.text[:300]
+
+
 async def _search(client, version, customer_id, query, headers):
     url = f"https://googleads.googleapis.com/{version}/customers/{customer_id}/googleAds:search"
     rows, page = [], None
@@ -146,10 +160,10 @@ async def _search(client, version, customer_id, query, headers):
             raise GoogleAdsError(
                 "Google Ads refused the request. Usually the ProfitDesk Google Cloud "
                 "project is still on Test access (Google Cloud Console > Google Ads API "
-                "> Access levels), or this Google login can't see that ad account."
+                f"> Access levels), or this Google login can't see that ad account. (Google: {_why(r)})"
             )
         if r.status_code >= 400:
-            raise GoogleAdsError(f"Google Ads error {r.status_code}: {r.text[:300]}")
+            raise GoogleAdsError(f"Google Ads error {r.status_code}: {_why(r)}")
         payload = r.json()
         rows.extend(payload.get("results", []))
         page = payload.get("nextPageToken")
