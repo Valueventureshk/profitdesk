@@ -108,6 +108,40 @@ def _status(amount: float, units: float, known, any_known=None, tier: int = 1) -
     return {"status": "ok", "previous": known[1], "note": each.strip()}
 
 
+def bundle_pass(rows: list) -> None:
+    """Suppliers often bill a bundle unevenly (3 bras = 15.60 + 7.80 on two lines). Judge the
+    product's total in the order: if total / items matches the earlier price, every line is ok.
+    Sets "each" (bundle price per item) on every line; changes rows in place."""
+    groups = {}
+    for r in rows:
+        if r.get("status") in ("unmatched", "duplicate", "superseded"):
+            continue
+        k = (r.get("invoice_id"), r.get("store_id"), r.get("order_name") or r.get("order_key"),
+             cog.base_name(r.get("product") or ""))
+        groups.setdefault(k, []).append(r)
+    for g in groups.values():
+        items = sum(r.get("units") or 1 for r in g)
+        total = sum(r["amount"] for r in g)
+        each = round(total / (items or 1), 4)
+        for r in g:
+            r["each"] = each
+        if len(g) < 2:
+            continue
+        prev = [r.get("previous") for r in g if r.get("previous") is not None]
+        if not prev or not any(r.get("status") == "changed" for r in g):
+            continue
+        old = max(set(prev), key=prev.count)
+        note = f"Bundle: {total:.2f} USD for {items:g} items = {each:.2f} each"
+        if abs(old - each) <= 0.05:
+            for r in g:
+                if r.get("status") == "changed":
+                    r.update(status="ok", previous=old, note=note)
+        else:
+            for r in g:
+                if r.get("status") in ("changed", "ok"):
+                    r.update(status="changed", previous=old, note=f"Was {old:.2f} USD each, now {each:.2f} · " + note)
+
+
 def check(inv: dict, store_of, order_lines: dict, catalog, invoiced: dict) -> dict:
     """Match and flag every line.
 
@@ -172,6 +206,8 @@ def check(inv: dict, store_of, order_lines: dict, catalog, invoiced: dict) -> di
         r.update(_status(r["amount"], r["units"], r.pop("_known"), r.pop("_any"), r["tier"]))
         r.pop("_line", None)
         r.pop("_qty", None)
+
+    bundle_pass([r for r in out if r.get("product")])
 
     # Fulfilled orders inside the invoice's order range that it doesn't include.
     missing = []

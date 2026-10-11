@@ -201,7 +201,7 @@ class Catalog:
             self.inv_by_order[(l["store_id"], l["order_key"])].append(entry)
             if l["status"] != "changed" or l.get("approved_at"):
                 hist = (10 ** 9 + int(l["invoice_id"]) * 1000 + int(l["line_no"]),
-                        l["amount"] / units, entry["supplier"], entry["day"],      # price per item
+                        l.get("each") or l["amount"] / units, entry["supplier"], entry["day"],   # price per item
                         int(l.get("tier") or round(units)))
                 self.exact[(l["store_id"], norm(l["product"]))].append(hist)
                 self.base[(l["store_id"], base_name(l["product"]))].append(hist)

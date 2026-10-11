@@ -825,24 +825,34 @@ async def api_invoice_recheck():
     catalog = cog.Catalog(await _cog_rows(), _cog["tags"])
     changed = {"lines": 0, "now_ok": 0, "still_changed": 0}
     touched = defaultdict(set)
+    by_inv = defaultdict(list)                      # one invoice at a time, oldest first
     for l in sorted(lines, key=lambda x: (x.get("date") or "", x["invoice_id"], x["line_no"])):
         if l["status"] in ("unmatched", "duplicate", "superseded") or not l.get("product"):
             continue
-        q = qty.get((l["store_id"], l["order_name"], l["product"])) or 1
-        units = max(1.0, q / per[(l["invoice_id"], l["store_id"], l["order_name"], l["product"])])
-        tier = tiers.get((l["store_id"], l["order_name"], cog.base_name(l["product"]))) or int(round(units))
-        st = invoices._status(l["amount"], units, catalog.latest_for(l["store_id"], l["product"], tier),
-                              catalog.latest(l["store_id"], l["product"]), tier)
-        if st["status"] != "changed" and l["status"] == "changed":
-            changed["now_ok"] += 1
-        if st["status"] == "changed":
-            changed["still_changed"] += 1
-        with db._conn() as con:
-            con.execute("UPDATE invoice_lines SET units = ?, tier = ?, status = ?, previous = ?, note = ? WHERE invoice_id = ? AND line_no = ?",
-                        (units, tier, st["status"], st["previous"], st["note"], l["invoice_id"], l["line_no"]))
-        changed["lines"] += 1
-        catalog.add_invoices([{**l, **st, "units": units, "tier": tier}])
-        touched[l["store_id"]].add(l["order_name"])
+        by_inv[(l.get("date") or "", l["invoice_id"])].append(l)
+    for key in sorted(by_inv):
+        rows = []
+        for l in by_inv[key]:
+            q = qty.get((l["store_id"], l["order_name"], l["product"])) or 1
+            units = max(1.0, q / per[(l["invoice_id"], l["store_id"], l["order_name"], l["product"])])
+            tier = tiers.get((l["store_id"], l["order_name"], cog.base_name(l["product"]))) or int(round(units))
+            st = invoices._status(l["amount"], units, catalog.latest_for(l["store_id"], l["product"], tier),
+                                  catalog.latest(l["store_id"], l["product"]), tier)
+            rows.append({**l, **st, "units": units, "tier": tier, "_was": l["status"]})
+        invoices.bundle_pass(rows)                  # judge a product's total in the order, not each line
+        for r in rows:
+            if r["status"] != "changed" and r["_was"] == "changed":
+                changed["now_ok"] += 1
+            if r["status"] == "changed":
+                changed["still_changed"] += 1
+            with db._conn() as con:
+                con.execute("UPDATE invoice_lines SET units = ?, tier = ?, each = ?, status = ?, previous = ?, note = ?"
+                            " WHERE invoice_id = ? AND line_no = ?",
+                            (r["units"], r["tier"], r.get("each"), r["status"], r["previous"], r["note"],
+                             r["invoice_id"], r["line_no"]))
+            changed["lines"] += 1
+            touched[r["store_id"]].add(r["order_name"])
+        catalog.add_invoices(rows)
     _cog.pop("catalog", None)
     _cog["catalog"] = catalog
     with db._conn() as con:                         # every order costed from history or estimates too
@@ -861,7 +871,7 @@ def api_invoice_changes():
     for l in db.invoice_lines():
         if l["status"] != "changed" or l["approved_at"] or l.get("check_state") == "kept":
             continue
-        unit = round(l["amount"] / (l.get("units") or 1), 2)          # per item
+        unit = round(l.get("each") or l["amount"] / (l.get("units") or 1), 2)   # per item (bundle average)
         k = (l["store_id"], l["product"], unit)
         g = groups.setdefault(k, {"store_id": l["store_id"], "store": stores.get(l["store_id"], "?"), "product": l["product"],
                                   "new": unit, "old": l["previous"], "lines": [], "orders": [],
