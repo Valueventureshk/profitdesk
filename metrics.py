@@ -2,7 +2,12 @@
 
 Every number the dashboard shows is defined here and nowhere else.
 
-    Total sales        what Shopify reports as total sales
+    Total sales        the full value of the orders placed that day (Shopify total price)
+  - Refunds            money refunded to customers that day, whatever day the order was
+                       placed (partial refunds count for what was refunded); refunds made
+                       straight in PayPal / Airwallex count too (all-stores view)
+  - Chargebacks        chargebacks / disputes taken by PayPal or Airwallex that day; money
+                       won back counts on the day it returns (all-stores view)
   - Processing fees    payment provider fees + Shopify's third-party fee
   - COG                what the supplier charged for the goods (incl. shipping),
                        per order from the orders sheet / product costs (cog.py);
@@ -25,7 +30,8 @@ Airwallex.
 """
 
 SUMMABLE = ("sales", "orders", "google_spend", "meta_spend", "ad_spend",
-            "payment_fee", "shopify_fee", "processing_fee",
+            "payment_fee", "shopify_fee", "processing_fee", "paypal_fee", "airwallex_fee", "other_payment_fee",
+            "refunds", "refund_count", "chargebacks", "refunds_total",
             "cogs", "cogs_estimated", "net_profit", "reserve_held", "net_available",
             "paypal_sales")
 
@@ -176,7 +182,8 @@ def with_google_tax(spend: float, tax_pct) -> float:
 def day(date: str, sales: float, orders: int, google_spend: float,
         meta_spend: float, cogs: float, payment_fee: float = 0.0,
         shopify_fee: float = 0.0, cogs_estimated: float = 0.0, reserve: float = 0.0,
-        paypal: float = 0.0):
+        paypal: float = 0.0, paypal_fee: float = 0.0, airwallex_fee: float = 0.0,
+        refunds: float = 0.0, refund_count: int = 0, chargebacks: float = 0.0):
     """One store, one day, all in one currency.
 
     Ad spend is the sum of every platform, and processing fees the sum of the
@@ -197,11 +204,18 @@ def day(date: str, sales: float, orders: int, google_spend: float,
         "payment_fee": payment_fee,
         "shopify_fee": shopify_fee,
         "processing_fee": processing_fee,
+        "paypal_fee": paypal_fee,          # parts of payment_fee, for the split on the card
+        "airwallex_fee": airwallex_fee,
+        "other_payment_fee": payment_fee - paypal_fee - airwallex_fee,
         "cogs": cogs,
         "cogs_estimated": cogs_estimated,
-        "net_profit": sales - processing_fee - cogs - ad_spend,
+        "refunds": refunds,
+        "refund_count": refund_count,
+        "chargebacks": chargebacks,
+        "refunds_total": refunds + chargebacks,
+        "net_profit": sales - refunds - chargebacks - processing_fee - cogs - ad_spend,
         "reserve_held": reserve,
-        "net_available": sales - processing_fee - cogs - ad_spend - reserve,
+        "net_available": sales - refunds - chargebacks - processing_fee - cogs - ad_spend - reserve,
         "paypal_sales": paypal,
     }
 

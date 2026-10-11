@@ -475,6 +475,41 @@ class ShopifyClient:
             data = await self._post(client, SHOP_QUERY)
         return data["shop"]
 
+    async def daily_refunds(self, start: str, end: str, tz_name: str, until=None) -> tuple:
+        """Money refunded to customers, by the day the refund was made (store's clock),
+        whatever day the order was placed. Partial refunds count for what was refunded.
+        Returns ({day: {"refunds", "count"}}, [{order, amount, time, gateway}])."""
+        tz = _zone(tz_name)
+        lo = datetime.combine(datetime.fromisoformat(start).date(), time.min, tz)
+        hi = datetime.combine(datetime.fromisoformat(end).date(), until or time.max, tz)
+        q = f"updated_at:>='{lo.astimezone(timezone.utc):%Y-%m-%dT%H:%M:%SZ}'"
+        days, records, cursor = {}, [], None
+        async with httpx.AsyncClient(timeout=90) as client:
+            while True:
+                data = await self._post(client, REFUNDS_QUERY, {"cursor": cursor, "q": q})
+                conn = data["orders"]
+                for o in conn["nodes"]:
+                    if o.get("test"):
+                        continue
+                    for r in o.get("refunds") or []:
+                        amount = _money(r, "totalRefundedSet")
+                        if amount <= 0 or not r.get("createdAt"):
+                            continue
+                        when = datetime.fromisoformat(r["createdAt"].replace("Z", "+00:00")).astimezone(tz)
+                        if not lo <= when <= hi:
+                            continue
+                        d = days.setdefault(when.date().isoformat(), {"refunds": 0.0, "count": 0})
+                        d["refunds"] += amount
+                        d["count"] += 1
+                        gw = next((t.get("gateway") for t in ((r.get("transactions") or {}).get("nodes") or [])
+                                   if t.get("gateway")), None) or ", ".join(o.get("paymentGatewayNames") or [])
+                        records.append({"order": o.get("name"), "amount": amount, "time": when.isoformat(),
+                                        "gateway": gw or ""})
+                if not conn["pageInfo"]["hasNextPage"]:
+                    break
+                cursor = conn["pageInfo"]["endCursor"]
+        return days, records
+
     async def daily_sales(self, start: str, end: str, tz_name: str = "UTC",
                           until: time = None):
         """Total sales and order count per day, in the store's own timezone.
@@ -508,12 +543,9 @@ class ShopifyClient:
                         o["createdAt"].replace("Z", "+00:00")
                     ).astimezone(tz)
                     bucket = days[created.date().isoformat()]
-                    # Original total minus money actually refunded. Shopify's
-                    # "current" total already drops returned items but not refunds
-                    # without a return, so it can't be combined with refunds safely.
-                    bucket["sales"] += (
-                        _money(o, "totalPriceSet") - _money(o, "totalRefundedSet")
-                    )
+                    # The order's full value on the day it was placed. Refunds are
+                    # counted separately, on the day they're made (daily_refunds).
+                    bucket["sales"] += _money(o, "totalPriceSet")
                     bucket["orders"] += 1
                     # Fees are charged on what was paid, and providers keep them
                     # when an order is refunded, so the base is the original total.
@@ -526,6 +558,25 @@ class ShopifyClient:
                 cursor = conn["pageInfo"]["endCursor"]
 
         return {d: v for d, v in sorted(days.items())}
+
+
+REFUNDS_QUERY = """
+query Refunds($cursor: String, $q: String!) {
+  orders(first: 100, after: $cursor, query: $q, sortKey: UPDATED_AT) {
+    pageInfo { hasNextPage endCursor }
+    nodes {
+      name
+      test
+      paymentGatewayNames
+      refunds(first: 20) {
+        createdAt
+        totalRefundedSet { shopMoney { amount } }
+        transactions(first: 5) { nodes { gateway kind status } }
+      }
+    }
+  }
+}
+"""
 
 
 def _zone(name: str):

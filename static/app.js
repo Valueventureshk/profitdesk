@@ -26,6 +26,7 @@ const CARDS = [
   { key: "net_margin",     label: "Net Margin",      fmt: "pct",   dot: "var(--up)",     dir: "up" },
   { key: "processing_fee", label: "Processing Fees", fmt: "money", dot: "var(--spend)",  dir: "none" },
   { key: "orders",         label: "Orders",          fmt: "int",   dot: "var(--sales)",  dir: "up" },
+  { key: "refunds_total",  label: "Refunds + chargebacks", fmt: "money", dot: "var(--spend)", dir: "none" },
 ];
 
 /* ------------------------------------------------ formatting */
@@ -388,6 +389,8 @@ function rangeLabel(r) {
 const LOGO = {
   shopify: `<svg class="logo logo-shopify" viewBox="0 0 24 24" aria-label="Shopify"><path fill="#95BF47" d="M15.337 23.979l7.216-1.561s-2.604-17.613-2.625-17.73c-.018-.116-.114-.192-.211-.192s-1.929-.136-1.929-.136-1.275-1.274-1.439-1.411c-.045-.037-.075-.057-.121-.074l-.914 21.104h.023zM11.71 11.305s-.81-.424-1.774-.424c-1.447 0-1.504.906-1.504 1.141 0 1.232 3.24 1.715 3.24 4.629 0 2.295-1.44 3.76-3.406 3.76-2.354 0-3.54-1.465-3.54-1.465l.646-2.086s1.245 1.066 2.28 1.066c.675 0 .975-.545.975-.932 0-1.619-2.654-1.694-2.654-4.359-.034-2.237 1.571-4.416 4.827-4.416 1.257 0 1.875.361 1.875.361l-.945 2.715-.02.009zM11.17.83c.136 0 .271.038.405.135-.984.465-2.064 1.639-2.508 3.992-.656.213-1.293.405-1.889.578C7.697 3.75 8.951.84 11.17.84V.83zm1.235 2.949v.135c-.754.232-1.583.484-2.394.736.466-1.777 1.333-2.645 2.085-2.971.193.501.309 1.176.309 2.1zm.539-2.234c.694.074 1.141.867 1.429 1.755-.349.114-.735.231-1.158.366v-.252c0-.752-.096-1.371-.271-1.871v.002zm2.992 1.289c-.02 0-.06.021-.078.021s-.289.075-.714.21c-.423-1.233-1.176-2.37-2.508-2.37h-.115C12.135.209 11.669 0 11.265 0 8.159 0 6.675 3.877 6.21 5.846c-1.194.365-2.063.636-2.16.674-.675.213-.694.232-.772.87-.075.462-1.83 14.063-1.83 14.063L15.009 24l.927-21.166z"/><path fill="#5E8E3E" d="M15.337 23.979l7.216-1.561s-2.604-17.613-2.625-17.73c-.018-.116-.114-.192-.211-.192s-1.929-.136-1.929-.136-1.275-1.274-1.439-1.411c-.045-.037-.075-.057-.121-.074l-.914 21.104h.023z"/></svg>`,
   google: `<svg class="logo" viewBox="0 0 48 48" aria-label="Google"><path fill="#EA4335" d="M24 9.5c3.5 0 6.7 1.2 9.2 3.6l6.9-6.9C35.9 2.4 30.5 0 24 0 14.6 0 6.5 5.4 2.6 13.2l8 6.2C12.4 13.7 17.7 9.5 24 9.5z"/><path fill="#4285F4" d="M47 24.5c0-1.6-.2-3.1-.4-4.5H24v9h12.9c-.6 3-2.3 5.5-4.8 7.2l7.7 6c4.5-4.2 7.2-10.4 7.2-17.7z"/><path fill="#FBBC05" d="M10.5 28.6c-.5-1.5-.8-3-.8-4.6s.3-3.1.8-4.6l-8-6.2C.9 16.5 0 20.1 0 24s.9 7.5 2.6 10.8z"/><path fill="#34A853" d="M24 48c6.5 0 11.9-2.1 15.9-5.8l-7.7-6c-2.2 1.5-4.9 2.3-8.2 2.3-6.3 0-11.6-4.2-13.5-9.9l-8 6.2C6.5 42.6 14.6 48 24 48z"/></svg>`,
+  paypal: `<svg class="logo" viewBox="0 0 24 24" aria-label="PayPal"><path fill="#003087" d="M7.016 19.198h-4.2a.562.562 0 0 1-.555-.65L5.093.584A.692.692 0 0 1 5.776 0h7.222c3.417 0 5.904 2.488 5.846 5.5-.006.25-.027.5-.066.747A6.794 6.794 0 0 1 12.071 12H8.743a.69.69 0 0 0-.682.583l-.325 2.056-.013.083-.692 4.39-.015.087z"/><path fill="#0070E0" d="M19.79 6.142c-.01.087-.01.175-.023.261a7.76 7.76 0 0 1-7.695 6.598H9.007l-.283 1.795-.013.083-.692 4.39-.134.843-.014.088H6.86l-.497 3.15a.562.562 0 0 0 .555.65h3.94c.34 0 .63-.249.683-.585l.952-6.031a.692.692 0 0 1 .683-.584h2.126a6.793 6.793 0 0 0 6.707-5.752c.306-1.95-.466-3.744-1.709-4.906z"/></svg>`,
+  airwallex: `<svg class="logo" viewBox="0 0 24 24" aria-label="Airwallex"><rect width="24" height="24" rx="5" fill="#612FFF"/><path fill="#fff" d="M17.9 15.6 13.6 5.9c-.6-1.3-2.5-1.3-3.1 0L6 15.6c-.4.9.3 1.8 1.2 1.6l3.6-.9c.8-.2 1.6-.2 2.4 0l3.6.9c.9.2 1.5-.7 1.1-1.6zm-5.9-2.4c-.6 0-1.2.1-1.7.2l1.7-4 1.8 4c-.6-.1-1.2-.2-1.8-.2z"/></svg>`,
   meta: `<svg class="logo" viewBox="0 0 24 24" aria-label="Meta"><path d="M3 14.6c0-4 2-7.1 4.4-7.1 3.6 0 5.6 9 9.2 9 2.4 0 4.4-1.9 4.4-4.4s-1.9-4.6-4.3-4.6c-3.6 0-5.6 9-9.3 9C5 16.5 3 15.6 3 14.6z" fill="none" stroke="#0866FF" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
 };
 
@@ -412,10 +415,10 @@ function renderCards(d) {
       <div class="card-value">${value}</div>
       ${c.key === "ad_spend" ? spendSplit(d.totals) : ""}
       ${c.key === "roas" ? roasSplit(d.platform_roas) : ""}
-      ${c.key === "orders" ? `<div class="card-note">AOV ${fmt(d.totals.aov, "money")}</div>` : ""}
+      ${c.key === "orders" ? `<div class="card-note card-aov">AOV <b>${fmt(d.totals.aov, "money")}</b></div>` : ""}
+      ${c.key === "refunds_total" ? refundSplit(d.totals) : ""}
       ${c.key === "cogs" ? cogNote(d.totals) : ""}
-      ${c.key === "processing_fee" ? `<div class="card-note">Payments ${fmt(d.totals.payment_fee, "money")}
-        · Shopify ${fmt(d.totals.shopify_fee, "money")}</div>` : ""}
+      ${c.key === "processing_fee" ? feeSplit(d.totals) : ""}
       ${sparkline(d.series, c.key, dot)}
     </div>`;
   }).join("") + availableCard(d);
@@ -435,7 +438,7 @@ function availableCard(d) {
       <div class="card-label"><span class="dot" style="background:${loss ? "var(--down)" : "var(--up)"}"></span>Net available${chip}</div>
       <div class="card-value">${fmt(t.net_available, "money")}</div>
       <div class="avail-flow">
-        ${step("Sales", t.sales)}<i>−</i>${step("Fees", t.processing_fee)}<i>−</i>${step("COG", t.cogs)}<i>−</i>${step("Ads", t.ad_spend)}<i>−</i>${step("Held in reserve", t.reserve_held)}
+        ${step("Sales", t.sales)}<i>−</i>${step("Refunds", t.refunds_total)}<i>−</i>${step("Fees", t.processing_fee)}<i>−</i>${step("COG", t.cogs)}<i>−</i>${step("Ads", t.ad_spend)}<i>−</i>${step("Held in reserve", t.reserve_held)}
       </div>
       <div class="card-note">What's yours to use now from these sales. ${fmt(t.reserve_held, "money")} is held back
         (PayPal 21% for 60 days, plus all PayPal sales over A$35,160 in a month for 21 days; Airwallex 10% for ~90 days) and comes back later. This card doesn't change any other figure.</div>
@@ -457,6 +460,25 @@ function cogNote(t) {
   const est = t.cogs_estimated >= 0.5
     ? ` · <span class="est" title="Products with no cost history yet, costed at the store's average COG %">${fmt(t.cogs_estimated, "money")} estimated</span>` : "";
   return `<div class="card-note">${share}${est}</div>`;
+}
+
+// Processing fees by provider: figures from the server (metrics.py); "other" covers any other gateway
+function feeSplit(t) {
+  const other = t.other_payment_fee || 0;
+  return `<div class="spend-split">
+      <div>${LOGO.paypal}<span>PayPal</span><b>${fmt(t.paypal_fee, "money")}</b></div>
+      <div>${LOGO.airwallex}<span>Airwallex</span><b>${fmt(t.airwallex_fee, "money")}</b></div>
+      ${Math.abs(other) >= 0.5 ? `<div><span class="nologo"></span><span>Other gateways</span><b>${fmt(other, "money")}</b></div>` : ""}
+      <div><span class="nologo"></span><span>Shopify</span><b>${fmt(t.shopify_fee, "money")}</b></div>
+    </div>`;
+}
+
+// Refunds (by the day they were made) and chargebacks
+function refundSplit(t) {
+  return `<div class="spend-split">
+      <div><span class="nologo"></span><span>Refunds${t.refund_count ? ` (${fmt(t.refund_count, "int")})` : ""}</span><b>${fmt(t.refunds, "money")}</b></div>
+      <div><span class="nologo"></span><span>Chargebacks</span><b>${fmt(t.chargebacks, "money")}</b></div>
+    </div>`;
 }
 
 function spendSplit(t) {
@@ -561,11 +583,12 @@ function renderStoreTable(d) {
     const profitClass = t.net_profit >= 0 ? "pos" : "neg";
     return `<tr>
       <td class="name">${esc(s.name)}
-        <span class="sub">${esc(linkedAccounts(s))}</span></td>
+        <span class="sub">${esc(s.outside ? "Refunds + chargebacks made in PayPal / Airwallex" : linkedAccounts(s))}</span></td>
       <td>${fmt(t.sales, "money")}</td>
       <td>${fmt(t.ad_spend, "money")}</td>
       <td class="roas">${fmt(t.roas, "ratio")}</td>
       <td>${fmt(t.processing_fee, "money")}</td>
+      <td>${fmt(t.refunds_total, "money")}</td>
       <td>${fmt(t.cogs_share, "pct")}</td>
       <td>${fmt(t.aov, "money")}</td>
       <td class="${profitClass}">${fmt(t.net_profit, "money")}</td>
@@ -576,7 +599,7 @@ function renderStoreTable(d) {
 
   $("storeTable").innerHTML = `
     <thead><tr>
-      <th>Store</th><th>Total sales</th><th>Ad spend</th><th>ROAS</th><th>Fees</th>
+      <th>Store</th><th>Total sales</th><th>Ad spend</th><th>ROAS</th><th>Fees</th><th title="Refunds made in the period (by refund day) + chargebacks">Refunds</th>
       <th title="Cost of goods as a % of sales">COG %</th><th>AOV</th>
       <th>Net profit</th><th>Margin</th><th>Orders</th>
     </tr></thead>
@@ -592,6 +615,7 @@ function storeTotalsRow(t) {
       <td>${fmt(t.ad_spend, "money")}</td>
       <td class="roas">${fmt(t.roas, "ratio")}</td>
       <td>${fmt(t.processing_fee, "money")}</td>
+      <td>${fmt(t.refunds_total, "money")}</td>
       <td title="Cost of goods as a share of total sales">${fmt(t.cogs_share, "pct")}</td>
       <td>${fmt(t.aov, "money")}</td>
       <td class="${t.net_profit >= 0 ? "pos" : "neg"}">${fmt(t.net_profit, "money")}</td>

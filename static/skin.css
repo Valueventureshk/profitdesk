@@ -104,15 +104,16 @@ html.skin-new .card.feature .chip.up { background: rgba(65, 215, 176, .16); colo
 html.skin-new .card.feature .chip.down { background: rgba(255, 125, 142, .16); color: #FF9AA8; }
 
 /* ------------------------------------------------ profit dashboard: arrangement only (same cards, same order in the page) */
-/* card order in the page: 1 Sales · 2 Ad spend · 3 ROAS · 4 COG · 5 Net profit · 6 Net margin · 7 Fees · 8 Orders */
+/* card order in the page: 1 Sales · 2 Ad spend · 3 ROAS · 4 COG · 5 Net profit · 6 Net margin · 7 Fees · 8 Orders · 9 Refunds · 10 Net available */
 html.skin-new #app .cards { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
 /* Canvas: Revenue hero + navy Net Profit, then the rest */
 html.skin-new:not([data-theme="dark"]) #app .cards > .card:nth-child(1) { grid-column: span 2; order: 1; }
 html.skin-new:not([data-theme="dark"]) #app .cards > .card:nth-child(5) { grid-column: span 2; order: 2; }
 html.skin-new:not([data-theme="dark"]) #app .cards > .card:nth-child(n+2):nth-child(-n+4) { order: 3; }
 html.skin-new:not([data-theme="dark"]) #app .cards > .card:nth-child(6) { order: 4; }
-html.skin-new:not([data-theme="dark"]) #app .cards > .card:nth-child(7),
-html.skin-new:not([data-theme="dark"]) #app .cards > .card:nth-child(8) { order: 5; grid-column: span 2; }
+html.skin-new:not([data-theme="dark"]) #app .cards > .card:nth-child(7) { order: 5; grid-column: span 2; }
+html.skin-new:not([data-theme="dark"]) #app .cards > .card:nth-child(8),
+html.skin-new:not([data-theme="dark"]) #app .cards > .card:nth-child(9) { order: 5; }
 /* Command: Net Profit panel first, Sales / Ad spend / ROAS / Orders beside it */
 html.skin-new[data-theme="dark"] #app .cards > .card:nth-child(5) { grid-column: span 2; grid-row: span 2; order: 0; }
 html.skin-new[data-theme="dark"] #app .cards > .card:nth-child(1) { order: 1; }
@@ -121,12 +122,14 @@ html.skin-new[data-theme="dark"] #app .cards > .card:nth-child(3) { order: 3; }
 html.skin-new[data-theme="dark"] #app .cards > .card:nth-child(8) { order: 4; }
 html.skin-new[data-theme="dark"] #app .cards > .card:nth-child(4) { order: 5; }
 html.skin-new[data-theme="dark"] #app .cards > .card:nth-child(6) { order: 6; }
-html.skin-new[data-theme="dark"] #app .cards > .card:nth-child(7) { order: 7; grid-column: span 2; }
+html.skin-new[data-theme="dark"] #app .cards > .card:nth-child(7) { order: 7; }
+html.skin-new[data-theme="dark"] #app .cards > .card:nth-child(9) { order: 7; }
 /* the wide "Net available" card: right under the heroes (Canvas), under the matrix (Command) */
-html.skin-new:not([data-theme="dark"]) #app .cards > .card:nth-child(9) { order: 2; }
-html.skin-new[data-theme="dark"] #app .cards > .card:nth-child(9) { order: 8; }
+html.skin-new:not([data-theme="dark"]) #app .cards > .card:nth-child(10) { order: 2; }
+html.skin-new[data-theme="dark"] #app .cards > .card:nth-child(10) { order: 8; }
 html.skin-new #app .cards { grid-auto-flow: row dense; }
 /* big hero numbers */
+html.skin-new .card-aov { font-size: 14px; }
 html.skin-new #app .cards > .card:nth-child(1) .card-value,
 html.skin-new #app .cards > .card:nth-child(5) .card-value { font-size: 36px; letter-spacing: -.04em; margin-top: 8px; }
 html.skin-new[data-theme="dark"] #app .cards > .card:nth-child(1) .card-value { font-size: 26px; letter-spacing: -.03em; margin-top: 6px; }

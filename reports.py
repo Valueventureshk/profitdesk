@@ -25,18 +25,20 @@ def _r(v, d=2):
 
 def profit_daily(dash: dict) -> tuple:
     cols = ["Date", "Sales", "Orders", "Ad spend", "Google", "Meta", "ROAS", "Payment fees",
-            "Shopify fees", "COG", "COG estimated", "Net profit", "Net margin %",
+            "Shopify fees", "Refunds", "Chargebacks", "COG", "COG estimated", "Net profit", "Net margin %",
             "Held in reserve", "Net available"]
     rows = []
     for r in dash["series"]:
         rows.append([r["date"], _r(r["sales"]), r["orders"], _r(r["ad_spend"]), _r(r["google_spend"]),
                      _r(r["meta_spend"]), _r(r.get("roas")), _r(r["payment_fee"]), _r(r["shopify_fee"]),
+                     _r(r.get("refunds", 0)), _r(r.get("chargebacks", 0)),
                      _r(r["cogs"]), _r(r["cogs_estimated"]), _r(r["net_profit"]),
                      _r((r.get("net_margin") or 0) * 100, 1) if r.get("net_margin") is not None else "",
                      _r(r.get("reserve_held", 0)), _r(r.get("net_available", 0))])
     t = dash["totals"]
     rows.append(["TOTAL", _r(t["sales"]), t["orders"], _r(t["ad_spend"]), _r(t["google_spend"]),
                  _r(t["meta_spend"]), _r(t.get("roas")), _r(t["payment_fee"]), _r(t["shopify_fee"]),
+                 _r(t.get("refunds", 0)), _r(t.get("chargebacks", 0)),
                  _r(t["cogs"]), _r(t["cogs_estimated"]), _r(t["net_profit"]),
                  _r((t.get("net_margin") or 0) * 100, 1) if t.get("net_margin") is not None else "",
                  _r(t.get("reserve_held", 0)), _r(t.get("net_available", 0))])
@@ -44,18 +46,18 @@ def profit_daily(dash: dict) -> tuple:
 
 
 def profit_stores(dash: dict) -> tuple:
-    cols = ["Store", "Sales", "Orders", "AOV", "Ad spend", "ROAS", "Fees", "COG", "COG %",
+    cols = ["Store", "Sales", "Orders", "AOV", "Ad spend", "ROAS", "Fees", "Refunds", "COG", "COG %",
             "Net profit", "Net margin %"]
     rows = []
     for s in sorted(dash.get("stores") or [], key=lambda s: -(s["totals"]["sales"] or 0)):
         t = s["totals"]
         rows.append([s["name"].strip(), _r(t["sales"]), t["orders"], _r(t.get("aov")), _r(t["ad_spend"]),
-                     _r(t.get("roas")), _r(t["processing_fee"]), _r(t["cogs"]),
+                     _r(t.get("roas")), _r(t["processing_fee"]), _r(t.get("refunds_total", 0)), _r(t["cogs"]),
                      _r((t.get("cogs_share") or 0) * 100, 1), _r(t["net_profit"]),
                      _r((t.get("net_margin") or 0) * 100, 1) if t.get("net_margin") is not None else ""])
     t = dash["totals"]
     rows.append(["TOTAL", _r(t["sales"]), t["orders"], _r(t.get("aov")), _r(t["ad_spend"]), _r(t.get("roas")),
-                 _r(t["processing_fee"]), _r(t["cogs"]), _r((t.get("cogs_share") or 0) * 100, 1),
+                 _r(t["processing_fee"]), _r(t.get("refunds_total", 0)), _r(t["cogs"]), _r((t.get("cogs_share") or 0) * 100, 1),
                  _r(t["net_profit"]), _r((t.get("net_margin") or 0) * 100, 1) if t.get("net_margin") is not None else ""])
     return cols, rows
 

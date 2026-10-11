@@ -181,13 +181,18 @@ in the UI, it is computed there and nowhere else. Never calculate a figure in
 These identities must hold exactly. Verify after any change to `metrics.py`:
 
 ```
-sales - processing_fee - cogs - ad_spend == net_profit      (metrics.day)
+sales - refunds - chargebacks - processing_fee - cogs - ad_spend == net_profit   (metrics.day)
+refunds_total == refunds + chargebacks
+payment_fee == paypal_fee + airwallex_fee + other_payment_fee
 ad_spend == google_spend + meta_spend
 processing_fee == payment_fee + shopify_fee
 ```
 
 Other rules:
 
+- **Sales = full order value on the order day; refunds count on the day they're made** (Shopify
+  refunds by refund date, plus PayPal / Airwallex refunds that match no Shopify refund and all
+  chargebacks, the latter two in the all-stores view as "PayPal / Airwallex (not in Shopify)").
 - **Tax is excluded from revenue.** Tax was never the merchant's money. It only
   appears in the payment-fee base, because processors charge on it.
 - **API spend supersedes manual spend** for the same day (`db.fetch_range`).

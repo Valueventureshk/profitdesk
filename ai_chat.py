@@ -26,8 +26,8 @@ def _tool(name, description, props, required):
 
 TOOLS = [
     _tool("list_stores", "The stores and store groups, with their ids (use an id as scope).", {}, []),
-    _tool("get_profit", "Profit dashboard figures for a period: sales, orders, ad spend (Google/Meta), ROAS, "
-          "fees, COG, net profit, margin, reserve held, net available; plus each store's totals when scope is "
+    _tool("get_profit", "Profit dashboard figures for a period: sales (full order value on the order day), orders, ad spend "
+          "(Google/Meta), ROAS, fees (PayPal / Airwallex / Shopify), refunds (on the day refunded) and chargebacks, COG, net profit, margin, reserve held, net available; plus each store's totals when scope is "
           "all or a group.",
           {**_RANGE, "scope": {"type": "string", "description": "all, a store id, or g<group id>"}},
           ["start", "end", "scope"]),

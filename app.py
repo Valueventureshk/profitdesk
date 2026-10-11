@@ -2142,7 +2142,7 @@ async def _chat_tool(name: str, args: dict, user: dict) -> dict:
         _need(user, "profit")
         d = await api_dashboard(scope=args.get("scope") or "all", start=args["start"], end=args["end"], currency=cur)
         keep = ("sales", "orders", "aov", "ad_spend", "google_spend", "meta_spend", "roas", "processing_fee",
-                "cogs", "cogs_estimated", "cogs_share", "net_profit", "net_margin", "reserve_held", "net_available")
+                "paypal_fee", "airwallex_fee", "refunds", "refund_count", "chargebacks", "refunds_total", "cogs", "cogs_estimated", "cogs_share", "net_profit", "net_margin", "reserve_held", "net_available")
         return _round({"title": d["title"], "currency": d["currency"], "range": d["range"],
                        "totals": {k: d["totals"].get(k) for k in keep},
                        "change_vs_previous_pct": {k: d["delta"].get(k) for k in ("sales", "ad_spend", "net_profit", "roas")},
@@ -4923,7 +4923,9 @@ def _in_currency(rows, store, fx_table, base):
                     r["google_spend"] * f_google, r["meta_spend"] * f_meta,
                     r["cogs"] * f_sales, r["payment_fee"] * f_sales, r["shopify_fee"] * f_sales,
                     r["cogs_estimated"] * f_sales, r["reserve_held"] * f_sales,
-                    r["paypal_sales"] * f_sales)
+                    r["paypal_sales"] * f_sales, paypal_fee=r["paypal_fee"] * f_sales,
+                    airwallex_fee=r["airwallex_fee"] * f_sales, refunds=r["refunds"] * f_sales,
+                    refund_count=r["refund_count"], chargebacks=r["chargebacks"] * f_sales)
         for r in rows
     ]
 
@@ -5176,6 +5178,24 @@ async def api_dashboard(scope: str = "all", start: str = None, end: str = None,
             "totals": metrics.summarize(cur),
         })
 
+    # All stores: refunds made straight in PayPal / Airwallex (Shopify never saw them) and
+    # chargebacks, as their own line. Group and store views can't tell which store they're from.
+    if scope == "all":
+        try:
+            outside = await _outside_refunds(stores, min(prev_start, start), end, base, fx_table, same_time)
+        except Exception as e:
+            outside = None
+            warnings.append(f"Couldn't read PayPal / Airwallex refunds and chargebacks: {str(e)[:120]}")
+        if outside:
+            cur_rows = [r for r in outside if r["date"] >= start]
+            pre_rows = [] if same_time else [r for r in outside if r["date"] <= prev_end]
+            current.append(cur_rows)
+            previous.append(pre_rows)
+            if any(r["refunds"] or r["chargebacks"] for r in cur_rows):
+                per_store.append({"id": None, "name": "PayPal / Airwallex (not in Shopify)", "currency": base,
+                                  "cost_pct": None, "google_account_name": None, "meta_account_name": None,
+                                  "outside": True, "totals": metrics.summarize(cur_rows)})
+
     series = metrics.with_ratios(metrics.blend(current))
     totals = metrics.summarize(series)
     prev_totals = metrics.summarize(metrics.blend(previous))
@@ -5221,6 +5241,67 @@ async def api_dashboard(scope: str = "all", start: str = None, end: str = None,
         "warnings": sorted(set(warnings)),
         "updated_at": datetime.now().isoformat(timespec="seconds"),
     }
+
+
+_outside_cache: dict = {}
+
+
+async def _outside_refunds(stores: list, start: str, end: str, base: str, fx_table, same_time: bool) -> list:
+    """Daily rows (display currency, Hong Kong days) of money returned to customers outside Shopify:
+    PayPal / Airwallex refunds that match no Shopify refund (same amount within 3 days), plus
+    every chargeback / dispute debit (money won back counts negative, on the day it returns)."""
+    ck = (start, end, base)
+    hit = _outside_cache.get(ck)
+    if hit and time.time() - hit[0] < 300:
+        rows = hit[1]
+    else:
+        since = datetime.combine(date.fromisoformat(start) - timedelta(days=3), clock.min, CASH_TZ)
+        until = datetime.combine(date.fromisoformat(end) + timedelta(days=1), clock.min, CASH_TZ)
+        moves, _problems = await _expense_moves(since, until)
+        if not fx_table and any((m.get("currency") or base) != base for m in moves):
+            fx_table = await fx.table(base)
+        shop = []                                     # Shopify refunds paid back through PayPal / Airwallex
+        for st in stores:
+            if demo.is_demo(st):
+                continue
+            try:
+                _d, recs = await ShopifyClient(st["shop_domain"], st["access_token"]).daily_refunds(
+                    (date.fromisoformat(start) - timedelta(days=3)).isoformat(), end, st["timezone"])
+            except Exception:
+                continue
+            for r in recs:
+                shop.append({"amount": r["amount"], "currency": st["currency"],
+                             "time": datetime.fromisoformat(r["time"]), "used": False})
+        days = {}
+        for m in moves:
+            line = m.get("line")
+            if line not in ("Refunds to customers", "Disputes and chargebacks"):
+                continue
+            when = m["time"].astimezone(CASH_TZ)
+            d = when.date().isoformat()
+            if not start <= d <= end:
+                continue
+            amt = -float(m.get("amount") or 0.0)          # money out is negative in the statement
+            if line == "Refunds to customers":
+                if amt <= 0:
+                    continue
+                twin = next((x for x in shop if not x["used"] and x["currency"] == m.get("currency")
+                             and abs(x["amount"] - amt) < 0.02 and abs((x["time"] - when).total_seconds()) < 3 * 86400),
+                            None)
+                if twin:                                  # already counted from Shopify
+                    twin["used"] = True
+                    continue
+            f = fx.factor(fx_table, m.get("currency") or base, base) if fx_table else 1.0
+            row = days.setdefault(d, {"refunds": 0.0, "count": 0, "chargebacks": 0.0})
+            if line == "Refunds to customers":
+                row["refunds"] += amt * f
+                row["count"] += 1
+            else:
+                row["chargebacks"] += amt * f
+        rows = [metrics.day(d, 0.0, 0, 0.0, 0.0, 0.0, refunds=v["refunds"], refund_count=v["count"],
+                            chargebacks=v["chargebacks"]) for d, v in sorted(days.items())]
+        _outside_cache[ck] = (time.time(), rows)
+    return rows
 
 
 async def _store_window(store, start, end, auth, meta_auth):
@@ -5300,9 +5381,17 @@ async def _store_window(store, start, end, auth, meta_auth):
         return await meta.daily_spend(meta_auth["access_token"], store["meta_account_id"],
                                       start, end_for_api, store["timezone"], account_tz)
 
-    got_sales, got_spend, got_meta = await asyncio.gather(
-        sales(), spend(), meta_spend(), return_exceptions=True
+    async def refunds():
+        client = ShopifyClient(store["shop_domain"], store["access_token"])
+        days, _records = await client.daily_refunds(start, end_for_api, store["timezone"])
+        return days
+
+    got_sales, got_spend, got_meta, got_refunds = await asyncio.gather(
+        sales(), spend(), meta_spend(), refunds(), return_exceptions=True
     )
+    if isinstance(got_refunds, Exception):
+        notes.append(f"{store['name']}: couldn't read refunds ({str(got_refunds)[:120]}).")
+        got_refunds = {}
 
     if isinstance(got_sales, Exception):
         notes.append(f"{store['name']}: {got_sales}")
@@ -5323,15 +5412,14 @@ async def _store_window(store, start, end, auth, meta_auth):
     rows = []
     for d in _dates(start, end):
         s = got_sales.get(d, {"sales": 0.0, "orders": 0, "payments": {}})
-        pay_fee, shop_fee = _fees_for(store, s["payments"], ctx, notes)
-        known, covered = tracked.get(d, (0.0, 0.0))
-        pay_fee = metrics.provider_fee_day(known, covered,
-                                           sum(v[1] for v in s["payments"].values()), pay_fee)
+        pp, aw, other, shop_fee = _fee_split(store, s["payments"], ctx, notes, tracked.get(d, {}))
         c, est = cogs.get(d, (0.0, 0.0))
+        rf = got_refunds.get(d, {"refunds": 0.0, "count": 0})
         rows.append(metrics.day(d, s["sales"], s["orders"],
                                 got_spend.get(d, 0.0), got_meta.get(d, 0.0),
-                                c, pay_fee, shop_fee, est, metrics.reserve_held(s["payments"]),
-                                metrics.paypal_sales(s["payments"])))
+                                c, pp + aw + other, shop_fee, est, metrics.reserve_held(s["payments"]),
+                                metrics.paypal_sales(s["payments"]), paypal_fee=pp, airwallex_fee=aw,
+                                refunds=rf["refunds"], refund_count=rf["count"]))
 
     _cache[key] = (time.time(), (rows, notes))
     return rows, notes
@@ -5598,9 +5686,14 @@ async def _recost(store_id: int, order_names: set):
     _cache.clear()
 
 
+def _fee_bucket(gateways: str) -> str:
+    m = metrics.payment_method(gateways or "")
+    return "paypal" if m == "paypal" else "airwallex" if m.startswith("airwallex") else "other"
+
+
 def _tracked_fees(store, start: str, end: str, until: datetime = None) -> dict:
-    """{day: (provider fees of tracked orders, amount those payments cover)}:
-    actual fee where posted, estimate otherwise."""
+    """{day: {provider: (fees of tracked orders, amount those payments cover)}}, provider
+    paypal | airwallex | other: actual fee where posted, estimate otherwise."""
     out = {}
     if demo.is_demo(store):
         return out
@@ -5608,9 +5701,30 @@ def _tracked_fees(store, start: str, end: str, until: datetime = None) -> dict:
         if until is not None and datetime.fromisoformat(r["created"]) > until:
             continue
         fee = r["fee_actual"] if r["fee_actual"] is not None else (r["fee_est"] or 0.0)
-        k, c = out.get(r["day"], (0.0, 0.0))
-        out[r["day"]] = (k + fee, c + r["amount"])
+        b = out.setdefault(r["day"], {})
+        k, c = b.get(_fee_bucket(r["gateway"]), (0.0, 0.0))
+        b[_fee_bucket(r["gateway"])] = (k + fee, c + r["amount"])
     return out
+
+
+def _fee_split(store, payments: dict, ctx, notes, tracked: dict) -> tuple:
+    """A store-day's (PayPal fee, Airwallex fee, other provider fee, Shopify fee): tracked orders'
+    fees (actual where posted) plus the rate-card estimate for the rest, per provider."""
+    rates, plan, hkd = ctx
+    unknown = sorted({g for g in payments if metrics.payment_method(g) == "other"})
+    if unknown:
+        notes.append(f"{store['name']}: some orders were paid with {', '.join(unknown)}, "
+                     "which has no fee rate yet, so only Shopify's fee is counted for them.")
+    groups = {"paypal": {}, "airwallex": {}, "other": {}}
+    for g, v in payments.items():
+        groups[_fee_bucket(g)][g] = v
+    fees, shop_total = {}, 0.0
+    for b, pays in groups.items():
+        est, shop = metrics.processing_fees(pays, rates, plan, store["currency"], hkd)
+        shop_total += shop
+        known, covered = tracked.get(b, (0.0, 0.0))
+        fees[b] = metrics.provider_fee_day(known, covered, sum(v[1] for v in pays.values()), est)
+    return fees["paypal"], fees["airwallex"], fees["other"], shop_total
 
 
 async def _cog_for(store, start: str, end: str, sales: dict, until: datetime = None) -> dict:
@@ -5857,16 +5971,20 @@ async def _same_time_yesterday(store, day, auth, meta_auth):
     if isinstance(got_meta, Exception):
         got_meta = 0.0
 
-    pay_fee, shop_fee = _fees_for(store, got_sales["payments"],
-                                  await _fee_context(store, notes), notes)
-    known, covered = _tracked_fees(store, day, day, until=cut).get(day, (0.0, 0.0))
-    pay_fee = metrics.provider_fee_day(known, covered,
-                                       sum(v[1] for v in got_sales["payments"].values()), pay_fee)
+    pp, aw, other, shop_fee = _fee_split(store, got_sales["payments"], await _fee_context(store, notes), notes,
+                                         _tracked_fees(store, day, day, until=cut).get(day, {}))
     c, est = (await _cog_for(store, day, day, {day: got_sales["sales"]}, until=cut)).get(day, (0.0, 0.0))
+    try:
+        rdays, _r = await ShopifyClient(store["shop_domain"], store["access_token"]).daily_refunds(
+            day, day, store["timezone"], until=until)
+        rf = rdays.get(day, {"refunds": 0.0, "count": 0})
+    except Exception:
+        rf = {"refunds": 0.0, "count": 0}
     return [metrics.day(day, got_sales["sales"], got_sales["orders"],
-                        got_google, got_meta, c, pay_fee, shop_fee, est,
+                        got_google, got_meta, c, pp + aw + other, shop_fee, est,
                         metrics.reserve_held(got_sales["payments"]),
-                        metrics.paypal_sales(got_sales["payments"]))], notes
+                        metrics.paypal_sales(got_sales["payments"]), paypal_fee=pp, airwallex_fee=aw,
+                        refunds=rf["refunds"], refund_count=rf["count"])], notes
 
 
 def _dates(start: str, end: str):
