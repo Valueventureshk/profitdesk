@@ -5984,7 +5984,8 @@ async def _recost(store_id: int, order_names: set):
     for o in orders.values():
         for no, line in zip(o["nos"], cog.cost_order(o, store_id, catalog, rate)):
             updates.append({"order_name": o["name"], "line_no": no, "cost": line["cost"],
-                            "source": line["source"], "supplier": line["supplier"], "note": line["note"]})
+                            "source": line["source"], "supplier": line["supplier"], "note": line["note"],
+                            "single": line.get("single")})
     db.update_cog_costs(store_id, updates)
     _cache.clear()
 
