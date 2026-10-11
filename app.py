@@ -133,7 +133,7 @@ _DESK_HOME = {"profit": "/", "cash": "/cash", "cog": "/cog", "inbox": "/inbox", 
 _EVERYONE = {"/api/me", "/api/me/password", "/api/logout", "/change-password",
              "/api/setup", "/api/chat"}
 # What "read & write" people may change (owners may change anything).
-_WRITE_OK = ("/api/invoices", "/api/cog/sync", "/api/inbox", "/api/expenses", "/api/scm", "/api/importer", "/api/sizecharts")
+_WRITE_OK = ("/api/invoices", "/api/suppliers/payee", "/api/cog/sync", "/api/inbox", "/api/expenses", "/api/scm", "/api/importer", "/api/sizecharts")
 # What anyone with the desk may do, read-only people included (it changes nothing).
 _ANY_OK = ("/api/reports",)
 
@@ -259,7 +259,8 @@ def healthz():
     path = os.path.abspath(db.DB_PATH)
     return {"ok": True, "db_path": path, "volume_mount": vol or None,
             "db_on_volume": bool(vol) and path.startswith(vol.rstrip("/") + "/"),
-            "has_accounts": auth.has_users()}
+            "has_accounts": auth.has_users(),
+            "version": (os.getenv("RAILWAY_GIT_COMMIT_SHA") or "")[:7] or None}
 
 
 @app.get("/login", response_class=HTMLResponse)

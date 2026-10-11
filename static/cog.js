@@ -413,9 +413,9 @@ async function loadSuppliers() {
       <div class="table-wrap"><table class="table"><thead><tr><th>Date</th><th>Paid to</th><th>Amount</th><th>Supplier</th><th></th></tr></thead><tbody>
       ${d.to_assign.map((p, i) => `<tr><td>${day(p.day)}</td><td class="name">${esc(p.name)}${p.detail ? `<span class="sub">${esc(p.detail)}</span>` : ""}</td>
         <td>${money(p.amount, p.currency)}${p.currency !== "USD" ? `<span class="sub">${usd(p.usd)}</span>` : ""}</td>
-        <td data-owner-only><select class="control" data-pay="${i}">${pick("")}</select>
+        <td data-write-only><select class="control" data-pay="${i}">${pick("")}</select>
           <label class="hint sup-all"><input type="checkbox" data-all="${i}"${p.key.startsWith("payee:") ? " checked" : ""}> every payment to this payee</label></td>
-        <td data-owner-only><button class="btn btn-sm btn-primary" data-save="${i}">Save</button></td></tr>`).join("")}
+        <td data-write-only><button class="btn btn-sm btn-primary" data-save="${i}">Save</button></td></tr>`).join("")}
       </tbody></table></div></section>` : "");
   for (const b of $("supAssign").querySelectorAll("[data-save]")) b.onclick = async () => {
     const i = +b.dataset.save, p = d.to_assign[i];
@@ -446,7 +446,7 @@ async function loadSuppliers() {
           : `<span class="src bad">${i.issues.length} to check</span><span class="sub">${esc(i.issues.slice(0, 3).join(" · "))}${i.issues.length > 3 ? " …" : ""}</span>`}</td></tr>`).join("");
     const pays = s.payments.map((p) => `<tr><td>${day(p.day)}</td><td class="name">${esc(p.name)}</td>
         <td>${money(p.amount, p.currency)}</td><td>${usd(p.usd)}</td>
-        <td data-owner-only><button class="btn btn-sm btn-ghost" data-unpay="${esc(p.by_payment ? "tx:" + p.id : p.key)}"
+        <td data-write-only><button class="btn btn-sm btn-ghost" data-unpay="${esc(p.by_payment ? "tx:" + p.id : p.key)}"
           title="${p.by_payment ? "Assign this payment again" : "Assign payments to this payee again"}">Change</button></td></tr>`).join("");
     const late = s.late_count ? `<details class="sup-late"><summary><span class="src catalog">${s.late_count} orders</span>
         fulfilled over 14 days ago and on no invoice yet · ${usd(s.late_cost)}</summary>
