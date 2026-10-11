@@ -40,6 +40,9 @@ const LOGO = {
   airwallex: `<svg class="logo" viewBox="0 0 24 24" aria-label="Airwallex"><path fill="#FF4F42" d="M12 3l9 16h-4.2L12 10.4 7.2 19H3z"/></svg>`,
 };
 const STATE_NAME = { respond: "Needs our response", waiting: "Waiting on customer", review: "PayPal / bank deciding", closed: "Closed" };
+const PROVIDER = { paypal: "PayPal", airwallex: "Airwallex" };
+const who = (c) => `<span class="dsp-prov ${c.provider}">${LOGO[c.provider] || ""}${PROVIDER[c.provider] || c.provider}</span>`;
+const stateName = (c) => (c.state === "review" ? (c.provider === "paypal" ? "PayPal deciding" : "Card bank deciding") : STATE_NAME[c.state] || c.state);
 const OUTCOME = { won: ["invoice", "Won"], lost: ["bad", "Lost"], refunded: ["catalog", "Refunded"], cancelled: ["new", "Cancelled by customer"] };
 const EVIDENCE_TYPES = [["PROOF_OF_FULFILLMENT", "Proof it was shipped / delivered (tracking)"], ["PROOF_OF_REFUND", "Proof of refund"],
   ["PROOF_OF_RETURN", "Proof of return"], ["ITEM_DESCRIPTION", "Item description"], ["PROOF_OF_DELIVERY_SIGNATURE", "Delivery signature"],
@@ -53,6 +56,7 @@ const nice = (s) => String(s || "").replace(/_/g, " ").toLowerCase().replace(/^.
 
 function due(c) {
   if (c.state === "closed") return `<span class="src ${(OUTCOME[c.outcome] || ["new"])[0]}">${esc((OUTCOME[c.outcome] || [, nice(c.outcome || "closed")])[1])}</span>`;
+  if (c.state !== "respond") return `<span class="src catalog">${esc(stateName(c))}</span>`;
   if (c.days_left === null || c.days_left === undefined) return `<span class="hint">—</span>`;
   const d = c.days_left;
   const cls = d < 0 ? "bad" : d <= 3 ? "changed" : "catalog";
@@ -85,7 +89,7 @@ function drawList() {
   $("list").innerHTML = rows.length ? `<thead><tr><th>Due</th><th>Case</th><th>Order</th><th>Customer</th><th>Amount</th></tr></thead><tbody>
     ${rows.map((c) => `<tr class="clickable${c.key === openKey ? " on" : ""}" data-key="${esc(c.key)}">
       <td>${due(c)}</td>
-      <td class="name">${LOGO[c.provider] || ""} ${esc(c.stage)} · ${esc(c.reason)}<span class="sub">${esc(c.account)} · ${esc(c.id)}</span></td>
+      <td class="name">${who(c)} ${esc(c.stage)} · ${esc(c.reason)}<span class="sub">${esc(c.account)} · ${esc(c.id)}</span></td>
       <td>${c.order_name ? `${esc(c.order_name)}<span class="sub">${esc(c.store)}</span>` : `<span class="hint">not linked</span>`}</td>
       <td>${esc(c.customer || "")}</td>
       <td>${money(c.amount, c.currency)}</td></tr>`).join("")}</tbody>`
@@ -124,11 +128,11 @@ function drawCase() {
   const forms = c.actions.map((a) => actionForm(a, c, ctx)).join("");
   const locked = c.actions.filter((a) => !c.can?.[a]);
   $("case").innerHTML = `
-    <div class="panel-head"><h2>${LOGO[c.provider] || ""} ${esc(c.stage)} · ${esc(c.reason)} · ${money(c.amount, c.currency)}</h2>
+    <div class="panel-head"><h2>${who(c)} ${esc(c.stage)} · ${esc(c.reason)} · ${money(c.amount, c.currency)}</h2>
       <span>${due(c)} <button class="btn btn-sm btn-ghost" id="caseClose">Close</button></span></div>
-    <p class="hint">${esc(c.account)} · case ${esc(c.id)} · ${esc(STATE_NAME[c.state] || c.state)} · status ${esc(nice(c.status))}
-      ${c.due && c.state !== "closed" ? ` · respond by <b>${esc(when(c.due))}</b>` : ""} · opened ${esc(when(c.created))}</p>
-    ${c.reason_detail ? `<p class="hint">${esc(c.reason_detail)}</p>` : ""}
+    <p class="hint">${esc(PROVIDER[c.provider])} account “${esc(c.account)}” · case ${esc(c.id)} · ${esc(stateName(c))} · status ${esc(nice(c.status))}
+      ${c.due && c.state === "respond" ? ` · respond by <b>${esc(when(c.due))}</b>` : ""} · opened ${esc(when(c.created))}</p>
+    ${c.reason_detail && !/^[a-z_]+$/.test(c.reason_detail) ? `<p class="hint">${esc(c.reason_detail)}</p>` : ""}
     ${c.requested_evidence?.length ? `<div class="notice">PayPal asks for: <b>${esc(c.requested_evidence.map(nice).join(", "))}</b></div>` : ""}
     <div class="dsp-grid">
       <div><h3>The order</h3>${orderBox}

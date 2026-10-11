@@ -1555,3 +1555,14 @@ tr.pc-checking td { background: rgba(245,158,11,.05); }
 .dsp-form textarea { width: 100%; font: inherit; }
 .dsp-link { display: inline-flex; gap: 6px; margin-left: 8px; }
 .dsp-log { font-size: 12px; margin: 3px 0; }
+.dsp-prov { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 600; padding: 1px 8px 1px 5px;
+  border-radius: 999px; border: 1px solid var(--rule); vertical-align: 2px; margin-right: 4px; }
+.dsp-prov.paypal { color: #003087; } .dsp-prov.airwallex { color: #E0392F; }
+html[data-theme="dark"] .dsp-prov.paypal { color: #8DB4FF; }
+/* Text inside panels never touches the edge (tables bring their own spacing) */
+.pc-tip, .sup-assign > .hint,
+.sup-card > :not(.panel-head):not(.table-wrap),
+.dsp-case > :not(.panel-head),
+#invDetail > :not(.panel-head):not(.table-wrap) { margin-left: 16px; margin-right: 16px; }
+.sup-card, .dsp-case, #invDetail { padding-bottom: 14px; }
+.sup-card > .panel-head + *, .dsp-case > .panel-head + *, #invDetail > .panel-head + * { margin-top: 12px; }
