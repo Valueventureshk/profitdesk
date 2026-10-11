@@ -43,6 +43,7 @@ import invoices
 import invoice_ai
 import suppliers
 import disputes
+import recordings
 import mail_client
 import gmail_send
 import mail_labels
@@ -127,10 +128,12 @@ _DESK_PATHS = {
     "importer": ("/importer", "/api/importer"),
     "sizecharts": ("/sizecharts", "/api/sizecharts"),
     "disputes": ("/disputes", "/api/disputes"),
+    "recordings": ("/recordings", "/api/recordings"),
 }
 _DESK_HOME = {"profit": "/", "cash": "/cash", "cog": "/cog", "inbox": "/inbox", "reports": "/reports",
              "expenses": "/expenses", "scm": "/scm", "importer": "/importer",
-             "sizecharts": "/sizecharts", "disputes": "/disputes"}
+             "sizecharts": "/sizecharts", "disputes": "/disputes",
+             "recordings": "/recordings"}
 # Shared by every desk's pages: the user's own details and the dropdown lists.
 _EVERYONE = {"/api/me", "/api/me/password", "/api/logout", "/change-password",
              "/api/setup", "/api/chat"}
@@ -4351,6 +4354,10 @@ async def proxy_track(request: Request, order: str = None, email: str = None, nu
     signed = bool(app_keys) and trackpage.verify_proxy(query, app_keys[1])
     if not signed and not getattr(request.state, "user", None):
         return Response("Not allowed.", status_code=401)
+    if rest.strip("/") == "rec/config":                 # session recordings: is this store recording?
+        cfg = recordings.config(store["id"])
+        on = signed and cfg["on"] and recordings.started_today(store["id"]) < cfg["per_day"]
+        return JSONResponse({"on": bool(on), "sample": cfg["sample"]}, headers={"Cache-Control": "no-store"})
     if rest.strip("/").startswith("sizechart"):
         return await _sizechart_for(store, request.query_params.get("handle") or "",
                                     request.query_params.get("country") or "")
@@ -5551,6 +5558,134 @@ async def _sc_script(store, on: bool) -> str:
     except Exception as e:
         return str(e)[:200]
     return ""
+
+
+# ---------------------------------------------------------------- Apps → Session Recordings
+
+@app.get("/recordings", response_class=HTMLResponse)
+def recordings_page():
+    return _page("recordings.html", ("recordings.js", "nav.js", "styles.css", "skin.css", "chat.js"))
+
+
+async def _script_tag(store, filename: str, on: bool) -> str:
+    """Add or remove one of our storefront scripts (ScriptTag). Returns an error message or ''."""
+    client = ShopifyClient(store["shop_domain"], store["access_token"])
+    try:
+        tags = (await client.gql(SCRIPT_TAGS))["scriptTags"]["nodes"]
+        ours = [t for t in tags if filename in (t.get("src") or "")]
+        if on and not ours:
+            r = await client.gql(SCRIPT_CREATE, {"i": {"src": f"{BASE_URL}/static/{filename}",
+                                                       "displayScope": "ONLINE_STORE", "cache": False}})
+            errs = r["scriptTagCreate"]["userErrors"]
+            if errs:
+                return "; ".join(e["message"] for e in errs)
+        if not on:
+            for t in ours:
+                await client.gql(SCRIPT_DELETE, {"id": t["id"]})
+    except Exception as e:
+        return str(e)[:200]
+    return ""
+
+
+@app.post("/proxy/track/rec")
+async def proxy_recording(request: Request, sid: str = "", seq: int = 0, z: int = 0):
+    """One chunk of a shopper's session, from the store's app proxy (signed by Shopify)."""
+    query = dict(request.query_params)
+    store = next((x for x in db.list_stores() if x["shop_domain"].lower() == (query.get("shop") or "").lower()), None)
+    keys = _shopify_app(store["shop_domain"]) if store else None
+    if not store or not keys or not trackpage.verify_proxy(query, keys[1]) or not recordings.valid_sid(sid):
+        return JSONResponse({"error": "Not allowed."}, status_code=401)
+    cfg = recordings.config(store["id"])
+    if not cfg["on"]:
+        return JSONResponse({"stop": True})
+    body = await request.body()
+    if len(body) > 4 * 1024 * 1024:
+        return JSONResponse({"error": "Too big."}, status_code=413)
+    try:
+        if z:
+            import zlib
+            d = zlib.decompressobj(16 + zlib.MAX_WBITS)
+            body = d.decompress(body, 20 * 1024 * 1024)
+            if d.unconsumed_tail:
+                return JSONResponse({"error": "Too big."}, status_code=413)
+        payload = json.loads(body)
+    except (ValueError, Exception):
+        return JSONResponse({"error": "Bad chunk."}, status_code=400)
+    with db._conn() as con:
+        known = con.execute("SELECT 1 FROM rec_sessions WHERE sid = ?", (sid,)).fetchone()
+    if not known and recordings.started_today(store["id"]) >= cfg["per_day"]:
+        return JSONResponse({"stop": True})
+    ok = await asyncio.to_thread(recordings.save_chunk, store["id"], sid, max(0, min(seq, 99999)), payload)
+    return JSONResponse({"ok": ok, "stop": not ok})
+
+
+_rec_clean = {"at": 0.0}
+
+
+@app.get("/api/recordings")
+async def api_recordings(store: str = "all", days: int = 7, device: str = "", seen: str = ""):
+    stores = [x for x in db.list_stores() if not demo.is_demo(x) and x.get("access_token")]
+    if time.time() - _rec_clean["at"] > 3600:
+        _rec_clean["at"] = time.time()
+        await asyncio.to_thread(recordings.cleanup, [x["id"] for x in stores])
+    names = {x["id"]: x["name"].strip() for x in stores}
+    since = (datetime.now(timezone.utc) - timedelta(days=max(1, min(days, 90)))).isoformat()
+    q, args = "SELECT * FROM rec_sessions WHERE started >= ?", [since]
+    if store != "all":
+        q += " AND store_id = ?"
+        args.append(int(store))
+    if device in ("mobile", "desktop"):
+        q += " AND mobile = ?"
+        args.append(1 if device == "mobile" else 0)
+    if seen == "cart":
+        q += " AND cart = 1"
+    elif seen == "product":
+        q += " AND product = 1"
+    elif seen == "new":
+        q += " AND watched = 0"
+    with db._conn() as con:
+        rows = [dict(r) for r in con.execute(q + " ORDER BY started DESC LIMIT 400", args)]
+        totals = {r[0]: (r[1], r[2]) for r in con.execute(
+            "SELECT store_id, COUNT(*), SUM(bytes) FROM rec_sessions GROUP BY store_id")}
+    for r in rows:
+        r["store"] = names.get(r["store_id"], "?")
+        r["pages"] = json.loads(r["pages"] or "[]")
+        r["seconds"] = round(((r["last_ts"] or 0) - (r["first_ts"] or 0)) / 1000) if r["first_ts"] else 0
+    return {"sessions": rows,
+            "stores": [{"id": x["id"], "name": names[x["id"]], "domain": x["shop_domain"], "cfg": recordings.config(x["id"]),
+                        "today": recordings.started_today(x["id"]), "kept": (totals.get(x["id"]) or (0, 0))[0],
+                        "mb": round(((totals.get(x["id"]) or (0, 0))[1] or 0) / 1048576, 1)} for x in stores]}
+
+
+@app.get("/api/recordings/events")
+async def api_recording_events(sid: str):
+    ev = await asyncio.to_thread(recordings.events, sid)
+    if not ev:
+        raise HTTPException(404, "Nothing recorded for this session (yet).")
+    with db._conn() as con:
+        con.execute("UPDATE rec_sessions SET watched = 1 WHERE sid = ?", (sid,))
+    return JSONResponse(ev)
+
+
+@app.delete("/api/recordings")
+def api_recording_delete(sid: str):
+    recordings.delete(sid)
+    return {"ok": True}
+
+
+@app.put("/api/recordings/settings/{store_id}")
+async def api_recording_settings(store_id: int, payload: dict):
+    store = next((x for x in db.list_stores() if x["id"] == store_id), None)
+    if not store:
+        raise HTTPException(404, "Store not found.")
+    was = recordings.config(store_id)["on"]
+    cfg = recordings.save_config(store_id, payload)
+    if cfg["on"] != was:
+        err = await _script_tag(store, "recorder.js", cfg["on"])
+        if err:
+            recordings.save_config(store_id, {"on": was})
+            raise HTTPException(400, f"Shopify didn't accept the change: {err}")
+    return {"ok": True, "cfg": cfg}
 
 
 @app.get("/api/sizecharts/settings")

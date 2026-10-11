@@ -24,11 +24,15 @@ window.PDUrl = {
     { href: "/inbox", desk: "inbox", label: "Inbox", note: "Customer emails from every store" },
     { href: "/reports", desk: "reports", label: "Reports", note: "Download spreadsheets of any figures" },
     { href: "/scm", desk: "scm", label: "SCM", note: "Every order's shipping and tracking" },
-    { href: "/importer", desk: "importer", label: "Product Importer", note: "Copy products from any Shopify store" },
-    { href: "/sizecharts", desk: "sizecharts", label: "Size Charts", note: "Size charts for every store, with AI" },
     { href: "/expenses", desk: "expenses", label: "Expenses", note: "Every payment out, by category" },
     { href: "/disputes", desk: "disputes", label: "Disputes", note: "PayPal cases and card chargebacks" },
+    // Apps: tools for the stores themselves
+    { href: "/sizecharts", desk: "sizecharts", label: "Size Charts", note: "Size charts for every store, with AI", group: "Apps" },
+    { href: "/importer", desk: "importer", label: "Product Importer", note: "Copy products from any Shopify store", group: "Apps" },
+    { href: "/recordings", desk: "recordings", label: "Session Recordings", note: "Watch what shoppers did on your stores", group: "Apps" },
   ];
+  // a group's title goes above its first item
+  const headed = (list, title) => (s, i) => (s.group && (i === 0 || list[i - 1].group !== s.group) ? title(s.group) : "");
 
   // Who's logged in: only their desks show in the menu; owner-only and
   // change buttons hide for people without that access (the server enforces it too).
@@ -60,10 +64,11 @@ window.PDUrl = {
     const dark = () => document.documentElement.dataset.theme === "dark";
     const themeItem = () => `<button class="section-item theme-toggle" data-theme-toggle>
         <strong>${dark() ? "☀ Day mode" : "☾ Night mode"}</strong><span>Switch the colours on this device</span></button>`;
-    menu.innerHTML = allowed.map((s) => s.soon
+    const head = headed(allowed, (g) => `<div class="section-group">${g}</div>`);
+    menu.innerHTML = allowed.map((s, i) => head(s, i) + (s.soon
       ? `<div class="section-item soon"><strong>${s.label}</strong><span>${s.note}</span></div>`
       : `<a class="section-item${location.pathname === s.href ? " on" : ""}" href="${s.href}">
-           <strong>${s.label}</strong><span>${s.note}</span></a>`).join("") + themeItem();
+           <strong>${s.label}</strong><span>${s.note}</span></a>`)).join("") + themeItem();
     const wireTheme = () => {
       menu.querySelector("[data-theme-toggle]").onclick = (e) => {
         e.stopPropagation();
@@ -109,6 +114,7 @@ window.PDUrl = {
     "/importer": '<path d="M12 3v12M7 10l5 5 5-5"/><path d="M4 17v3h16v-3"/>',
     "/sizecharts": '<path d="M3 15l12-12 6 6-12 12z"/><path d="M7 11l2 2M10 8l2 2M13 5l2 2"/>',
     "/disputes": '<path d="M12 3l8 4v5c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V7z"/><path d="M12 8v5M12 16v.01"/>',
+    "/recordings": '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 9.5v5l4.5-2.5z"/>',
     settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>',
     theme: '<path d="M20 14.5A8 8 0 019.5 4a8 8 0 1010.5 10.5z"/>',
     logout: '<path d="M14 4h5v16h-5M10 8l-4 4 4 4M6 12h10"/>',
@@ -128,7 +134,7 @@ window.PDUrl = {
     const dark = () => document.documentElement.dataset.theme === "dark";
     rail.innerHTML = `
       <a class="pd-rail-brand" href="/"><span class="brand-mark">PD</span><span>ProfitDesk</span></a>
-      <nav class="pd-rail-nav">${allowed.map((s) => `<a class="pd-rail-item${here === s.href ? " on" : ""}" href="${s.href}" title="${s.note}">
+      <nav class="pd-rail-nav">${allowed.map((s, i) => `${headed(allowed, (g) => `<div class="pd-rail-group">${g}</div>`)(s, i)}<a class="pd-rail-item${here === s.href ? " on" : ""}" href="${s.href}" title="${s.note}">
         ${svg(s.href)}<span>${s.label.replace(" + Products Monitor", "")}</span></a>`).join("")}</nav>
       <div class="pd-rail-foot">
         <button class="pd-rail-item" data-rail-fold title="Make the sidebar narrower or wider">${svg("fold")}<span>Collapse sidebar</span></button>

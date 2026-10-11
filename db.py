@@ -288,6 +288,29 @@ CREATE TABLE IF NOT EXISTS cash_snapshots (
 -- Expenses desk: the owner's category picks. key = a payee ("payee:pgs tech
 -- limited", "merchant:canva") or one transaction ("tx:<id>"). Suggestions are
 -- the AI's guesses for payees nobody has picked yet.
+CREATE TABLE IF NOT EXISTS rec_sessions (
+    sid       TEXT PRIMARY KEY,           -- the visitor's browser session (recordings.py)
+    store_id  INTEGER NOT NULL,
+    started   TEXT NOT NULL,
+    last_at   TEXT NOT NULL,
+    first_ts  INTEGER,                    -- first / last event time (ms) -> length
+    last_ts   INTEGER,
+    chunks    INTEGER NOT NULL DEFAULT 0,
+    bytes     INTEGER NOT NULL DEFAULT 0,
+    mobile    INTEGER NOT NULL DEFAULT 0,
+    width     INTEGER,
+    landing   TEXT,
+    last_url  TEXT,
+    referrer  TEXT,
+    pages     TEXT NOT NULL DEFAULT '[]',
+    clicks    INTEGER NOT NULL DEFAULT 0,
+    product   INTEGER NOT NULL DEFAULT 0,  -- saw a product page
+    cart      INTEGER NOT NULL DEFAULT 0,  -- opened the cart page
+    tz        TEXT,                        -- browser time zone (rough location)
+    lang      TEXT,
+    watched   INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS rec_sessions_store ON rec_sessions (store_id, started);
 CREATE TABLE IF NOT EXISTS disputes (
     key        TEXT PRIMARY KEY,         -- pp:<connection>:<id> | awx:<connection>:<id>
     provider   TEXT NOT NULL,

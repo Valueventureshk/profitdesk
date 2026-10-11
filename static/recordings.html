@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ProfitDesk · Session Recordings</title>
+<script>try{var t=localStorage.getItem("pdTheme")||(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");document.documentElement.dataset.theme=t;if((localStorage.getItem("pdSkin")||"new")==="new")document.documentElement.classList.add("skin-new");}catch(e){}</script>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;650;700&display=swap">
+<link rel="stylesheet" href="/static/styles.css">
+<link rel="stylesheet" href="/static/skin.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/rrweb-player@2.1.7/dist/style.min.css">
+</head>
+<body>
+<div class="cash-page">
+  <header class="cash-top">
+    <div class="brand" data-section-menu title="Switch section">
+      <span class="brand-mark">PD</span>
+      <span class="brand-name">ProfitDesk</span>
+    </div>
+    <div class="crumb">
+      <h1>Session Recordings</h1>
+      <p id="sub">Watch what shoppers did on your stores. What they type is never recorded.</p>
+    </div>
+    <div class="controls">
+      <button id="refresh" class="btn btn-ghost">Refresh</button>
+    </div>
+  </header>
+
+  <main class="content">
+    <div id="problems" class="warnings"></div>
+    <section class="panel rec-guide">
+      <details id="guide"><summary><b>How it works, and how to switch it on</b></summary>
+      <div class="rec-guide-body">
+        <h3>What it does</h3>
+        <p>When it's on for a store, a small script records what shoppers see and do on the store: pages, scrolling,
+          taps and clicks, menus they open. You watch it here like a video. It isn't a screen video, so it's light and
+          doesn't slow the store down.</p>
+        <h3>What it never records</h3>
+        <ul>
+          <li>Anything typed into a box (names, emails, addresses, search, discount codes): it shows as ••••.</li>
+          <li>The checkout and the customer account pages (no payment details, ever).</li>
+          <li>Shoppers who said no to analytics in the store's cookie banner.</li>
+        </ul>
+        <h3>Switch it on for a store</h3>
+        <ol>
+          <li>Below, under <b>Recording on these stores</b>, open the list and tick <b>Record</b> next to the store.
+            (Needs Manage access to this app.)</li>
+          <li>Choose the <b>share of visitors</b> to record (start with 20–30%), the <b>max a day</b>
+            (recordings stop for the day after this many) and how many days to <b>keep</b> them.</li>
+          <li>Within a minute, new visitors start being recorded. Each session appears in the list a few seconds after
+            the shopper starts browsing; click <b>▶ Watch</b>.</li>
+          <li>Untick <b>Record</b> to stop: the script is removed from the store straight away.</li>
+        </ol>
+        <h3>Before you switch it on</h3>
+        <ul>
+          <li>The store needs the <b>App proxy</b> (the same one the order tracking page uses). Amber Ashton doesn't have it yet.</li>
+          <li>Add a line about session recording to the store's <b>privacy policy</b>, for example: “We record anonymised
+            browsing sessions (pages viewed, clicks, scrolling) to improve the store. We never record what you type
+            or any payment details.” EU, UK and Canadian stores especially.</li>
+        </ul>
+        <h3>Using it well</h3>
+        <ul>
+          <li>Filter <b>Opened the cart</b> to watch shoppers who nearly bought: where did they stop?</li>
+          <li>Filter <b>Phones</b>: most of your traffic. Look for things they tap that don't work, or text they can't read.</li>
+          <li>Recordings older than the keep days are deleted automatically, oldest first if storage fills up.</li>
+        </ul>
+      </div></details>
+    </section>
+    <section class="panel rec-settings" id="settings"></section>
+    <div class="cog-filters rec-filters">
+      <select id="fStore" class="control"><option value="all">All stores</option></select>
+      <select id="fDays" class="control"><option value="1">Last 24 hours</option><option value="7" selected>Last 7 days</option><option value="30">Last 30 days</option></select>
+      <select id="fDevice" class="control"><option value="">Phones + computers</option><option value="mobile">Phones</option><option value="desktop">Computers</option></select>
+      <select id="fSeen" class="control"><option value="">Every session</option><option value="cart">Opened the cart</option><option value="product">Saw a product</option><option value="new">Not watched yet</option></select>
+    </div>
+    <section class="panel"><div class="table-wrap"><table class="table rec-list" id="list"><tbody><tr><td class="hint">Loading…</td></tr></tbody></table></div></section>
+    <div class="rec-modal" id="player" hidden><div class="rec-box"><div class="rec-head"><b id="pTitle"></b>
+      <span><button class="btn btn-sm btn-danger" id="pDelete" data-manage-only>Delete</button> <button class="btn btn-sm btn-ghost" id="pClose">Close</button></span></div>
+      <div id="pMeta" class="hint"></div><div id="pStage"></div></div></div>
+  </main>
+</div>
+<div id="toast" class="toast" hidden></div>
+<script src="/static/nav.js"></script>
+<script src="/static/chat.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/rrweb-player@2.1.7/umd/rrweb-player.min.js"></script>
+<script src="/static/recordings.js"></script>
+</body>
+</html>

@@ -58,6 +58,7 @@ file and have it work.
 | `statement.py` | The statement pop-up: opening → movements → closing, sales check |
 | `adbills.py` | Ads payable: Meta balance, Google spend since its last card charge |
 | `cog.py` | **COG engine**: orders sheet → per-store product costs → cost of every order line |
+| `recordings.py` `static/recordings.*` `static/recorder.js` | Apps → **Session Recordings**: rrweb recorder (ScriptTag, off by default per store), chunks via app proxy `/apps/track/rec` → `<DB dir>/recordings/`, replay with rrweb-player |
 | `disputes.py` `static/disputes.*` | **Disputes desk**: PayPal cases + Airwallex chargebacks in one shape, order evidence pack (PDF/PNG, bundled Noto Sans in `assets/`), AI draft (Sonnet), actions |
 | `suppliers.py` | **Supplier accounts**: opening + fulfilled orders' COG − Airwallex payments = owed; invoice expected vs invoiced (COG page → Suppliers) |
 | `invoices.py` `invoice_ai.py` | Supplier invoices: read (PDF/Excel), match to orders, price + bundle check; AI second reading |
