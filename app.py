@@ -378,6 +378,10 @@ def api_users(request: Request):
 @app.post("/api/users")
 def api_add_user(payload: dict):
     """Add a person with a temporary password they must change at first login."""
+    first = ((payload.get("name") or "").strip().split() or [""])[0]
+    if not first:
+        raise HTTPException(400, "Type their first name: it's how the team sees them (e.g. on Inbox tickets).")
+    payload = {**payload, "name": first[:40]}
     try:
         uid = auth.create_user(payload.get("email"), payload.get("name"), payload.get("password"),
                                payload.get("role"), payload.get("desks"), temporary=True)
@@ -1604,8 +1608,11 @@ def api_inbox_ticket(ticket_id: int, request: Request):
 
 
 def _display_name(u: dict) -> str:
+    """First name only, as typed when the person was added (else from their email)."""
     name = (u.get("name") or "").strip()
-    return name or (u.get("email") or "team").split("@")[0].replace(".", " ").title()
+    if name:
+        return name.split()[0][:40]
+    return re.split(r"[._\-+0-9]", (u.get("email") or "team").split("@")[0])[0].title() or "Team"
 
 
 @app.post("/api/inbox/tickets/{ticket_id}")

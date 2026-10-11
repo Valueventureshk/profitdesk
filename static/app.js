@@ -827,7 +827,7 @@ async function renderPeople() {
 
   $("peopleBox").innerHTML = `${rows}
     <details class="advanced"><summary>Add a person</summary>
-      <label class="field"><span>Name</span><input id="puName" type="text"></label>
+      <label class="field"><span>First name (shown to the team, e.g. on Inbox tickets they handle)</span><input id="puName" type="text" autocomplete="off"></label>
       <label class="field"><span>Email (they log in with this)</span><input id="puEmail" type="email" autocomplete="off"></label>
       <label class="field"><span>Temporary password (10+ characters)</span>
         <input id="puPass" type="text" autocomplete="off"></label>
@@ -847,7 +847,8 @@ async function renderPeople() {
 
   $("puAdd").onclick = async () => {
     try {
-      await jsonPost("/api/users", { name: $("puName").value, email: $("puEmail").value,
+      if (!$("puName").value.trim()) { toast("Type their first name.", true); $("puName").focus(); return; }
+      await jsonPost("/api/users", { name: $("puName").value.trim().split(/\s+/)[0], email: $("puEmail").value,
                                      password: $("puPass").value, ...readAccess("pu") });
       toast("Added. Send them their email and temporary password.");
       renderPeople();
