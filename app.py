@@ -5611,7 +5611,7 @@ def googleads_page():
 
 
 _gdesk_cache: dict = {}
-PRODUCT_INFO = """query($ids: [ID!]!) { nodes(ids: $ids) { ... on Product { legacyResourceId title handle status
+GD_PRODUCTS = """query($ids: [ID!]!) { nodes(ids: $ids) { ... on Product { legacyResourceId title handle status
   featuredImage { url(transform: {maxWidth: 120}) }
   variants(first: 100) { nodes { legacyResourceId title price image { url(transform: {maxWidth: 120}) } } } } } }"""
 
@@ -5622,7 +5622,7 @@ async def _product_info(store, pids: list) -> dict:
     ids = [f"gid://shopify/Product/{p}" for p in pids if p.isdigit()]
     for i in range(0, len(ids), 100):
         try:
-            got = await client.gql(PRODUCT_INFO, {"ids": ids[i:i + 100]})
+            got = await client.gql(GD_PRODUCTS, {"ids": ids[i:i + 100]})
         except Exception as e:
             _gdesk_cache["_info_error"] = f"{type(e).__name__}: {str(e)[:300]}"
             continue
