@@ -712,7 +712,7 @@ def api_invoices():
     return {"invoices": out, "to_check": sum(i["to_check"] or 0 for i in out)}
 
 
-@app.get("/api/invoices/{invoice_id}")
+@app.get("/api/invoices/{invoice_id:int}")
 def api_invoice(invoice_id: int):
     inv = db.get_invoice(invoice_id)
     if not inv:
@@ -797,7 +797,7 @@ async def api_invoice_approve(request: Request, invoice_id: int, line_no: int):
     return {"ok": True}
 
 
-@app.delete("/api/invoices/{invoice_id}")
+@app.delete("/api/invoices/{invoice_id:int}")
 async def api_invoice_delete(invoice_id: int):
     inv = db.get_invoice(invoice_id)
     names = {l["order_name"] for l in db.invoice_lines(invoice_id) if l["order_name"]}
