@@ -86,6 +86,9 @@ async def lifespan(app):
     reader = asyncio.create_task(_mail_loop())
     snapper = asyncio.create_task(_snapshot_loop())
     tracker = asyncio.create_task(_scm_loop())
+    for i in db.list_invoices():                     # AI double-checks cut off by a restart
+        if i.get("ai_check") == "pending":
+            asyncio.create_task(_ai_check_invoice(i["id"]))
     yield
     tracker.cancel()
     saver.cancel()

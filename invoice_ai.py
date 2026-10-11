@@ -84,11 +84,37 @@ async def read(api_key: str, data: bytes, filename: str = "") -> dict:
         content = [{"type": "text", "text": f"Invoice {filename}:\n\n" + data.decode("utf-8", "ignore")[:400000]}]
     content.append({"type": "text", "text": "Read this invoice."})
     client = anthropic.AsyncAnthropic(api_key=api_key, max_retries=3, timeout=600)
+    messages = [{"role": "user", "content": content}]
+    usage = {"in": 0, "out": 0}
+    for attempt in range(3):
+        resp = await _ask(client, messages)
+        usage["in"] += resp.usage.input_tokens
+        usage["out"] += resp.usage.output_tokens
+        text = next((b.text for b in resp.content if b.type == "text"), "")
+        try:
+            out = json.loads(text)
+        except ValueError as e:
+            raise AIError("The AI's reading couldn't be understood.") from e
+        # its own check: the orders it read must add up to the total it read, or it skipped some
+        got = round(sum(float(o["amount"] or 0) for o in out["orders"]), 2)
+        if out.get("total") is None or abs(got - float(out["total"])) < 0.01 or attempt == 2:
+            break
+        messages += [{"role": "assistant", "content": text},
+                     {"role": "user", "content": f"Your {len(out['orders'])} orders add up to {got:.2f}, but the invoice "
+                                                 f"total is {float(out['total']):.2f}, so some orders are missing or "
+                                                 "misread. Read the whole file again, every page and every row to the "
+                                                 "end, and return the complete list."}]
+    out["usage"] = usage
+    out["attempts"] = attempt + 1
+    return out
+
+
+async def _ask(client, messages):
     try:
         async with client.messages.stream(
             model=MODEL, max_tokens=64000, system=SYSTEM,
             output_config={"format": {"type": "json_schema", "schema": SCHEMA}},
-            messages=[{"role": "user", "content": content}],
+            messages=messages,
         ) as stream:
             resp = await stream.get_final_message()
     except anthropic.AuthenticationError as e:
@@ -105,13 +131,7 @@ async def read(api_key: str, data: bytes, filename: str = "") -> dict:
         raise AIError("The invoice is too long for one AI reading.")
     if resp.stop_reason == "refusal":
         raise AIError("The AI declined to read this file.")
-    text = next((b.text for b in resp.content if b.type == "text"), "")
-    try:
-        out = json.loads(text)
-    except ValueError as e:
-        raise AIError("The AI's reading couldn't be understood.") from e
-    out["usage"] = {"in": resp.usage.input_tokens, "out": resp.usage.output_tokens}
-    return out
+    return resp
 
 
 def _key(order: str) -> str:
