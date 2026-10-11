@@ -81,10 +81,11 @@ html.skin-new[data-theme="dark"] .control { background-color: #101924; }
 html.skin-new :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* ------------------------------------------------ cards and panels */
-html.skin-new .card { border-radius: var(--sk-card-radius); border-color: var(--line); padding: 18px 20px 12px; box-shadow: var(--shadow); }
+html.skin-new .card { border-radius: var(--sk-card-radius); border-color: var(--line); padding: 14px 16px 10px; box-shadow: var(--shadow); min-height: 0; }
+html.skin-new .card-label .logo-shopify { width: 22px; height: 22px; }
 html.skin-new .card-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .09em; color: var(--muted); }
 html.skin-new .card-label .chip { text-transform: none; letter-spacing: 0; }
-html.skin-new .card-value { font-size: 32px; font-weight: 750; letter-spacing: -.035em; margin-top: 10px; }
+html.skin-new .card-value { font-size: 26px; font-weight: 750; letter-spacing: -.03em; margin-top: 6px; }
 html.skin-new .card-note { color: var(--muted); }
 html.skin-new .chip { border-radius: 999px; padding: 3px 9px; font-weight: 700; }
 html.skin-new .chip.up { background: var(--sk-good-bg); color: var(--up); }
@@ -104,10 +105,10 @@ html.skin-new .card.feature .chip.down { background: rgba(255, 125, 142, .16); c
 
 /* ------------------------------------------------ profit dashboard: arrangement only (same cards, same order in the page) */
 /* card order in the page: 1 Sales · 2 Ad spend · 3 ROAS · 4 COG · 5 Net profit · 6 Net margin · 7 Fees · 8 Orders */
-html.skin-new #app .cards { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+html.skin-new #app .cards { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
 /* Canvas: Revenue hero + navy Net Profit, then the rest */
-html.skin-new:not([data-theme="dark"]) #app .cards > .card:nth-child(1) { grid-column: span 2; grid-row: span 2; order: 1; }
-html.skin-new:not([data-theme="dark"]) #app .cards > .card:nth-child(5) { grid-column: span 2; grid-row: span 2; order: 2; }
+html.skin-new:not([data-theme="dark"]) #app .cards > .card:nth-child(1) { grid-column: span 2; order: 1; }
+html.skin-new:not([data-theme="dark"]) #app .cards > .card:nth-child(5) { grid-column: span 2; order: 2; }
 html.skin-new:not([data-theme="dark"]) #app .cards > .card:nth-child(n+2):nth-child(-n+4) { order: 3; }
 html.skin-new:not([data-theme="dark"]) #app .cards > .card:nth-child(6) { order: 4; }
 html.skin-new:not([data-theme="dark"]) #app .cards > .card:nth-child(7),
@@ -127,10 +128,9 @@ html.skin-new[data-theme="dark"] #app .cards > .card:nth-child(9) { order: 8; }
 html.skin-new #app .cards { grid-auto-flow: row dense; }
 /* big hero numbers */
 html.skin-new #app .cards > .card:nth-child(1) .card-value,
-html.skin-new #app .cards > .card:nth-child(5) .card-value { font-size: 52px; letter-spacing: -.045em; margin-top: 14px; }
-html.skin-new[data-theme="dark"] #app .cards > .card:nth-child(1) .card-value { font-size: 32px; letter-spacing: -.035em; margin-top: 10px; }
-html.skin-new:not([data-theme="dark"]) #app .cards > .card:nth-child(1) .spark { height: 90px; }
-html.skin-new #app .cards > .card:nth-child(5) .spark { height: 70px; }
+html.skin-new #app .cards > .card:nth-child(5) .card-value { font-size: 36px; letter-spacing: -.04em; margin-top: 8px; }
+html.skin-new[data-theme="dark"] #app .cards > .card:nth-child(1) .card-value { font-size: 26px; letter-spacing: -.03em; margin-top: 6px; }
+html.skin-new #app .cards > .card:nth-child(5) .spark { height: 44px; }
 
 /* ------------------------------------------------ tables */
 html.skin-new .table th { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .09em; color: var(--muted);
