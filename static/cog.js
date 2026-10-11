@@ -117,7 +117,9 @@ async function loadDay() {
           ${o.cancelled ? `<span class="sub">cancelled</span>` : ""}</td>
         <td class="cog-lines">${lines}</td>
         <td>${money(o.sales, cur)}</td>
-        <td class="${o.estimated ? "est" : ""}">${money(o.cog, cur)}</td>
+        <td class="${o.estimated ? "est" : ""}">${money(o.cog, cur)}${o.bundle ? `<span class="sub bundle-off"
+          title="${o.bundle.estimated ? "Estimated: single prices less this store's usual discount for this many items" : "From the supplier's invoice"}">Singles ${money(o.bundle.singles, cur)} ·
+          ${o.bundle.discount >= -0.005 ? `bundle discount ${money(o.bundle.discount, cur)}` : `<span class="est">bundle ${money(-o.bundle.discount, cur)} dearer</span>`}${o.bundle.estimated ? " (est.)" : ""}</span>` : ""}</td>
         <td>${pct(o.cog_pct)}</td></tr>`;
   }).join("")}</tbody>` : `<tbody><tr><td class="hint">No orders costed for this period yet.${
     status && !status.synced_at ? " The first costing run is still going; refresh in a few minutes." : ""}</td></tr></tbody>`;
@@ -157,6 +159,18 @@ const STATUS = {
 
 // Invoice archive: every uploaded invoice by its invoice date, with the original file to download
 let invAll = [];
+let aiPoll = null;
+const AI_CHIP = {
+  pending: `<span class="src catalog" title="The AI is reading the original file to double-check it">AI checking…</span>`,
+  review: `<span class="src bad" title="The AI read some orders differently. These lines aren't used for costs until someone decides.">AI disagrees</span>`,
+  failed: `<span class="src catalog">AI check failed</span>`,
+  ai_only: `<span class="src new" title="Only the AI could read this file; its orders add up to the invoice total">Read by AI</span>`,
+};
+function aiChip(i) {
+  if (AI_CHIP[i.ai_check]) return AI_CHIP[i.ai_check];
+  return ["agreed", "confirmed"].includes(i.ai_check) ? `<span class="ai-ok" title="${esc(i.ai_note || "")}">AI ✓</span>` : "";
+}
+
 async function loadInvoices() {
   loadPriceChanges();
   let d;
@@ -173,7 +187,17 @@ async function loadInvoices() {
     <label>To <input type="date" class="control" id="arcTo" value="${esc(was.to)}"></label>
     <select class="control" id="arcStore"><option value="">All stores</option>${storesSeen.map(([id, n]) => `<option value="${esc(id)}"${was.store === id ? " selected" : ""}>${esc(n)}</option>`).join("")}</select>
     <select class="control" id="arcSup"><option value="">All suppliers</option>${sups.map((x) => `<option${was.sup === x ? " selected" : ""}>${esc(x)}</option>`).join("")}</select>
-    <a class="btn btn-sm btn-primary" id="arcZip">⬇ Download all (zip)</a>`;
+    <a class="btn btn-sm btn-primary" id="arcZip">⬇ Download all (zip)</a>
+    ${(() => { const n = invAll.filter((i) => i.file_ext && ["", "skipped", "failed"].includes(i.ai_check || "")).length;
+      return n ? `<button class="btn btn-sm btn-ghost" id="arcAi" data-write-only title="The AI reads each original file again and compares it with the first reading">Double-check ${n} with AI</button>` : ""; })()}`;
+  if ($("arcAi")) $("arcAi").onclick = async () => {
+    if (!confirm("The AI reads every invoice file it hasn't checked yet and compares it with the first reading. It costs a few US cents per invoice. Start?")) return;
+    $("arcAi").disabled = true;
+    try { const r = await api("/api/invoices/ai-check", { method: "POST" }); toast(`${r.queued} invoices queued for the AI double-check.`); loadInvoices(); }
+    catch (e) { toast(e.message, true); $("arcAi").disabled = false; }
+  };
+  clearTimeout(aiPoll);
+  if (invAll.some((i) => i.ai_check === "pending") && !$("invoicesView").hidden) aiPoll = setTimeout(loadInvoices, 15000);
   for (const id of ["arcFrom", "arcTo", "arcStore", "arcSup"]) $(id).onchange = drawArchive;
   drawArchive();
 }
@@ -202,9 +226,9 @@ function drawArchive() {
     <tr class="clickable" data-inv="${i.id}"><td>${i.date ? niceDate(i.date) : "—"}</td>
       <td class="name">${esc(i.supplier || "?")} #${esc(i.number || "—")}<span class="sub">${esc(i.filename || "")}</span></td>
       <td>${esc(i.store)}</td><td>${i.lines}</td><td>${money(i.total, "USD")}</td>
-      <td>${[i.to_check ? `<span class="src changed">${i.to_check} price change${i.to_check === 1 ? "" : "s"}</span>` : "",
+      <td>${[aiChip(i), i.to_check ? `<span class="src changed">${i.to_check} price change${i.to_check === 1 ? "" : "s"}</span>` : "",
              i.problems ? `<span class="src bad">${i.problems} unmatched</span>` : "",
-             i.missing ? `<span class="src catalog">${i.missing} missing</span>` : ""].join(" ") || "✓"}</td>
+             i.missing ? `<span class="src catalog">${i.missing} missing</span>` : ""].join(" ").trim() || "✓"}</td>
       <td onclick="event.stopPropagation()">${i.file_ext
         ? `<a class="btn btn-sm btn-ghost" href="/api/invoices/${i.id}/file" target="_blank" rel="noopener" title="Open the original">${i.file_ext.toUpperCase()}</a>
            <a class="btn btn-sm btn-ghost" href="/api/invoices/${i.id}/file?download=1" title="Download">⬇</a>`
@@ -301,15 +325,50 @@ async function showInvoice(id) {
   const missing = i.missing.length ? `<div class="inv-missing"><strong>Fulfilled but not on this invoice (${i.missing.length})</strong>
       ${i.missing.map((m) => `<div>${esc(m.order)} <span class="hint">${esc(m.products.join(" · "))}</span></div>`).join("")}
       <p class="hint">These were marked fulfilled in Shopify within this invoice's order range. Ask the supplier if they'll be on a later invoice.</p></div>` : "";
+  let review = "";
+  if (i.ai_check === "review") {
+    const rv = (() => { try { return JSON.parse(i.review || "{}"); } catch { return {}; } })();
+    const m = (v) => (v === null || v === undefined ? "—" : money(v, "USD"));
+    review = `<div class="inv-review"><strong>The AI read this invoice differently (${(rv.diffs || []).length})</strong>
+      <p class="hint">Until you decide, this invoice's lines aren't used for any cost. Open the original file and check these orders.</p>
+      <div class="table-wrap"><table class="table"><thead><tr><th>Order</th><th>First reading</th><th>AI reading</th><th></th></tr></thead><tbody>
+      ${(rv.diffs || []).map((x) => `<tr><td class="name">${esc(x.order)}</td><td>${m(x.file)}</td><td>${m(x.ai)}</td><td class="hint">${esc(x.what)}</td></tr>`).join("")}
+      </tbody></table></div>
+      <div class="inv-review-btns" data-write-only>
+        ${i.file_ext ? `<a class="btn btn-sm btn-ghost" href="/api/invoices/${i.id}/file" target="_blank" rel="noopener">Open the original</a>` : ""}
+        <button class="btn btn-sm btn-primary" data-review="file">The first reading is right</button>
+        <button class="btn btn-sm btn-primary" data-review="ai">Use the AI's reading</button>
+        <button class="btn btn-sm btn-ghost" data-review="recheck">Ask the AI again</button></div></div>`;
+  } else if (i.ai_check) {
+    const say = { agreed: "AI double-check: same orders and amounts as the first reading.",
+                  confirmed: i.ai_note || "Checked by a person.", ai_only: i.ai_note || "Read by the AI only.",
+                  pending: "The AI is double-checking this invoice…", skipped: `Not double-checked: ${i.ai_note || ""}`,
+                  failed: `AI double-check failed: ${i.ai_note || ""}` }[i.ai_check] || "";
+    review = say ? `<p class="hint inv-ai">${esc(say)}${["skipped", "failed"].includes(i.ai_check) && i.file_ext
+      ? ` <button class="btn btn-sm btn-ghost" data-review="recheck" data-write-only>Double-check now</button>` : ""}</p>` : "";
+  }
   $("invDetail").hidden = false;
   $("invDetail").innerHTML = `<div class="panel-head"><h2>${esc(i.supplier || "?")} invoice #${esc(i.number || "—")}
       · ${esc(i.store)} · ${i.date ? niceDate(i.date) : ""}</h2>
       <span><button class="btn btn-sm btn-ghost" id="invClose">Close</button>
       <button class="btn btn-sm btn-danger" id="invDelete" data-write-only>Delete</button></span></div>
-    ${missing}
+    ${review}${missing}
     <div class="table-wrap"><table class="table"><thead><tr><th>Order / product</th><th>Invoice</th><th>Before</th><th>Check</th></tr></thead>
       <tbody>${rows}</tbody></table></div>`;
   $("invClose").onclick = () => { $("invDetail").hidden = true; };
+  for (const b of $("invDetail").querySelectorAll("[data-review]")) b.onclick = async () => {
+    const use = b.dataset.review;
+    if (use === "ai" && !confirm("Replace this invoice's lines with the AI's reading? Orders are matched and costed again.")) return;
+    b.disabled = true;
+    try {
+      await api(`/api/invoices/${id}/review`, { method: "POST", headers: { "Content-Type": "application/json" },
+                                                 body: JSON.stringify({ use }) });
+      toast({ file: "Saved: the first reading is used.", ai: "Saved: the AI's reading is used. Orders re-costed.",
+              recheck: "The AI is reading it again; this takes up to a minute." }[use]);
+      showInvoice(id);
+      loadInvoices();
+    } catch (e) { toast(e.message, true); b.disabled = false; }
+  };
   $("invDelete").onclick = async () => {
     if (!confirm(`Delete invoice #${i.number}? Its orders go back to their previous costs.`)) return;
     await api(`/api/invoices/${id}`, { method: "DELETE" });
@@ -391,7 +450,7 @@ async function uploadInvoices(files) {
   $("invResult").innerHTML = `<div class="notice ${done.bad.length ? "" : "ok"}"><b>${done.ok} invoices added</b>
       (${done.lines} lines, ${money(done.total, "USD")})${done.attached ? ` · ${done.attached} earlier invoices now have their file kept` : ""}${done.dup ? ` · ${done.dup} were already uploaded` : ""}.
       ${done.changed} price changes to check · ${done.newp} first-time products · ${done.problems} lines need a look.
-      Order costs are updated from these invoices now.</div>
+      Order costs are updated from these invoices now. The AI is double-checking each file in the background.</div>
     ${done.bad.length ? `<div class="warn">Couldn't read ${done.bad.length}:<br>${done.bad.map(esc).join("<br>")}</div>` : ""}`;
 }
 

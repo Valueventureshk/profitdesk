@@ -100,7 +100,7 @@ def _status(amount: float, units: float, known, any_known=None, tier: int = 1) -
     each = f" each ({units:g} items, {amount:.2f} USD)" if units > 1 else ""
     if known is None and any_known is not None:
         return {"status": "new", "previous": None,
-                "note": f"First price for {tier} per order: {unit:.2f} USD each (other quantities: {any_known[1]:.2f})"}
+                "note": f"First single-item price: {unit:.2f} USD (earlier prices were from bundle orders: {any_known[1]:.2f})"}
     if known is None:
         return {"status": "new", "previous": None, "note": "First invoice for this product" + (each and f" ·{each}")}
     if abs(known[1] - unit) > 0.05:
@@ -108,38 +108,62 @@ def _status(amount: float, units: float, known, any_known=None, tier: int = 1) -
     return {"status": "ok", "previous": known[1], "note": each.strip()}
 
 
-def bundle_pass(rows: list) -> None:
-    """Suppliers often bill a bundle unevenly (3 bras = 15.60 + 7.80 on two lines). Judge the
-    product's total in the order: if total / items matches the earlier price, every line is ok.
-    Sets "each" (bundle price per item) on every line; changes rows in place."""
+def judge(rows: list, catalog) -> None:
+    """Price check for matched invoice lines, by order (changes rows in place).
+
+    Each row: store_id, order_name, product, amount, units (items the line is for), tier (items in
+    the whole Shopify order).
+
+    1 item in the order    the price per item against the product's last single-item price:
+                           ok / changed / new.
+    2+ items (any products) suppliers discount these, so single prices don't apply line by line.
+                           The order's items at single prices are added up ("singles") and the
+                           difference to what was charged is the bundle discount. Never flagged
+                           when cheaper; flagged (changed) when the bundle costs more than the
+                           items would on their own.
+    """
     groups = {}
     for r in rows:
-        if r.get("status") in ("unmatched", "duplicate", "superseded"):
+        if r.get("status") in ("unmatched", "duplicate", "superseded") or not r.get("product"):
             continue
-        k = (r.get("invoice_id"), r.get("store_id"), r.get("order_name") or r.get("order_key"),
-             cog.base_name(r.get("product") or ""))
-        groups.setdefault(k, []).append(r)
+        groups.setdefault((r.get("invoice_id"), r["store_id"], r.get("order_name") or r.get("order")), []).append(r)
     for g in groups.values():
-        items = sum(r.get("units") or 1 for r in g)
-        total = sum(r["amount"] for r in g)
-        each = round(total / (items or 1), 4)
+        items = max(int(g[0].get("tier") or 0), int(round(sum(r.get("units") or 1 for r in g))))
         for r in g:
-            r["each"] = each
-        if len(g) < 2:
-            continue
-        prev = [r.get("previous") for r in g if r.get("previous") is not None]
-        if not prev or not any(r.get("status") == "changed" for r in g):
-            continue
-        old = max(set(prev), key=prev.count)
-        note = f"Bundle: {total:.2f} USD for {items:g} items = {each:.2f} each"
-        if abs(old - each) <= 0.05:
+            r["tier"] = items
+            r["each"] = None
+        if items <= 1:
             for r in g:
-                if r.get("status") == "changed":
-                    r.update(status="ok", previous=old, note=note)
+                known = catalog.single(r["store_id"], r["product"]) if catalog else None
+                any_known = catalog.latest(r["store_id"], r["product"]) if catalog else None
+                r.update(_status(r["amount"], r.get("units") or 1, known, any_known, 1))
+                r["singles"] = known[1] * (r.get("units") or 1) if known else None
+            continue
+        charged = sum(r["amount"] for r in g)
+        missing = []
+        for r in g:
+            one = catalog.single(r["store_id"], r["product"]) if catalog else None
+            r["previous"] = one[1] if one else None
+            r["singles"] = one[1] * (r.get("units") or 1) if one else None
+            if not one:
+                missing.append(r["product"])
+        if missing:
+            names = "; ".join(sorted({m.split(" - ")[0][:40] for m in missing}))
+            for r in g:
+                r.update(status="new" if r["singles"] is None else "ok",
+                         note=f"Bundle of {items}: charged {charged:.2f} USD. No single price yet for {names}")
+            continue
+        full = sum(r["singles"] for r in g)
+        off = full - charged
+        if off < -0.05:
+            for r in g:
+                r.update(status="changed", note=f"Bundle of {items} charged {charged:.2f} USD, but on their own "
+                                                f"these items cost {full:.2f} USD ({-off:.2f} more)")
         else:
             for r in g:
-                if r.get("status") in ("changed", "ok"):
-                    r.update(status="changed", previous=old, note=f"Was {old:.2f} USD each, now {each:.2f} · " + note)
+                r.update(status="ok", note=f"Bundle of {items}: singles {full:.2f} USD, charged {charged:.2f} USD, "
+                                           f"bundle discount {max(off, 0):.2f} USD"
+                                           + (f" ({off / full * 100:.0f}%)" if full and off > 0.005 else ""))
 
 
 def check(inv: dict, store_of, order_lines: dict, catalog, invoiced: dict) -> dict:
@@ -184,12 +208,9 @@ def check(inv: dict, store_of, order_lines: dict, catalog, invoiced: dict) -> di
             row.update(status="duplicate", note=f"Already on invoice {invoiced[key]}")
             out.append(row)
             continue
-        tier = sum((c["quantity"] or 1) for c in candidates
-                   if cog.base_name(c["product"]) == cog.base_name(best["product"])) or 1
+        items = sum((c["quantity"] or 1) for c in candidates if c.get("source") != "cancelled") or 1
         row.update(status="pending", _line=(best["order_name"], best["line_no"]), _qty=best["quantity"] or 1,
-                   tier=tier,
-                   _known=catalog.latest_for(sid, best["product"], tier) if catalog else None,
-                   _any=catalog.latest(sid, best["product"]) if catalog else None)
+                   tier=items)
         out.append(row)
 
     # One invoice line can be for several items (2 pairs = one $26 line). Prices are compared
@@ -202,12 +223,8 @@ def check(inv: dict, store_of, order_lines: dict, catalog, invoiced: dict) -> di
         if r.get("status") != "pending":
             r.setdefault("units", 1.0)
             continue
-        r["units"] = max(1.0, r["_qty"] / per_line[r["_line"]])
-        r.update(_status(r["amount"], r["units"], r.pop("_known"), r.pop("_any"), r["tier"]))
-        r.pop("_line", None)
-        r.pop("_qty", None)
-
-    bundle_pass([r for r in out if r.get("product")])
+        r["units"] = max(1.0, r.pop("_qty") / per_line[r.pop("_line")])
+    judge(out, catalog)
 
     # Fulfilled orders inside the invoice's order range that it doesn't include.
     missing = []

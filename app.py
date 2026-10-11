@@ -40,6 +40,7 @@ import track17
 import expenses
 import cog
 import invoices
+import invoice_ai
 import mail_client
 import gmail_send
 import mail_labels
@@ -620,8 +621,14 @@ async def api_cog_day(start: str, end: str = None, store: str = "all", currency:
         o = orders.setdefault((r["store_id"], r["order_name"]), {
             "store": name, "order": r["order_name"], "created": r["created"], "day": r["day"],
             "cancelled": bool(r["cancelled"]), "fulfillment": r["fulfillment"], "lines": [],
-            "sales": 0.0, "cog": 0.0, "estimated": False})
+            "sales": 0.0, "cog": 0.0, "estimated": False, "items": 0, "singles": 0.0, "singles_known": True})
         cost = (r["cost_usd"] or 0.0) * f("USD")
+        if not r["cancelled"]:
+            o["items"] += r["quantity"] or 1
+            if r.get("single_usd") is None:
+                o["singles_known"] = False
+            else:
+                o["singles"] += r["single_usd"] * f("USD")
         sales = 0.0 if r["cancelled"] else r["subtotal"] * f(cur)
         o["lines"].append({"product": r["product"], "quantity": r["quantity"], "sku": r["sku"],
                            "sales": sales, "cog": cost, "cog_usd": r["cost_usd"],
@@ -632,6 +639,11 @@ async def api_cog_day(start: str, end: str = None, store: str = "all", currency:
     out = sorted(orders.values(), key=lambda o: datetime.fromisoformat(o["created"]))
     for o in out:
         o["cog_pct"] = (o["cog"] / o["sales"]) if o["sales"] else None
+        # 2+ items: what they'd cost bought one by one, and the supplier's bundle discount
+        if o["items"] >= 2 and o["singles_known"] and o["singles"] > 0:
+            o["bundle"] = {"singles": o["singles"], "discount": o["singles"] - o["cog"],
+                           "estimated": any(l["source"] != "invoice" for l in o["lines"])}
+        del o["singles"], o["singles_known"]
     sales = sum(o["sales"] for o in out)
     cogs = sum(o["cog"] for o in out)
     est = [l for o in out for l in o["lines"] if l["source"] == "estimate"]
@@ -724,6 +736,7 @@ async def api_invoice_upload(request: Request, filename: str = "invoice"):
         raise HTTPException(400, "That file is empty.")
     if len(data) > 15 * 1024 * 1024:
         raise HTTPException(400, "That file is too big (15 MB max).")
+    ai_state = None
     try:
         if data[:4] == b"%PDF":
             text = invoices.pdf_text(data)
@@ -733,39 +746,46 @@ async def api_invoice_upload(request: Request, filename: str = "invoice"):
             text = data.decode("utf-8", "ignore")
         inv = invoices.parse(text)
     except invoices.InvoiceError as e:
-        raise HTTPException(400, str(e))
+        # the normal reader couldn't read it: the AI reads it alone, used only if it adds up
+        key = db.get_setting("anthropic_api_key")
+        if not key:
+            raise HTTPException(400, str(e))
+        try:
+            ai = await invoice_ai.read(key, data, filename)
+        except invoice_ai.AIError as e2:
+            raise HTTPException(400, f"{e} The AI couldn't read it either: {e2}")
+        inv = invoice_ai.as_invoice(ai)
+        if not inv["lines"]:
+            raise HTTPException(400, f"{e} The AI found no orders in it either.")
+        inv["date"] = inv["date"] or date.today().isoformat()
+        sums = round(sum(float(o["amount"]) for o in ai["orders"]), 2)
+        adds_up = ai.get("total") is None or abs(sums - float(ai["total"])) < 0.01
+        ai_state = ("ai_only", f"Read by the AI only ({e})", None) if adds_up else \
+            ("review", "Read by the AI only, and its orders don't add up to the invoice total",
+             {"diffs": [{"order": "Orders vs total", "file": None, "ai": sums,
+                         "what": f"The AI's orders add up to {sums:.2f}, the invoice says {float(ai['total']):.2f}"}],
+              "ai": ai})
     for old in db.list_invoices():
         if old["number"] and old["number"] == inv["number"] and old["supplier"] == inv["supplier"] \
                 and abs((old["total"] or 0) - inv["total"]) < 0.01:
             if not old.get("file_ext"):          # uploaded before files were kept: keep this copy now
                 _save_invoice_file(old["id"], data, filename)
+                if (old.get("ai_check") or "") in ("", "skipped", "failed"):
+                    db.set_invoice_ai(old["id"], "pending", "Queued")
+                    asyncio.create_task(_ai_check_invoice(old["id"]))
                 return {"ok": True, "attached": True, "id": old["id"], "supplier": inv["supplier"],
                         "number": inv["number"], "lines": len(inv["lines"]), "total": inv["total"],
                         "sum": inv["total"], "counts": {}, "missing": 0}
             raise HTTPException(400, f"Invoice {inv['number']} from {inv['supplier']} is already uploaded.")
-    catalog = await _catalog()
-    tags = _cog.get("tags") or {}
-    store_of = lambda key: tags.get(cog.tag_of(key)) if cog.tag_of(key) else None
-    sids = {store_of(l["order"]) for l in inv["lines"]} - {None}
-    order_lines = {}
-    if sids:
-        start = (date.today() - timedelta(days=150)).isoformat()
-        for r in db.cog_lines(list(sids), start, date.today().isoformat()):
-            order_lines.setdefault((r["store_id"], cog.order_key(r["order_name"])), []).append(r)
-    queried = {}          # lines whose price is still being checked: a corrected invoice replaces them
-    invoiced = {}
-    for l in db.invoice_lines():
-        if l["status"] in ("unmatched", "duplicate", "superseded"):
-            continue
-        key = (l["store_id"], l["order_key"], cog.norm(l["product"] or ""))
-        if l["status"] == "changed" and not l["approved_at"]:
-            queried[key] = (l["invoice_id"], l["line_no"])
-        else:
-            invoiced[key] = l["number"]
-    checked = invoices.check(inv, store_of, order_lines, catalog, invoiced)
+    checked, sids, queried = await _check_invoice(inv)
     user = (getattr(request.state, "user", None) or {}).get("email", "")
     iid = db.save_invoice(inv, checked, filename[:120], user)
     _save_invoice_file(iid, data, filename)
+    if ai_state:
+        db.set_invoice_ai(iid, *ai_state)
+    else:
+        db.set_invoice_ai(iid, "pending")
+        asyncio.create_task(_ai_check_invoice(iid))      # the AI reads it too, in the background
     with db._conn() as con:
         for l in checked["lines"]:
             key = (l.get("store_id"), l.get("order") , cog.norm(l.get("product") or ""))
@@ -779,6 +799,125 @@ async def api_invoice_upload(request: Request, filename: str = "invoice"):
     return {"ok": True, "id": iid, "supplier": inv["supplier"], "number": inv["number"],
             "lines": len(inv["lines"]), "total": inv["total"], "sum": checked["sum"],
             "counts": checked["counts"], "missing": len(checked["missing"])}
+
+
+async def _check_invoice(inv: dict, skip_invoice: int = None):
+    """Match an invoice's lines to orders and check prices. (checked, store ids, lines it corrects)."""
+    catalog = await _catalog()
+    tags = _cog.get("tags") or {}
+    store_of = lambda key: tags.get(cog.tag_of(key)) if cog.tag_of(key) else None
+    sids = {store_of(l["order"]) for l in inv["lines"]} - {None}
+    order_lines = {}
+    if sids:
+        start = (date.today() - timedelta(days=150)).isoformat()
+        for r in db.cog_lines(list(sids), start, date.today().isoformat()):
+            order_lines.setdefault((r["store_id"], cog.order_key(r["order_name"])), []).append(r)
+    queried = {}          # lines whose price is still being checked: a corrected invoice replaces them
+    invoiced = {}
+    for l in db.invoice_lines():
+        if l["status"] in ("unmatched", "duplicate", "superseded") or l["invoice_id"] == skip_invoice:
+            continue
+        key = (l["store_id"], l["order_key"], cog.norm(l["product"] or ""))
+        if l["status"] == "changed" and not l["approved_at"]:
+            queried[key] = (l["invoice_id"], l["line_no"])
+        else:
+            invoiced[key] = l["number"]
+    return invoices.check(inv, store_of, order_lines, catalog, invoiced), sids, queried
+
+
+_ai_reading = asyncio.Semaphore(2)
+
+
+async def _recost_invoice(iid: int):
+    by_store = defaultdict(set)
+    for l in db.invoice_lines(iid):
+        if l["store_id"] and l["order_name"]:
+            by_store[l["store_id"]].add(l["order_name"])
+    for sid, names in by_store.items():
+        await _recost(sid, names)
+
+
+async def _ai_check_invoice(iid: int):
+    """Second, independent reading of a kept invoice file by the AI, compared with the first."""
+    inv = db.get_invoice(iid)
+    if not inv:
+        return
+    key = db.get_setting("anthropic_api_key")
+    if not key:
+        db.set_invoice_ai(iid, "skipped", "No AI key in Settings → AI")
+        return
+    path = os.path.join(INVOICE_DIR, f"{iid}.{inv.get('file_ext') or ''}")
+    if not inv.get("file_ext") or not os.path.exists(path):
+        db.set_invoice_ai(iid, "skipped", "The original file isn't kept; upload it again to double-check it")
+        return
+    with open(path, "rb") as f:
+        data = f.read()
+    async with _ai_reading:
+        db.set_invoice_ai(iid, "pending", "Reading…")
+        try:
+            ai = await invoice_ai.read(key, data, inv.get("filename") or "")
+        except invoice_ai.AIError as e:
+            db.set_invoice_ai(iid, "failed", str(e))
+            return
+        except Exception as e:                       # never leave it "pending" forever
+            db.set_invoice_ai(iid, "failed", f"{type(e).__name__}")
+            return
+    diffs = invoice_ai.compare(db.invoice_lines(iid), inv["total"], ai)
+    cost = f"AI read {len(ai['orders'])} orders ({ai['usage']['in']} + {ai['usage']['out']} tokens)"
+    if diffs:
+        db.set_invoice_ai(iid, "review", f"{len(diffs)} difference{'s' if len(diffs) != 1 else ''} · {cost}",
+                          {"diffs": diffs, "ai": ai})
+        await _recost_invoice(iid)                   # its lines are left out until someone decides
+    else:
+        db.set_invoice_ai(iid, "agreed", cost)
+
+
+@app.post("/api/invoices/{invoice_id:int}/review")
+async def api_invoice_review(invoice_id: int, payload: dict):
+    """A person looked at where the AI read the invoice differently and picked the right reading:
+    file = the first reading was right; ai = use the AI's reading instead; recheck = ask the AI again."""
+    inv = db.get_invoice(invoice_id)
+    if not inv:
+        raise HTTPException(404, "That invoice no longer exists.")
+    use = payload.get("use")
+    if use == "recheck":
+        db.set_invoice_ai(invoice_id, "pending", "Queued")
+        asyncio.create_task(_ai_check_invoice(invoice_id))
+        return {"ok": True}
+    if use == "file":
+        db.set_invoice_ai(invoice_id, "confirmed", "Checked by a person: the first reading is right")
+    elif use == "ai":
+        review = json.loads(inv.get("review") or "{}")
+        if not review.get("ai"):
+            raise HTTPException(400, "There's no AI reading for this invoice.")
+        new = invoice_ai.as_invoice(review["ai"])
+        new.update(supplier=inv["supplier"], number=inv["number"], date=inv["date"])
+        old_orders = {(l["store_id"], l["order_name"]) for l in db.invoice_lines(invoice_id) if l["order_name"]}
+        checked, _, _ = await _check_invoice(new, skip_invoice=invoice_id)
+        db.replace_invoice_lines(invoice_id, new, checked)
+        db.set_invoice_ai(invoice_id, "confirmed", "Checked by a person: the AI's reading is used")
+        for sid, name in old_orders:
+            await _recost(sid, {name})
+    else:
+        raise HTTPException(400, "Pick which reading is right.")
+    await _recost_invoice(invoice_id)
+    return {"ok": True}
+
+
+@app.post("/api/invoices/ai-check")
+async def api_invoice_ai_check_all():
+    """Double-check every kept invoice the AI hasn't read yet (oldest first, two at a time)."""
+    if not db.get_setting("anthropic_api_key"):
+        raise HTTPException(400, "Add the Anthropic API key in Settings → AI first.")
+    todo = [i["id"] for i in sorted(db.list_invoices(), key=lambda x: (x["date"] or "", x["id"]))
+            if i.get("file_ext") and (i.get("ai_check") or "") in ("", "skipped", "failed")]
+    for iid in todo:
+        db.set_invoice_ai(iid, "pending", "Queued")
+
+    async def run():
+        await asyncio.gather(*(_ai_check_invoice(i) for i in todo))
+    asyncio.create_task(run())
+    return {"ok": True, "queued": len(todo)}
 
 
 @app.get("/api/invoices")
@@ -812,9 +951,8 @@ async def api_invoice_recheck():
     with db._conn() as con:
         qty = {(r[0], r[1], r[2]): r[3] for r in con.execute(
             "SELECT store_id, order_name, product, SUM(quantity) FROM cog_lines GROUP BY store_id, order_name, product")}
-    tiers = defaultdict(int)                        # how many of a product (any variant) were in the order
-    for (sid, oname, prod), q in qty.items():
-        tiers[(sid, oname, cog.base_name(prod or ""))] += int(q or 1)
+        items = {(r[0], r[1]): r[2] for r in con.execute(           # items in the whole order
+            "SELECT store_id, order_name, SUM(quantity) FROM cog_lines WHERE cancelled = 0 GROUP BY store_id, order_name")}
     per = {}
     for l in lines:
         if l["status"] not in ("unmatched", "duplicate", "superseded") and l.get("product"):
@@ -835,20 +973,18 @@ async def api_invoice_recheck():
         for l in by_inv[key]:
             q = qty.get((l["store_id"], l["order_name"], l["product"])) or 1
             units = max(1.0, q / per[(l["invoice_id"], l["store_id"], l["order_name"], l["product"])])
-            tier = tiers.get((l["store_id"], l["order_name"], cog.base_name(l["product"]))) or int(round(units))
-            st = invoices._status(l["amount"], units, catalog.latest_for(l["store_id"], l["product"], tier),
-                                  catalog.latest(l["store_id"], l["product"]), tier)
-            rows.append({**l, **st, "units": units, "tier": tier, "_was": l["status"]})
-        invoices.bundle_pass(rows)                  # judge a product's total in the order, not each line
+            rows.append({**l, "units": units, "tier": items.get((l["store_id"], l["order_name"])) or 1,
+                         "_was": l["status"]})
+        invoices.judge(rows, catalog)               # 1 item: single price; 2+: the order against singles
         for r in rows:
             if r["status"] != "changed" and r["_was"] == "changed":
                 changed["now_ok"] += 1
             if r["status"] == "changed":
                 changed["still_changed"] += 1
             with db._conn() as con:
-                con.execute("UPDATE invoice_lines SET units = ?, tier = ?, each = ?, status = ?, previous = ?, note = ?"
-                            " WHERE invoice_id = ? AND line_no = ?",
-                            (r["units"], r["tier"], r.get("each"), r["status"], r["previous"], r["note"],
+                con.execute("UPDATE invoice_lines SET units = ?, tier = ?, each = NULL, singles = ?, status = ?,"
+                            " previous = ?, note = ? WHERE invoice_id = ? AND line_no = ?",
+                            (r["units"], r["tier"], r.get("singles"), r["status"], r["previous"], r["note"],
                              r["invoice_id"], r["line_no"]))
             changed["lines"] += 1
             touched[r["store_id"]].add(r["order_name"])
@@ -871,7 +1007,25 @@ def api_invoice_changes():
     for l in db.invoice_lines():
         if l["status"] != "changed" or l["approved_at"] or l.get("check_state") == "kept":
             continue
-        unit = round(l.get("each") or l["amount"] / (l.get("units") or 1), 2)   # per item (bundle average)
+        if l.get("ai_check") == "review":
+            continue
+        if (l.get("tier") or 1) >= 2:               # a bundle that cost more than its items on their own
+            k = ("bundle", l["invoice_id"], l["store_id"], l["order_name"] or l["order_key"])
+            g = groups.setdefault(k, {"store_id": l["store_id"], "store": stores.get(l["store_id"], "?"),
+                                      "product": "", "items": [], "bundle": True, "new": 0.0, "old": 0.0,
+                                      "lines": [], "orders": [l["order_name"] or l["order_key"]],
+                                      "state": l.get("check_state") or "", "check_by": l.get("check_by"),
+                                      "check_at": l.get("check_at")})
+            u = l.get("units") or 1
+            g["items"].append(f"{(l['product'] or l['title']).split(' - ')[0][:38]} ×{u:g}")
+            g["product"] = f"Bundle of {l.get('tier')}: " + " + ".join(g["items"])
+            g["new"] = round(g["new"] + l["amount"], 2)
+            g["old"] = round(g["old"] + (l.get("singles") or 0), 2)
+            g["lines"].append([l["invoice_id"], l["line_no"]])
+            if l.get("check_state") == "checking":
+                g.update(state="checking", check_by=l.get("check_by"), check_at=l.get("check_at"))
+            continue
+        unit = round(l["amount"] / (l.get("units") or 1), 2)          # per item
         k = (l["store_id"], l["product"], unit)
         g = groups.setdefault(k, {"store_id": l["store_id"], "store": stores.get(l["store_id"], "?"), "product": l["product"],
                                   "new": unit, "old": l["previous"], "lines": [], "orders": [],

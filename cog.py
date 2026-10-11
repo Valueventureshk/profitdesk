@@ -172,16 +172,15 @@ class Catalog:
                 continue
             r["store"] = sid
             self.by_order[(sid, r["order"])].append(r)
-        # Suppliers price by bundle size (1 pair $16.30, 2 pairs $13 each), so every price is kept
-        # with its tier: how many of that product were in the order (one sheet row per item).
-        tier = defaultdict(int)
+        # Suppliers give a discount when an order has several items (1 pair $16.30, 2 pairs $13 each,
+        # or two different products), so every price is kept with the order's item count (one sheet
+        # row per item). Only prices from 1-item orders are "single" prices.
+        self._rates = {}
         for (sid, order), rs in self.by_order.items():
-            for r in rs:
-                tier[(sid, order, base_name(r["product"]))] += 1
-        for (sid, order), rs in self.by_order.items():
+            n = len(rs)
             for r in rs:
                 if r["cog"] and r["cog"] > 0:
-                    entry = (r["seq"], r["cog"], r["supplier"], r["day"], tier[(sid, order, base_name(r["product"]))])
+                    entry = (r["seq"], r["cog"], r["supplier"], r["day"], n)
                     self.exact[(sid, norm(r["product"]))].append(entry)
                     self.base[(sid, base_name(r["product"]))].append(entry)
                     if r["subtotal"] and r["subtotal"] > 0:
@@ -195,18 +194,20 @@ class Catalog:
         for l in lines:
             if not l.get("store_id") or not l.get("product") or l["status"] in ("unmatched", "duplicate", "superseded"):
                 continue
+            if l.get("ai_check") == "review":            # the AI read this invoice differently: wait for a person
+                continue
             # "kept": the supplier said the higher price was a mistake, so this order costs the old price
             units = l.get("units") or 1.0
             charged = l["previous"] * units if l.get("check_state") == "kept" and l.get("previous") is not None \
                 else l["amount"]
-            entry = {"order": l["order_key"], "product": l["product"], "cog": charged,
+            entry = {"order": l["order_key"], "product": l["product"], "cog": charged, "units": units,
                      "supplier": l.get("supplier") or "", "day": l.get("date"),
                      "invoice": l.get("number") or "invoice"}
             self.inv_by_order[(l["store_id"], l["order_key"])].append(entry)
             if l["status"] != "changed" or l.get("approved_at"):
                 hist = (10 ** 9 + int(l["invoice_id"]) * 1000 + int(l["line_no"]),
-                        l.get("each") or l["amount"] / units, entry["supplier"], entry["day"],   # price per item
-                        int(l.get("tier") or round(units)))
+                        l["amount"] / units, entry["supplier"], entry["day"],   # price per item
+                        int(l.get("tier") or round(units)))                     # items in the order
                 self.exact[(l["store_id"], norm(l["product"]))].append(hist)
                 self.base[(l["store_id"], base_name(l["product"]))].append(hist)
 
@@ -217,6 +218,46 @@ class Catalog:
             if same:
                 return max(same)
         return None
+
+    def single(self, store, product):
+        """Latest price per item from an order with just this one item, or None."""
+        return self.latest_for(store, product, 1)
+
+    def bundle_rate(self, store, items: int) -> tuple:
+        """(usual discount off single prices for an order of `items` items, orders it's learned from).
+        Learned from the last 60 costed bundle orders of that size in the store (sheet rows and
+        invoices) whose every item has a single price; then any bundle size in the store; then 0."""
+        if store not in self._rates:
+            samples = defaultdict(list)                          # size -> [(day, discount)]
+            orders = {}
+            for (sid, order), rs in self.by_order.items():
+                if sid == store and len(rs) >= 2 and all(r["cog"] and r["cog"] > 0 for r in rs):
+                    orders[order] = (rs[0]["day"] or "", [(r["product"], 1, r["cog"]) for r in rs])
+            for (sid, order), es in self.inv_by_order.items():     # invoices win over the sheet
+                if sid == store and sum(e.get("units") or 1 for e in es) >= 2:
+                    orders[order] = (es[0]["day"] or "", [(e["product"], e.get("units") or 1, e["cog"]) for e in es])
+            for day, its in orders.values():
+                singles = [self.single(store, p) for p, _, _ in its]
+                if any(x is None for x in singles):
+                    continue
+                full = sum(x[1] * u for x, (_, u, _) in zip(singles, its))
+                paid = sum(c for _, _, c in its)
+                if full > 0:
+                    n = int(round(sum(u for _, u, _ in its)))
+                    samples[min(n, 4)].append((str(day), 1 - paid / full))
+            self._rates[store] = samples
+        samples = self._rates[store]
+
+        def median(xs):
+            xs = sorted(d for _, d in sorted(xs)[-60:])
+            return xs[len(xs) // 2] if xs else None
+        mine = samples.get(min(items, 4)) or []
+        if len(mine) >= 3:
+            return max(0.0, median(mine)), len(mine)
+        every = [x for v in samples.values() for x in v]
+        if len(every) >= 3:
+            return max(0.0, median(every)), len(every)
+        return 0.0, 0
 
     def latest(self, store, product):
         hist = self.exact.get((store, norm(product)))
@@ -258,11 +299,15 @@ def cost_order(order: dict, store, catalog: Catalog, usd_to_store: float) -> lis
     free = list(rows)
     inv_free = list(catalog.inv_by_order.get((store, key), []))
     pct = catalog.cog_pct(store, usd_to_store)
+    items = 0 if order["cancelled"] else sum(max(x["quantity"], 1) for x in order["lines"])
     out = []
     for li in order["lines"]:
         name = f"{li['title']} - {li['variant']}" if li["variant"] else li["title"]
         qty = max(li["quantity"], 1)
         line = {**li, "product": name, "cost": None, "source": None, "supplier": "", "note": ""}
+        one = catalog.single(store, name)
+        if items >= 2 and one:
+            line["single"] = one[1] * qty                       # what it would cost bought on its own
         if order["cancelled"]:
             line.update(cost=0.0, source="cancelled", note="Order cancelled")
             out.append(line)
@@ -290,13 +335,21 @@ def cost_order(order: dict, store, catalog: Catalog, usd_to_store: float) -> lis
                 line["note"] = f"{len(picked)} sheet row(s) for {qty} items"
             out.append(line)
             continue
-        # 2. the product's latest known cost in this store, for this bundle size if seen before
-        tier_n = sum(max(x["quantity"], 1) for x in order["lines"]
-                     if base_name(f"{x['title']} - {x['variant']}" if x["variant"] else x["title"]) == base_name(name))
-        known = catalog.latest_for(store, name, tier_n) or catalog.latest(store, name)
+        # 2. not invoiced yet. One item: its single price. Several items (any products): single
+        #    prices less the store's usual discount for that many items.
+        if items >= 2 and one:
+            rate, seen = catalog.bundle_rate(store, items)
+            line.update(cost=one[1] * qty * (1 - rate), source="catalog", supplier=one[2],
+                        note=f"Single price {one[1]:.2f} USD" + (
+                            f", less the usual {items if items < 4 else '4+'}-item discount {rate * 100:.1f}%"
+                            f" (from {seen} orders)" if rate else ", no bundle discount seen yet"))
+            out.append(line)
+            continue
+        known = one or catalog.latest(store, name)
         if known:
             line.update(cost=known[1] * qty, source="catalog", supplier=known[2],
-                        note=f"Last cost {known[1]:.2f} USD ({known[3] or 'earlier'})")
+                        note=f"Last cost {known[1]:.2f} USD ({known[3] or 'earlier'})"
+                             + ("" if len(known) < 5 or known[4] == 1 else f", from a {known[4]}-item order"))
             out.append(line)
             continue
         # 3. never bought: the store's average COG %

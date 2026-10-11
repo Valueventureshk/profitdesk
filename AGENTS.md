@@ -58,6 +58,7 @@ file and have it work.
 | `statement.py` | The statement pop-up: opening → movements → closing, sales check |
 | `adbills.py` | Ads payable: Meta balance, Google spend since its last card charge |
 | `cog.py` | **COG engine**: orders sheet → per-store product costs → cost of every order line |
+| `invoices.py` `invoice_ai.py` | Supplier invoices: read (PDF/Excel), match to orders, price + bundle check; AI second reading |
 | `static/cog.html` `cog.js` | COG + Products Monitor page (Check COG, Products) |
 | `mail_client.py` | Store support mailboxes over IMAP (app password): Inbox + Sent, read-only |
 | `ai_brain.py` | Claude Haiku 5.5 sorts each email (customer/inquiry/legal/other, SCM/CS, thread) |
@@ -168,6 +169,19 @@ COG rules (replaced the old per-store "Other costs %", which is no longer used):
 - Store ↔ order tag (AS…, …CH) is learned from each store's Shopify order names.
 - Background job: last 2 days every 20 min, full window every 6 h. Dashboard COG
   per day = saved lines + store average for any sales not yet covered.
+- Bundles: suppliers discount orders with 2+ items (same or different products), so prices are
+  kept with the order's item count and only 1-item orders give a product's "single" price.
+  Invoices (`invoices.judge`): 1-item orders compare per item against the single price; 2+ item
+  orders compare the order's charge against its items at single prices (singles − charged = bundle
+  discount, never flagged; dearer than singles = flagged, one Price-changes row per order).
+  Not yet invoiced 2+ item orders cost single prices less the store's usual discount for that many
+  items (`Catalog.bundle_rate`, median of the last 60 such orders). `cog_lines.single_usd` lets Check
+  COG show "Singles … · bundle discount …" per order.
+- AI double-check (`invoice_ai.py`, Sonnet 5.5): every uploaded invoice file is read again by the AI
+  in the background and compared per order to the cent plus the total. Agree → `ai_check` agreed;
+  differ → `review` and its lines are left out of all costs until a person picks a reading on the
+  invoice (first reading / AI's reading / ask again). Files the normal reader can't read are read by
+  the AI alone (`ai_only`) when its orders add up to the printed total.
 - Next steps planned: invoice upload (AI reading) with price-change flags and
   approval, supplier payments ledger from Airwallex payouts, write cost to Shopify
   "Cost per item" (needs read_products, read_inventory, write_inventory).

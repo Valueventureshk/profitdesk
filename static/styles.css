@@ -1497,3 +1497,11 @@ tr.pc-checking td { background: rgba(245,158,11,.05); }
 .arc-bar label { display: inline-flex; gap: 6px; align-items: center; }
 .arc-bar .control { width: auto; height: 32px; font-size: 12.5px; }
 .arc-month td { background: var(--line-soft); font-weight: 700; font-size: 12.5px; text-align: left !important; }
+
+/* COG: AI double-check of invoices, bundle discount */
+.inv-review { border: 1px solid var(--loss); border-radius: 8px; padding: 12px 14px; margin: 0 0 14px; background: color-mix(in srgb, var(--loss) 5%, transparent); }
+.inv-review .table td, .inv-review .table th { padding: 6px 8px; }
+.inv-review-btns { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.inv-ai { margin: 0 0 12px; }
+.ai-ok { font-size: 11px; color: var(--profit); white-space: nowrap; }
+.bundle-off { white-space: normal; font-size: 11px; }

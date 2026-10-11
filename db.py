@@ -484,15 +484,20 @@ _ADDED_COLUMNS = {
         ("file_ext", "TEXT"),        # the original file is kept: <DB dir>/invoice_files/<id>.<ext>
         ("file_size", "INTEGER"),
         ("file_at", "TEXT"),
+        ("ai_check", "TEXT"),        # pending | agreed | ai_only | review | confirmed | skipped | failed
+        ("ai_note", "TEXT"),
+        ("review", "TEXT"),          # JSON {diffs, ai}: what the AI read differently
     ],
     "invoice_lines": [
         ("units", "REAL NOT NULL DEFAULT 1"),   # items this line is for (one line can bill 2 pairs)
-        ("tier", "INTEGER"),                    # how many of the product were in the order (bundle size)
+        ("tier", "INTEGER"),                    # items in the whole Shopify order (2+ = a bundle)
+        ("singles", "REAL"),                    # what these items cost when bought on their own (USD)
         ("each", "REAL"),                       # price per item for the whole bundle (supplier may split it unevenly)
         ("check_state", "TEXT"),     # checking (asked the supplier) | kept (supplier corrected: old price stands)
         ("check_by", "TEXT"),
         ("check_at", "TEXT"),
     ],
+    "cog_lines": [("single_usd", "REAL")],     # the line at single-item prices (bundles show their discount)
     "shipments": [("province", "TEXT"), ("fulfillment_gid", "TEXT"), ("pushed", "TEXT NOT NULL DEFAULT ''"),
                   ("push_error", "TEXT")],
     "stores": [
@@ -690,11 +695,11 @@ def replace_cog_lines(store_id: int, start: str, end: str, rows: list):
                     (store_id, start, end))
         con.executemany(
             "INSERT OR REPLACE INTO cog_lines (store_id, order_name, line_no, day, created, cancelled,"
-            " fulfillment, product, sku, variant_id, quantity, subtotal, cost_usd, source, supplier, note)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " fulfillment, product, sku, variant_id, quantity, subtotal, cost_usd, source, supplier, note, single_usd)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [(store_id, r["order"], r["line_no"], r["day"], r["created"], int(r["cancelled"]),
               r.get("fulfillment"), r["product"], r.get("sku"), r.get("variant_id"), r["quantity"],
-              r["subtotal"], r.get("cost"), r.get("source"), r.get("supplier"), r.get("note"))
+              r["subtotal"], r.get("cost"), r.get("source"), r.get("supplier"), r.get("note"), r.get("single"))
              for r in rows])
 
 
@@ -743,9 +748,9 @@ def update_cog_costs(store_id: int, rows: list):
     """rows: [{order_name, line_no, cost, source, supplier, note}]"""
     with _conn() as con:
         con.executemany(
-            "UPDATE cog_lines SET cost_usd = ?, source = ?, supplier = ?, note = ?"
+            "UPDATE cog_lines SET cost_usd = ?, source = ?, supplier = ?, note = ?, single_usd = ?"
             " WHERE store_id = ? AND order_name = ? AND line_no = ?",
-            [(r["cost"], r["source"], r["supplier"], r["note"], store_id, r["order_name"], r["line_no"])
+            [(r["cost"], r["source"], r["supplier"], r["note"], r.get("single"), store_id, r["order_name"], r["line_no"])
              for r in rows])
 
 
@@ -771,11 +776,35 @@ def save_invoice(inv: dict, checked: dict, filename: str, user: str) -> int:
              filename, user, json.dumps(checked["missing"]))).lastrowid
         con.executemany(
             "INSERT INTO invoice_lines (invoice_id, line_no, order_key, order_name, store_id, title,"
-            " product, amount, status, previous, note, units, tier, each) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            [(iid, l["line_no"], l["order"], l.get("order_name"), l["store_id"], l["title"],
-              l["product"], l["amount"], l["status"], l["previous"], l["note"], l.get("units") or 1.0, l.get("tier"), l.get("each"))
-             for l in checked["lines"]])
+            " product, amount, status, previous, note, units, tier, each, singles) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            _line_rows(iid, checked["lines"]))
     return iid
+
+
+def _line_rows(iid: int, lines: list) -> list:
+    return [(iid, l["line_no"], l["order"], l.get("order_name"), l["store_id"], l["title"],
+             l["product"], l["amount"], l["status"], l["previous"], l["note"], l.get("units") or 1.0,
+             l.get("tier"), l.get("each"), l.get("singles")) for l in lines]
+
+
+def replace_invoice_lines(iid: int, inv: dict, checked: dict):
+    """A person picked the AI's reading of an invoice: its lines replace the first reading."""
+    import json
+    with _conn() as con:
+        con.execute("DELETE FROM invoice_lines WHERE invoice_id = ?", (iid,))
+        con.execute("UPDATE invoices SET total = ?, store_id = ?, missing = ? WHERE id = ?",
+                    (inv["total"], checked["store_id"], json.dumps(checked["missing"]), iid))
+        con.executemany(
+            "INSERT INTO invoice_lines (invoice_id, line_no, order_key, order_name, store_id, title,"
+            " product, amount, status, previous, note, units, tier, each, singles) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            _line_rows(iid, checked["lines"]))
+
+
+def set_invoice_ai(iid: int, state: str, note: str = "", review=None):
+    import json
+    with _conn() as con:
+        con.execute("UPDATE invoices SET ai_check = ?, ai_note = ?, review = ? WHERE id = ?",
+                    (state, note, json.dumps(review) if review is not None else None, iid))
 
 
 def list_invoices() -> list:
@@ -792,7 +821,7 @@ def invoice_lines(invoice_id: int = None) -> list:
     with _conn() as con:
         if invoice_id is None:
             return [dict(r) for r in con.execute(
-                "SELECT l.*, i.number, i.date, i.supplier FROM invoice_lines l"
+                "SELECT l.*, i.number, i.date, i.supplier, i.ai_check FROM invoice_lines l"
                 " JOIN invoices i ON i.id = l.invoice_id")]
         return [dict(r) for r in con.execute(
             "SELECT * FROM invoice_lines WHERE invoice_id = ? ORDER BY line_no", (invoice_id,))]
