@@ -5902,26 +5902,38 @@ GD_PRODUCTS = """query($ids: [ID!]!) { nodes(ids: $ids) { ... on Product { legac
   variants(first: 100) { nodes { legacyResourceId title price image { url(transform: {maxWidth: 120}) } } } } } }"""
 
 
+_pinfo: dict = {}          # store id -> {product id: (read at, info)}: titles, images, variants, status
+PINFO_KEEP = 6 * 3600
+
+
 async def _product_info(store, pids: list) -> dict:
+    """Shopify title, image, status and variants per product id. Kept 6 hours per store (only products not
+    seen yet are read, 50 at a time, three requests at once); status changes from the desk update it."""
     client = ShopifyClient(store["shop_domain"], store["access_token"])
-    out = {}
-    ids = [f"gid://shopify/Product/{p}" for p in pids if p.isdigit()]
-    for i in range(0, len(ids), 100):
-        try:
-            got = await client.gql(GD_PRODUCTS, {"ids": ids[i:i + 100]})
-        except Exception as e:
-            _gdesk_cache["_info_error"] = f"{type(e).__name__}: {str(e)[:300]}"
-            continue
+    have = _pinfo.setdefault(store["id"], {})
+    now = time.time()
+    want = [p for p in pids if p.isdigit() and not (p in have and now - have[p][0] < PINFO_KEEP)]
+    gate = asyncio.Semaphore(3)
+
+    async def batch(ids):
+        async with gate:
+            try:
+                got = await client.gql(GD_PRODUCTS, {"ids": [f"gid://shopify/Product/{p}" for p in ids]})
+            except Exception as e:
+                _gdesk_cache["_info_error"] = f"{type(e).__name__}: {str(e)[:300]}"
+                return
         for n in got.get("nodes") or []:
             if not n:
                 continue
-            out[str(n["legacyResourceId"])] = {
+            have[str(n["legacyResourceId"])] = (now, {
                 "title": n["title"], "handle": n["handle"], "status": (n.get("status") or "").title(),
                 "image": (n.get("featuredImage") or {}).get("url"),
                 "variants": {str(v["legacyResourceId"]): {"title": v["title"], "price": float(v["price"] or 0) or None,
                                                           "image": (v.get("image") or {}).get("url")}
-                             for v in (n.get("variants") or {}).get("nodes") or []}}
-    return out
+                             for v in (n.get("variants") or {}).get("nodes") or []}})
+    await asyncio.gather(*(batch(want[i:i + 50]) for i in range(0, len(want), 50)))
+    # copies: prices are converted per request
+    return {p: json.loads(json.dumps(have[p][1])) for p in pids if p in have}
 
 
 def _gd_store(store: str):
@@ -6132,6 +6144,10 @@ async def api_googleads_status(payload: dict):
                 done.append(pid)
         except Exception as e:
             errors.append(f"{pid}: {str(e)[:120]}")
+    for pid in done:
+        hit = _pinfo.get(st["id"], {}).get(pid)
+        if hit:
+            hit[1]["status"] = status.title()
     for k, (_t, out) in list(_gdesk_cache.items()):         # show the new status without a full reload
         if isinstance(k, tuple) and k and k[0] == st["id"]:
             for p in out.get("products", []):
