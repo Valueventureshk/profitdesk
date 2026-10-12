@@ -151,7 +151,8 @@ function columns() {
 }
 
 const SORT_IC = `<svg viewBox="0 0 16 16" aria-hidden="true"><path class="up" d="M5 6.5 8 3.5l3 3"/><path class="dn" d="M5 9.5 8 12.5l3-3"/></svg>`;
-const W_FIRST = 300, W_COL = 196;
+// column widths; phones get a narrower pinned name column so the figures stay in view
+const widths = () => (innerWidth < 640 ? [170, 150] : [300, 196]);
 
 function draw() {
   const cols = columns();
@@ -164,6 +165,7 @@ function draw() {
   const per = Number($("rows").value), pages = Math.max(1, Math.ceil(rows.length / per));
   page = Math.min(page, pages - 1);
   const shown = rows.slice(page * per, page * per + per);
+  const [W_FIRST, W_COL] = widths();
   const width = W_FIRST + cols.length * W_COL;
   const colgroup = `<colgroup><col style="width:${W_FIRST}px">${cols.map(() => `<col style="width:${W_COL}px">`).join("")}</colgroup>`;
   const label = { campaign: "Campaign", adset: "Adset", ad: "Ad" }[level];
@@ -234,7 +236,8 @@ function edge() {
   $("grid").classList.toggle("more", sx.scrollWidth - sx.clientWidth - x > 2);
   $("barX").hidden = sx.scrollWidth <= sx.clientWidth + 1;
 }
-window.addEventListener("resize", () => { if (data) edge(); });
+let lastW = innerWidth;
+window.addEventListener("resize", () => { if (!data) return; if ((innerWidth < 640) !== (lastW < 640)) draw(); else edge(); lastW = innerWidth; });
 
 /* ------------------------------------------------ column builder */
 let draft = null;
