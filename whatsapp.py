@@ -190,3 +190,24 @@ async def setup(app_id: str) -> list:
                 "verify_token": c["verify"], "fields": "messages", "access_token": f"{app_id}|{c['app_secret']}"})
         out.append("Webhook set on the Meta app" if r.status_code < 300 else f"Webhook: {r.text[:200]}")
     return out
+
+
+async def diagnose(app_id: str) -> dict:
+    """What Meta says about the setup: the number (registered? quality), apps subscribed to the WhatsApp account,
+    the app's webhook subscription, and the message template."""
+    c = cfg()
+    h = {"Authorization": f"Bearer {c['token']}"}
+    out = {}
+    async with httpx.AsyncClient(timeout=30) as client:
+        async def get(path, params=None, auth=h):
+            r = await client.get(f"{GRAPH}/{_version()}/{path}", params=params or {}, headers=auth or {})
+            try:
+                return r.json()
+            except ValueError:
+                return {"raw": r.text[:300]}
+        out["number"] = await get(c["phone_id"], {"fields": "display_phone_number,verified_name,code_verification_status,platform_type,status,quality_rating,name_status"})
+        out["subscribed_apps"] = await get(f"{c['waba_id']}/subscribed_apps")
+        if app_id and c["app_secret"]:
+            out["app_webhook"] = await get(f"{app_id}/subscriptions", {"access_token": f"{app_id}|{c['app_secret']}"}, auth=None)
+        out["templates"] = await get(f"{c['waba_id']}/message_templates", {"fields": "name,status,language"})
+    return out

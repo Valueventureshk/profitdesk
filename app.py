@@ -7837,6 +7837,25 @@ async def api_wa_settings_save(payload: dict):
     return out
 
 
+@app.get("/api/whatsapp/diagnose")
+async def api_wa_diagnose():
+    """Owner check: what Meta has set up, and the last messages ProfitDesk received / sent."""
+    with db._conn() as con:
+        last = [dict(r) for r in con.execute("SELECT phone, direction, substr(text, 1, 80) AS text, created_at FROM wa_messages ORDER BY id DESC LIMIT 8")]
+    return {"meta": await whatsapp.diagnose(db.get_setting("wa_app_id") or ""), "last_messages": last}
+
+
+@app.post("/api/whatsapp/setup")
+async def api_wa_setup():
+    """Run Meta's setup steps again (register the number, subscribe the app, set the webhook, the template)."""
+    out = {"setup": await whatsapp.setup(db.get_setting("wa_app_id") or "")}
+    try:
+        out["template"] = await whatsapp.ensure_template()
+    except whatsapp.WAError as e:
+        out["template_error"] = str(e)
+    return out
+
+
 @app.post("/api/whatsapp/test")
 async def api_wa_test(payload: dict):
     """Send a test message to one allowed number (it must have messaged ProfitDesk's number in the last 24 h,
