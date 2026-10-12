@@ -6180,6 +6180,52 @@ async def api_ads_structure(store: int):
         raise HTTPException(400, str(e))
 
 
+_store_urls: dict = {}
+
+
+async def _store_url(st) -> str:
+    """The store's public web address (Shopify primary domain), for new campaigns' final URL."""
+    if st["id"] not in _store_urls:
+        got = await ShopifyClient(st["shop_domain"], st["access_token"]).gql("{ shop { primaryDomain { url } } }", {})
+        _store_urls[st["id"]] = ((got.get("shop") or {}).get("primaryDomain") or {}).get("url") or f"https://{st['shop_domain']}"
+    return _store_urls[st["id"]]
+
+
+@app.post("/api/ads/selftest")
+async def api_ads_selftest(payload: dict):
+    """Owner check: ask Google to validate (validateOnly, nothing changes) a new feed-only Performance Max
+    campaign and a product-list change on the store's first enabled Performance Max asset group."""
+    st = next((x for x in db.list_stores() if x["id"] == int(payload["store"]) and x.get("google_customer_id")), None)
+    auth = db.get_google_auth()
+    args = (auth["refresh_token"], st["google_customer_id"], st["google_login_cid"])
+    s = await gads_manage.structure(*args)
+    out = {}
+    items = [r["item_id"] for r in (await gads.product_report(*args, (date.today() - timedelta(days=3)).isoformat(),
+                                                               date.today().isoformat()))[0]][:2]
+    out["items"] = items
+    try:
+        await gads_manage.create_pmax(*args, "ProfitDesk test (validate only)", 10, s["merchant_ids"][0], await _store_url(st),
+                                      items, None, "PAUSED", validate_only=True)
+        out["create_pmax"] = "ok"
+    except Exception as e:
+        out["create_pmax"] = str(e)[:800]
+    g = next((g for c in s["campaigns"] if c["status"] == "ENABLED" and c["type"] == "PERFORMANCE_MAX"
+              for g in c["groups"] if g["status"] == "ENABLED"), None)
+    if g:
+        try:
+            await gads_manage.mutate(*args, gads_manage.tree_ops(g, "except", items[:1]), validate_only=True)
+            out["tree_except"] = "ok"
+        except Exception as e:
+            out["tree_except"] = str(e)[:800]
+        c = next(c for c in s["campaigns"] if c["id"] == g["campaign"])
+        try:
+            await gads_manage.set_budget(*args, c["budget_resource"], c["budget"] + 1, validate_only=True)
+            out["budget"] = "ok"
+        except Exception as e:
+            out["budget"] = str(e)[:800]
+    return out
+
+
 @app.get("/api/googleads/check")
 async def api_googleads_check(store: int):
     """Last 30 days of one store's Google spend four ways, to find where figures differ:
