@@ -6241,10 +6241,19 @@ async def _google_days(store, start: str, end: str, auth) -> dict:
                 _glive[key] = (time.time(), got)
                 out.update(got)
             except gads.GoogleAdsError:
+                # Google's daily allowance used up (or Google down): keep the last figures we read, however old,
+                # else the Google Ads script's Sheet, so spend never drops to $0 and profit never looks too good.
                 if hit:
                     out.update(hit[1])
                 else:
-                    raise
+                    try:
+                        got = await gsheet.daily_spend(auth["refresh_token"], store["google_customer_id"],
+                                                       a, end, store["timezone"])
+                    except Exception:
+                        got = None
+                    if not got:
+                        raise
+                    out.update(got)
     return out
 
 
