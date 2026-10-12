@@ -246,18 +246,36 @@ async def billing(token: str) -> dict:
     return {str(a.get("account_id")): a for a in rows if a.get("account_id")}
 
 
-async def level_spend(token: str, account_id: str, since: str, until: str, level: str) -> list:
+_acct_tz: dict = {}
+
+
+async def account_timezone(token: str, account_id: str) -> str:
+    """The ad account's own clock (Meta reports days and hours on it). Cached."""
+    acct = str(account_id).removeprefix("act_")
+    if acct not in _acct_tz:
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.get(f"{GRAPH}/{_version()}/act_{acct}", params=_params(token, {"fields": "timezone_name"}))
+            if r.status_code >= 400:
+                raise _explain(r)
+            _acct_tz[acct] = r.json().get("timezone_name") or "UTC"
+    return _acct_tz[acct]
+
+
+async def level_spend(token: str, account_id: str, since: str, until: str, level: str, hour: int | None = None) -> list:
     """Spend per campaign / ad set / ad over since..until (ad account days):
-    [{"id", "name", "campaign", "adset", "spend", "impressions", "clicks"}]. For the Tracking report."""
+    [{"id", "name", "campaign", "adset", "spend", "impressions", "clicks"}]. For the Tracking report.
+    With hour (0-23, ad account clock): only that hour of the day (Meta's hourly breakdown)."""
     level = level if level in ("campaign", "adset", "ad") else "campaign"
     acct = str(account_id).removeprefix("act_")
     fields = {"campaign": "campaign_id,campaign_name", "adset": "adset_id,adset_name,campaign_name",
               "ad": "ad_id,ad_name,adset_name,campaign_name"}[level] + ",spend,impressions,inline_link_clicks"
     async with httpx.AsyncClient(timeout=60) as client:
-        rows = await _get_all(client, f"act_{acct}/insights", token, {
-            "level": level, "fields": fields, "limit": 500,
-            "time_range": json.dumps({"since": since, "until": until}),
-        })
+        q = {"level": level, "fields": fields, "limit": 500, "time_range": json.dumps({"since": since, "until": until})}
+        if hour is not None:
+            q["breakdowns"] = "hourly_stats_aggregated_by_advertiser_time_zone"
+        rows = await _get_all(client, f"act_{acct}/insights", token, q)
+    if hour is not None:
+        rows = [r for r in rows if str(r.get("hourly_stats_aggregated_by_advertiser_time_zone") or "").startswith(f"{hour:02d}:")]
     return [{"id": r.get(f"{level}_id"), "name": r.get(f"{level}_name") or "", "campaign": r.get("campaign_name") or "",
              "adset": r.get("adset_name") or "", "spend": float(r.get("spend") or 0),
              "impressions": int(r.get("impressions") or 0), "clicks": int(r.get("inline_link_clicks") or 0)}

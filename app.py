@@ -5805,12 +5805,15 @@ def _utc_range(st, start: str, end: str):
 
 
 @app.get("/api/tracking/events")
-async def api_tracking_events(store: int, start: str, end: str, value: str, field: str = "a_campaign"):
-    """The single adds to cart, checkouts and purchases behind one report row."""
+async def api_tracking_events(store: int, start: str, end: str, value: str, field: str = "a_campaign", hour: str = ""):
+    """The single adds to cart, checkouts and purchases behind one report row (optionally one hour of one day)."""
     st = next((x for x in db.list_stores() if x["id"] == store), None)
     if not st:
         raise HTTPException(404, "Store not found.")
     a, b = _utc_range(st, start, end)
+    if hour.isdigit() and 0 <= int(hour) <= 23 and start == end:
+        t = datetime.combine(date.fromisoformat(start), clock(int(hour)), _zone(st)).astimezone(timezone.utc)
+        a, b = t.isoformat(timespec="seconds"), (t + timedelta(hours=1)).isoformat(timespec="seconds")
     return {"events": await asyncio.to_thread(tracking.events, store, a, b, field, value), "currency": st["currency"],
             "timezone": st["timezone"]}
 
@@ -5823,7 +5826,7 @@ async def api_tracking_journey(store: int, client: str):
 
 @app.get("/api/tracking/report")
 async def api_tracking_report(store: int, start: str, end: str, field: str = "a_campaign", since: str = "",
-                              currency: str = ""):
+                              currency: str = "", hour: str = ""):
     """Rows like wetracked.io's report: adds to cart, checkouts and purchases (count + value) per
     campaign / ad set / ad or any UTM. Days are the store's own."""
     st = next((x for x in db.list_stores() if x["id"] == store), None)
@@ -5835,6 +5838,13 @@ async def api_tracking_report(store: int, start: str, end: str, field: str = "a_
         b = datetime.combine(date.fromisoformat(end) + timedelta(days=1), clock.min, tz).astimezone(timezone.utc)
     except ValueError:
         raise HTTPException(400, "Pick the dates.")
+    hr = None
+    if hour.strip():                            # one hour of one day, on the store's clock (00-01 … 23-00)
+        if start != end or not hour.isdigit() or not 0 <= int(hour) <= 23:
+            raise HTTPException(400, "Pick one day to look at a single hour.")
+        hr = int(hour)
+        a = datetime.combine(date.fromisoformat(start), clock(hr), tz).astimezone(timezone.utc)
+        b = a + timedelta(hours=1)
     a_s = a.isoformat(timespec="seconds")
     if since:                                   # from an exact moment (side-by-side checks against another tool)
         try:
@@ -5847,7 +5857,19 @@ async def api_tracking_report(store: int, start: str, end: str, field: str = "a_
     conn = next((c for c in db.list_meta_connections() if c["id"] == st.get("meta_connection_id")), None)
     if lvl and st.get("meta_account_id") and conn:
         try:
-            spends = await meta.level_spend(conn["access_token"], st["meta_account_id"], start, end, lvl)
+            if hr is None:
+                spends = await meta.level_spend(conn["access_token"], st["meta_account_id"], start, end, lvl)
+            else:
+                # the same hour on the ad account's clock (Meta reports hours there)
+                try:
+                    atz = ZoneInfo(await meta.account_timezone(conn["access_token"], st["meta_account_id"]))
+                except (ZoneInfoNotFoundError, ValueError):
+                    atz = timezone.utc
+                at = a.astimezone(atz)
+                spends = await meta.level_spend(conn["access_token"], st["meta_account_id"], at.date().isoformat(),
+                                                at.date().isoformat(), lvl, hour=at.hour)
+                if at.minute:
+                    note = "The Meta ad account's clock is offset by half an hour from the store's, so spend is for the closest hour."
             table = await fx.table(st["currency"])
             f = fx.factor(table, st.get("meta_currency") or st["currency"], st["currency"]) if table else 1.0
             out = tracking.with_spend(out, spends, f)

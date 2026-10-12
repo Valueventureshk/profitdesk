@@ -35,7 +35,7 @@ let colState = (() => {
   } catch { /* none saved */ }
   return DEFAULT_COLS.map((x) => [...x]);
 })();
-const state = { store: PDUrl.get("store") || "", range: PDUrl.get("range") || "today", key: PDUrl.get("key") || "", cur: PDUrl.get("cur") || "" };
+const state = { store: PDUrl.get("store") || "", range: PDUrl.get("range") || "today", key: PDUrl.get("key") || "", cur: PDUrl.get("cur") || "", hour: PDUrl.get("hour") || "" };
 
 function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -83,6 +83,25 @@ function range() {
   }
 }
 
+// one hour of one day (store clock): "13:00–14:00"; today's current hour is "so far", later hours aren't offered
+const pad = (h) => String(h).padStart(2, "0");
+const slot = (h) => `${pad(h)}:00–${pad((h + 1) % 24)}:00`;
+function oneDay() { const [a, b] = range(); return a === b; }
+function storeHour() {
+  try { return Number(new Intl.DateTimeFormat("en-GB", { timeZone: store()?.timezone || undefined, hour: "2-digit", hourCycle: "h23" }).format(new Date())); }
+  catch { return new Date().getHours(); }
+}
+function hourItems() {
+  const [a] = range(), today = a === storeToday(), now = storeHour();
+  const out = [["", "All day"]];
+  for (let h = 0; h < 24; h++) {
+    if (today && h > now) break;
+    out.push([String(h), slot(h) + (today && h === now ? " · so far" : "")]);
+  }
+  return out;
+}
+const hourQ = () => (state.hour !== "" && oneDay() ? `&hour=${state.hour}` : "");
+
 function menu(box, items, current, onPick) {
   const open = box.hidden;
   for (const m of document.querySelectorAll(".trk-menu")) m.hidden = true;
@@ -92,7 +111,7 @@ function menu(box, items, current, onPick) {
   for (const b of box.querySelectorAll("button")) b.onclick = () => { box.hidden = true; onPick(b.dataset.v); };
 }
 document.addEventListener("click", (e) => {
-  for (const [m, b] of [["storeMenu", "storeBtn"], ["rangeMenu", "rangeBtn"]]) {
+  for (const [m, b] of [["storeMenu", "storeBtn"], ["rangeMenu", "rangeBtn"], ["hourMenu", "hourBtn"]]) {
     if (!$(m).hidden && !$(m).contains(e.target) && !$(b).contains(e.target)) $(m).hidden = true;
   }
 });
@@ -110,6 +129,10 @@ function syncControls() {
   $("storeName").textContent = st ? st.name : "Store";
   $("rangeName").textContent = (RANGES.find((r) => r[0] === state.range) || [, "Today"])[1];
   $("dates").hidden = state.range !== "custom";
+  $("hourBox").hidden = !oneDay();
+  if (!oneDay()) state.hour = "";
+  if (state.hour !== "" && oneDay() && range()[0] === storeToday() && Number(state.hour) > storeHour()) state.hour = "";
+  $("hourName").textContent = state.hour === "" ? "All day" : slot(Number(state.hour)) + (range()[0] === storeToday() && Number(state.hour) === storeHour() ? " · so far" : "");
   for (const r of document.querySelectorAll("#level input")) r.checked = r.value === level;
   $("key").value = state.key || LEVEL_KEY[level];
   $("keyName").textContent = $("key").selectedOptions[0]?.textContent || "";
@@ -122,10 +145,10 @@ async function load() {
   const [start, end] = range();
   const key = state.key || LEVEL_KEY[level];
   PDUrl.set({ store: state.store, range: state.range === "today" ? null : state.range, level: level === "campaign" ? null : level,
-              key: state.key || null, cur: state.cur || null });
+              key: state.key || null, cur: state.cur || null, hour: state.hour === "" ? null : state.hour });
   $("reload").disabled = true;
   try {
-    data = await api(`/api/tracking/report?store=${state.store}&start=${start}&end=${end}&field=${KEY[key]}&currency=${encodeURIComponent(state.cur)}`);
+    data = await api(`/api/tracking/report?store=${state.store}&start=${start}&end=${end}&field=${KEY[key]}&currency=${encodeURIComponent(state.cur)}${hourQ()}`);
   } catch (e) { toast(e.message, true); $("reload").disabled = false; return; }
   $("reload").disabled = false;
   const curs = data.currencies || [data.currency];
@@ -309,7 +332,7 @@ async function openEvents(name) {
   $("evSub").textContent = "Loading…";
   $("evTable").innerHTML = "";
   let d;
-  try { d = await api(`/api/tracking/events?store=${state.store}&start=${start}&end=${end}&field=${KEY[key]}&value=${encodeURIComponent(name)}`); }
+  try { d = await api(`/api/tracking/events?store=${state.store}&start=${start}&end=${end}&field=${KEY[key]}&value=${encodeURIComponent(name)}${hourQ()}`); }
   catch (e) { $("evSub").textContent = e.message; return; }
   const n = (k) => d.events.filter((e) => e.label === k).length;
   $("evSub").textContent = `${n("Add to cart")} adds to cart · ${n("Checkout started")} checkouts · ${n("Purchase")} purchases. Each one is credited to the ad click shown (last click within 7 days).`;
@@ -377,6 +400,7 @@ $("rangeBtn").onclick = () => menu($("rangeMenu"), RANGES, state.range, (v) => {
   load();
 });
 $("from").onchange = $("to").onchange = load;
+$("hourBtn").onclick = () => menu($("hourMenu"), hourItems(), state.hour, (v) => { state.hour = v; load(); });
 for (const r of document.querySelectorAll("#level input")) r.onchange = () => { level = r.value; state.key = ""; sort = { k: null, dir: -1 }; load(); };
 $("key").onchange = () => { state.key = $("key").value === LEVEL_KEY[level] ? "" : $("key").value; load(); };
 $("cur").onchange = () => { state.cur = $("cur").value; load(); };
