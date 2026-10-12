@@ -167,8 +167,9 @@ file and have it work.
   APIs on: Google Ads, Sheets, Gmail. Consent screen "ProfitDesk", published (unverified warning).
   Google login connected in ProfitDesk = shop.valueventures@gmail.com (sees the ad accounts).
   Per store `google_source`: NULL = direct API (hourly, shifted to the store clock), "sheet" = the
-  script's Sheet. `/api/google/compare` checks both. ZAVA + Revionel stay on the Sheet until
-  shop.valueventures@gmail.com gets access to those ad accounts.
+  script's Sheet. `/api/google/compare` checks both. All 7 Google stores (incl. ZAVA + Revionel) read the API
+  directly (checked 13 Oct 2026); today/yesterday re-read at most every 10 min, last figures / Sheet if the
+  daily allowance runs out.
 - Speed: SQLite in WAL mode with a 10 s busy timeout (`db._conn`, `db._wal`; restore checkpoints and drops
   the side files). GZip on every response; /static files linked with ?v=<hash> are cached for a year.
   Heavy work (COG costing, re-costing, Google desk maths) runs in threads (`asyncio.to_thread`) so pages
