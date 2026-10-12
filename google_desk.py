@@ -25,6 +25,7 @@ from datetime import date, timedelta
 WINDOWS = (7, 14, 30)
 ITEM = re.compile(r"^shopify_[a-z]{2,3}_(\d+)_(\d+)$", re.I)
 FIELDS = ("cost", "impressions", "clicks", "conversions", "value", "qty", "sales", "cog", "fees", "refunds", "ref_units")
+UNLINKED = "unlinked"
 ITEM_COUNTRY = re.compile(r"^shopify_([a-z]{2,3})_", re.I)
 
 
@@ -39,7 +40,9 @@ def parse_item(item_id: str) -> tuple:
     m = ITEM.match((item_id or "").strip())
     if m:
         return m.group(1), m.group(2)
-    return "item:" + (item_id or "?"), item_id or "?"
+    if not (item_id or "").strip():                 # Shopping spend Google reports without a product id
+        return UNLINKED, UNLINKED
+    return "item:" + item_id, item_id
 
 
 def _num(gid) -> str:
@@ -208,6 +211,12 @@ def build(google_rows: list, g_factor: float, lines: list, usd_factor: float, pr
             totals[w]["ad_days"] = len(set().union(*(p["variants"][x["vid"]]["days"][w] for x in variants))) if variants else 0
             _finish(totals[w], fee_rate, unit_margin, min_spend)
         variants.sort(key=lambda x: -x["w"][lead]["cost"])
+        if pid == UNLINKED:
+            for w in W:
+                totals[w]["verdict"] = ""                 # nothing to keep or cut: no product
+            out.append({"pid": pid, "title": "Spend with no product ID from Google", "image": None, "status": "Google",
+                        "handle": None, "variants": [], "w": totals, "unlinked": True})
+            continue
         out.append({"pid": pid, "title": info.get("title") or p["gtitle"] or pid, "image": info.get("image"),
                     "status": info.get("status") or ("" if not pid.startswith("item:") else "Not Shopify"),
                     "handle": info.get("handle"), "variants": variants, "w": totals})

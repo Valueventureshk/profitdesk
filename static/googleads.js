@@ -99,7 +99,7 @@ const COLS = [
   { id: "roas", label: "ROAS", t: "Shopify sales ÷ spend, picked period", v: (m) => m.roas, f: (v) => ratio(v), heat: true },
   { id: "be_roas", label: "BE ROAS", t: "Breakeven ROAS: where the product stops losing money", v: (m) => m.be_roas, f: (v) => ratio(v) },
   { id: "verdict", label: "Verdict", t: "Scale / Keep / Watch / Cut / Learning", v: (m) => ({ scale: 5, keep: 4, watch: 3, cut: 1, learning: 2 }[m.verdict] || 0),
-    f: (v, m) => { const [c, l] = VERDICT[m.verdict] || ["new", m.verdict]; return `<span class="src ${c}">${l}</span>`; } },
+    f: (v, m) => { if (!m.verdict) return "—"; const [c, l] = VERDICT[m.verdict] || ["new", m.verdict]; return `<span class="src ${c}">${l}</span>`; } },
   { id: "value", label: "G value", t: "Google conversion value (Google's attribution)", v: (m) => m.value, f: (v) => money(v) },
   { id: "ad_days", label: "Ad days", t: "Days the product had Google spend", v: (m) => m.ad_days, f: (v) => n(v) },
 ];
@@ -230,12 +230,12 @@ function drawAll() {
     <tbody>${rows.map((p) => {
       const mine = (ptags[p.pid] || []).map((id) => tags.find((t) => t.id === id)).filter(Boolean);
       return `<tr data-pid="${esc(p.pid)}" class="${picked.has(p.pid) ? "on" : ""}">
-        <td class="gx-pin gx-cb"><input type="checkbox" data-pick${picked.has(p.pid) ? " checked" : ""}></td>
+        <td class="gx-pin gx-cb">${p.unlinked ? "" : `<input type="checkbox" data-pick${picked.has(p.pid) ? " checked" : ""}>`}</td>
         <td class="gx-pin gx-prod">${p.image ? `<img src="${esc(p.image)}" alt="" loading="lazy">` : `<span class="gx-noimg"></span>`}
           <span class="gx-pt"><span class="gx-pn" title="${esc(p.title)}">${p.handle && data.shop ? `<a href="https://${esc(data.shop)}/products/${esc(p.handle)}" target="_blank" rel="noopener">${esc(p.title)}</a>` : esc(p.title)}</span>
-          <span class="gx-ps">${mine.map((t) => `<span class="gx-tag" style="--c:${esc(t.color)}">${esc(t.name)}</span>`).join("") || `<span class="gx-muted">${esc(p.pid.startsWith("item:") ? p.pid.slice(5) : "ID " + p.pid)}</span>`}</span></span></td>
+          <span class="gx-ps">${p.unlinked ? `<span class="gx-muted" title="Google reported this Shopping / Performance Max spend without saying which product it was for (usually a product since removed from the feed or Merchant Center). It counts in the totals.">Google didn't say which product · counted in totals</span>` : ""}${p.unlinked ? "" : mine.map((t) => `<span class="gx-tag" style="--c:${esc(t.color)}">${esc(t.name)}</span>`).join("") || `<span class="gx-muted">${esc(p.pid.startsWith("item:") ? p.pid.slice(5) : "ID " + p.pid)}</span>`}</span></span></td>
         <td class="gx-pin gx-st"><span class="gx-status ${esc((p.status || "").toLowerCase())}">${esc(p.status || "—")}</span></td>
-        <td class="gx-pin gx-vr"><button class="gx-vbtn" data-var="${data.products.indexOf(p)}">${p.variants.length} ▤</button></td>
+        <td class="gx-pin gx-vr">${p.unlinked ? "—" : `<button class="gx-vbtn" data-var="${data.products.indexOf(p)}">${p.variants.length} ▤</button>`}</td>
         ${cols.map((c) => { const m = p.w[win(c)], v = c.v(m);
           return `<td class="${c.heat ? "gx-hc " + heat(m) : ""} ${c.sign ? ((v ?? 0) >= 0 ? "gx-posc" : "gx-negc") : ""} ${c.cls || ""}">${c.f(v, m)}${c.sub && c.sub(m) ? `<span class="gx-subn">${c.sub(m)}</span>` : ""}</td>`; }).join("")}</tr>`;
     }).join("") || `<tr><td class="gx-muted gx-empty" colspan="40">No products match.</td></tr>`}</tbody>`;
