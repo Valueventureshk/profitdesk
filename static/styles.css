@@ -2026,7 +2026,8 @@ td.gx-dcn { color: var(--gx-muted); }
 .gours .neg, .gstats .neg { color: #B91C1C; }
 html[data-theme="dark"] .gpl { background: #1E1B4B; border-color: #3730A3; }
 .pd-badge { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px; margin-left: 4px; border-radius: 9px; background: #DC2626; color: #fff; font-size: 11px; font-weight: 700; }
-.wa-person { display: flex; gap: 8px; margin: 6px 0; }
-.wa-person .wa-phone { flex: 1; }
+.wa-person { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0; align-items: center; }
+.wa-person .wa-phone { flex: 1 1 220px; min-width: 200px; width: auto; }
+.wa-person .wa-email { flex: 1 1 180px; width: auto; min-width: 160px; }
 .wa-h { margin: 14px 0 2px; }
 .wa-btns { display: flex; gap: 8px; margin-top: 12px; }

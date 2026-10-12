@@ -1100,8 +1100,8 @@ async function renderWA() {
   let r;
   try { r = await api("/api/whatsapp/settings"); } catch { $("waBox").innerHTML = ""; return; }
   const userOpts = (sel) => r.users.map((u) => `<option value="${esc(u.email)}"${u.email === sel ? " selected" : ""}>${esc(u.name)}</option>`).join("");
-  const row = (p = {}) => `<div class="wa-person"><input class="control wa-phone" placeholder="Phone with country code, e.g. 85291234567" value="${esc(p.phone || "")}">
-      <select class="control wa-email">${userOpts(p.email)}</select><button class="btn btn-sm btn-ghost wa-del" title="Remove">✕</button></div>`;
+  const row = (p = {}) => `<div class="wa-person"><input class="control wa-phone" type="tel" placeholder="WhatsApp number with country code, e.g. 94771234567" value="${esc(p.phone || "")}">
+      <span class="hint">is</span><select class="control wa-email">${userOpts(p.email)}</select><button class="btn btn-sm btn-ghost wa-del" title="Remove">✕</button></div>`;
   $("waBox").innerHTML = `
     <div class="group-row"><div class="group-name"><strong>${r.connected ? "Connected" : "Not connected yet"}</strong>
       <span>${r.connected ? `Phone number ID ${esc(r.phone_id)} · ${r.people.length} people can use it` : "Fill in the four boxes below."}</span></div></div>
