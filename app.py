@@ -80,6 +80,7 @@ SHOPIFY_REDIRECT = f"{BASE_URL}/auth/shopify/callback"
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 CACHE_TTL = 60  # seconds; the Refresh button bypasses it
+LIVE_DAYS = 2   # the last days always read live from Shopify; older ones from the saved copy
 
 
 # ---- stall watchdog: when the server is stuck on one job (pages wait meanwhile), note where
@@ -3512,7 +3513,7 @@ async def _disputes_refresh(force: bool = False) -> list:
                         case = disputes.from_paypal(await paypal.dispute(c["client_id"], c["secret"], row["dispute_id"]), c)
                     except paypal.PayPalError:
                         pass
-            db.save_dispute(case)
+            await asyncio.to_thread(db.save_dispute, case)
 
         async def one(c):
             try:
@@ -3520,8 +3521,8 @@ async def _disputes_refresh(force: bool = False) -> list:
                     rows = await paypal.disputes(c["client_id"], c["secret"], since)
                     await asyncio.gather(*(paypal_one(c, r) for r in rows))
                 elif c["provider"] == "airwallex":
-                    for d in await awx.disputes(c["client_id"], c["secret"], c.get("account_id")):
-                        db.save_dispute(disputes.from_airwallex(d, c))
+                    got = await awx.disputes(c["client_id"], c["secret"], c.get("account_id"))
+                    await asyncio.to_thread(lambda: [db.save_dispute(disputes.from_airwallex(d, c)) for d in got])
             except (paypal.PayPalError, awx.AirwallexError) as e:
                 problems.append(f"{c['label']}: {e}")
         await asyncio.gather(*(one(c) for c in db.list_cash_connections()))
@@ -6586,23 +6587,34 @@ async def _store_window(store, start, end, auth, meta_auth):
         return rows, notes
     end_for_api = min(end, store_today)
 
+    # Completed days come from ProfitDesk's saved copy (refreshed every 6 hours and on every read);
+    # only the last LIVE_DAYS days, and any day not saved yet, are asked from Shopify. A 30-day
+    # view used to download 60 days of orders for every store on every load.
+    recent_from = max(start, (_store_today(store) - timedelta(days=LIVE_DAYS)).isoformat())
+
+    def live_start(saved: dict, lo: str) -> str:
+        missing = [d for d in _dates(lo, min(end_for_api, (date.fromisoformat(recent_from) - timedelta(days=1)).isoformat()))
+                   if d not in saved] if lo < recent_from else []
+        return min(missing) if missing else recent_from
+
     async def sales():
         # Shopify only shares the last 60 days; older days come from the totals
         # ProfitDesk saved while they were still inside that window.
         cutoff = _shopify_cutoff(store)
         if start < cutoff and "read_all_orders" in await _granted(store):
             cutoff = start            # approved for full history: ask Shopify for all of it
+        saved = db.saved_shopify_days(store["id"], start, end_for_api, store["timezone"])
+        live_from = live_start(saved, max(start, cutoff))
         got = {}
-        live_from = max(start, cutoff)
         if live_from <= end_for_api:
             client = ShopifyClient(store["shop_domain"], store["access_token"])
             got = await client.daily_sales(live_from, end_for_api, store["timezone"])
             _save_sales(store, got, live_from, end_for_api)
+        older = {d: v for d, v in saved.items() if d < live_from}
         if start < cutoff:
-            older = db.saved_shopify_days(store["id"], start,
-                                          (date.fromisoformat(cutoff) - timedelta(days=1)).isoformat())
-            got = {**older, **got}
-        return got
+            older = {**db.saved_shopify_days(store["id"], start,
+                                             (date.fromisoformat(cutoff) - timedelta(days=1)).isoformat()), **older}
+        return {**older, **got}
 
     async def spend():
         if not store["google_customer_id"]:
@@ -6636,9 +6648,15 @@ async def _store_window(store, start, end, auth, meta_auth):
                                       start, end_for_api, store["timezone"], account_tz)
 
     async def refunds():
-        client = ShopifyClient(store["shop_domain"], store["access_token"])
-        days, _records = await client.daily_refunds(start, end_for_api, store["timezone"])
-        return days
+        saved = db.saved_refund_days(store["id"], start, end_for_api, store["timezone"])
+        live_from = live_start(saved, start)
+        days = {}
+        if live_from <= end_for_api:
+            client = ShopifyClient(store["shop_domain"], store["access_token"])
+            days, _records = await client.daily_refunds(live_from, end_for_api, store["timezone"])
+            db.save_refund_days(store["id"], {d: days.get(d, {"refunds": 0.0, "count": 0})
+                                              for d in _dates(live_from, end_for_api)}, store["timezone"])
+        return {**{d: v for d, v in saved.items() if d < live_from}, **days}
 
     got_sales, got_spend, got_meta, got_refunds = await asyncio.gather(
         sales(), spend(), meta_spend(), refunds(), return_exceptions=True
@@ -6710,9 +6728,12 @@ async def _save_all_history():
                 continue
             try:
                 start, end = _shopify_cutoff(x), _store_today(x).isoformat()
-                got = await ShopifyClient(x["shop_domain"], x["access_token"]).daily_sales(
-                    start, end, x["timezone"])
+                client = ShopifyClient(x["shop_domain"], x["access_token"])
+                got = await client.daily_sales(start, end, x["timezone"])
                 _save_sales(x, got, start, end)
+                ref, _records = await client.daily_refunds(start, end, x["timezone"])
+                db.save_refund_days(x["id"], {d: ref.get(d, {"refunds": 0.0, "count": 0})
+                                              for d in _dates(start, end)}, x["timezone"])
             except Exception as e:
                 print(f"Saving Shopify history for {x['name']} failed: {e}", flush=True)
         await asyncio.sleep(6 * 3600)

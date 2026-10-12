@@ -288,6 +288,15 @@ CREATE TABLE IF NOT EXISTS cash_snapshots (
 -- Expenses desk: the owner's category picks. key = a payee ("payee:pgs tech
 -- limited", "merchant:canva") or one transaction ("tx:<id>"). Suggestions are
 -- the AI's guesses for payees nobody has picked yet.
+CREATE TABLE IF NOT EXISTS refund_days (
+    store_id   INTEGER NOT NULL,          -- Shopify refunds per day (store clock), saved like shopify_days
+    date       TEXT    NOT NULL,
+    refunds    REAL    NOT NULL DEFAULT 0,
+    count      INTEGER NOT NULL DEFAULT 0,
+    timezone   TEXT,
+    saved_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (store_id, date)
+);
 CREATE TABLE IF NOT EXISTS rec_sessions (
     sid       TEXT PRIMARY KEY,           -- the visitor's browser session (recordings.py)
     store_id  INTEGER NOT NULL,
@@ -753,11 +762,13 @@ def save_shopify_days(store_id: int, days: dict, tz: str):
              for d, v in days.items()])
 
 
-def saved_shopify_days(store_id: int, start: str, end: str) -> dict:
+def saved_shopify_days(store_id: int, start: str, end: str, tz: str = None) -> dict:
+    """tz: only days saved on that clock (a store whose clock changed gets fresh ones)."""
     import json
     with _conn() as con:
-        rows = con.execute("SELECT * FROM shopify_days WHERE store_id = ? AND date BETWEEN ? AND ?",
-                           (store_id, start, end)).fetchall()
+        rows = con.execute("SELECT * FROM shopify_days WHERE store_id = ? AND date BETWEEN ? AND ?"
+                           + (" AND timezone = ?" if tz else ""),
+                           (store_id, start, end, *([tz] if tz else []))).fetchall()
     return {r["date"]: {"sales": r["sales"], "orders": r["orders"],
                         "payments": json.loads(r["payments"] or "{}")} for r in rows}
 
@@ -1580,3 +1591,22 @@ def log_dispute(key: str, who: str, action: str, detail: str = ""):
 def dispute_log(key: str) -> list:
     with _conn() as con:
         return [dict(r) for r in con.execute("SELECT * FROM dispute_log WHERE key = ? ORDER BY id DESC", (key,))]
+
+
+def save_refund_days(store_id: int, days: dict, tz: str):
+    """days: {date: {"refunds", "count"}}; replaces what was saved."""
+    with _conn() as con:
+        con.executemany(
+            "INSERT INTO refund_days (store_id, date, refunds, count, timezone, saved_at)"
+            " VALUES (?,?,?,?,?, datetime('now')) ON CONFLICT(store_id, date) DO UPDATE SET"
+            " refunds = excluded.refunds, count = excluded.count, timezone = excluded.timezone,"
+            " saved_at = excluded.saved_at",
+            [(store_id, d, float(v.get("refunds") or 0), int(v.get("count") or 0), tz) for d, v in days.items()])
+
+
+def saved_refund_days(store_id: int, start: str, end: str, tz: str = None) -> dict:
+    with _conn() as con:
+        rows = con.execute("SELECT date, refunds, count FROM refund_days WHERE store_id = ? AND date BETWEEN ? AND ?"
+                           + (" AND timezone = ?" if tz else ""),
+                           (store_id, start, end, *([tz] if tz else []))).fetchall()
+    return {r["date"]: {"refunds": r["refunds"], "count": r["count"]} for r in rows}
