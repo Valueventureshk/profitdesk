@@ -80,7 +80,9 @@ function drawManage() {
       <td class="gx-cact" data-manage-only><button class="gx-btn gx-sm" data-bud="${c.id}">Budget</button>
         <button class="gx-btn gx-sm" data-st="${c.id}">${c.status === "ENABLED" ? "Pause" : "Enable"}</button></td></tr>`).join("")
     || `<tr><td colspan="15" class="gx-muted gx-empty">No campaigns.</td></tr>`}</tbody>`;
-  if (!tracks && camps.some((c) => c.p.cost > 5)) $("mgCampNote").textContent += " · Google reports no conversions or add to carts for this account in this period: its conversion tracking may not be working.";
+  const spent = camps.reduce((x, c) => x + c.p.cost, 0), sold = camps.reduce((x, c) => x + c.p.sales, 0);
+  const conv = camps.reduce((x, c) => x + c.p.conversions, 0), atc = camps.reduce((x, c) => x + c.p.atc, 0);
+  if (spent > 20 && sold > 0 && !conv) $("mgCampNote").innerHTML += ` · <b class="gx-neg">Google recorded no purchases while Shopify sold ${esc(mgMoney(sold, 0))}${atc ? ` (it does see ${atc.toFixed(0)} add to carts)` : ""}: this account's purchase tracking isn't working.</b>`;
   for (const b of $("mgCamps").querySelectorAll("[data-bud]")) b.onclick = () => {
     const c = camps.find((x) => x.id === b.dataset.bud);
     const v = prompt(`New daily budget for “${c.name}” (now ${mgMoney(c.budget)}):`, c.budget);
