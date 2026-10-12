@@ -6297,9 +6297,36 @@ def _ads_lines(st, days=62):
             (st["id"], start))]
 
 
-async def _ads_items(st, pids: list) -> list:
-    """Every Google item id (one per variant) for these Shopify products: the ones Google has reported, plus each
-    Shopify variant under the feed's own prefix (shopify_us_…), so variants that never got spend are included too."""
+_ads_catalog: dict = {}      # store id -> (time, [catalogue items])
+
+
+async def _ads_catalog_of(st) -> list:
+    hit = _ads_catalog.get(st["id"])
+    if hit and time.time() - hit[0] < 3600:
+        return hit[1]
+    got = await gads_manage.catalog(*_ads_args(st))
+    _ads_catalog[st["id"]] = (time.time(), got)
+    return got
+
+
+async def _ads_items(st, pids: list, feed_label: str = None) -> list:
+    """Every Google item id (one per variant) for these Shopify products. Google's own catalogue first (exactly the
+    variants Google has, for the campaign's feed label); products Google doesn't list yet fall back to each Shopify
+    variant under the feed's prefix (shopify_au_…)."""
+    try:
+        cat = await _ads_catalog_of(st)
+    except gads.GoogleAdsError:
+        cat = []
+    want = {str(p) for p in pids}
+    from_cat, seen = [], set()
+    for i in cat:
+        pid = google_desk.parse_item(i["item"])[0]
+        if pid in want and (not feed_label or not i["feed_label"] or i["feed_label"].upper() == feed_label.upper()):
+            from_cat.append(i["item"])
+            seen.add(pid)
+    pids = [p for p in pids if str(p) not in seen]
+    if not pids:
+        return sorted(set(from_cat))
     _rows, index = await _ads_data(st)
     prefixes = {re.match(r"^(shopify_[a-z]{2,3}_)", i, re.I).group(1) for v in index.values() for i in v
                 if re.match(r"^(shopify_[a-z]{2,3}_)", i, re.I)} or {"shopify_" + (st.get("country") or "us").lower() + "_"}
@@ -6312,7 +6339,7 @@ async def _ads_items(st, pids: list) -> list:
             for pre in prefixes:
                 out.add(f"{pre}{pid}_{vid}")
     seen = {}
-    for i in sorted(out):                                   # one spelling per item (Google matches any case)
+    for i in sorted(out | set(from_cat)):                   # one spelling per item (Google matches any case)
         seen.setdefault(i.lower(), i)
     return sorted(seen.values())
 
@@ -6386,7 +6413,9 @@ async def _ads_execute(st, a: dict, created: dict, validate_only=False) -> dict:
             raise gads.GoogleAdsError(f"There's already a campaign called “{p['name']}”.")
         if not s["merchant_ids"]:
             raise gads.GoogleAdsError("This account has no Merchant Center link on any campaign, so I can't make a shopping campaign.")
-        items = await _ads_items(st, p.get("products") or [])
+        labels0 = [c["feed_label"] for c in s["campaigns"] if c.get("feed_label")]
+        cc = [c.upper() for c in (p.get("countries") or []) if c]
+        items = await _ads_items(st, p.get("products") or [], p.get("feed_label") or (cc[0] if len(cc) == 1 and cc[0] in labels0 else None))
         if not items:
             raise gads.GoogleAdsError("No products to put in the new campaign.")
         status = (p.get("status") or "ENABLED").upper()
@@ -6414,11 +6443,21 @@ async def _ads_execute(st, a: dict, created: dict, validate_only=False) -> dict:
         dst = camp(p["to_campaign"] if k == "move_products" else p["campaign"]) if k in ("move_products", "add_products") and (p.get("to_campaign") or p.get("campaign")) else None
         if k == "move_products" and src and dst and src["id"] == dst["id"]:
             raise gads.GoogleAdsError("From and to are the same campaign.")
+        cat_attrs = {}
+        if src and any(g["products"]["mode"] == "custom" for g in src["groups"]):
+            try:
+                cat_attrs = {i["item"].lower(): i for i in await _ads_catalog_of(st)}
+            except gads.GoogleAdsError:
+                cat_attrs = {}
+
         def change(g, add=(), remove=()):
             nonlocal temp
             before[g["resource"]] = {"nodes": gads_manage.plain_nodes(g)}
             if g["products"]["mode"] == "custom":           # picked by labels / categories: edit inside the tree
-                nodes = gads_manage.custom_exclude(g, remove) if remove else gads_manage.custom_include(g, add)
+                if remove:
+                    nodes = gads_manage.custom_exclude(g, remove, cat_attrs)
+                else:
+                    nodes = gads_manage.custom_include(g, add)
                 o = gads_manage.rebuild_ops(g, nodes, temp)
                 temp += len(nodes) + 5
                 return o

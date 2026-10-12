@@ -222,7 +222,7 @@ def tree_ops(group: dict, mode: str, items: list, temp_start: int = 1) -> list:
     """Operations that replace a group's product tree with a flat one:
     mode "all" (every product), "only" (just items), "except" (every product but items)."""
     items = sorted({i.strip() for i in items if i and i.strip()}, key=str.lower)
-    if mode in ("only", "except") and len(items) > 900:
+    if mode in ("only", "except") and len(items) > 950:
         raise gads.GoogleAdsError(f"That's {len(items)} product variants in one product list; Google allows about 1,000. "
                                   "Use fewer products, or split them over campaigns.")
     tree = group.get("tree") or []
@@ -284,8 +284,7 @@ async def create_pmax(rt, customer_id, login_cid, name: str, budget: float, merc
     running just `items`, with its own daily budget, bidding for conversion value (optionally a target ROAS),
     starting now with no end date, shown to people in `countries` (codes like AU)."""
     cid = str(customer_id).replace("-", "")
-    budget_rn, camp_rn, ag_rn = (f"customers/{cid}/campaignBudgets/-1", f"customers/{cid}/campaigns/-2",
-                                 f"customers/{cid}/assetGroups/-3")
+    budget_rn, camp_rn = f"customers/{cid}/campaignBudgets/-1", f"customers/{cid}/campaigns/-2"
     shopping = {"merchantId": str(merchant_id)}
     if feed_label:
         shopping["feedLabel"] = feed_label
@@ -298,15 +297,22 @@ async def create_pmax(rt, customer_id, login_cid, name: str, budget: float, merc
             "campaignBudget": budget_rn, "maximizeConversionValue": {"targetRoas": target_roas} if target_roas else {},
             "shoppingSetting": shopping, "geoTargetTypeSetting": {"positiveGeoTargetType": "PRESENCE"},
             "containsEuPoliticalAdvertising": "DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING"}}},
-        {"assetGroupOperation": {"create": {"resourceName": ag_rn, "campaign": camp_rn, "name": "Products",
-                                            "finalUrls": [final_url], "status": "ENABLED"}}},
     ]
+    items = sorted({i for i in items if i})
+    chunks = [items[k:k + 950] for k in range(0, len(items), 950)] or [[]]
+    if len(chunks) > 100:
+        raise gads.GoogleAdsError(f"{len(items)} variants need {len(chunks)} asset groups; Google allows 100 per campaign.")
     for code in countries or []:
         geo = GEO.get(str(code).upper().strip())
         if not geo:
             raise gads.GoogleAdsError(f"Unknown country code “{code}” (use two letters, e.g. AU).")
         ops.append({"campaignCriterionOperation": {"create": {"campaign": camp_rn, "location": {"geoTargetConstant": f"geoTargetConstants/{geo}"}}}})
-    ops += tree_ops({"kind": "asset_group", "resource": ag_rn, "tree": []}, "only", items, temp_start=10)
+    for n, chunk in enumerate(chunks):
+        rn = f"customers/{cid}/assetGroups/-{3 + n}"
+        ops.append({"assetGroupOperation": {"create": {"resourceName": rn, "campaign": camp_rn,
+                                                       "name": "Products" + (f" {n + 1}" if len(chunks) > 1 else ""),
+                                                       "finalUrls": [final_url], "status": "ENABLED"}}})
+        ops += tree_ops({"kind": "asset_group", "resource": rn, "tree": []}, "only", chunk, temp_start=10)
     got = await mutate(rt, customer_id, login_cid, ops, validate_only)
     if validate_only:
         return {"ok": True}
@@ -394,7 +400,80 @@ def _item_of(node) -> str:
     return ((node.get("case") or {}).get("productItemId") or {}).get("value")
 
 
-def custom_exclude(group: dict, items: list) -> list:
+def _leaf_for(nodes, kids, attrs) -> object:
+    """The tree end an item falls into, walking from the root by custom labels / item id; None if the tree splits by
+    something ProfitDesk doesn't know for the item (brand, category, type)."""
+    node = next((n for n in nodes if n["parent"] is None), None)
+    while node is not None and node["type"] == "SUBDIVISION":
+        ch = kids.get(node["key"], [])
+        nxt, other = None, None
+        for c in ch:
+            cv = c.get("case") or {}
+            if "productCustomAttribute" in cv:
+                idx = int(str(cv["productCustomAttribute"].get("index", "INDEX0")).replace("INDEX", "") or 0)
+                val = (cv["productCustomAttribute"].get("value") or "").lower()
+                if not val:
+                    other = c
+                elif attrs.get(f"label{idx}", "") == val:
+                    nxt = c
+            elif "productItemId" in cv:
+                val = (cv["productItemId"].get("value") or "").lower()
+                if not val:
+                    other = c
+                elif val == attrs.get("item", "").lower():
+                    nxt = c
+            else:
+                return None
+        node = nxt or other
+    return node
+
+
+def custom_exclude(group: dict, items: list, attrs: dict = None) -> list:
+    """Like custom_exclude_all, but each item is excluded only under the tree end it actually falls into (from its
+    custom labels in Google's catalogue), so far fewer entries are needed."""
+    kind, nodes = group["kind"], plain_nodes(group)
+    kids = {}
+    for n in nodes:
+        kids.setdefault(n["parent"], []).append(n)
+    attrs = attrs or {}
+    per_leaf, unknown = {}, []
+    for it in items:
+        a = attrs.get(it.lower())
+        leaf = _leaf_for(nodes, kids, {**(a or {}), "item": it}) if a else None
+        if leaf is None:
+            unknown.append(it)
+        elif _included(leaf, kind) or leaf["type"] == "SUBDIVISION":
+            per_leaf.setdefault(leaf["key"], []).append(it)
+    if unknown:
+        return custom_exclude_all(group, items)
+    out = [dict(n) for n in nodes]
+    by_key = {n["key"]: n for n in out}
+    n_new = 0
+    for key, its in per_leaf.items():
+        leaf = by_key[key]
+        ch = [c for c in out if c["parent"] == key]
+        have = {(_item_of(c) or "").lower(): c for c in ch if _item_of(c)}
+        if leaf["type"] != "SUBDIVISION":
+            leaf["type"], leaf["negative"] = "SUBDIVISION", False
+            n_new += 1
+            out.append({"key": f"new{n_new}", "parent": key, "type": "UNIT_INCLUDED" if kind == "asset_group" else "UNIT",
+                        "case": {"productItemId": {}}, "negative": False, "bid": leaf.get("bid") or 0})
+        for it in its:
+            c = have.get(it.lower())
+            if c:
+                c.update(type="UNIT_EXCLUDED" if kind == "asset_group" else "UNIT", negative=kind != "asset_group")
+            else:
+                n_new += 1
+                out.append({"key": f"new{n_new}", "parent": key, "type": "UNIT_EXCLUDED" if kind == "asset_group" else "UNIT",
+                            "case": {"productItemId": {"value": it}}, "negative": kind != "asset_group", "bid": 0})
+    if len(out) > 990:
+        raise gads.GoogleAdsError(f"Taking these products out of “{group['name']}” needs {len(out)} product-list entries "
+                                  f"({len(items)} variants); Google allows 1,000 per asset group. Take out fewer products "
+                                  f"(about {max(0, 990 - len(nodes))} variants fit), or have them carry their own label.")
+    return out
+
+
+def custom_exclude_all(group: dict, items: list) -> list:
     """Nodes of a label / category tree with these item ids left out: every included end of the tree gets split by
     item id (those items excluded, everything else still included); ends already split by item id get the items
     switched to excluded. The labels themselves are untouched."""
