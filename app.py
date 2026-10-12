@@ -5945,18 +5945,23 @@ async def api_googleads(store: str = "", fresh: int = 0, min_spend: float = None
     auth = db.get_google_auth()
     if not auth:
         raise HTTPException(400, "Google isn't connected (Settings → Google Ads).")
-    # last 30 complete days, like Google's own "Last 30 days": store days for Shopify, account days for Google
-    today = _now_in(st).date() - timedelta(days=1)
+    # the dashboard's own "Last 7 / 14 / 30 days": store days, today so far included. The totals come from
+    # the dashboard's engine (_store_window + metrics), so both pages show the same figures.
+    today = _store_today(st)
     start = today - timedelta(days=29)
     args = (auth["refresh_token"], st["google_customer_id"], st["google_login_cid"])
+    meta_conn = next((c for c in db.list_meta_connections() if c["id"] == st.get("meta_connection_id")), None)
     try:
-        acct, gcur, atz = await gads.account_daily(*args, (start - timedelta(days=2)).isoformat(),
-                                                   (today + timedelta(days=2)).isoformat())
+        (dash_rows, _notes), (acct, gcur, atz) = await asyncio.gather(
+            _store_window(st, start.isoformat(), today.isoformat(), auth, meta_conn),
+            gads.account_daily(*args, (start - timedelta(days=1)).isoformat(), (today + timedelta(days=1)).isoformat()))
         try:
-            g_today = datetime.now(ZoneInfo(atz)).date() - timedelta(days=1)
+            g_today = datetime.now(ZoneInfo(atz)).date()
+            # the store's first day starts on this account day (products only; totals are exact)
+            g_start = datetime.combine(start, clock.min, _zone(st)).astimezone(ZoneInfo(atz)).date()
         except (ZoneInfoNotFoundError, ValueError):
-            g_today = today
-        rows, gcur2 = await gads.product_report(*args, (g_today - timedelta(days=29)).isoformat(), g_today.isoformat())
+            g_today, g_start = today, start
+        rows, gcur2 = await gads.product_report(*args, g_start.isoformat(), g_today.isoformat())
         gcur = gcur or gcur2
     except gads.GoogleAdsError as e:
         raise HTTPException(400, str(e))
@@ -5972,8 +5977,10 @@ async def api_googleads(store: str = "", fresh: int = 0, min_spend: float = None
     info = await _product_info(st, sorted(p for p in pids if p))
     table = await fx.table(st["currency"])
     f = lambda c: fx.factor(table, c, st["currency"]) if table and c else 1.0
-    out = await asyncio.to_thread(google_desk.build, rows, f(gcur or st.get("google_currency") or st["currency"]), lines,
-                                  f("USD"), info, fee_rate, today.isoformat(), min_spend, acct, g_today.isoformat())
+    tax = 1 + (st.get("google_tax_pct") or 0) / 100.0          # as the dashboard counts Google (e.g. ZAVA GST)
+    out = await asyncio.to_thread(google_desk.build, rows, f(gcur or st.get("google_currency") or st["currency"]) * tax, lines,
+                                  f("USD"), info, fee_rate, today.isoformat(), min_spend, None, g_today.isoformat())
+    google_desk.with_dashboard(out, dash_rows, today.isoformat())
     out.update(store=st["id"], currency=st["currency"], google_currency=gcur, fee_rate=fee_rate, min_spend=min_spend,
                today=today.isoformat(), google_today=g_today.isoformat(), account_timezone=atz, shop=st["shop_domain"],
                missing_product_ids=not any(l.get("product_id") for l in lines),

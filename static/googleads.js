@@ -63,8 +63,6 @@ async function load(fresh = false) {
   }
   $("problems").innerHTML = data.missing_product_ids
     ? `<div class="notice">Shopify sales are still being matched to products for this store (a few minutes after the update). Refresh shortly.</div>` : "";
-  $("sub").textContent = `Last 30 days to ${data.today} (complete days, like Google's "Last 30 days") · ${data.currency}${data.google_currency && data.google_currency !== data.currency ? ` (Google spend converted from ${data.google_currency})` : ""}`
-    + ` · updated ${new Date(data.cached_at * 1000).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}`;
   $("help").innerHTML = `<p><b>Shopify sales / qty</b>: everything the product sold on the store in the period, all channels (fair for stores
       that only advertise on Google). <b>Google conv. value</b>: what Google says its ads sold (its own attribution).
       <b>COG</b>: from invoices and product history. <b>Fees</b>: payment fees at this store's rate (${pct(data.fee_rate)}).</p>
@@ -81,6 +79,8 @@ async function load(fresh = false) {
 }
 
 function drawCards() {
+  $("sub").textContent = `${win} days: ${data.summary[win].start} to ${data.today} (today so far included, same as the dashboard) · ${data.currency}${data.google_currency && data.google_currency !== data.currency ? ` (Google spend converted from ${data.google_currency})` : ""}`
+    + ` · updated ${new Date(data.cached_at * 1000).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}`;
   const s = data.summary[win];
   const card = (label, value, note = "", cls = "") => `<div class="card"><div class="card-label">${label}</div>
       <div class="card-value ${cls}">${value}</div><div class="card-note">${note}</div></div>`;
@@ -89,11 +89,11 @@ function drawCards() {
     card("Google spend", money(s.cost, 0), s.cost_other >= 0.5
       ? `whole account · on products ${money(s.cost_products, 0)} · not on a product ${money(s.cost_other, 0)}`
       : `${n(s.clicks)} clicks · CPC ${money(s.cpc)}`) +
-    card("Shopify qty", n(s.qty), "items sold") +
-    card("Shopify sales", money(s.sales, 0), `Google says ${money(s.value, 0)}`) +
+    card("Shopify qty", n(s.qty), `items sold · ${n(s.orders)} orders`) +
+    card("Shopify sales", money(s.sales, 0), `refunds ${money(s.refunds, 0)} · Google says ${money(s.value, 0)}`) +
     card("ROAS", ratio(s.roas), `breakeven ${ratio(s.be_roas)}`) +
     card("Sum COG", money(s.cog, 0), `fees ${money(s.fees, 0)}`) +
-    card("Net profit", money(s.profit, 0), "sales − COG − fees − spend", s.profit >= 0 ? "pos" : "neg") +
+    card("Net profit", money(s.profit, 0), "sales − refunds − COG − fees − Google spend", s.profit >= 0 ? "pos" : "neg") +
     card("POAS", ratio(s.poas), "net profit ÷ spend", (s.poas ?? 0) >= 0 ? "pos" : "neg");
 }
 

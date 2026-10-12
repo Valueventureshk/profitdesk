@@ -64,6 +64,35 @@ def _finish(w: dict, fee_rate: float, unit_margin, min_spend: float) -> dict:
     return w
 
 
+def with_dashboard(out: dict, rows: list, today: str) -> dict:
+    """Swap the summary's totals for the dashboard's own (metrics.day rows of the same store days), so
+    the two pages agree to the cent: Shopify sales, refunds, COG, fees and Google spend (the whole
+    account, store clock). What the product rows add up to stays as cost_products; the rest of the
+    spend is "not on a product"."""
+    end = date.fromisoformat(today)
+    for w in WINDOWS:
+        start = (end - timedelta(days=w - 1)).isoformat()
+        days = [r for r in rows if start <= r["date"] <= today]
+        s = out["summary"][w]
+        cost = sum(r["google_spend"] for r in days)
+        s["cost_products"] = s["cost"]
+        s["cost"] = cost
+        s["cost_other"] = cost - s["cost_products"]
+        s["sales"] = sum(r["sales"] for r in days)
+        s["refunds"] = sum(r["refunds"] + r["chargebacks"] for r in days)
+        s["cog"] = sum(r["cogs"] for r in days)
+        s["fees"] = sum(r["processing_fee"] for r in days)
+        s["orders"] = sum(r["orders"] for r in days)
+        kept = s["sales"] - s["refunds"] - s["cog"] - s["fees"]
+        s["profit"] = kept - cost
+        s["roas"] = s["sales"] / cost if cost else None
+        s["poas"] = s["profit"] / cost if cost else None
+        s["cpc"] = cost / s["clicks"] if s["clicks"] else None
+        s["be_roas"] = s["sales"] / kept if kept > 0 else None
+        s["start"], s["end"] = start, today
+    return out
+
+
 def build(google_rows: list, g_factor: float, lines: list, usd_factor: float, products: dict,
           fee_rate: float, today: str, min_spend: float = 25.0, account_days: dict = None, g_today: str = None) -> dict:
     """google_rows: gads.product_report rows (account currency x g_factor = store currency);
