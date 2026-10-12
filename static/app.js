@@ -780,6 +780,7 @@ async function openSettings() {
   renderPeople();
   renderMailboxes();
   renderAI();
+  renderWA();
   renderWidgets();
   renderStoreSettings();
   await Promise.all([loadAccounts(), loadMetaAccounts()]);
@@ -1089,6 +1090,51 @@ async function renderAI() {
       toast("Saved. Sorting starts now; tickets appear in the Inbox within a few minutes.");
       renderAI();
     } catch (e) { toast(e.message, true); }
+  };
+}
+
+/* ------------------------------------------------ WhatsApp */
+
+async function renderWA() {
+  if (!$("waBox")) return;
+  let r;
+  try { r = await api("/api/whatsapp/settings"); } catch { $("waBox").innerHTML = ""; return; }
+  const userOpts = (sel) => r.users.map((u) => `<option value="${esc(u.email)}"${u.email === sel ? " selected" : ""}>${esc(u.name)}</option>`).join("");
+  const row = (p = {}) => `<div class="wa-person"><input class="control wa-phone" placeholder="Phone with country code, e.g. 85291234567" value="${esc(p.phone || "")}">
+      <select class="control wa-email">${userOpts(p.email)}</select><button class="btn btn-sm btn-ghost wa-del" title="Remove">✕</button></div>`;
+  $("waBox").innerHTML = `
+    <div class="group-row"><div class="group-name"><strong>${r.connected ? "Connected" : "Not connected yet"}</strong>
+      <span>${r.connected ? `Phone number ID ${esc(r.phone_id)} · ${r.people.length} people can use it` : "Fill in the four boxes below."}</span></div></div>
+    <details class="advanced"${r.connected ? "" : " open"}><summary>${r.connected ? "Connection details" : "Connect"}</summary>
+      <p class="hint">In Meta's WhatsApp setup, set the webhook: <b>Callback URL</b> <code>${esc(r.webhook)}</code> and
+        <b>Verify token</b> <code>${esc(r.verify)}</code>, then subscribe to <b>messages</b>.</p>
+      <label class="field"><span>Access token (System user, permanent)${r.has_token ? " · saved, paste to replace" : ""}</span><input id="waToken" type="password" autocomplete="off"></label>
+      <label class="field"><span>App secret (Meta app → Settings → Basic)${r.has_secret ? " · saved, paste to replace" : ""}</span><input id="waSecret" type="password" autocomplete="off"></label>
+      <label class="field"><span>Phone number ID</span><input id="waPhone" value="${esc(r.phone_id || "")}"></label>
+      <label class="field"><span>WhatsApp Business Account ID</span><input id="waWaba" value="${esc(r.waba_id || "")}"></label>
+    </details>
+    <h4 class="wa-h">Who can use it</h4>
+    <p class="hint">Each number chats as that person, with their ProfitDesk access. Messages from any other number are ignored.</p>
+    <div id="waPeople">${(r.people.length ? r.people : [{}]).map(row).join("")}</div>
+    <button class="btn btn-sm btn-ghost" id="waAdd">+ Add a number</button>
+    <div class="wa-btns"><button id="waSave" class="btn btn-primary">Save</button>
+      ${r.connected ? `<button id="waTest" class="btn btn-ghost">Send a test message</button>` : ""}</div>`;
+  const wire = () => { for (const b of $("waPeople").querySelectorAll(".wa-del")) b.onclick = () => { b.closest(".wa-person").remove(); }; };
+  wire();
+  $("waAdd").onclick = () => { $("waPeople").insertAdjacentHTML("beforeend", row()); wire(); };
+  $("waSave").onclick = async () => {
+    const people = [...$("waPeople").querySelectorAll(".wa-person")].map((d) => ({ phone: d.querySelector(".wa-phone").value, email: d.querySelector(".wa-email").value }));
+    try {
+      const out = await jsonPost("/api/whatsapp/settings", { token: $("waToken").value, app_secret: $("waSecret").value,
+        phone_id: $("waPhone").value, waba_id: $("waWaba").value, people }, "PUT");
+      toast(out.template_error ? `Saved. Template: ${out.template_error}` : `Saved.${out.template ? " Message template: " + out.template : ""}`, !!out.template_error);
+      renderWA();
+    } catch (e) { toast(e.message, true); }
+  };
+  if ($("waTest")) $("waTest").onclick = async () => {
+    const p = $("waPeople").querySelector(".wa-phone")?.value;
+    try { const out = await jsonPost("/api/whatsapp/test", { phone: p }); toast(out.note || "Sent."); }
+    catch (e) { toast(e.message, true); }
   };
 }
 

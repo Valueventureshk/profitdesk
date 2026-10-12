@@ -47,6 +47,7 @@ import recordings
 import google_desk
 import gads_manage
 import gads_conv
+import whatsapp
 import ads_engine
 import ads_brain
 import tracking
@@ -173,7 +174,7 @@ _cache: dict[tuple, tuple[float, dict]] = {}
 
 # Reachable without logging in: the login page itself and what it needs.
 _OPEN = {"/login", "/api/login", "/api/logout", "/api/first-user", "/api/first-restore",
-         "/api/scm/webhook",
+         "/api/scm/webhook", "/api/whatsapp/webhook",
          "/healthz", "/about", "/privacy", "/terms"}
 
 
@@ -7481,8 +7482,12 @@ def _assist_job(user, kind, name, spec) -> dict:
 
 def _assist_deliver(email: str, title: str, body: str, source: str):
     with db._conn() as con:
-        con.execute("INSERT INTO assistant_inbox (user_email, title, body, source, created_at) VALUES (?,?,?,?,?)",
-                    (email, title[:200], body[:20000], source, datetime.now(timezone.utc).isoformat(timespec="seconds")))
+        iid = con.execute("INSERT INTO assistant_inbox (user_email, title, body, source, created_at) VALUES (?,?,?,?,?)",
+                          (email, title[:200], body[:20000], source, datetime.now(timezone.utc).isoformat(timespec="seconds"))).lastrowid
+    try:
+        asyncio.get_running_loop().create_task(_wa_push(email, iid, title, body))
+    except RuntimeError:
+        pass
 
 
 def _assist_user_row(email: str) -> dict:
@@ -7604,6 +7609,245 @@ def api_assistant_read(request: Request, payload: dict):
         con.executemany("UPDATE assistant_inbox SET read_at = ? WHERE id = ? AND user_email = ?",
                         [(datetime.now(timezone.utc).isoformat(timespec="seconds"), i, me) for i in ids])
     return {"ok": True}
+
+
+# ---------------------------------------------------------------- WhatsApp: chat with the assistant
+
+_wa_pending: dict = {}       # phone -> [action ids waiting for YES]
+_wa_busy: dict = {}          # phone -> lock, one answer at a time per person
+
+
+def _wa_dir():
+    d = os.path.join(os.path.dirname(os.path.abspath(db.DB_PATH)), "wa_files")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _wa_log(phone, direction, text=None, wa_id=None, file_id=None) -> bool:
+    try:
+        with db._conn() as con:
+            con.execute("INSERT INTO wa_messages (wa_id, phone, direction, text, file_id, created_at) VALUES (?,?,?,?,?,?)",
+                        (wa_id, phone, direction, (text or "")[:20000], file_id, datetime.now(timezone.utc).isoformat(timespec="seconds")))
+        return True
+    except Exception:
+        return False                          # already had this message id
+
+
+def _wa_window_open(phone) -> bool:
+    """Meta lets a business send free text for 24 hours after the person's last message."""
+    with db._conn() as con:
+        r = con.execute("SELECT MAX(created_at) FROM wa_messages WHERE phone = ? AND direction = 'in'", (phone,)).fetchone()
+    return bool(r and r[0] and datetime.now(timezone.utc) - datetime.fromisoformat(r[0]) < timedelta(hours=23, minutes=50))
+
+
+async def _wa_send(phone, text):
+    await whatsapp.send_text(phone, text)
+    _wa_log(phone, "out", text)
+
+
+async def _wa_flush(phone, email):
+    """Reports / alerts that waited for the person to reply (sent outside the 24-hour window as a template heads-up)."""
+    with db._conn() as con:
+        rows = [dict(r) for r in con.execute("SELECT id, title, body FROM assistant_inbox WHERE user_email = ? AND sent_wa = 'waiting' ORDER BY id",
+                                             (email,))]
+    for m in rows:
+        await _wa_send(phone, f"*{m['title']}*\n{m['body']}")
+        with db._conn() as con:
+            con.execute("UPDATE assistant_inbox SET sent_wa = ? WHERE id = ?", (datetime.now(timezone.utc).isoformat(timespec="seconds"), m["id"]))
+
+
+async def _wa_push(email, inbox_id, title, body):
+    """A report / alert also goes to the person's WhatsApp: as text inside the 24-hour window, else a template heads-up."""
+    phone = whatsapp.phone_of(email) if whatsapp.ready() else None
+    if not phone:
+        return
+    try:
+        if _wa_window_open(phone):
+            await _wa_send(phone, f"*{title}*\n{body}")
+            mark = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        else:
+            await whatsapp.send_template(phone, title)
+            mark = "waiting"
+        with db._conn() as con:
+            con.execute("UPDATE assistant_inbox SET sent_wa = ? WHERE id = ?", (mark, inbox_id))
+    except whatsapp.WAError as e:
+        print(f"WhatsApp push failed: {e}", flush=True)
+
+
+class _FakeReq:
+    """Enough of a request for the invoice upload route (file bytes + who sent it)."""
+    def __init__(self, data, user):
+        self._d, self.state = data, type("S", (), {"user": user})()
+
+    async def body(self):
+        return self._d
+
+
+async def _wa_file(phone, user, msg) -> tuple:
+    """Save a photo / document someone sent. Invoices (PDF / Excel, or a caption saying invoice) go into COG → Invoices.
+    Returns (file id, a line for the assistant / the reply)."""
+    kind = msg["type"]
+    m = msg.get(kind) or {}
+    data, mime = await whatsapp.media(m["id"])
+    caption = m.get("caption") or ""
+    ext = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "application/pdf": ".pdf",
+           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx"}.get(mime, "")
+    name = re.sub(r"[^\w.\- ]", "_", m.get("filename") or f"{kind}-{datetime.now(timezone.utc):%Y%m%d-%H%M%S}{ext}")[:120]
+    with db._conn() as con:
+        fid = con.execute("INSERT INTO wa_files (phone, user_email, filename, mime, size, caption, path, created_at) VALUES (?,?,?,?,?,?,?,?)",
+                          (phone, user.get("email"), name, mime, len(data), caption, "", datetime.now(timezone.utc).isoformat(timespec="seconds"))).lastrowid
+    path = os.path.join(_wa_dir(), f"{fid}_{name}")
+    with open(path, "wb") as f:
+        f.write(data)
+    with db._conn() as con:
+        con.execute("UPDATE wa_files SET path = ? WHERE id = ?", (path, fid))
+    is_invoice = "invoice" in (caption + " " + name).lower() or mime in ("application/pdf",
+                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    if is_invoice and auth.at_least(user, "cog", "work"):
+        try:
+            got = await api_invoice_upload(_FakeReq(data, user), filename=name)
+            with db._conn() as con:
+                con.execute("UPDATE wa_files SET used_for = ? WHERE id = ?", (f"invoice:{got.get('id')}", fid))
+            return fid, (f"File #{fid} ({name}) added to COG → Invoices: supplier {got.get('supplier')}, invoice {got.get('number')}"
+                         + (", already uploaded before (attached)" if got.get("attached") else "") + ".")
+        except HTTPException as e:
+            return fid, f"File #{fid} ({name}) saved, but it couldn't be read as an invoice: {e.detail}"
+    return fid, f"File #{fid} ({name}, {mime}) saved in ProfitDesk" + (f" with the note “{caption}”" if caption else "") + "."
+
+
+async def _wa_handle(msg, contact_name=None):
+    phone = whatsapp.norm_phone(msg.get("from"))
+    who = whatsapp.person(phone)
+    if not who:
+        return                                # not someone the owner allowed: ignored
+    if not _wa_log(phone, "in", (msg.get("text") or {}).get("body") or msg.get("type"), msg.get("id")):
+        return                                # Meta retried a message we already answered
+    user = _assist_user_row(who["email"])
+    lock = _wa_busy.setdefault(phone, asyncio.Lock())
+    async with lock:
+        await whatsapp.mark_read(msg["id"])
+        await _wa_flush(phone, user["email"])
+        t = msg.get("type")
+        text = ((msg.get("text") or {}).get("body") or "").strip()
+        if t == "button":
+            text = ((msg.get("button") or {}).get("text") or "").strip()
+        note = ""
+        if t in ("image", "document", "video", "audio"):
+            try:
+                _fid, note = await _wa_file(phone, user, msg)
+            except whatsapp.WAError as e:
+                note = f"(Couldn't download the file: {e})"
+            text = ((msg.get(t) or {}).get("caption") or "").strip()
+            if not text:
+                await _wa_send(phone, note)
+                return
+        # YES / NO to the last proposed change
+        word = text.lower().strip(" .!")
+        if _wa_pending.get(phone) and word in ("yes", "y", "confirm", "ok", "do it", "go", "no", "n", "cancel", "stop"):
+            ok = word not in ("no", "n", "cancel", "stop")
+            outs = []
+            for aid in _wa_pending.pop(phone):
+                try:
+                    r = await api_chat_action(aid, {"confirm": ok}, _FakeReq(b"", user))
+                    outs.append(r.get("text") or "Done.")
+                except HTTPException as e:
+                    outs.append(f"⚠ {e.detail}")
+            await _wa_send(phone, "\n".join(outs))
+            return
+        key = db.get_setting("anthropic_api_key")
+        if not key:
+            await _wa_send(phone, "The assistant needs the Anthropic API key (ProfitDesk Settings → AI).")
+            return
+        with db._conn() as con:
+            past = [dict(r) for r in con.execute("SELECT direction, text FROM wa_messages WHERE phone = ? ORDER BY id DESC LIMIT 14", (phone,))][::-1]
+        hist = [{"role": "user" if m["direction"] == "in" else "assistant", "content": m["text"] or ""} for m in past[:-1] if m["text"]]
+        hist.append({"role": "user", "content": (f"[{note}] " if note else "") + (text or "(sent a file)")})
+        today = max((_store_today(x) for x in db.list_stores() if not demo.is_demo(x)), default=datetime.now(CASH_TZ).date()).isoformat()
+        try:
+            got = await ai_chat.reply(key, hist, lambda n, a: _chat_tool(n, a, user), today, _display_currency())
+        except ai_chat.ChatError as e:
+            await _wa_send(phone, f"⚠ {e}")
+            return
+        reply = got["text"]
+        for l in got.get("links") or []:
+            reply += f"\n📎 {l['title']}: {BASE_URL}{l['url']}"
+        if got.get("actions"):
+            _wa_pending[phone] = [a["id"] for a in got["actions"]]
+            reply += "\n\n" + "\n".join(f"➡️ *{a['title']}*\n{a['detail']}" for a in got["actions"]) + "\n\nReply *YES* to do it or *NO* to cancel."
+        await _wa_send(phone, reply)
+
+
+@app.get("/api/whatsapp/webhook")
+def api_wa_verify(request: Request):
+    q = request.query_params
+    if q.get("hub.mode") == "subscribe" and q.get("hub.verify_token") and q.get("hub.verify_token") == whatsapp.cfg()["verify"]:
+        return Response(q.get("hub.challenge") or "", media_type="text/plain")
+    raise HTTPException(403, "Wrong verify token.")
+
+
+@app.post("/api/whatsapp/webhook")
+async def api_wa_webhook(request: Request):
+    body = await request.body()
+    if not whatsapp.signature_ok(body, request.headers.get("x-hub-signature-256")):
+        raise HTTPException(403, "Bad signature.")
+    try:
+        data = json.loads(body)
+    except ValueError:
+        return {"ok": True}
+    for e in data.get("entry") or []:
+        for ch in e.get("changes") or []:
+            v = ch.get("value") or {}
+            for m in v.get("messages") or []:
+                asyncio.create_task(_wa_handle(m))
+    return {"ok": True}
+
+
+@app.get("/api/whatsapp/settings")
+def api_wa_settings():
+    c = whatsapp.cfg()
+    if not c["verify"]:
+        db.set_setting("wa_verify", secrets.token_urlsafe(18))
+        c = whatsapp.cfg()
+    users = [{"email": u["email"], "name": u.get("name") or u["email"], "role": u.get("role")} for u in db.list_users()]
+    return {"connected": whatsapp.ready(), "has_token": bool(c["token"]), "has_secret": bool(c["app_secret"]),
+            "phone_id": c["phone_id"], "waba_id": c["waba_id"], "verify": c["verify"], "people": c["people"],
+            "webhook": f"{BASE_URL}/api/whatsapp/webhook", "users": users}
+
+
+@app.put("/api/whatsapp/settings")
+async def api_wa_settings_save(payload: dict):
+    for k, s in (("token", "wa_token"), ("app_secret", "wa_app_secret"), ("phone_id", "wa_phone_id"), ("waba_id", "wa_waba_id")):
+        v = (payload.get(k) or "").strip()
+        if v:
+            db.set_setting(s, v)
+    if "people" in payload:
+        people = [{"phone": whatsapp.norm_phone(p.get("phone")), "email": p.get("email")} for p in payload["people"] or []
+                  if whatsapp.norm_phone(p.get("phone")) and p.get("email")]
+        db.set_setting("wa_people", json.dumps(people))
+    out = {"ok": True}
+    if whatsapp.ready() and whatsapp.cfg()["waba_id"]:
+        try:
+            out["template"] = await whatsapp.ensure_template()
+        except whatsapp.WAError as e:
+            out["template_error"] = str(e)
+    return out
+
+
+@app.post("/api/whatsapp/test")
+async def api_wa_test(payload: dict):
+    """Send a test message to one allowed number (it must have messaged ProfitDesk's number in the last 24 h,
+    otherwise the template is sent)."""
+    phone = whatsapp.norm_phone(payload.get("phone"))
+    if not whatsapp.person(phone):
+        raise HTTPException(400, "Add that number under 'Who can use it' first.")
+    try:
+        if _wa_window_open(phone):
+            await _wa_send(phone, "✅ ProfitDesk is connected. Ask me anything, e.g. “check all store health”.")
+            return {"sent": "text"}
+        await whatsapp.send_template(phone, "WhatsApp connected")
+        return {"sent": "template", "note": "Outside the 24-hour window, so the template was sent (needs Meta's approval first)."}
+    except whatsapp.WAError as e:
+        raise HTTPException(400, str(e))
 
 
 @app.get("/api/googleads/check")

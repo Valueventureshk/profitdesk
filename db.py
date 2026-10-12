@@ -143,6 +143,30 @@ CREATE TABLE IF NOT EXISTS cog_lines (
 );
 CREATE INDEX IF NOT EXISTS cog_lines_day ON cog_lines (store_id, day);
 
+-- WhatsApp: every message in / out (one conversation per phone number) and the files people sent.
+CREATE TABLE IF NOT EXISTS wa_messages (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    wa_id      TEXT UNIQUE,               -- Meta's message id (a retried webhook never counts twice)
+    phone      TEXT    NOT NULL,
+    direction  TEXT    NOT NULL,          -- in | out
+    text       TEXT,
+    file_id    INTEGER,
+    created_at TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS wa_messages_phone ON wa_messages (phone, id);
+CREATE TABLE IF NOT EXISTS wa_files (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    phone      TEXT    NOT NULL,
+    user_email TEXT,
+    filename   TEXT    NOT NULL,
+    mime       TEXT,
+    size       INTEGER,
+    caption    TEXT,
+    path       TEXT    NOT NULL,          -- on the volume, <DB dir>/wa_files/
+    used_for   TEXT,                      -- e.g. invoice:<id>
+    created_at TEXT    NOT NULL
+);
+
 -- The assistant (Ask chat, later WhatsApp): each person's scheduled messages and alerts, and the messages it
 -- sent them (reports, alerts) waiting to be read.
 CREATE TABLE IF NOT EXISTS assistant_jobs (
