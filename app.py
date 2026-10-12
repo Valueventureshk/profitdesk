@@ -5835,7 +5835,20 @@ async def api_tracking_report(store: int, start: str, end: str, field: str = "a_
     except ValueError:
         raise HTTPException(400, "Pick the dates.")
     out = await asyncio.to_thread(tracking.report, store, a.isoformat(timespec="seconds"), b.isoformat(timespec="seconds"), field)
-    return {**out, "currency": st["currency"], "health": tracking.health(store)}
+    note = None
+    lvl = tracking.LEVEL_OF_FIELD.get(field)
+    conn = next((c for c in db.list_meta_connections() if c["id"] == st.get("meta_connection_id")), None)
+    if lvl and st.get("meta_account_id") and conn:
+        try:
+            spends = await meta.level_spend(conn["access_token"], st["meta_account_id"], start, end, lvl)
+            table = await fx.table(st["currency"])
+            f = fx.factor(table, st.get("meta_currency") or st["currency"], st["currency"]) if table else 1.0
+            out = tracking.with_spend(out, spends, f)
+        except Exception as e:
+            note = f"Couldn't read Meta spend: {str(e)[:150]}"
+    elif lvl:
+        note = "This store has no Meta ad account linked, so spend isn't shown."
+    return {**out, "currency": st["currency"], "health": tracking.health(store), "spend_note": note}
 
 
 # ---------------------------------------------------------------- Apps → Google Ads desk

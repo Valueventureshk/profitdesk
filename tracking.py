@@ -191,3 +191,40 @@ def journey(store_id: int, client_id: str) -> list:
         r["label"] = NAMES.get(r["name"], r["name"])
         r["path"] = re.sub(r"^https?://[^/]+", "", r["url"] or "").split("?")[0][:160]
     return rows
+
+
+LEVEL_OF_FIELD = {"a_campaign": "campaign", "a_term": "adset", "a_content": "ad"}
+
+
+def with_spend(rep: dict, spends: list, factor: float) -> dict:
+    """Add Meta spend to report rows (matched by the name in the UTM = the campaign / ad set / ad name),
+    plus cost per purchase and ROAS (purchase value / spend). Rows that spent but tracked nothing are
+    added too: they matter most."""
+    by = {}
+    for x in spends:
+        k = (x["name"] or "").strip().lower()
+        if not k:
+            continue
+        t = by.setdefault(k, {"name": x["name"], "spend": 0.0, "impressions": 0, "clicks": 0})
+        t["spend"] += x["spend"] * factor
+        t["impressions"] += x["impressions"]
+        t["clicks"] += x["clicks"]
+    rows = {r["name"].strip().lower(): r for r in rep["rows"]}
+    for k, t in by.items():
+        r = rows.get(k)
+        if r is None:
+            if not t["spend"]:
+                continue
+            r = rows[k] = {"name": t["name"]}
+            rep["rows"].append(r)
+        r.update(spend=t["spend"], impressions=t["impressions"], link_clicks=t["clicks"])
+    for r in rep["rows"]:
+        sp = r.get("spend") or 0.0
+        r["cpa"] = sp / r["purchase"] if sp and r.get("purchase") else None
+        r["roas"] = (r.get("purchase_value") or 0) / sp if sp else None
+    tot = rep["total"]
+    tot["spend"] = sum(r.get("spend") or 0 for r in rep["rows"])
+    tot["cpa"] = tot["spend"] / tot["purchase"] if tot["spend"] and tot["purchase"] else None
+    tot["roas"] = tot["purchase_value"] / tot["spend"] if tot["spend"] else None
+    rep["has_spend"] = True
+    return rep

@@ -72,6 +72,7 @@ async function load() {
   catch (e) { toast(e.message, true); $("reload").disabled = false; return; }
   $("reload").disabled = false;
   $("cur").textContent = data.currency;
+  $("spendNote").textContent = data.spend_note || (data.has_spend ? "Spend from Meta, matched to each row by the campaign / ad set / ad name in its UTM tags." : "");
   const h = data.health;
   $("health").innerHTML = h.last ? `<span class="trk-dot ${h.hour ? "on" : ""}"></span>${h.hour ? `${h.hour} events in the last hour` : "No events in the last hour"}`
     : `<span class="trk-dot"></span>No events from this store yet`;
@@ -88,16 +89,19 @@ function draw() {
   const per = Number($("rows").value), pages = Math.max(1, Math.ceil(rows.length / per));
   page = Math.min(page, pages - 1);
   const shown = rows.slice(page * per, page * per + per);
-  const cols = [["atc", "Total adds to cart"], ["atc_value", "Total adds to cart conversion value"], ["ic", "Total checkouts initiated"],
-                ["ic_value", "Total checkouts initiated conversion value"], ["purchase", "Total purchases"], ["purchase_value", "Total purchases conversion value"]];
+  const cols = [...(data.has_spend ? [["spend", "Meta spend"]] : []),
+                ["atc", "Total adds to cart"], ["atc_value", "Total adds to cart conversion value"], ["ic", "Total checkouts initiated"],
+                ["ic_value", "Total checkouts initiated conversion value"], ["purchase", "Total purchases"], ["purchase_value", "Total purchases conversion value"],
+                ...(data.has_spend ? [["cpa", "Cost per purchase"], ["roas", "ROAS"]] : [])];
+  const cell = (k, v) => (k === "roas" ? (v ? v.toFixed(2) : "—") : (k.endsWith("_value") || k === "spend" || k === "cpa") ? money(v) : count(v));
   const head = (k, label) => `<th class="trk-sort${sort.k === k ? " on" : ""}" data-k="${k}">${label}<span>${sort.k === k ? (sort.dir < 0 ? "↓" : "↑") : "↕"}</span></th>`;
   const name = { campaign: "Campaign", adset: "Adset", ad: "Ad" }[level];
   const t = data.total;
   $("table").innerHTML = `<thead><tr><th class="trk-first">${name}</th>${cols.map(([k, l]) => head(k, l)).join("")}</tr></thead>
     <tbody>${shown.map((r) => `<tr class="trk-row" data-name="${esc(r.name)}"><th class="trk-first" title="${esc(r.name)} · click to see each event">${esc(r.name)}</th>${cols.map(([k]) =>
-      `<td>${k.endsWith("_value") ? money(r[k]) : count(r[k])}</td>`).join("")}</tr>`).join("")
-      || `<tr><td class="trk-empty" colspan="7">${data.health.last ? `No ${lvl} with events in this period.` : "No events from this store yet. Switch the pixel on in Setup."}</td></tr>`}</tbody>
-    <tfoot><tr><th class="trk-first">Results from ${rows.length} ${lvl}</th>${cols.map(([k]) => `<td>${k.endsWith("_value") ? money(t[k]) : count(t[k])}</td>`).join("")}</tr></tfoot>`;
+      `<td class="${k === "roas" && r.roas ? "trk-roas" : ""}">${cell(k, r[k])}</td>`).join("")}</tr>`).join("")
+      || `<tr><td class="trk-empty" colspan="${cols.length + 1}">${data.health.last ? `No ${lvl} with events in this period.` : "No events from this store yet. Switch the pixel on in Setup."}</td></tr>`}</tbody>
+    <tfoot><tr><th class="trk-first">Results from ${rows.length} ${lvl}</th>${cols.map(([k]) => `<td>${cell(k, t[k])}</td>`).join("")}</tr></tfoot>`;
   $("pager").innerHTML = `${pages > 1 ? `<button class="btn btn-sm btn-ghost" id="prev"${page ? "" : " disabled"}>‹</button>` : ""}
     Showing <b>${rows.length ? page * per + 1 : 0}-${Math.min(rows.length, page * per + per)}</b> of ${rows.length}
     ${pages > 1 ? `<button class="btn btn-sm btn-ghost" id="next"${page < pages - 1 ? "" : " disabled"}>›</button>` : ""}`;

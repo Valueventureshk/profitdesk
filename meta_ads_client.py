@@ -244,3 +244,21 @@ async def billing(token: str) -> dict:
             "fields": "name,account_id,currency,account_status,balance", "limit": 200,
         })
     return {str(a.get("account_id")): a for a in rows if a.get("account_id")}
+
+
+async def level_spend(token: str, account_id: str, since: str, until: str, level: str) -> list:
+    """Spend per campaign / ad set / ad over since..until (ad account days):
+    [{"id", "name", "campaign", "adset", "spend", "impressions", "clicks"}]. For the Tracking report."""
+    level = level if level in ("campaign", "adset", "ad") else "campaign"
+    acct = str(account_id).removeprefix("act_")
+    fields = {"campaign": "campaign_id,campaign_name", "adset": "adset_id,adset_name,campaign_name",
+              "ad": "ad_id,ad_name,adset_name,campaign_name"}[level] + ",spend,impressions,inline_link_clicks"
+    async with httpx.AsyncClient(timeout=60) as client:
+        rows = await _get_all(client, f"act_{acct}/insights", token, {
+            "level": level, "fields": fields, "limit": 500,
+            "time_range": json.dumps({"since": since, "until": until}),
+        })
+    return [{"id": r.get(f"{level}_id"), "name": r.get(f"{level}_name") or "", "campaign": r.get("campaign_name") or "",
+             "adset": r.get("adset_name") or "", "spend": float(r.get("spend") or 0),
+             "impressions": int(r.get("impressions") or 0), "clicks": int(r.get("inline_link_clicks") or 0)}
+            for r in rows]
