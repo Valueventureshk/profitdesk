@@ -2,7 +2,35 @@
    30 day columns, and a variant breakdown. Every figure comes from the server (google_desk.py). */
 
 const $ = (id) => document.getElementById(id);
-let data = null, win = Number(PDUrl.get("w") || 30), shown = 60, sort = { key: "cost", win: 30, dir: -1 }, openP = null, vWin = 30;
+let data = null, win = "sel", shown = 60, sort = { key: "cost", win: "sel", dir: -1 }, openP = null, vWin = "sel";
+let period = PDUrl.get("period") || "30";
+const PERIOD = { today: "Today", yesterday: "Yesterday", 7: "Last 7 days", 14: "Last 14 days", 30: "Last 30 days", mtd: "This month",
+                 lastmonth: "Last month", 90: "Last 90 days", custom: "Custom" };
+
+// the picked period on the store's own clock (like the dashboard: today so far included)
+function storeOf() { return (data?.stores || []).find((s) => String(s.id) === String($("store").value || data?.store)); }
+function storeToday() {
+  try { return new Intl.DateTimeFormat("en-CA", { timeZone: storeOf()?.timezone || undefined }).format(new Date()); }
+  catch { return new Date().toISOString().slice(0, 10); }
+}
+function range() {
+  const t = new Date(storeToday() + "T12:00:00Z"), iso = (d) => d.toISOString().slice(0, 10);
+  const back = (n) => { const d = new Date(t); d.setUTCDate(d.getUTCDate() - n); return iso(d); };
+  switch (period) {
+    case "today": return [iso(t), iso(t)];
+    case "yesterday": return [back(1), back(1)];
+    case "mtd": return [iso(t).slice(0, 8) + "01", iso(t)];
+    case "lastmonth": { const a = new Date(t); a.setUTCDate(0); const e = iso(a); a.setUTCDate(1); return [iso(a), e]; }
+    case "custom": return [$("from").value || PDUrl.get("from") || back(29), $("to").value || PDUrl.get("to") || iso(t)];
+    default: return [back(Number(period) - 1), iso(t)];
+  }
+}
+// the trend column groups: the picked period, then any of 7 / 14 / 30 days that isn't the same days
+function groups() {
+  const r = data.ranges, same = (k) => r[k].start === r.sel.start && r[k].end === r.sel.end;
+  return ["sel", ...["7", "14", "30"].filter((k) => !same(k))];
+}
+const gLabel = (k) => (k === "sel" ? (period === "custom" ? "Period" : PERIOD[period].replace("Last ", "")) : `${k}D`);
 
 function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -46,14 +74,21 @@ async function load(fresh = false) {
   const store = $("store").value || PDUrl.get("store") || "";
   $("refresh").disabled = true;
   $("sub").textContent = "Reading Google Ads and Shopify…";
-  try { data = await api(`/api/googleads?store=${encodeURIComponent(store)}${fresh ? "&fresh=1" : ""}`); }
+  const [a, b] = data?.stores ? range() : [null, null];
+  try {
+    const got = await api(`/api/googleads?store=${encodeURIComponent(store)}${a ? `&start=${a}&end=${b}` : ""}${fresh ? "&fresh=1" : ""}`);
+    data = got;
+    if (!a && period !== "30" && !got.error) { load(fresh); return; }        // first load: now the store's clock is known
+  }
   catch (e) { const m = typeof e.message === "string" ? e.message : "Couldn't load Google Ads."; toast(m, true); $("refresh").disabled = false; $("sub").textContent = m; return; }
   $("refresh").disabled = false;
   if (!$("store").options.length || fresh === "stores") {
     $("store").innerHTML = data.stores.map((s) => `<option value="${s.id}"${s.direct ? "" : " disabled"}>${esc(s.name)}${s.direct ? "" : " (needs access)"}</option>`).join("");
   }
   if (data.store) $("store").value = String(data.store);
-  PDUrl.set({ store: data.store || null });
+  PDUrl.set({ store: data.store || null, period: period === "30" ? null : period,
+              from: period === "custom" ? data.start : null, to: period === "custom" ? data.end : null });
+  if (period === "custom" && data.start) { $("from").value = data.start; $("to").value = data.end; }
   if (data.error) {
     $("problems").innerHTML = `<div class="warn">${esc(data.error)}</div>`;
     $("cards").innerHTML = "";
@@ -79,13 +114,15 @@ async function load(fresh = false) {
 }
 
 function drawCards() {
-  $("sub").textContent = `${win} days: ${data.summary[win].start} to ${data.today} (today so far included, same as the dashboard) · ${data.currency}${data.google_currency && data.google_currency !== data.currency ? ` (Google spend converted from ${data.google_currency})` : ""}`
+  const s0 = data.summary[win];
+  $("sub").textContent = `${PERIOD[period]}: ${s0.start === s0.end ? s0.start : `${s0.start} to ${s0.end}`} (store clock, same days as the dashboard) · ${data.currency}, the Google Ads account's currency`
+    + (data.fx_rate ? ` (store sales, COG and fees converted from ${data.store_currency})` : "")
     + ` · updated ${new Date(data.cached_at * 1000).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}`;
-  const s = data.summary[win];
+  const s = s0;
   const card = (label, value, note = "", cls = "") => `<div class="card"><div class="card-label">${label}</div>
       <div class="card-value ${cls}">${value}</div><div class="card-note">${note}</div></div>`;
   $("cards").innerHTML =
-    card("Products", n(s.products), `with spend or sales · ${win} days`) +
+    card("Products", n(s.products), `with spend or sales · ${PERIOD[period].toLowerCase()}`) +
     card("Google spend", money(s.cost, 0), s.cost_other >= 0.5
       ? `whole account · on products ${money(s.cost_products, 0)} · not on a product ${money(s.cost_other, 0)}`
       : `${n(s.clicks)} clicks · CPC ${money(s.cpc)}`) +
@@ -100,7 +137,7 @@ function drawCards() {
 function rows() {
   const q = $("q").value.trim().toLowerCase(), v = $("verdict").value, st = $("status").value;
   const list = data.products.filter((p) => (!q || p.title.toLowerCase().includes(q))
-    && (!v || p.w[win].verdict === v) && (!st || p.status === st) && (p.w[30].cost || p.w[30].sales));
+    && (!v || p.w[win].verdict === v) && (!st || p.status === st) && (p.w.sel.cost || p.w.sel.sales || p.w["30"].cost || p.w["30"].sales));
   const get = (p) => {
     const x = p.w[sort.win][sort.key];
     return sort.key === "title" ? p.title.toLowerCase() : (x === null || x === undefined ? -Infinity : x);
@@ -116,10 +153,10 @@ function head(label, key, w = win, title = "") {
 function draw() {
   const list = rows();
   $("count").textContent = `(${list.length} products)`;
-  const W = [7, 14, 30];
+  const W = groups();
   $("table").innerHTML = `<thead><tr><th class="gd-stick">Product</th><th>Status</th><th>Variants</th>${head("Verdict", "roas", win, "Sort by ROAS")}
       ${head("BE ROAS", "be_roas", win, "Breakeven ROAS")}
-      ${W.map((w) => head(`ROAS ${w}D`, "roas", w) + head(`$ ${w}D`, "cost", w, "Google spend") + head(`Sales ${w}D`, "sales", w, "Shopify sales") + head(`👁 ${w}D`, "impressions", w, "Impressions")).join("")}
+      ${W.map((w) => head(`ROAS ${gLabel(w)}`, "roas", w) + head(`$ ${gLabel(w)}`, "cost", w, "Google spend") + head(`Sales ${gLabel(w)}`, "sales", w, "Shopify sales") + head(`👁 ${gLabel(w)}`, "impressions", w, "Impressions")).join("")}
       ${head("Clicks", "clicks")}${head("CTR", "ctr")}${head("CPC", "cpc")}${head("Qty", "qty")}${head("G conv.", "conversions", win, "Google conversions")}${head("G value", "value", win, "Google conversion value")}
       ${head("Sum COG", "cog")}${head("Fees", "fees")}${head("Net profit", "profit")}${head("POAS", "poas")}</tr></thead>
     <tbody>${list.slice(0, shown).map((p, i) => {
@@ -138,7 +175,7 @@ function draw() {
   $("more").innerHTML = list.length > shown ? `<button class="btn btn-sm btn-ghost" id="moreBtn">Show ${Math.min(100, list.length - shown)} more</button>` : "";
   if ($("moreBtn")) $("moreBtn").onclick = () => { shown += 100; draw(); };
   for (const th of $("table").querySelectorAll(".gd-sort")) th.onclick = () => {
-    const key = th.dataset.key, w = Number(th.dataset.w);
+    const key = th.dataset.key, w = th.dataset.w;
     sort = sort.key === key && sort.win === w ? { key, win: w, dir: -sort.dir } : { key, win: w, dir: key === "title" ? 1 : -1 };
     draw();
   };
@@ -147,8 +184,8 @@ function draw() {
 
 function openVariants(p) {
   openP = p;
-  vWin = win;
-  for (const b of $("vWin").querySelectorAll("[data-w]")) b.classList.toggle("on", Number(b.dataset.w) === vWin);
+  vWin = "sel";
+  for (const b of $("vWin").querySelectorAll("[data-w]")) b.classList.toggle("on", b.dataset.w === vWin);
   $("vModal").hidden = false;
   drawVariants();
 }
@@ -174,8 +211,8 @@ function drawVariants() {
 
 function exportCsv() {
   const list = rows();
-  const W = [7, 14, 30];
-  const head = ["Product", "Status", "Variants", "Verdict", "Breakeven ROAS", ...W.flatMap((w) => [`ROAS ${w}D`, `Spend ${w}D`, `Sales ${w}D`, `Impressions ${w}D`]),
+  const W = groups();
+  const head = ["Product", "Status", "Variants", "Verdict", "Breakeven ROAS", ...W.flatMap((w) => [`ROAS ${gLabel(w)}`, `Spend ${gLabel(w)}`, `Sales ${gLabel(w)}`, `Impressions ${gLabel(w)}`]),
     "Clicks", "CTR", "CPC", "Qty", "Google conversions", "Google conv. value", "Sum COG", "Fees", "Net profit", "POAS"];
   const fmt = (v) => (v === null || v === undefined ? "" : typeof v === "number" ? v.toFixed(2) : String(v));
   const lines = [head, ...list.map((p) => {
@@ -186,19 +223,12 @@ function exportCsv() {
   const csv = lines.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
-  a.download = `Google products ${$("store").selectedOptions[0]?.textContent || ""} ${win}d ${data.today}.csv`;
+  a.download = `Google products ${$("store").selectedOptions[0]?.textContent || ""} ${data.start} to ${data.end} ${data.currency}.csv`;
   a.click();
 }
 
-for (const b of $("win").querySelectorAll("[data-w]")) b.onclick = () => {
-  win = Number(b.dataset.w);
-  for (const x of $("win").querySelectorAll("[data-w]")) x.classList.toggle("on", x === b);
-  sort = { ...sort, win: sort.key === "title" ? sort.win : win };
-  PDUrl.set({ w: win === 30 ? null : win });
-  if (data && !data.error) { drawCards(); draw(); }
-};
 for (const b of $("vWin").querySelectorAll("[data-w]")) b.onclick = () => {
-  vWin = Number(b.dataset.w);
+  vWin = b.dataset.w;
   for (const x of $("vWin").querySelectorAll("[data-w]")) x.classList.toggle("on", x === b);
   drawVariants();
 };
@@ -209,5 +239,14 @@ for (const id of ["q", "verdict", "status"]) $(id).oninput = () => { shown = 60;
 $("store").onchange = () => { PDUrl.set({ store: $("store").value }); load(); };
 $("refresh").onclick = () => load(true);
 $("csv").onclick = exportCsv;
-for (const b of $("win").querySelectorAll("[data-w]")) b.classList.toggle("on", Number(b.dataset.w) === win);
+$("period").value = period;
+$("dates").hidden = period !== "custom";
+$("period").onchange = () => {
+  period = $("period").value;
+  $("dates").hidden = period !== "custom";
+  if (period === "custom" && !$("from").value) { const [a, b] = range(); $("from").value = a; $("to").value = b; }
+  shown = 60;
+  load();
+};
+$("from").onchange = $("to").onchange = () => { if ($("from").value && $("to").value) load(); };
 load();

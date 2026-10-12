@@ -5925,11 +5925,14 @@ async def _product_info(store, pids: list) -> dict:
 
 
 @app.get("/api/googleads")
-async def api_googleads(store: str = "", fresh: int = 0, min_spend: float = None):
-    """One store's Google products for 7 / 14 / 30 days, one row per Shopify product (google_desk.py)."""
+async def api_googleads(store: str = "", fresh: int = 0, min_spend: float = None, start: str = "", end: str = ""):
+    """One store's Google products for the picked period (default last 30 days) plus the last 7 / 14 / 30
+    days, one row per Shopify product (google_desk.py). Each store on its own, in its Google Ads account's
+    currency. Store days, today so far included (the dashboard's days); the summary totals come from the
+    dashboard's engine, so the two agree."""
     stores = [x for x in db.list_stores() if x.get("google_customer_id") and not demo.is_demo(x)]
-    listing = [{"id": x["id"], "name": x["name"].strip(), "currency": x["currency"],
-                "direct": x.get("google_source") != "sheet"} for x in stores]
+    listing = [{"id": x["id"], "name": x["name"].strip(), "currency": x["currency"], "timezone": x["timezone"],
+                "google_currency": x.get("google_currency"), "direct": x.get("google_source") != "sheet"} for x in stores]
     st = next((x for x in stores if str(x["id"]) == store), None) or next((x for x in stores if x.get("google_source") != "sheet"), None)
     if not st:
         return {"stores": listing, "error": "No store reads Google Ads directly yet."}
@@ -5937,53 +5940,69 @@ async def api_googleads(store: str = "", fresh: int = 0, min_spend: float = None
         return {"stores": listing, "store": st["id"],
                 "error": f"{st['name'].strip()}'s ad account isn't readable directly yet: give shop.valueventures@gmail.com "
                          "access to it in Google Ads, then switch it from the Sheet."}
+    today = _store_today(st)
+    try:
+        sel_end = min(date.fromisoformat(end), today) if end else today
+        sel_start = date.fromisoformat(start) if start else sel_end - timedelta(days=29)
+    except ValueError:
+        raise HTTPException(400, "Pick the dates.")
+    if sel_start > sel_end:
+        raise HTTPException(400, "The start date has to be on or before the end date.")
+    if (sel_end - sel_start).days > 365:
+        raise HTTPException(400, "Pick up to a year at a time.")
     min_spend = min_spend if min_spend is not None else float(db.get_setting(f"gads_min:{st['id']}") or 25)
-    key = (st["id"], min_spend)
+    key = (st["id"], min_spend, sel_start, sel_end, today)
     hit = _gdesk_cache.get(key)
     if hit and not fresh and time.time() - hit[0] < 1200:
         return {**hit[1], "stores": listing, "cached_at": hit[0]}
     auth = db.get_google_auth()
     if not auth:
         raise HTTPException(400, "Google isn't connected (Settings → Google Ads).")
-    # the dashboard's own "Last 7 / 14 / 30 days": store days, today so far included. The totals come from
-    # the dashboard's engine (_store_window + metrics), so both pages show the same figures.
-    today = _store_today(st)
-    start = today - timedelta(days=29)
+    lo = min(sel_start, today - timedelta(days=29))
+    windows = google_desk.windows_for(today, sel_start, sel_end)
     args = (auth["refresh_token"], st["google_customer_id"], st["google_login_cid"])
     meta_conn = next((c for c in db.list_meta_connections() if c["id"] == st.get("meta_connection_id")), None)
     try:
-        (dash_rows, _notes), (acct, gcur, atz) = await asyncio.gather(
-            _store_window(st, start.isoformat(), today.isoformat(), auth, meta_conn),
-            gads.account_daily(*args, (start - timedelta(days=1)).isoformat(), (today + timedelta(days=1)).isoformat()))
+        (dash_rows, _notes), (_acct, gcur, atz) = await asyncio.gather(
+            _store_window(st, lo.isoformat(), today.isoformat(), auth, meta_conn),
+            gads.account_daily(*args, today.isoformat(), today.isoformat()))
         try:
-            g_today = datetime.now(ZoneInfo(atz)).date()
-            # the store's first day starts on this account day (products only; totals are exact)
-            g_start = datetime.combine(start, clock.min, _zone(st)).astimezone(ZoneInfo(atz)).date()
+            atzi = ZoneInfo(atz)
         except (ZoneInfoNotFoundError, ValueError):
-            g_today, g_start = today, start
-        rows, gcur2 = await gads.product_report(*args, g_start.isoformat(), g_today.isoformat())
-        gcur = gcur or gcur2
+            atzi = _zone(st)
+        # each store-day period as the ad account's days (product rows only; the totals are exact by the hour)
+        g_day = lambda d, last=False: (datetime.combine(d + timedelta(days=1 if last else 0), clock.min, _zone(st))
+                                       - timedelta(seconds=1 if last else 0)).astimezone(atzi).date().isoformat()
+        g_windows = {k: (g_day(date.fromisoformat(a)), g_day(date.fromisoformat(b), True)) for k, (a, b) in windows.items()}
+        rows, gcur2 = await gads.product_report(*args, g_day(lo), g_day(today, True))
+        gcur = gcur or gcur2 or st.get("google_currency") or st["currency"]
     except gads.GoogleAdsError as e:
         raise HTTPException(400, str(e))
     with db._conn() as con:
         lines = [dict(r) for r in con.execute(
             "SELECT day, product, variant_id, product_id, quantity, subtotal, cost_usd, cancelled FROM cog_lines"
-            " WHERE store_id = ? AND day >= ? AND day <= ?", (st["id"], start.isoformat(), today.isoformat()))]
+            " WHERE store_id = ? AND day >= ? AND day <= ?", (st["id"], lo.isoformat(), today.isoformat()))]
         fee = con.execute("SELECT SUM(COALESCE(fee_actual, fee_est)), SUM(amount) FROM order_fees"
-                          " WHERE store_id = ? AND day >= ?", (st["id"], start.isoformat())).fetchone()
+                          " WHERE store_id = ? AND day >= ?", (st["id"], lo.isoformat())).fetchone()
     fee_rate = (fee[0] / fee[1]) if fee and fee[1] else 0.0
     pids = {google_desk.parse_item(r["item_id"])[0] for r in rows}
     pids |= {str(l["product_id"] or "").rsplit("/", 1)[-1] for l in lines if l.get("product_id")}
     info = await _product_info(st, sorted(p for p in pids if p))
-    table = await fx.table(st["currency"])
-    f = lambda c: fx.factor(table, c, st["currency"]) if table and c else 1.0
+    # everything in the Google Ads account's currency (this desk is for running the ads)
+    table = await fx.table(gcur)
+    f = lambda c: fx.factor(table, c, gcur) if table and c else 1.0
+    for k in info:                                               # variant prices in the same currency
+        for v in (info[k].get("variants") or {}).values():
+            if v.get("price"):
+                v["price"] *= f(st["currency"])
     tax = 1 + (st.get("google_tax_pct") or 0) / 100.0          # as the dashboard counts Google (e.g. ZAVA GST)
-    out = await asyncio.to_thread(google_desk.build, rows, f(gcur or st.get("google_currency") or st["currency"]) * tax, lines,
-                                  f("USD"), info, fee_rate, today.isoformat(), min_spend, None, g_today.isoformat())
-    # same currency step as the dashboard (Google / Meta spend arrive in the ad accounts' currencies)
-    google_desk.with_dashboard(out, _in_currency(dash_rows, st, table, st["currency"]), today.isoformat())
-    out.update(store=st["id"], currency=st["currency"], google_currency=gcur, fee_rate=fee_rate, min_spend=min_spend,
-               today=today.isoformat(), google_today=g_today.isoformat(), account_timezone=atz, shop=st["shop_domain"],
+    out = await asyncio.to_thread(google_desk.build, rows, tax, lines, f("USD"), info, fee_rate, windows, g_windows,
+                                  min_spend, f(st["currency"]))
+    google_desk.with_dashboard(out, _in_currency(dash_rows, {**st, "google_currency": gcur}, table, gcur), windows)
+    out.update(store=st["id"], currency=gcur, store_currency=st["currency"], google_currency=gcur, fee_rate=fee_rate,
+               min_spend=min_spend, today=today.isoformat(), start=sel_start.isoformat(), end=sel_end.isoformat(),
+               account_timezone=atz, store_timezone=st["timezone"], shop=st["shop_domain"],
+               fx_rate=None if gcur == st["currency"] else f(st["currency"]),
                missing_product_ids=not any(l.get("product_id") for l in lines),
                info_error=None if info else _gdesk_cache.get("_info_error"),
                sample_items=[r["item_id"] for r in rows[:3]] if not info else [])

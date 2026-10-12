@@ -1785,3 +1785,5 @@ html[data-theme="dark"] .trk-x { color: #D8CBB9; }
   .trk-store-btn { min-width: 0; width: 100%; }
   .trk-search { width: 100%; }
 }
+.gd-dates { display: inline-flex; align-items: center; gap: 6px; }
+.gd-dates input { width: auto; }
