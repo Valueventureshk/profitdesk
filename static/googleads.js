@@ -63,7 +63,7 @@ async function load(fresh = false) {
   }
   $("problems").innerHTML = data.missing_product_ids
     ? `<div class="notice">Shopify sales are still being matched to products for this store (a few minutes after the update). Refresh shortly.</div>` : "";
-  $("sub").textContent = `Last 30 days to ${data.today} · ${data.currency}${data.google_currency && data.google_currency !== data.currency ? ` (Google spend converted from ${data.google_currency})` : ""}`
+  $("sub").textContent = `Last 30 days to ${data.today} (complete days, like Google's "Last 30 days") · ${data.currency}${data.google_currency && data.google_currency !== data.currency ? ` (Google spend converted from ${data.google_currency})` : ""}`
     + ` · updated ${new Date(data.cached_at * 1000).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}`;
   $("help").innerHTML = `<p><b>Shopify sales / qty</b>: everything the product sold on the store in the period, all channels (fair for stores
       that only advertise on Google). <b>Google conv. value</b>: what Google says its ads sold (its own attribution).
@@ -72,7 +72,10 @@ async function load(fresh = false) {
       <b>Breakeven ROAS</b>: the ROAS where the product stops losing money (sales ÷ (sales − COG − fees)).</p>
     <p><b>Verdicts</b>: Learning = under ${money(data.min_spend, 0)} spend in the period · Scale = ROAS 30%+ over breakeven ·
       Keep = over breakeven · Watch = up to 20% under · Cut = further under, or spend with no sales.
-      ROAS colours follow the same bands. Google's days are the ad account's own.</p>`;
+      ROAS colours follow the same bands. Google's days are the ad account's own.</p>
+    <p><b>Not on a product</b>: Performance Max also spends on video, display and search ads that Google doesn't put on any product,
+      and Search campaigns have no products. That spend is in the totals (Google spend, ROAS, net profit) so they match your Google
+      Ads account, but in no product row.</p>`;
   drawCards();
   draw();
 }
@@ -83,7 +86,9 @@ function drawCards() {
       <div class="card-value ${cls}">${value}</div><div class="card-note">${note}</div></div>`;
   $("cards").innerHTML =
     card("Products", n(s.products), `with spend or sales · ${win} days`) +
-    card("Google spend", money(s.cost, 0), `${n(s.clicks)} clicks · CPC ${money(s.cpc)}`) +
+    card("Google spend", money(s.cost, 0), s.cost_other >= 0.5
+      ? `whole account · on products ${money(s.cost_products, 0)} · not on a product ${money(s.cost_other, 0)}`
+      : `${n(s.clicks)} clicks · CPC ${money(s.cpc)}`) +
     card("Shopify qty", n(s.qty), "items sold") +
     card("Shopify sales", money(s.sales, 0), `Google says ${money(s.value, 0)}`) +
     card("ROAS", ratio(s.roas), `breakeven ${ratio(s.be_roas)}`) +

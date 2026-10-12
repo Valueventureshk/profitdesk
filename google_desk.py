@@ -14,7 +14,10 @@ is grouped back into one row per Shopify product, with its variants underneath.
 
 Verdicts (per window): Learning (spend under the minimum), Scale (ROAS 30% over breakeven),
 Keep (over breakeven), Watch (within 20% under), Cut (further under, or spend and no sales).
-Google's days are the ad account's own; Shopify's are the store's.
+Google's days are the ad account's own; Shopify's are the store's. Windows end yesterday, like
+Google's own "Last 7 / 14 / 30 days". Performance Max also spends on video, display and search ads
+that belong to no product, and Search campaigns have no products: that spend is "not on a product",
+counted in the totals (spend, ROAS, net profit) but in no product row.
 """
 import re
 from datetime import date, timedelta
@@ -62,12 +65,16 @@ def _finish(w: dict, fee_rate: float, unit_margin, min_spend: float) -> dict:
 
 
 def build(google_rows: list, g_factor: float, lines: list, usd_factor: float, products: dict,
-          fee_rate: float, today: str, min_spend: float = 25.0) -> dict:
+          fee_rate: float, today: str, min_spend: float = 25.0, account_days: dict = None, g_today: str = None) -> dict:
     """google_rows: gads.product_report rows (account currency x g_factor = store currency);
     lines: cog_lines rows of the last 30 store days (cost_usd x usd_factor = store currency);
-    products: {product id: {title, image, status, handle, variants: {variant id: {title, price, image}}}}."""
+    products: {product id: {title, image, status, handle, variants: {variant id: {title, price, image}}}};
+    today / g_today: the last day counted (store / ad account clock); account_days: {account day: cost}."""
     end = date.fromisoformat(today)
+    g_end = date.fromisoformat(g_today or today)
     starts = {w: (end - timedelta(days=w - 1)).isoformat() for w in WINDOWS}
+    g_starts = {w: (g_end - timedelta(days=w - 1)).isoformat() for w in WINDOWS}
+    end_s, g_end_s = end.isoformat(), g_end.isoformat()
     variant_of = {}                                   # variant id -> product id
     for pid, p in products.items():
         for vid in (p.get("variants") or {}):
@@ -85,7 +92,7 @@ def build(google_rows: list, g_factor: float, lines: list, usd_factor: float, pr
         variant_of.setdefault(vid, pid)
         v = slot(pid, vid, r["title"])
         for w in WINDOWS:
-            if (r["date"] or "") >= starts[w]:
+            if g_starts[w] <= (r["date"] or "") <= g_end_s:
                 t = v["w"][w]
                 t["cost"] += r["cost"] * g_factor
                 t["value"] += r["value"] * g_factor
@@ -106,7 +113,7 @@ def build(google_rows: list, g_factor: float, lines: list, usd_factor: float, pr
             v["units_cost"][0] += cog
             v["units_cost"][1] += qty
         for w in WINDOWS:
-            if (l.get("day") or "") >= starts[w]:
+            if starts[w] <= (l.get("day") or "") <= end_s:
                 t = v["w"][w]
                 t["qty"] += qty
                 t["sales"] += sales
@@ -144,6 +151,11 @@ def build(google_rows: list, g_factor: float, lines: list, usd_factor: float, pr
         for p in out:
             for k in FIELDS:
                 s[k] += p["w"][w][k]
+        s["cost_products"] = s["cost"]
+        if account_days is not None:            # the whole account, so totals match Google
+            s["cost"] = max(s["cost"], sum(c for d, c in account_days.items() if g_starts[w] <= d <= g_end_s) * g_factor)
+        s["cost_other"] = s["cost"] - s["cost_products"]
         summary[w] = _finish(s, fee_rate, None, 0)
         summary[w]["products"] = sum(1 for p in out if p["w"][w]["cost"] or p["w"][w]["sales"])
-    return {"products": out, "summary": summary, "windows": list(WINDOWS)}
+    return {"products": out, "summary": summary, "windows": list(WINDOWS),
+            "ranges": {w: {"start": starts[w], "end": end_s, "g_start": g_starts[w], "g_end": g_end_s} for w in WINDOWS}}

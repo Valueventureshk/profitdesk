@@ -289,6 +289,25 @@ async def product_report(refresh_token, customer_id, login_cid, start, end):
     return out, currency
 
 
+async def account_daily(refresh_token, customer_id, login_cid, start, end):
+    """Whole-account cost per account day (every campaign type), with the account's currency and clock:
+    ({date: cost}, currency, tz). The Google Ads desk's total spend, matching Google's own reports."""
+    _, _, dev_token, version = _cfg()
+    access = await _access_token(refresh_token)
+    query = ("SELECT customer.currency_code, customer.time_zone, segments.date, metrics.cost_micros FROM customer "
+             f"WHERE segments.date BETWEEN '{start}' AND '{end}'")
+    cid = str(customer_id).replace("-", "")
+    async with httpx.AsyncClient(timeout=60) as client:
+        rows = await _search(client, version, cid, query, _headers(access, dev_token, login_cid or customer_id))
+    out, currency, tz = {}, "", "UTC"
+    for r in rows:
+        c, d = r.get("customer") or {}, (r.get("segments") or {}).get("date")
+        currency, tz = currency or c.get("currencyCode", ""), c.get("timeZone") or tz
+        if d:
+            out[d] = out.get(d, 0.0) + int((r.get("metrics") or {}).get("costMicros", 0) or 0) / 1_000_000
+    return out, currency, tz
+
+
 async def campaign_spend(refresh_token, customer_id, login_cid, start, end):
     """Every campaign's cost between start and end (account days), with its type, plus the account's
     currency and clock: ([{campaign, type, status, cost, impressions, clicks, conversions, value}], currency, tz)."""

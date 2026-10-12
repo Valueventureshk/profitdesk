@@ -5945,17 +5945,25 @@ async def api_googleads(store: str = "", fresh: int = 0, min_spend: float = None
     auth = db.get_google_auth()
     if not auth:
         raise HTTPException(400, "Google isn't connected (Settings → Google Ads).")
-    today = _now_in(st).date()
+    # last 30 complete days, like Google's own "Last 30 days": store days for Shopify, account days for Google
+    today = _now_in(st).date() - timedelta(days=1)
     start = today - timedelta(days=29)
+    args = (auth["refresh_token"], st["google_customer_id"], st["google_login_cid"])
     try:
-        rows, gcur = await gads.product_report(auth["refresh_token"], st["google_customer_id"], st["google_login_cid"],
-                                               start.isoformat(), today.isoformat())
+        acct, gcur, atz = await gads.account_daily(*args, (start - timedelta(days=2)).isoformat(),
+                                                   (today + timedelta(days=2)).isoformat())
+        try:
+            g_today = datetime.now(ZoneInfo(atz)).date() - timedelta(days=1)
+        except (ZoneInfoNotFoundError, ValueError):
+            g_today = today
+        rows, gcur2 = await gads.product_report(*args, (g_today - timedelta(days=29)).isoformat(), g_today.isoformat())
+        gcur = gcur or gcur2
     except gads.GoogleAdsError as e:
         raise HTTPException(400, str(e))
     with db._conn() as con:
         lines = [dict(r) for r in con.execute(
             "SELECT day, product, variant_id, product_id, quantity, subtotal, cost_usd, cancelled FROM cog_lines"
-            " WHERE store_id = ? AND day >= ?", (st["id"], start.isoformat()))]
+            " WHERE store_id = ? AND day >= ? AND day <= ?", (st["id"], start.isoformat(), today.isoformat()))]
         fee = con.execute("SELECT SUM(COALESCE(fee_actual, fee_est)), SUM(amount) FROM order_fees"
                           " WHERE store_id = ? AND day >= ?", (st["id"], start.isoformat())).fetchone()
     fee_rate = (fee[0] / fee[1]) if fee and fee[1] else 0.0
@@ -5965,9 +5973,9 @@ async def api_googleads(store: str = "", fresh: int = 0, min_spend: float = None
     table = await fx.table(st["currency"])
     f = lambda c: fx.factor(table, c, st["currency"]) if table and c else 1.0
     out = await asyncio.to_thread(google_desk.build, rows, f(gcur or st.get("google_currency") or st["currency"]), lines,
-                                  f("USD"), info, fee_rate, today.isoformat(), min_spend)
+                                  f("USD"), info, fee_rate, today.isoformat(), min_spend, acct, g_today.isoformat())
     out.update(store=st["id"], currency=st["currency"], google_currency=gcur, fee_rate=fee_rate, min_spend=min_spend,
-               today=today.isoformat(), shop=st["shop_domain"],
+               today=today.isoformat(), google_today=g_today.isoformat(), account_timezone=atz, shop=st["shop_domain"],
                missing_product_ids=not any(l.get("product_id") for l in lines),
                info_error=None if info else _gdesk_cache.get("_info_error"),
                sample_items=[r["item_id"] for r in rows[:3]] if not info else [])
