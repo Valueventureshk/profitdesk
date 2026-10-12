@@ -350,6 +350,21 @@ CREATE TABLE IF NOT EXISTS px_visitors (
     fbp TEXT, fbc TEXT, ip TEXT, ua TEXT,
     PRIMARY KEY (store_id, client_id)
 );
+-- Tracking → Google Ads: every purchase / add to cart / checkout ProfitDesk sent (or skipped) to Google Ads.
+CREATE TABLE IF NOT EXISTS gconv_uploads (
+    store_id   INTEGER NOT NULL,
+    kind       TEXT    NOT NULL,          -- purchase | add_to_cart | begin_checkout
+    ref        TEXT    NOT NULL,          -- Shopify order id (purchase) or pixel event id
+    at         TEXT    NOT NULL,          -- when it happened (UTC)
+    value      REAL, currency TEXT,
+    click      TEXT,                      -- gclid | gbraid | wbraid | '' (no Google click)
+    status     TEXT    NOT NULL,          -- sent | failed | retry | no_click
+    error      TEXT,
+    tries      INTEGER NOT NULL DEFAULT 0,
+    sent_at    TEXT,
+    PRIMARY KEY (store_id, kind, ref)
+);
+CREATE INDEX IF NOT EXISTS gconv_store ON gconv_uploads (store_id, at);
 CREATE TABLE IF NOT EXISTS px_events (
     id         TEXT PRIMARY KEY,           -- Shopify's event id (a retry never counts twice)
     store_id   INTEGER NOT NULL,
@@ -655,6 +670,7 @@ _ADDED_COLUMNS = {
         ("check_by", "TEXT"),
         ("check_at", "TEXT"),
     ],
+    "px_visitors": [("g_click", "TEXT"), ("g_at", "TEXT")],   # the latest Google click (JSON {gclid|gbraid|wbraid}) and when
     "cog_lines": [("single_usd", "REAL"), ("product_id", "TEXT"), ("country", "TEXT")],   # country: shipping country code   # product_id: Shopify product GID     # the line at single-item prices (bundles show their discount)
     "shipments": [("province", "TEXT"), ("fulfillment_gid", "TEXT"), ("pushed", "TEXT NOT NULL DEFAULT ''"),
                   ("push_error", "TEXT")],

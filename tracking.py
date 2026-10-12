@@ -75,6 +75,10 @@ def record(store_id: int, ev: dict, ip: str) -> bool:
                 (store_id, cid, at_s, at_s, json.dumps(touch), json.dumps(touch), at_s,
                  ev.get("fbp") or "", ev.get("fbc") or "", ip, (ev.get("ua") or "")[:400]))
             last, touch_at = touch, at
+            g = {k: touch[k] for k in ("gclid", "gbraid", "wbraid") if touch.get(k)}
+            if g:                                    # Google's own click, kept apart (a later Meta click mustn't hide it)
+                con.execute("UPDATE px_visitors SET g_click = ?, g_at = ? WHERE store_id = ? AND client_id = ?",
+                            (json.dumps(g), at_s, store_id, cid))
         else:
             con.execute(
                 "INSERT INTO px_visitors (store_id, client_id, first_at, last_at, fbp, fbc, ip, ua) VALUES (?,?,?,?,?,?,?,?)"

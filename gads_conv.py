@@ -201,3 +201,111 @@ async def upload(rt, customer_id, login_cid, action_resource: str, items: list, 
                 code = "".join(f"{k}={v}" for k, v in (e.get("errorCode") or {}).items())
                 bad[idx] = f"{e.get('message', '')} ({code})"
     return [{"order": it["order"], "ok": i not in bad, "error": bad.get(i)} for i, it in enumerate(items)]
+
+
+# ---------------------------------------------------------------- what to send (from the ProfitDesk pixel)
+
+import json as _json
+from datetime import timedelta
+
+import db
+
+GOOGLE_KEYS = ("gclid", "gbraid", "wbraid")
+KIND_OF_EVENT = {"checkout_completed": "purchase", "product_added_to_cart": "add_to_cart", "checkout_started": "begin_checkout"}
+CLICK_DAYS = 30            # a click older than this doesn't get the conversion (the actions' click-through window)
+
+
+def _gclick(touch_json) -> dict:
+    try:
+        t = _json.loads(touch_json or "{}")
+    except ValueError:
+        return {}
+    for k in GOOGLE_KEYS:
+        if t.get(k):
+            return {k: t[k]}
+    return {}
+
+
+def click_for(visitor: dict, at: datetime) -> dict:
+    """The Google click a visitor's event belongs to: their latest Google click within 30 days before it."""
+    if not visitor:
+        return {}
+    cands = [(visitor.get("g_click"), visitor.get("g_at")), (visitor.get("last_touch"), visitor.get("touch_at")),
+             (visitor.get("first_touch"), visitor.get("first_at"))]
+    for touch, when in cands:
+        c = _gclick(touch)
+        if not c or not when:
+            continue
+        try:
+            t = datetime.fromisoformat(when)
+        except ValueError:
+            continue
+        if timedelta(0) <= at - t <= timedelta(days=CLICK_DAYS) or abs((at - t).total_seconds()) < 120:
+            return c
+    return {}
+
+
+def todo(store_id: int, since: str, retry_hours: int = 48) -> list:
+    """Pixel purchases / adds to cart / checkouts since `since` (UTC ISO) not sent yet, each with its Google click.
+    [{kind, ref, at, value, currency, client_id, order_id, click}] (click {} = no Google click)."""
+    with db._conn() as con:
+        done = {(r[0], r[1]): r[2] for r in con.execute(
+            "SELECT kind, ref, status FROM gconv_uploads WHERE store_id = ? AND at >= ?", (store_id, since))}
+        evs = [dict(r) for r in con.execute(
+            "SELECT id, client_id, name, at, value, currency, order_id FROM px_events WHERE store_id = ? AND at >= ? AND name IN "
+            "('checkout_completed', 'product_added_to_cart', 'checkout_started') ORDER BY at", (store_id, since))]
+        vis = {r["client_id"]: dict(r) for r in con.execute(
+            "SELECT client_id, first_at, first_touch, last_touch, touch_at, g_click, g_at FROM px_visitors WHERE store_id = ? AND "
+            "client_id IN (SELECT DISTINCT client_id FROM px_events WHERE store_id = ? AND at >= ?)", (store_id, store_id, since))}
+    out, seen = [], set()
+    for e in evs:
+        kind = KIND_OF_EVENT[e["name"]]
+        ref = str(e["order_id"]) if kind == "purchase" and e.get("order_id") else e["id"]
+        if (kind, ref) in seen or done.get((kind, ref)) in ("sent", "failed", "no_click"):
+            continue
+        seen.add((kind, ref))
+        at = datetime.fromisoformat(e["at"])
+        out.append({"kind": kind, "ref": ref, "at": e["at"], "value": e.get("value"), "currency": e.get("currency"),
+                    "client_id": e["client_id"], "order_id": e.get("order_id"), "click": click_for(vis.get(e["client_id"]), at)})
+    return out
+
+
+RETRY_CODES = ("TOO_RECENT", "CLICK_NOT_FOUND", "CONVERSION_PRECEDES_GCLID", "RESOURCE_EXHAUSTED", "INTERNAL", "TRANSIENT")
+TERMS_CODES = ("CUSTOMER_NOT_ACCEPTED_CUSTOMER_DATA_TERMS", "CUSTOMER_DATA_POLICY", "ENHANCED_CONVERSIONS")
+
+
+def save(store_id: int, rows: list):
+    """rows: [{kind, ref, at, value, currency, click, status, error}] -> gconv_uploads (tries counted)."""
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    with db._conn() as con:
+        for r in rows:
+            con.execute(
+                "INSERT INTO gconv_uploads (store_id, kind, ref, at, value, currency, click, status, error, tries, sent_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,1,?) ON CONFLICT(store_id, kind, ref) DO UPDATE SET status = excluded.status,"
+                " error = excluded.error, tries = tries + 1, value = excluded.value, sent_at = excluded.sent_at",
+                (store_id, r["kind"], r["ref"], r["at"], r.get("value"), r.get("currency"), r.get("click") or "",
+                 r["status"], r.get("error"), now if r["status"] == "sent" else None))
+
+
+def counts(store_id: int, since: str) -> dict:
+    """{kind: {status: count}} since `since`."""
+    out = {}
+    with db._conn() as con:
+        for k, s, n in con.execute("SELECT kind, status, COUNT(*) FROM gconv_uploads WHERE store_id = ? AND at >= ? GROUP BY kind, status",
+                                   (store_id, since)):
+            out.setdefault(k, {})[s] = n
+    return out
+
+
+async def daily_by_action(rt, customer_id, login_cid, start, end) -> dict:
+    """{action name: {date: conversions}} (Google's attribution, by day) for purchase actions."""
+    rows = await gads_manage._q(rt, customer_id, login_cid,
+                                "SELECT segments.conversion_action_name, segments.conversion_action_category, segments.date, "
+                                f"metrics.all_conversions FROM customer WHERE segments.date BETWEEN '{start}' AND '{end}' "
+                                "AND segments.conversion_action_category = 'PURCHASE'")
+    out = {}
+    for r in rows:
+        s = r.get("segments") or {}
+        nm = s.get("conversionActionName")
+        out.setdefault(nm, {})[s.get("date")] = out.get(nm, {}).get(s.get("date"), 0) + float((r.get("metrics") or {}).get("allConversions") or 0)
+    return out

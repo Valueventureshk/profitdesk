@@ -135,6 +135,7 @@ async def lifespan(app):
     asyncio.create_task(_outside_loop())
     asyncio.create_task(_gdesk_loop())
     asyncio.create_task(_ads_loop())
+    asyncio.create_task(_gconv_loop())
     for i in db.list_invoices():                     # AI double-checks cut off by a restart
         if i.get("ai_check") == "pending":
             asyncio.create_task(_ai_check_invoice(i["id"]))
@@ -6919,6 +6920,276 @@ async def api_tracking_google_primary(payload: dict):
     await gads_manage.mutate(*args, ops, validate_only=True)
     await gads_manage.mutate(*args, ops)
     return {"ok": True, "actions": await gads_conv.all_actions(*args)}
+
+
+# ---------------------------------------------------------------- Tracking → Google Ads (ProfitDesk conversions)
+
+GCONV_DEFAULT = {"enabled": False, "mode": "watch", "started_at": None, "switched_at": None, "ids": True, "note": None}
+GCONV_ORDERS = """query($ids: [ID!]!) { nodes(ids: $ids) { ... on Order { legacyResourceId name createdAt email phone
+  currentTotalPriceSet { shopMoney { amount currencyCode } } currentTotalTaxSet { shopMoney { amount } } } } }"""
+_gconv_state: dict = {}      # store id -> {"actions": (time, {...}), "last_run", "last_error"}
+
+
+def _gconv_cfg(store_id: int) -> dict:
+    try:
+        got = json.loads(db.get_setting(f"gconv:{store_id}") or "{}")
+    except ValueError:
+        got = {}
+    return {**GCONV_DEFAULT, **got}
+
+
+def _gconv_save(store_id: int, cfg: dict):
+    db.set_setting(f"gconv:{store_id}", json.dumps(cfg))
+
+
+def _gconv_ours_primary(cfg: dict) -> bool:
+    return cfg["mode"] == "primary" or (cfg["mode"] == "auto" and bool(cfg.get("switched_at")))
+
+
+async def _gconv_actions(st, cfg, fresh=False) -> dict:
+    """ProfitDesk's three conversion actions in the store's account, made if missing; purchase primary or not
+    as the mode says (adds to cart and checkouts always secondary)."""
+    hit = _gconv_state.get(st["id"], {}).get("actions")
+    want = _gconv_ours_primary(cfg)
+    if hit and not fresh and time.time() - hit[0] < 3600 and hit[1].get("purchase", {}).get("primary") == want:
+        return hit[1]
+    args = _ads_args(st)
+    acts = {"purchase": await gads_conv.ensure_action(*args, "purchase", want),
+            "add_to_cart": await gads_conv.ensure_action(*args, "add_to_cart", False),
+            "begin_checkout": await gads_conv.ensure_action(*args, "begin_checkout", False)}
+    _gconv_state.setdefault(st["id"], {})["actions"] = (time.time(), acts)
+    return acts
+
+
+async def _gconv_run(st):
+    """Send the store's new pixel purchases / adds to cart / checkouts that came from a Google click."""
+    cfg = _gconv_cfg(st["id"])
+    if not cfg["enabled"] or not cfg.get("started_at"):
+        return
+    args = _ads_args(st)
+    acts = await _gconv_actions(st, cfg)
+    since = max(cfg["started_at"], (datetime.now(timezone.utc) - timedelta(days=7)).isoformat(timespec="seconds"))
+    items = await asyncio.to_thread(gads_conv.todo, st["id"], since)
+    if not items:
+        return
+    rows = [dict(i, status="no_click") for i in items if not i["click"]]
+    send = [i for i in items if i["click"]]
+    # purchases: the order's own value (total less tax), currency, email / phone from Shopify
+    orders = {}
+    oids = sorted({i["order_id"] for i in send if i["kind"] == "purchase" and i.get("order_id")})
+    client = ShopifyClient(st["shop_domain"], st["access_token"])
+    for k in range(0, len(oids), 50):
+        got = await client.gql(GCONV_ORDERS, {"ids": [f"gid://shopify/Order/{o}" for o in oids[k:k + 50]]})
+        for n in got.get("nodes") or []:
+            if n:
+                tot = (n.get("currentTotalPriceSet") or {}).get("shopMoney") or {}
+                tax = float(((n.get("currentTotalTaxSet") or {}).get("shopMoney") or {}).get("amount") or 0)
+                orders[str(n["legacyResourceId"])] = {"name": n["name"], "value": round(float(tot.get("amount") or 0) - tax, 2),
+                                                       "currency": tot.get("currencyCode"), "email": n.get("email"), "phone": n.get("phone")}
+    for kind in ("purchase", "add_to_cart", "begin_checkout"):
+        batch = [i for i in send if i["kind"] == kind]
+        if not batch or not acts.get(kind):
+            continue
+        up = []
+        for i in batch:
+            o = orders.get(str(i.get("order_id"))) if kind == "purchase" else None
+            up.append({"order": (o or {}).get("name") or i["ref"] if kind == "purchase" else i["ref"], "created": i["at"],
+                       "value": (o or {}).get("value") if o else round(float(i.get("value") or 0), 2),
+                       "currency": (o or {}).get("currency") or i.get("currency") or st["currency"],
+                       "click": i["click"], "email": (o or {}).get("email"), "phone": (o or {}).get("phone")})
+        for k in range(0, len(up), 200):
+            chunk, src = up[k:k + 200], batch[k:k + 200]
+            try:
+                res = await gads_conv.upload(*args, acts[kind]["resource"], chunk, with_ids=cfg.get("ids", True))
+                if cfg.get("ids", True) and any(r["error"] and any(c in r["error"] for c in gads_conv.TERMS_CODES) for r in res):
+                    cfg["ids"] = False                    # the account hasn't accepted Google's customer data terms
+                    cfg["note"] = "Google Ads hasn't accepted the Customer data terms, so emails / phones aren't sent (Goals → Settings)."
+                    _gconv_save(st["id"], cfg)
+                    res = await gads_conv.upload(*args, acts[kind]["resource"], chunk, with_ids=False)
+            except gads.GoogleAdsError as e:
+                res = [{"ok": False, "error": str(e)[:300]} for _ in chunk]
+            for i, u, r in zip(src, chunk, res):
+                retry = (not r["ok"]) and any(c in (r["error"] or "") for c in gads_conv.RETRY_CODES)
+                age = datetime.now(timezone.utc) - datetime.fromisoformat(i["at"])
+                rows.append({**i, "value": u["value"], "currency": u["currency"], "click": next(iter(i["click"])),
+                             "status": "sent" if r["ok"] else ("retry" if retry and age < timedelta(hours=48) else "failed"),
+                             "error": r.get("error")})
+    await asyncio.to_thread(gads_conv.save, st["id"], rows)
+
+
+async def _gconv_compare(st, days: int = 14) -> dict:
+    """Last N days, Google's own count per day: ProfitDesk Purchase against the other purchase actions."""
+    args = _ads_args(st)
+    today = _store_today(st)
+    start = (today - timedelta(days=days - 1)).isoformat()
+    got = await gads_conv.daily_by_action(*args, start, today.isoformat())
+    acts = await gads_conv.all_actions(*args)
+    ours = gads_conv.ACTION_NAMES["purchase"]
+    others = [a["name"] for a in acts if a["category"] == "PURCHASE" and a["name"] != ours and a["status"] == "ENABLED"
+              and (a["primary"] or got.get(a["name"]))]
+    dates = [(today - timedelta(days=k)).isoformat() for k in range(days - 1, -1, -1)]
+    return {"dates": dates, "ours": [round(got.get(ours, {}).get(d, 0), 1) for d in dates],
+            "others": {nm: [round(got.get(nm, {}).get(d, 0), 1) for d in dates] for nm in others},
+            "primary": [a["name"] for a in acts if a["category"] == "PURCHASE" and a["primary"]]}
+
+
+async def _gconv_autoswitch(st):
+    """Auto mode: after 7 days, when ProfitDesk Purchase caught at least 95% of the current primary's purchases over
+    the last 7 complete days, make ours primary and the others secondary (one primary purchase action)."""
+    cfg = _gconv_cfg(st["id"])
+    if not cfg["enabled"] or cfg["mode"] != "auto" or cfg.get("switched_at") or not cfg.get("started_at"):
+        return
+    if datetime.now(timezone.utc) - datetime.fromisoformat(cfg["started_at"]) < timedelta(days=8):
+        return
+    c = await _gconv_compare(st, 8)
+    ours = sum(c["ours"][:7])
+    prim = [nm for nm in c["primary"] if nm != gads_conv.ACTION_NAMES["purchase"]]
+    theirs = max((sum(c["others"].get(nm, [0] * 8)[:7]) for nm in prim), default=0)
+    if theirs <= 0 or ours < 0.95 * theirs:
+        cfg["note"] = f"Auto switch waiting: ours {ours:g} vs {theirs:g} purchases over 7 days (needs 95%)."
+        _gconv_save(st["id"], cfg)
+        return
+    args = _ads_args(st)
+    acts = {a["name"]: a for a in await gads_conv.all_actions(*args)}
+    cid = str(st["google_customer_id"]).replace("-", "")
+    ops = [{"conversionActionOperation": {"update": {"resourceName": f"customers/{cid}/conversionActions/{acts[nm]['id']}",
+                                                     "primaryForGoal": False}, "updateMask": "primary_for_goal"}} for nm in prim if nm in acts]
+    if ops:
+        await gads_manage.mutate(*args, ops)
+    cfg["switched_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    cfg["note"] = f"Switched: ProfitDesk Purchase is primary ({ours:g} vs {theirs:g} over 7 days); {', '.join(prim)} now secondary."
+    _gconv_save(st["id"], cfg)
+    await _gconv_actions(st, cfg, fresh=True)
+
+
+async def _gconv_loop():
+    """Every 10 minutes: send each switched-on store's new Google-click events; once an hour, the auto switch."""
+    await asyncio.sleep(200)
+    n = 0
+    while True:
+        for st in db.list_stores():
+            try:
+                if st.get("google_customer_id") and _gconv_cfg(st["id"])["enabled"]:
+                    await _gconv_run(st)
+                    if n % 6 == 0:
+                        await _gconv_autoswitch(st)
+                    _gconv_state.setdefault(st["id"], {}).update(last_run=time.time(), last_error=None)
+            except Exception as e:
+                _gconv_state.setdefault(st["id"], {}).update(last_error=str(getattr(e, "detail", None) or e)[:300])
+                print(f"Google conversions failed for {st['name']}: {str(e)[:300]}", flush=True)
+        n += 1
+        await asyncio.sleep(600)
+
+
+@app.get("/api/tracking/google/status")
+async def api_tracking_google_status(store: int):
+    st = _ads_store(store)
+    cfg = _gconv_cfg(st["id"])
+    since = (datetime.now(timezone.utc) - timedelta(days=14)).isoformat(timespec="seconds")
+    try:
+        cmp_ = await _gconv_compare(st)
+    except gads.GoogleAdsError as e:
+        cmp_ = {"error": str(e)}
+    with db._conn() as con:
+        errs = [dict(r) for r in con.execute("SELECT kind, ref, at, error FROM gconv_uploads WHERE store_id = ? AND status IN ('failed', 'retry')"
+                                             " ORDER BY at DESC LIMIT 5", (st["id"],))]
+        visitors = con.execute("SELECT COUNT(*) FROM px_visitors WHERE store_id = ? AND g_click IS NOT NULL AND g_at >= ?",
+                               (st["id"], since)).fetchone()[0]
+    s = _gconv_state.get(st["id"], {})
+    return {"store": st["id"], "settings": cfg, "ours_primary": _gconv_ours_primary(cfg), "counts": gads_conv.counts(st["id"], since),
+            "google_visitors_14d": visitors, "compare": cmp_, "errors": errs,
+            "last_run": s.get("last_run"), "last_error": s.get("last_error"), "pixel": bool(db.get_setting(f"px_key:{st['id']}"))}
+
+
+@app.put("/api/tracking/google/settings/{store_id}")
+async def api_tracking_google_settings(store_id: int, payload: dict):
+    """{enabled, mode: watch | auto | primary}. Turning on starts sending from now; mode primary makes
+    ProfitDesk Purchase the purchase action Google bids on."""
+    st = _ads_store(store_id)
+    cfg = _gconv_cfg(st["id"])
+    if "enabled" in payload:
+        cfg["enabled"] = bool(payload["enabled"])
+        if cfg["enabled"] and not cfg.get("started_at"):
+            cfg["started_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    if payload.get("mode") in ("watch", "auto", "primary"):
+        cfg["mode"] = payload["mode"]
+        if cfg["mode"] != "auto":
+            cfg["switched_at"] = None
+    _gconv_save(st["id"], cfg)
+    if cfg["enabled"]:
+        try:
+            await _gconv_actions(st, cfg, fresh=True)
+        except gads.GoogleAdsError as e:
+            raise HTTPException(400, str(e))
+    return cfg
+
+
+GCONV_BRIDGE = "Google Shopping App Purchase"
+
+
+async def _gconv_plan() -> list:
+    """The changes still needed for the agreed setup (TrackBee cancelled):
+    a store with a working Google Shopping App Purchase -> it becomes the primary purchase action (bridge) and ProfitDesk
+    runs next to it on auto switch; a store without one -> ProfitDesk Purchase becomes primary straight away.
+    ZAVA (its own Google tag works) is left alone."""
+    steps = []
+    for st in db.list_stores():
+        if not st.get("google_customer_id") or demo.is_demo(st) or st.get("google_source") == "sheet" or "ZAVA" in st["name"].upper():
+            continue
+        if not db.get_setting(f"px_key:{st['id']}"):
+            continue
+        acts = await gads_conv.all_actions(*_ads_args(st))
+        cfg = _gconv_cfg(st["id"])
+        ours = gads_conv.ACTION_NAMES["purchase"]
+        bridge = next((a for a in acts if a["name"] == GCONV_BRIDGE and a["status"] == "ENABLED" and a["conversions_30d"] > 0), None)
+        prim = [a["name"] for a in acts if a["category"] == "PURCHASE" and a["primary"] and a["name"] != ours]
+        if bridge:
+            make_secondary = [nm for nm in prim if nm != GCONV_BRIDGE]
+            need = not bridge["primary"] or make_secondary or cfg["mode"] != "auto" or not cfg["enabled"]
+            if need:
+                steps.append({"store": st["id"], "name": st["name"].strip(), "primary": [] if bridge["primary"] else [GCONV_BRIDGE],
+                              "secondary": make_secondary, "mode": "auto",
+                              "text": (f"Make “{GCONV_BRIDGE}” primary ({bridge['conversions_30d']:g} purchases in 30 days)" if not bridge["primary"] else f"Keep “{GCONV_BRIDGE}” primary")
+                                      + (f"; set {', '.join('“' + n + '”' for n in make_secondary)} secondary" if make_secondary else "")
+                                      + "; send ProfitDesk Purchase next to it and switch over automatically at 95%+"})
+        else:
+            if cfg["mode"] != "primary" or not cfg["enabled"] or prim:
+                steps.append({"store": st["id"], "name": st["name"].strip(), "primary": [], "secondary": prim, "mode": "primary",
+                              "text": "No working purchase tracker left: make ProfitDesk Purchase primary now"
+                                      + (f"; set {', '.join('“' + n + '”' for n in prim)} secondary" if prim else "")})
+    return steps
+
+
+@app.get("/api/tracking/google/plan")
+async def api_tracking_google_plan():
+    return {"steps": await _gconv_plan()}
+
+
+@app.post("/api/tracking/google/plan")
+async def api_tracking_google_plan_do(request: Request):
+    """Do it: carry out the plan, store by store (the person clicked)."""
+    done, failed = [], []
+    for sp in await _gconv_plan():
+        st = _ads_store(sp["store"])
+        args = _ads_args(st)
+        try:
+            cfg = _gconv_cfg(st["id"])
+            cfg.update(enabled=True, mode=sp["mode"], switched_at=None)
+            cfg["started_at"] = cfg.get("started_at") or datetime.now(timezone.utc).isoformat(timespec="seconds")
+            _gconv_save(st["id"], cfg)
+            await _gconv_actions(st, cfg, fresh=True)          # creates ours (primary when mode primary)
+            acts = {a["name"]: a for a in await gads_conv.all_actions(*args)}
+            cid = str(st["google_customer_id"]).replace("-", "")
+            ops = [{"conversionActionOperation": {"update": {"resourceName": f"customers/{cid}/conversionActions/{acts[nm]['id']}",
+                                                             "primaryForGoal": flag}, "updateMask": "primary_for_goal"}}
+                   for flag, names in ((True, sp["primary"]), (False, sp["secondary"])) for nm in names if nm in acts]
+            if ops:
+                await gads_manage.mutate(*args, ops, validate_only=True)
+                await gads_manage.mutate(*args, ops)
+            done.append(f"{sp['name']}: {sp['text']}")
+        except (gads.GoogleAdsError, HTTPException) as e:
+            failed.append(f"{sp['name']}: {str(getattr(e, 'detail', None) or e)[:200]}")
+    return {"done": done, "failed": failed}
 
 
 @app.get("/api/googleads/check")

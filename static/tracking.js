@@ -406,7 +406,10 @@ async function drawGoogle() {
       <button class="btn btn-sm btn-ghost" id="gClose">Close</button></span></div>
     <p class="hint trk-pad">What each Google Ads account records. <b>Primary</b> = Google bids on it and shows it as Conversions; <b>secondary</b> = recorded only.
       A store needs exactly one working primary purchase action. Next step: ProfitDesk's own Purchase / Add to cart / Checkout sent from the pixel (needs the pixel on the store).</p>
+    <div id="gPlan"></div><div id="gOurs"></div>
     <div id="gBody"><p class="hint trk-pad">Reading the account…</p></div>`;
+  drawPlan();
+  drawOurs();
   $("gClose").onclick = () => { $("gpanel").hidden = true; };
   $("gStore").onchange = () => { gStore = $("gStore").value; drawGoogle(); };
   let d;
@@ -439,6 +442,57 @@ async function drawGoogle() {
   };
   for (const b of $("gBody").querySelectorAll("[data-flip]")) b.onclick = () => (b.dataset.to === "1" ? flip([b.dataset.flip], []) : flip([], [b.dataset.flip]));
   if ($("gFix")) $("gFix").onclick = () => flip([best.name], prim.filter((a) => a.name !== best.name).map((a) => a.name));
+}
+
+async function drawPlan() {
+  let p;
+  try { p = await api("/api/tracking/google/plan"); } catch (e) { $("gPlan").innerHTML = ""; return; }
+  if (!p.steps.length) { $("gPlan").innerHTML = ""; return; }
+  $("gPlan").innerHTML = `<div class="gpl"><b>Recommended now (TrackBee cancelled)</b>
+      <ol>${p.steps.map((s) => `<li><b>${esc(s.name)}</b>: ${esc(s.text)}</li>`).join("")}</ol>
+      <p class="hint">This changes which purchase action Google bids on in these accounts. ZAVA is left as it is.</p>
+      <span data-manage-only><button class="btn btn-sm btn-primary" id="gPlanGo">Do it</button></span></div>`;
+  $("gPlanGo").onclick = async () => {
+    if (!confirm("Carry out these changes in Google Ads now?")) return;
+    $("gPlanGo").disabled = true; $("gPlanGo").textContent = "Working…";
+    try { const r = await api("/api/tracking/google/plan", { method: "POST" });
+          toast(r.failed.length ? `Done ${r.done.length}, failed: ${r.failed.join(" · ")}` : `Done for ${r.done.length} store(s).`, !!r.failed.length); }
+    catch (e) { toast(e.message, true); }
+    drawGoogle();
+  };
+}
+const GMODE = { watch: "Watch (secondary)", auto: "Auto switch at 95%", primary: "Primary (Google bids on it)" };
+async function drawOurs() {
+  const mine = gStore;
+  let d;
+  try { d = await api(`/api/tracking/google/status?store=${gStore}`); } catch (e) { $("gOurs").innerHTML = `<p class="hint trk-pad">${esc(e.message)}</p>`; return; }
+  if (mine !== gStore) return;
+  const c = d.settings, n = (k, st) => (d.counts[k] || {})[st] || 0;
+  const cmp = d.compare || {};
+  const rows = cmp.dates ? cmp.dates.map((dt, i) => `<tr><td>${dt.slice(5)}</td><td class="num"><b>${cmp.ours[i] || "—"}</b></td>${Object.values(cmp.others).map((v) => `<td class="num">${v[i] || "—"}</td>`).join("")}</tr>`).reverse().join("") : "";
+  $("gOurs").innerHTML = `<div class="gours"><div class="gours-h"><b>ProfitDesk → Google Ads</b>
+      ${d.pixel ? "" : `<span class="src bad">Pixel off in this store</span>`}
+      <span data-manage-only><label class="trk-gsw"><input type="checkbox" id="gOn"${c.enabled ? " checked" : ""}> Send to Google</label>
+      <select class="control" id="gMode">${Object.entries(GMODE).map(([k, v]) => `<option value="${k}"${c.mode === k ? " selected" : ""}>${v}</option>`).join("")}</select></span></div>
+    <p class="hint">${c.enabled ? `Sending since ${new Date(c.started_at).toLocaleString()} · ${d.ours_primary ? "<b>ProfitDesk Purchase is primary</b>" : "ProfitDesk Purchase is secondary (recorded, not bid on)"}` : "Off: nothing is sent."}
+      ${c.note ? ` · ${esc(c.note)}` : ""}${d.last_error ? ` · <span class="neg">${esc(d.last_error)}</span>` : ""}</p>
+    <div class="gstats">
+      <span><b>${d.google_visitors_14d}</b> visitors from a Google click (14 days)</span>
+      <span><b>${n("purchase", "sent")}</b> purchases sent</span><span><b>${n("add_to_cart", "sent")}</b> adds to cart sent</span>
+      <span><b>${n("begin_checkout", "sent")}</b> checkouts sent</span>
+      <span>${n("purchase", "no_click")} purchases had no Google click</span>
+      ${n("purchase", "retry") + n("purchase", "failed") ? `<span class="neg">${n("purchase", "retry")} waiting to retry · ${n("purchase", "failed")} failed</span>` : ""}</div>
+    ${rows ? `<details${c.enabled ? " open" : ""}><summary class="hint">Purchases per day as Google counts them: ProfitDesk vs the others</summary>
+      <div class="table-wrap"><table class="table"><thead><tr><th>Day</th><th>ProfitDesk Purchase</th>${Object.keys(cmp.others).map((k) => `<th>${esc(k)}${cmp.primary.includes(k) ? " (primary)" : ""}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div></details>` : ""}
+    ${d.errors.length ? `<details><summary class="hint">Last problems</summary>${d.errors.map((e) => `<div class="hint">${esc(e.kind)} ${esc(e.at)}: ${esc(e.error || "")}</div>`).join("")}</details>` : ""}</div>`;
+  const save = async (body) => {
+    if (body.mode === "primary" && !confirm("Make ProfitDesk Purchase the purchase action Google bids on? Set the old primary to secondary below, so nothing counts twice.")) return drawOurs();
+    try { await api(`/api/tracking/google/settings/${gStore}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); toast("Saved."); }
+    catch (e) { toast(e.message, true); }
+    drawGoogle();
+  };
+  $("gOn").onchange = () => save({ enabled: $("gOn").checked });
+  $("gMode").onchange = () => save({ mode: $("gMode").value });
 }
 
 /* ------------------------------------------------ wiring */
