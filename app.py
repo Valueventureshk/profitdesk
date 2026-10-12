@@ -7966,6 +7966,10 @@ async def _wa_handle(msg, contact_name=None):
         hist = [{"role": "user" if m["direction"] == "in" else "assistant", "content": m["text"] or ""} for m in past[:-1] if m["text"]]
         me = (f"[WhatsApp from {user.get('name') or user.get('email')} ({user.get('email')}, {'owner' if user.get('role') == 'owner' else 'staff'}); "
               "on WhatsApp they approve a proposed change by replying YES, there is no Confirm button] ")
+        if gads.busy():
+            me += ("[System note: ProfitDesk's Google Ads API daily request allowance is used up until it resets (midnight US Pacific). "
+                   "Shopify sales, COG, Meta and saved Google spend for past days still show; fresh Google Ads figures and Google Ads "
+                   "changes wait until the reset.] ")
         hist.append({"role": "user", "content": me + (f"[{note}] " if note else "") + (text or "(sent a file)")})
         today = max((_store_today(x) for x in db.list_stores() if not demo.is_demo(x)), default=datetime.now(CASH_TZ).date()).isoformat()
         try:
