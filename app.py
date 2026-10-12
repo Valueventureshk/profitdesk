@@ -46,6 +46,7 @@ import disputes
 import recordings
 import google_desk
 import gads_manage
+import gads_conv
 import ads_engine
 import ads_brain
 import tracking
@@ -6869,6 +6870,19 @@ async def _ads_tool(st, name: str, a: dict, who: str, made: dict) -> dict:
         return {"changes": [{k: r[k] for k in ("id", "kind", "summary", "status", "source", "created_at", "error")}
                             for r in _ads_actions_of(st["id"], 30)]}
     return {"error": f"Unknown tool {name}"}
+
+
+@app.get("/api/tracking/google/peek")
+async def api_tracking_google_peek(store: int, days: int = 7):
+    """Read only: the store's recent orders and which carry a Google click id; the account's conversion actions."""
+    st = _ads_store(store)
+    since = (datetime.now(timezone.utc) - timedelta(days=max(1, min(days, 60)))).strftime("%Y-%m-%dT%H:%M:%SZ")
+    got = await gads_conv.orders(ShopifyClient(st["shop_domain"], st["access_token"]), since)
+    acts = await gads_conv.all_actions(*_ads_args(st))
+    clicked = [o for o in got if o["click"]]
+    return {"orders": len(got), "with_google_click": len(clicked), "value_with_click": round(sum(o["value"] for o in clicked), 2),
+            "examples": [{"order": o["name"], "value": o["value"], "click": list(o["click"])} for o in clicked[:5]],
+            "conversion_actions": acts}
 
 
 @app.get("/api/googleads/check")
