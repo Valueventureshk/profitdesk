@@ -118,6 +118,7 @@ def build(google_rows: list, g_factor: float, lines: list, usd_factor: float, pr
     windows / g_windows: {key: (first, last day)} on the store's / the ad account's clock (windows_for);
     every money figure comes out in one currency: Google x g_factor, store currency x s_factor, USD x usd_factor."""
     W = list(windows)
+    lead = "sel" if "sel" in windows else W[0]          # the period rows are ordered by
     variant_of = {}                                   # variant id -> product id
     for pid, p in products.items():
         for vid in (p.get("variants") or {}):
@@ -206,11 +207,11 @@ def build(google_rows: list, g_factor: float, lines: list, usd_factor: float, pr
         for w in W:
             totals[w]["ad_days"] = len(set().union(*(p["variants"][x["vid"]]["days"][w] for x in variants))) if variants else 0
             _finish(totals[w], fee_rate, unit_margin, min_spend)
-        variants.sort(key=lambda x: -x["w"]["sel"]["cost"])
+        variants.sort(key=lambda x: -x["w"][lead]["cost"])
         out.append({"pid": pid, "title": info.get("title") or p["gtitle"] or pid, "image": info.get("image"),
                     "status": info.get("status") or ("" if not pid.startswith("item:") else "Not Shopify"),
                     "handle": info.get("handle"), "variants": variants, "w": totals})
-    out.sort(key=lambda x: -x["w"]["sel"]["cost"])
+    out.sort(key=lambda x: -x["w"][lead]["cost"])
     summary = {}
     for w in W:
         s = _empty()
