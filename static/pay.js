@@ -121,6 +121,7 @@
       opts.customer_id = started.customer_id;
       opts.payment_consent = { next_triggered_by: "merchant", merchant_trigger_reason: "scheduled" };
       opts.submitType = "subscribe";
+      opts.methods = ["card", "applepay", "googlepay"];   // Afterpay can't be charged again each month
     }
     const el = await sdk.createElement("dropIn", opts);
     el.mount("dropin");
