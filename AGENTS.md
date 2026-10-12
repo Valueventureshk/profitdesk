@@ -166,13 +166,6 @@ file and have it work.
   Per store `google_source`: NULL = direct API (hourly, shifted to the store clock), "sheet" = the
   script's Sheet. `/api/google/compare` checks both. ZAVA + Revionel stay on the Sheet until
   shop.valueventures@gmail.com gets access to those ad accounts.
-- Speed: SQLite in WAL mode with a 10 s busy timeout (`db._conn`, `db._wal`; restore checkpoints and drops
-  the side files). GZip on every response; /static files linked with ?v=<hash> are cached for a year.
-  Heavy work (COG costing, re-costing, Google desk maths) runs in threads (`asyncio.to_thread`) so pages
-  never queue behind it. A watchdog notes any stall over 0.6 s with the ProfitDesk code that caused it:
-  owner route `/api/debug/stalls`, counts in `/healthz` (`stalls_10min`). New slow code: check there first.
-- Ads payable (Google): stores read directly use `gads.hourly_tab` (hourly spend, account clock) instead of
-  the Sheet; the Sheet is the fallback.
 - Business clock is Hong Kong (`CASH_TIMEZONE`). Each store has its own clock;
   "today" is the furthest-ahead store's date.
 

@@ -82,50 +82,9 @@ STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 CACHE_TTL = 60  # seconds; the Refresh button bypasses it
 
 
-# ---- stall watchdog: when the server is stuck on one job (pages wait meanwhile), note where
-_stalls: list = []            # [(when, seconds, "file:line function" stack of ProfitDesk code)]
-_beat = {"t": time.time()}
-
-
-async def _heartbeat():
-    while True:
-        _beat["t"] = time.time()
-        await asyncio.sleep(0.2)
-
-
-def _watchdog(loop_thread_id: int):
-    import sys
-    import threading
-    import traceback
-    noted = 0.0
-    while True:
-        time.sleep(0.25)
-        late = time.time() - _beat["t"]
-        if late > 0.6 and _beat["t"] != noted:
-            frame = sys._current_frames().get(loop_thread_id)
-            if frame is None:
-                continue
-            ours = [f"{os.path.basename(fs.filename)}:{fs.lineno} {fs.name}" for fs in traceback.extract_stack(frame)
-                    if os.path.dirname(os.path.abspath(fs.filename)) == os.path.dirname(os.path.abspath(__file__))]
-            noted = _beat["t"]
-            _stalls.append([datetime.now(timezone.utc).isoformat(timespec="seconds"), round(late, 2), ours[-6:]])
-            del _stalls[:-60]
-        elif _stalls and _beat["t"] == noted:
-            _stalls[-1][1] = round(max(_stalls[-1][1], late), 2)
-
-
-@app.get("/api/debug/stalls")
-def api_debug_stalls():
-    """Owner: the last times the server was stuck on one job, how long, and where."""
-    return {"stalls": list(reversed(_stalls))}
-
-
 @asynccontextmanager
 async def lifespan(app):
     db.init()
-    import threading
-    asyncio.create_task(_heartbeat())
-    threading.Thread(target=_watchdog, args=(threading.get_ident(),), daemon=True).start()
     saver = asyncio.create_task(_save_all_history())
     coster = asyncio.create_task(_cog_loop())
     reader = asyncio.create_task(_mail_loop())
@@ -143,8 +102,6 @@ async def lifespan(app):
 
 
 app = FastAPI(title="ProfitDesk", docs_url=None, redoc_url=None, lifespan=lifespan)
-from starlette.middleware.gzip import GZipMiddleware  # noqa: E402
-app.add_middleware(GZipMiddleware, minimum_size=1024)   # pages, scripts and data ~5x smaller on the wire
 
 _google_states: set[str] = set()
 _shopify_states: dict[str, str] = {}
@@ -320,7 +277,6 @@ def healthz():
     return {"ok": True, "db_path": path, "volume_mount": vol or None,
             "db_on_volume": bool(vol) and path.startswith(vol.rstrip("/") + "/"),
             "has_accounts": auth.has_users(),
-            "stalls_10min": [x[:2] for x in _stalls if x[0] >= (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat(timespec="seconds")],
             "version": (os.getenv("RAILWAY_GIT_COMMIT_SHA") or "")[:7] or None}
 
 
@@ -3228,20 +3184,9 @@ async def _ad_bills_raw() -> list:
             if not isinstance(g, Exception):
                 cards.extend(g)
         charges = adbills.google_charges(cards)
-        since = (now - timedelta(days=62)).date().isoformat()
-
-        async def direct(x):
-            # stores read directly from Google: hourly spend from the API (the Sheet stays a fallback)
-            if x.get("google_source") == "sheet" or not auth:
-                return None
-            try:
-                return await gads.hourly_tab(auth["refresh_token"], x["google_customer_id"], x["google_login_cid"], since)
-            except Exception:
-                return None
-        direct_tabs = await asyncio.gather(*(direct(x) for x in google_stores))
-        for x, api_tab in zip(google_stores, direct_tabs):
+        for x in google_stores:
             cid = _digits_only(x["google_customer_id"])
-            rows.append(adbills.google_row(x, api_tab or tabs.get(cid), charges.get(cid, []), now))
+            rows.append(adbills.google_row(x, tabs.get(cid), charges.get(cid, []), now))
 
     _ads_cache["rows"] = (time.time(), rows)
     return rows
@@ -5733,8 +5678,8 @@ async def api_googleads(store: str = "", fresh: int = 0, min_spend: float = None
     info = await _product_info(st, sorted(p for p in pids if p))
     table = await fx.table(st["currency"])
     f = lambda c: fx.factor(table, c, st["currency"]) if table and c else 1.0
-    out = await asyncio.to_thread(google_desk.build, rows, f(gcur or st.get("google_currency") or st["currency"]), lines,
-                                  f("USD"), info, fee_rate, today.isoformat(), min_spend)
+    out = google_desk.build(rows, f(gcur or st.get("google_currency") or st["currency"]), lines, f("USD"), info,
+                            fee_rate, today.isoformat(), min_spend)
     out.update(store=st["id"], currency=st["currency"], google_currency=gcur, fee_rate=fee_rate, min_spend=min_spend,
                today=today.isoformat(), shop=st["shop_domain"],
                missing_product_ids=not any(l.get("product_id") for l in lines),
@@ -6741,28 +6686,21 @@ async def _cog_sync(days_back: int = None, store_ids: list = None) -> dict:
         saved = _cog.get("tags") or {}
         tags = {**saved, **cog.store_tags(known)}
         _cog["tags"] = tags
-        def build_catalog():
-            c = cog.Catalog(rows, tags)
-            c.add_invoices(db.invoice_lines())
-            return c
-        catalog = await asyncio.to_thread(build_catalog)     # heavy: off the line pages wait on
+        catalog = cog.Catalog(rows, tags)
+        catalog.add_invoices(db.invoice_lines())
         _cog["catalog"] = catalog
-
-        def cost_all(orders, sid, rate):
-            out = []
-            for o in orders:
-                for n, line in enumerate(cog.cost_order(o, sid, catalog, rate)):
-                    out.append({**line, "order": o["name"], "line_no": n, "day": o["day"],
-                                "created": o["created"], "cancelled": o["cancelled"],
-                                "fulfillment": o["fulfillment"]})
-            return out
         for x in stores:
             if x["id"] not in fetched:
                 continue
             start, end, orders = fetched[x["id"]]
             rate = await _usd_to(x["currency"])
-            out = await asyncio.to_thread(cost_all, orders, x["id"], rate)
-            await asyncio.to_thread(db.replace_cog_lines, x["id"], start, end, out)
+            out = []
+            for o in orders:
+                for n, line in enumerate(cog.cost_order(o, x["id"], catalog, rate)):
+                    out.append({**line, "order": o["name"], "line_no": n, "day": o["day"],
+                                "created": o["created"], "cancelled": o["cancelled"],
+                                "fulfillment": o["fulfillment"]})
+            db.replace_cog_lines(x["id"], start, end, out)
             db.replace_order_fees(x["id"], start, end, await _order_fee_rows(x, orders, fee_map))
             src = defaultdict(int)
             for r in out:
@@ -6884,39 +6822,33 @@ async def _catalog() -> "cog.Catalog":
 
 
 async def _recost(store_id: int, order_names: set):
-    """Re-cost saved order lines (no Shopify call), e.g. after an invoice upload. The work runs in a
-    thread so pages don't wait on it."""
+    """Re-cost saved order lines (no Shopify call), e.g. after an invoice upload."""
     store = next((x for x in db.list_stores() if x["id"] == store_id), None)
     if not store or not order_names:
         return
-    sheet_rows = await _cog_rows()
-    tags = _cog.get("tags") or cog.store_tags(db.store_order_names())
+    catalog = cog.Catalog(await _cog_rows(), _cog.get("tags") or cog.store_tags(db.store_order_names()))
+    catalog.add_invoices(db.invoice_lines())
+    _cog["catalog"] = catalog
     rate = await _usd_to(store["currency"])
-
-    def work():
-        catalog = cog.Catalog(sheet_rows, tags)
-        catalog.add_invoices(db.invoice_lines())
-        with db._conn() as con:
-            marks = ",".join("?" * len(order_names))
-            rows = [dict(r) for r in con.execute(
-                f"SELECT * FROM cog_lines WHERE store_id = ? AND order_name IN ({marks})"
-                " ORDER BY order_name, line_no", (store_id, *order_names))]
-        orders = {}
-        for r in rows:
-            o = orders.setdefault(r["order_name"], {"name": r["order_name"], "cancelled": bool(r["cancelled"]),
-                                                    "lines": [], "nos": []})
-            o["lines"].append({"title": r["product"], "variant": "", "quantity": r["quantity"],
-                               "subtotal": r["subtotal"], "sku": r["sku"]})
-            o["nos"].append(r["line_no"])
-        updates = []
-        for o in orders.values():
-            for no, line in zip(o["nos"], cog.cost_order(o, store_id, catalog, rate)):
-                updates.append({"order_name": o["name"], "line_no": no, "cost": line["cost"],
-                                "source": line["source"], "supplier": line["supplier"], "note": line["note"],
-                                "single": line.get("single")})
-        db.update_cog_costs(store_id, updates)
-        return catalog
-    _cog["catalog"] = await asyncio.to_thread(work)
+    with db._conn() as con:
+        marks = ",".join("?" * len(order_names))
+        rows = [dict(r) for r in con.execute(
+            f"SELECT * FROM cog_lines WHERE store_id = ? AND order_name IN ({marks})"
+            " ORDER BY order_name, line_no", (store_id, *order_names))]
+    orders = {}
+    for r in rows:
+        o = orders.setdefault(r["order_name"], {"name": r["order_name"], "cancelled": bool(r["cancelled"]),
+                                                "lines": [], "nos": []})
+        o["lines"].append({"title": r["product"], "variant": "", "quantity": r["quantity"],
+                           "subtotal": r["subtotal"], "sku": r["sku"]})
+        o["nos"].append(r["line_no"])
+    updates = []
+    for o in orders.values():
+        for no, line in zip(o["nos"], cog.cost_order(o, store_id, catalog, rate)):
+            updates.append({"order_name": o["name"], "line_no": no, "cost": line["cost"],
+                            "source": line["source"], "supplier": line["supplier"], "note": line["note"],
+                            "single": line.get("single")})
+    db.update_cog_costs(store_id, updates)
     _cache.clear()
 
 
@@ -7240,19 +7172,7 @@ strong{{color:{tone}}}</style>
 setTimeout(()=>window.close(),1500);}}</script>"""
 
 
-class _Static(StaticFiles):
-    """Scripts and styles: pages link them with ?v=<content hash>, so a browser may keep that exact
-    copy for a year and never ask again; a changed file gets a new hash. Without ?v: always check."""
-    async def get_response(self, path, scope):
-        resp = await super().get_response(path, scope)
-        if b"v=" in (scope.get("query_string") or b""):
-            resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
-        else:
-            resp.headers.setdefault("Cache-Control", "no-cache")
-        return resp
-
-
-app.mount("/static", _Static(directory=STATIC_DIR), name="static")
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 if __name__ == "__main__":
