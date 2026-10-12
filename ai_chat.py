@@ -133,9 +133,13 @@ TOOLS += [
     _tool("list_schedules_alerts", "This person's scheduled messages and alerts.", {}, []),
     _tool("delete_schedule_alert", "Delete one of this person's schedules or alerts by id.", {"id": {"type": "integer"}}, ["id"]),
 ]
+# Anthropic allows at most 20 strict tools: the simple ones (few or no inputs) don't need it.
+_LOOSE = {"propose_google_change", "list_stores", "get_cash", "get_inbox", "list_schedules_alerts", "delete_schedule_alert",
+          "store_health", "tracking_live", "google_campaigns", "google_product_issues", "find_shopify_products"}
 for _t in TOOLS:
-    if _t["name"] == "propose_google_change":
+    if _t["name"] in _LOOSE:
         _t.pop("strict", None)
+assert sum(1 for _t in TOOLS if _t.get("strict")) <= 20, "too many strict tools"
 
 SYSTEM = """You are ProfitDesk's assistant for the owner and staff of a group of Shopify stores.
 Answer questions about their business using the tools: profit, cash flow, COG, the support inbox and reports. Never make up a figure: if a tool can't give it, say so.
