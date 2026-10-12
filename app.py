@@ -6886,6 +6886,21 @@ async def api_tracking_google_peek(store: int, days: int = 7):
             "conversion_actions": acts}
 
 
+@app.get("/api/tracking/google/stores")
+def api_tracking_google_stores():
+    return {"stores": [{"id": x["id"], "name": x["name"].strip()} for x in db.list_stores()
+                       if x.get("google_customer_id") and not demo.is_demo(x) and x.get("google_source") != "sheet"]}
+
+
+@app.get("/api/tracking/google/actions")
+async def api_tracking_google_actions(store: int):
+    st = _ads_store(store)
+    try:
+        return {"actions": await gads_conv.all_actions(*_ads_args(st))}
+    except gads.GoogleAdsError as e:
+        raise HTTPException(400, str(e))
+
+
 @app.post("/api/tracking/google/primary")
 async def api_tracking_google_primary(payload: dict):
     """Set Google conversion actions primary (used for bidding) or secondary: {store, primary: [names], secondary: [names]}."""

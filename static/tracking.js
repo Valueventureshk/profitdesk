@@ -392,6 +392,53 @@ async function refreshStores() {
   if (!$("setup").hidden) drawSetup();
 }
 
+/* ------------------------------------------------ Google Ads conversion tracking (per Google store) */
+let gStores = null, gStore = null;
+async function drawGoogle() {
+  const box = $("gpanel");
+  if (!gStores) {
+    box.innerHTML = `<p class="hint trk-pad">Loading…</p>`;
+    try { gStores = (await api("/api/tracking/google/stores")).stores; } catch (e) { box.innerHTML = `<p class="hint trk-pad">${esc(e.message)}</p>`; return; }
+    gStore = gStore || String((gStores[0] || {}).id || "");
+  }
+  box.innerHTML = `<div class="panel-head"><h2>Google Ads conversion tracking</h2>
+      <span><select class="control" id="gStore">${gStores.map((s) => `<option value="${s.id}"${String(s.id) === gStore ? " selected" : ""}>${esc(s.name)}</option>`).join("")}</select>
+      <button class="btn btn-sm btn-ghost" id="gClose">Close</button></span></div>
+    <p class="hint trk-pad">What each Google Ads account records. <b>Primary</b> = Google bids on it and shows it as Conversions; <b>secondary</b> = recorded only.
+      A store needs exactly one working primary purchase action. Next step: ProfitDesk's own Purchase / Add to cart / Checkout sent from the pixel (needs the pixel on the store).</p>
+    <div id="gBody"><p class="hint trk-pad">Reading the account…</p></div>`;
+  $("gClose").onclick = () => { $("gpanel").hidden = true; };
+  $("gStore").onchange = () => { gStore = $("gStore").value; drawGoogle(); };
+  let d;
+  try { d = await api(`/api/tracking/google/actions?store=${gStore}`); }
+  catch (e) { $("gBody").innerHTML = `<p class="hint trk-pad">${esc(e.message)}</p>`; return; }
+  const acts = d.actions.filter((a) => a.status !== "HIDDEN" && (a.primary || ["PURCHASE", "ADD_TO_CART", "BEGIN_CHECKOUT"].includes(a.category)));
+  const prim = acts.filter((a) => a.primary && a.category === "PURCHASE");
+  const best = acts.filter((a) => a.category === "PURCHASE").sort((x, y) => y.conversions_30d - x.conversions_30d)[0];
+  let advice = "";
+  if (!prim.some((a) => a.conversions_30d > 0) && best && best.conversions_30d > 0)
+    advice = `<div class="notice trk-pad">The primary purchase action recorded nothing in 30 days, but <b>${esc(best.name)}</b> recorded ${best.conversions_30d}.
+      Make it primary (and the empty one secondary) so Google counts and bids on real purchases.
+      <button class="btn btn-sm btn-primary" id="gFix" data-manage-only>Fix: make “${esc(best.name)}” primary</button></div>`;
+  else if (prim.filter((a) => a.conversions_30d > 0).length > 1)
+    advice = `<div class="notice trk-pad">More than one primary purchase action is recording: Google may count some orders twice.</div>`;
+  $("gBody").innerHTML = `${advice}<div class="table-wrap"><table class="table"><thead><tr><th>Conversion action</th><th>Type</th><th>Used for bidding</th><th>Last 30 days</th><th>Value</th><th></th></tr></thead><tbody>
+    ${acts.map((a) => `<tr><td class="name">${esc(a.name)}<span class="sub">${esc((a.type || "").replace(/_/g, " ").toLowerCase())}</span></td>
+      <td>${esc((a.category || "").replace(/_/g, " ").toLowerCase())}</td>
+      <td>${a.primary ? `<span class="src invoice">Primary</span>` : `<span class="src new">Secondary</span>`}</td>
+      <td class="num">${a.conversions_30d}${!a.conversions_30d && a.primary ? ` <span class="src bad">nothing recorded</span>` : ""}</td>
+      <td class="num">${a.value_30d ? a.value_30d.toLocaleString(undefined, { maximumFractionDigits: 0 }) : "—"}</td>
+      <td data-manage-only><button class="btn btn-sm btn-ghost" data-flip="${esc(a.name)}" data-to="${a.primary ? "0" : "1"}">${a.primary ? "Make secondary" : "Make primary"}</button></td></tr>`).join("")}</tbody></table></div>`;
+  const flip = async (primary, secondary) => {
+    if (!confirm(`Change what Google Ads counts and bids on for ${gStores.find((s) => String(s.id) === gStore)?.name}?\n\nPrimary: ${primary.join(", ") || "—"}\nSecondary: ${secondary.join(", ") || "—"}`)) return;
+    try { await api("/api/tracking/google/primary", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ store: gStore, primary, secondary }) });
+          toast("Changed in Google Ads. New conversions follow the new setting."); drawGoogle(); }
+    catch (e) { toast(e.message, true); }
+  };
+  for (const b of $("gBody").querySelectorAll("[data-flip]")) b.onclick = () => (b.dataset.to === "1" ? flip([b.dataset.flip], []) : flip([], [b.dataset.flip]));
+  if ($("gFix")) $("gFix").onclick = () => flip([best.name], prim.filter((a) => a.name !== best.name).map((a) => a.name));
+}
+
 /* ------------------------------------------------ wiring */
 $("storeBtn").onclick = () => menu($("storeMenu"), stores.map((s) => [s.id, `${s.name} · ${s.domain}${s.installed ? "" : " (pixel off)"}`]), state.store, (v) => { state.store = v; state.cur = ""; load(); });
 $("rangeBtn").onclick = () => menu($("rangeMenu"), RANGES, state.range, (v) => {
@@ -408,6 +455,7 @@ $("reload").onclick = load;
 $("q").oninput = () => { page = 0; if (data) draw(); };
 $("rows").onchange = () => { page = 0; $("rowsName").textContent = $("rows").value; if (data) draw(); };
 $("noteX").onclick = () => { $("note").hidden = true; try { localStorage.setItem("pdTrkNote", "off"); } catch { /* private */ } };
+$("gBtn").onclick = () => { $("gpanel").hidden = !$("gpanel").hidden; if (!$("gpanel").hidden) drawGoogle(); };
 $("setupBtn").onclick = () => { $("setup").hidden = !$("setup").hidden; if (!$("setup").hidden) drawSetup(); };
 $("evClose").onclick = () => { $("evModal").hidden = true; };
 for (const m of ["evModal", "colsModal"]) $(m).onclick = (e) => { if (e.target === $(m)) $(m).hidden = true; };
