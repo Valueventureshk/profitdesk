@@ -1963,3 +1963,4 @@ td.gx-dcn { color: var(--gx-muted); }
   .gx-search { min-width: 0; width: 100%; }
   .gx-sync { margin-left: 0; }
 }
+.gx-ico { width: 14px; height: 14px; vertical-align: -3px; margin-right: 5px; flex: none; }

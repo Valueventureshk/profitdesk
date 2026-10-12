@@ -10,6 +10,10 @@ let period = PDUrl.get("period") || "30", page = 0, cpage = 0, sort = { key: "co
 let picked = new Set(), openP = null, vWin = "sel", tagFilter = new Set();
 const PERIOD = { today: "Today", yesterday: "Yesterday", 7: "Last 7 days", 14: "Last 14 days", 30: "Last 30 days", mtd: "This month",
                  lastmonth: "Last month", 90: "Last 90 days", custom: "Custom" };
+// header icons: Google Ads for Google spend, Shopify for Shopify sales / revenue / items sold
+const G_ICON = `<svg class="gx-ico" viewBox="0 0 24 24" aria-label="Google Ads"><path fill="#FBBC04" d="M3.3 16.2 9.6 5.3a3.4 3.4 0 0 1 5.9 3.4L9.2 19.6a3.4 3.4 0 0 1-5.9-3.4z"/><path fill="#4285F4" d="M20.7 16.2 14.4 5.3a3.4 3.4 0 0 0-5.9 3.4l6.3 10.9a3.4 3.4 0 0 0 5.9-3.4z"/><circle fill="#34A853" cx="6.2" cy="17.9" r="3.4"/></svg>`;
+const S_ICON = `<svg class="gx-ico" viewBox="0 0 24 24" aria-label="Shopify"><path fill="#95BF47" d="M15.3 3.2c-.1 0-.2 0-.3.1l-.6.2C14 2.4 13.4 2 12.6 2c-1.8 0-2.7 2.3-3 3.4l-1.6.5c-.5.2-.5.2-.6.6L6 19.5l9.7 1.8 5.3-1.2-3.4-16.5c0-.2-.2-.3-.3-.3zM12.9 4l-1.7.5c.3-1.3 1-1.9 1.5-2.1.1.4.2 1 .2 1.6zm-1.6-1.4.3.1c-.7.3-1.4 1.1-1.7 2.6l-1.3.4c.4-1.2 1.2-3.1 2.7-3.1z"/><path fill="#5E8E3E" d="m17.3 3.3-1.6 18 5.3-1.2-3.4-16.5c0-.2-.2-.3-.3-.3z"/><path fill="#fff" d="m12.6 7.6-.7 2c-.6-.3-1.4-.4-1.4-.4-1.1.1-1.2.8-1.2.9.1 1 2.6 1.2 2.7 3.5.1 1.8-1 3-2.5 3.1-1.8.1-2.8-1-2.8-1l.4-1.6s1 .7 1.7.7c.5 0 .7-.4.7-.7-.1-1.3-2.2-1.2-2.3-3.3-.1-1.8 1-3.6 3.6-3.7 1-.1 1.8.5 1.8.5z"/></svg>`;
+const ICON = { g: G_ICON, s: S_ICON };
 const VERDICT = { scale: ["invoice", "Scale"], keep: ["catalog", "Keep"], watch: ["changed", "Watch"], cut: ["bad", "Cut"], learning: ["new", "Learning"] };
 
 function esc(s) {
@@ -74,18 +78,18 @@ const fmtDate = (s) => new Date(s + "T12:00:00Z").toLocaleDateString(undefined, 
 
 /* ------------------------------------------------ columns (pythago's, then ProfitDesk's) */
 const COLS = [
-  { id: "cost", label: "Cost", t: "Google spend in the picked period", v: (m) => m.cost, f: (v) => money(v) },
-  { id: "conversions", label: "🛒 Conv.", t: "Google conversions (Google's attribution)", v: (m) => m.conversions, f: (v) => n(v, 1), cls: "gx-purple" },
-  { id: "qty", label: "📦 Qty.", t: "Items sold on Shopify (all channels)", v: (m) => m.qty, f: (v) => n(v), sub: (m) => (m.ref_units ? `(−${n(m.ref_units)})` : "") },
-  { id: "sales", label: "CV", t: "Shopify conversion value: what the product sold for", v: (m) => m.sales, f: (v) => money(v) },
+  { id: "cost", label: "Cost", icon: "g", t: "Google spend in the picked period", v: (m) => m.cost, f: (v) => money(v) },
+  { id: "conversions", label: "Conv.", t: "Google conversions (Google's attribution)", v: (m) => m.conversions, f: (v) => n(v, 1), cls: "gx-purple" },
+  { id: "qty", label: "Qty.", icon: "s", t: "Items sold on Shopify (all channels)", v: (m) => m.qty, f: (v) => n(v), sub: (m) => (m.ref_units ? `(−${n(m.ref_units)})` : "") },
+  { id: "sales", label: "CV", icon: "s", t: "Shopify conversion value: what the product sold for", v: (m) => m.sales, f: (v) => money(v) },
   { id: "refunds", label: "Refunds", t: "Refunded on Shopify in the period", v: (m) => m.refunds, f: (v) => (v ? `<span class="gx-neg">−${money(v)}</span>` : "—") },
   { id: "clicks", label: "Clicks", v: (m) => m.clicks, f: (v) => n(v), cls: "gx-purple" },
   { id: "ctr", label: "CTR", v: (m) => m.ctr, f: (v) => pct(v), cls: "gx-green" },
   { id: "cpc", label: "CPC", v: (m) => m.cpc, f: (v) => money(v) },
   ...["7", "14", "30"].flatMap((w) => [
     { id: "roas" + w, w, key: "roas", label: `ROAS ${w}D`, v: (m) => m.roas, f: (v) => ratio(v), heat: true },
-    { id: "cost" + w, w, key: "cost", label: `$ ${w}D`, t: "Google spend", v: (m) => m.cost, f: (v) => money(v) },
-    { id: "sales" + w, w, key: "sales", label: `↗ ${w}D`, t: "Shopify sales", v: (m) => m.sales, f: (v) => money(v) },
+    { id: "cost" + w, w, key: "cost", label: `Cost ${w}D`, icon: "g", t: "Google spend", v: (m) => m.cost, f: (v) => money(v) },
+    { id: "sales" + w, w, key: "sales", label: `Sales ${w}D`, icon: "s", t: "Shopify sales", v: (m) => m.sales, f: (v) => money(v) },
     { id: "impressions" + w, w, key: "impressions", label: `👁 ${w}D`, t: "Impressions", v: (m) => m.impressions, f: (v) => n(v) },
   ]),
   { id: "cog", label: "Sum COG", v: (m) => m.cog, f: (v) => money(v) },
@@ -204,9 +208,9 @@ function drawCards(list) {
 }
 
 /* ------------------------------------------------ table */
-function th(label, key, w, title = "", cls = "") {
+function th(label, key, w, title = "", cls = "", icon = "") {
   const on = sort.key === key && (sort.win === w || key === "title");
-  return `<th class="gx-sort ${cls}${on ? " on" : ""}" data-key="${key}" data-w="${w}" title="${esc(title)}">${label} <i>${on ? (sort.dir < 0 ? "↓" : "↑") : "⇅"}</i></th>`;
+  return `<th class="gx-sort ${cls}${on ? " on" : ""}" data-key="${key}" data-w="${w}" title="${esc(title)}">${ICON[icon] || ""}${label} <i>${on ? (sort.dir < 0 ? "↓" : "↑") : "⇅"}</i></th>`;
 }
 function drawAll() {
   const list = sorted(filtered());
@@ -222,7 +226,7 @@ function drawAll() {
   const allOn = rows.length && rows.every((p) => picked.has(p.pid));
   $("table").innerHTML = `<thead><tr><th class="gx-pin gx-cb"><input type="checkbox" id="all"${allOn ? " checked" : ""}></th>
       ${th("Product", "title", "sel", "", "gx-pin gx-prodh")}<th class="gx-pin gx-st">Status</th><th class="gx-pin gx-vr">Variants</th>
-      ${cols.map((c) => th(c.label, c.id, win(c), c.t || "", c.id.startsWith("roas") ? "gx-hc" : "")).join("")}</tr></thead>
+      ${cols.map((c) => th(c.label, c.id, win(c), c.t || "", c.id.startsWith("roas") ? "gx-hc" : "", c.icon)).join("")}</tr></thead>
     <tbody>${rows.map((p) => {
       const mine = (ptags[p.pid] || []).map((id) => tags.find((t) => t.id === id)).filter(Boolean);
       return `<tr data-pid="${esc(p.pid)}" class="${picked.has(p.pid) ? "on" : ""}">
@@ -343,8 +347,8 @@ function drawVariants() {
     + card(`${n(m.net_qty)} ${m.ref_units ? `<small class="gx-neg">(−${n(m.ref_units)})</small>` : ""}`, "Net qty.") + card(money(m.net_sales), "Net sales")
     + card(ratio(m.roas), "ROAS") + card(money(m.cog), "Sum COG") + card(money(m.profit), "Net profit", m.profit >= 0 ? "gx-pos" : "gx-negc")
     + card(ratio(m.poas), "POAS", (m.poas ?? 0) >= 0 ? "gx-pos" : "gx-negc");
-  $("vTable").innerHTML = `<thead><tr><th>Variant name</th><th>Price</th><th>COG</th><th>Ad cost</th><th>Impressions</th><th>Clicks</th><th>Online conv.</th>
-      <th>Offline qty.</th><th>Offline rev.</th><th>Refunds</th><th>Ref. units</th><th>Net rev.</th><th>Sum COG</th><th>Net profit</th><th>POAS</th><th>CTR</th><th>CPC</th><th>ROAS</th><th>Verdict</th></tr></thead>
+  $("vTable").innerHTML = `<thead><tr><th>Variant name</th><th>Price</th><th>COG</th><th>${G_ICON}Ad cost</th><th>Impressions</th><th>Clicks</th><th>Online conv.</th>
+      <th>${S_ICON}Offline qty.</th><th>${S_ICON}Offline rev.</th><th>Refunds</th><th>Ref. units</th><th>${S_ICON}Net rev.</th><th>Sum COG</th><th>Net profit</th><th>POAS</th><th>CTR</th><th>CPC</th><th>ROAS</th><th>Verdict</th></tr></thead>
     <tbody>${p.variants.map((v) => {
       const x = v.w[vWin], [vc, vl] = VERDICT[x.verdict] || ["new", x.verdict];
       return `<tr><td class="gx-prod">${v.image ? `<img src="${esc(v.image)}" alt="" loading="lazy">` : ""}<span>${esc(v.title)}</span></td>
@@ -427,7 +431,7 @@ function drawCompare() {
   const per = Number($("cper").value), pages = Math.max(1, Math.ceil(list.length / per));
   cpage = Math.min(cpage, pages - 1);
   const rows = list.slice(cpage * per, cpage * per + per);
-  const G = [["cost", "Ad spend", 0], ["sales", "Revenue", 1], ["roas", "ROAS", 1], ["cog", "COG", 0], ["profit", "Net profit", 1]];
+  const G = [["cost", `${G_ICON}Ad spend`, 0], ["sales", `${S_ICON}Revenue`, 1], ["roas", "ROAS", 1], ["cog", "COG", 0], ["profit", "Net profit", 1]];
   const fm = (k, v) => (k === "roas" ? ratio(v) : money(v));
   const sh = (k, p, label) => `<th class="gx-sort${csort.key === k && csort.p === p ? " on" : ""}" data-ck="${k}" data-cp="${p}"><span class="gx-p ${p}">${label}</span></th>`;
   $("ctable").innerHTML = `<thead><tr><th rowspan="2" class="gx-prodh">Product</th>${G.map(([k, l]) => `<th colspan="3" class="gx-grp">${l}</th>`).join("")}</tr>
