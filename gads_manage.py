@@ -288,7 +288,7 @@ async def create_pmax(rt, customer_id, login_cid, name: str, budget: float, merc
         {"campaignOperation": {"create": {
             "resourceName": camp_rn, "name": name, "status": status, "advertisingChannelType": "PERFORMANCE_MAX",
             "campaignBudget": budget_rn, "maximizeConversionValue": {"targetRoas": target_roas} if target_roas else {},
-            "shoppingSetting": shopping, "urlExpansionOptOut": False,
+            "shoppingSetting": shopping,
             "containsEuPoliticalAdvertising": "DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING"}}},
         {"assetGroupOperation": {"create": {"resourceName": ag_rn, "campaign": camp_rn, "name": "Products",
                                             "finalUrls": [final_url], "status": "ENABLED"}}},
