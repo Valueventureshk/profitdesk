@@ -97,10 +97,24 @@ TOOLS += [
     _tool("propose_google_change", "Propose changes to a store's Google Ads (needs Manage on Google Ads). Nothing changes until "
           "the person confirms. Steps (in order), each {kind, ...}: set_budget {campaign, amount}, set_status {campaign, "
           "status ENABLED|PAUSED}, move_products {products, from_campaign, to_campaign}, add_products {products, campaign}, "
-          "remove_products {products, campaign}, create_campaign {name, budget, products, status}. Campaigns by id or exact "
-          "name; products are Shopify product ids. 'Scale by 20%' = set_budget to budget x 1.2.",
+          "remove_products {products, campaign}, create_campaign {name, budget, products, status ENABLED|PAUSED, countries [codes "
+          "like AU], target_roas (optional)}. A new campaign is always Performance Max, feed only (ads come only from the "
+          "product feed, no assets), bidding to maximise conversion value (plus target ROAS if given), starting now with no "
+          "end date, targeting people in the given countries. Campaigns by id or exact name; to use a campaign made earlier "
+          "in the same plan write \"new:<its name>\". Products are Shopify product ids (all their variants are used). "
+          "Campaigns that pick products by labels / categories (Adon labels) CAN have products taken out (they're excluded "
+          "inside the label) and put back; adding brand-new products into a label campaign needs the label. Put "
+          "create_campaign first, then move/remove. Google checks the plan in test mode before it's shown. 'Scale by 20%' = "
+          "set_budget to budget x 1.2.",
           {**_STORE, "summary": {"type": "string"}, "steps": {"type": "array", "items": {"type": "object"}}},
           ["store", "summary", "steps"], ),
+    _tool("google_product_issues", "Products Google won't show (disapproved / limited / not eligible) for a store's Google Ads "
+          "account, with Google's reasons, and links to each product in Shopify admin and on the store. Read only.",
+          {**_STORE}, ["store"]),
+    _tool("find_shopify_products", "Find products in a store's Shopify catalogue by title, status or tag, with their Shopify "
+          "admin link and store link (use for 'send me the link to …').",
+          {**_STORE, "query": {"type": "string", "description": "words in the title, or a Shopify search like status:draft"},
+           "limit": {"type": ["integer", "null"]}}, ["store", "query", "limit"]),
     _tool("create_schedule", "Save a scheduled message: at a time of day (and days of the week) the assistant runs the "
           "instruction and sends the answer to this person (e.g. 'performance report for all stores today' at 17:00).",
           {"name": {"type": "string"}, "instruction": {"type": "string", "description": "what to do / report each time"},

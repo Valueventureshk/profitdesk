@@ -211,3 +211,17 @@ async def diagnose(app_id: str) -> dict:
             out["app_webhook"] = await get(f"{app_id}/subscriptions", {"access_token": f"{app_id}|{c['app_secret']}"}, auth=None)
         out["templates"] = await get(f"{c['waba_id']}/message_templates", {"fields": "name,status,language"})
     return out
+
+
+async def transcribe(data: bytes, mime: str) -> str:
+    """A voice note as text (OpenAI's transcription; key = setting openai_api_key, pasted by the owner)."""
+    key = db.get_setting("openai_api_key")
+    if not key:
+        raise WAError("NO_KEY")
+    ext = {"audio/ogg": "ogg", "audio/mpeg": "mp3", "audio/mp4": "m4a", "audio/aac": "aac", "audio/amr": "amr"}.get((mime or "").split(";")[0], "ogg")
+    async with httpx.AsyncClient(timeout=120) as client:
+        r = await client.post("https://api.openai.com/v1/audio/transcriptions", headers={"Authorization": f"Bearer {key}"},
+                              data={"model": "gpt-4o-mini-transcribe"}, files={"file": (f"voice.{ext}", data, (mime or "audio/ogg").split(";")[0])})
+    if r.status_code >= 400:
+        raise WAError(f"Transcription failed ({r.status_code}): {r.text[:200]}")
+    return (r.json().get("text") or "").strip()

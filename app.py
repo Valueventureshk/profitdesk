@@ -6390,15 +6390,19 @@ async def _ads_execute(st, a: dict, created: dict, validate_only=False) -> dict:
         if not items:
             raise gads.GoogleAdsError("No products to put in the new campaign.")
         status = (p.get("status") or "ENABLED").upper()
-        feed = next((c["feed_label"] for c in s["campaigns"] if c.get("feed_label")), None)
+        countries = [c.upper() for c in (p.get("countries") or []) if c]
+        labels = [c["feed_label"] for c in s["campaigns"] if c.get("feed_label")]
+        feed = p.get("feed_label") or (countries[0] if len(countries) == 1 and countries[0] in labels else (labels[0] if labels else None))
+        kw = dict(target_roas=p.get("target_roas"), status=status, feed_label=feed, countries=countries)
         made = await gads_manage.create_pmax(*args, p["name"], budget, s["merchant_ids"][0], await _store_url(st), items,
-                                             p.get("target_roas"), status, feed, validate_only=True)
+                                             validate_only=True, **kw)
         if not validate_only:
-            made = await gads_manage.create_pmax(*args, p["name"], budget, s["merchant_ids"][0], await _store_url(st), items,
-                                                 p.get("target_roas"), status, feed)
+            made = await gads_manage.create_pmax(*args, p["name"], budget, s["merchant_ids"][0], await _store_url(st), items, **kw)
             created[p["name"].strip().lower()] = made["campaign_id"]
         return {"before": {"created": made.get("campaign_id")},
-                "result": f"Made “{p['name']}” (Performance Max, feed only) at {budget:.2f} a day with {len(p.get('products') or [])} products ({len(items)} variants)"}
+                "result": f"Made “{p['name']}” (Performance Max, feed only, bidding for conversion value"
+                          + (f", target ROAS {p['target_roas']}" if p.get("target_roas") else "") + (f", shown in {', '.join(countries)}" if countries else "")
+                          + f") at {budget:.2f} a day with {len(p.get('products') or [])} products ({len(items)} variants), {status.lower()}, no end date"}
     if k in ("move_products", "add_products", "remove_products"):
         pids = [str(x) for x in p.get("products") or []]
         if not pids:
@@ -6410,19 +6414,25 @@ async def _ads_execute(st, a: dict, created: dict, validate_only=False) -> dict:
         dst = camp(p["to_campaign"] if k == "move_products" else p["campaign"]) if k in ("move_products", "add_products") and (p.get("to_campaign") or p.get("campaign")) else None
         if k == "move_products" and src and dst and src["id"] == dst["id"]:
             raise gads.GoogleAdsError("From and to are the same campaign.")
+        def change(g, add=(), remove=()):
+            nonlocal temp
+            before[g["resource"]] = {"nodes": gads_manage.plain_nodes(g)}
+            if g["products"]["mode"] == "custom":           # picked by labels / categories: edit inside the tree
+                nodes = gads_manage.custom_exclude(g, remove) if remove else gads_manage.custom_include(g, add)
+                o = gads_manage.rebuild_ops(g, nodes, temp)
+                temp += len(nodes) + 5
+                return o
+            mode, its = gads_manage.new_tree(g["products"], add=add, remove=remove)
+            o = gads_manage.tree_ops(g, mode, its, temp)
+            temp += len(its) + 5
+            return o
         if src:
             for g in _ads_groups(src, "remove"):
-                mode, its = gads_manage.new_tree(g["products"], remove=items)
-                before[g["resource"]] = g["products"]
-                ops += gads_manage.tree_ops(g, mode, its, temp)
-                temp += len(its) + 5
+                ops += change(g, remove=items)
             words.append(f"out of “{src['name']}”")
         if dst:
             for g in _ads_groups(dst, "add"):
-                mode, its = gads_manage.new_tree(g["products"], add=items)
-                before[g["resource"]] = g["products"]
-                ops += gads_manage.tree_ops(g, mode, its, temp)
-                temp += len(its) + 5
+                ops += change(g, add=items)
             words.append(f"into “{dst['name']}”")
         if not ops:
             raise gads.GoogleAdsError("Nothing to change.")
@@ -6457,7 +6467,12 @@ async def _ads_undo(st, a: dict) -> str:
         ops, temp = [], 1
         for res, prod in (b.get("groups") or {}).items():
             g = groups.get(res)
-            if g:
+            if not g:
+                continue
+            if "nodes" in prod:                              # the tree exactly as it was
+                ops += gads_manage.rebuild_ops(g, prod["nodes"], temp)
+                temp += len(prod["nodes"]) + 5
+            else:
                 ops += gads_manage.tree_ops(g, prod["mode"], prod["items"], temp)
                 temp += len(prod["items"]) + 5
         if ops:
@@ -6747,6 +6762,21 @@ async def api_ads_rule(rule_id: int, payload: dict):
     return {"ok": True}
 
 
+@app.post("/api/ads/dryrun/{store_id}")
+async def api_ads_dryrun(store_id: int, payload: dict):
+    """Owner check: Google's test run of a list of steps (validateOnly), nothing changes."""
+    st = _ads_store(store_id)
+    out, created = [], {}
+    for sp in payload.get("steps") or []:
+        params = {k: v for k, v in sp.items() if k != "kind"}
+        try:
+            got = await _ads_execute(st, {"kind": sp["kind"], "params": params}, created, validate_only=True)
+            out.append({"kind": sp["kind"], "ok": True, "result": got["result"]})
+        except (gads.GoogleAdsError, HTTPException) as e:
+            out.append({"kind": sp["kind"], "ok": False, "error": str(getattr(e, "detail", None) or e)[:600]})
+    return {"steps": out}
+
+
 @app.post("/api/ads/manual/{store_id}")
 async def api_ads_manual(store_id: int, payload: dict, request: Request):
     """A change made by hand on the Manage tab (budget, pause / enable): logged like the AI's, with Undo."""
@@ -6866,8 +6896,25 @@ async def _ads_tool(st, name: str, a: dict, who: str, made: dict) -> dict:
             params = {k: v for k, v in sp.items() if k not in ("kind", "summary") and v not in (None, "", [])}
             _ads_log(st["id"], batch, "chat", sp["kind"], params, sp.get("summary") or sp["kind"],
                      {"products": len(params.get("products") or [])}, status="planned")
+        # Google checks each step in test mode first (steps that use a campaign made earlier in the plan are checked when run)
+        checks, created = [], {}
+        for sp in steps:
+            params = {k: v for k, v in sp.items() if k not in ("kind", "summary") and v not in (None, "", [])}
+            if any(isinstance(v, str) and v.lower().startswith("new:") for v in params.values()):
+                checks.append(f"{sp['kind']}: checked when it runs (uses the new campaign)")
+                continue
+            try:
+                await _ads_execute(st, {"kind": sp["kind"], "params": params}, created, validate_only=True)
+                checks.append(f"{sp['kind']}: Google accepted it in test mode")
+            except (gads.GoogleAdsError, HTTPException) as e:
+                with db._conn() as con:
+                    con.execute("UPDATE ads_actions SET status = 'failed', error = ? WHERE batch = ? AND status = 'planned'",
+                                (f"Google's test run refused it: {str(getattr(e, 'detail', None) or e)[:300]}", batch))
+                return {"error": f"Google's test run refused step '{sp['kind']}': {str(getattr(e, 'detail', None) or e)[:400]}. "
+                                 "Nothing was proposed; explain this to the person and suggest a fix."}
         made["plans"].append(batch)
-        return {"plan": batch, "steps": len(steps), "status": "Shown to the person with a Do it button. Nothing is changed until they click it."}
+        return {"plan": batch, "steps": len(steps), "google_test": checks,
+                "status": "Shown to the person to approve (Do it in the app, or reply YES on WhatsApp). Nothing changes until they do."}
     if name == "save_rule":
         kind = a.get("kind")
         if kind not in ads_engine.KINDS:
@@ -7447,6 +7494,44 @@ async def _assist_tool(name: str, args: dict, user: dict):
                           for sp in args.get("steps") or [])
         return _propose(user, "ads_plan", f"{st['name'].strip()}: {args.get('summary') or 'Google Ads change'}", steps[:600],
                         {"store": st["id"], "batch": made["plans"][0]})
+    if name == "find_shopify_products":
+        st = next((x for x in real if str(x["id"]) == str(args.get("store"))), None)
+        if not st:
+            return {"error": "Pick one store (see list_stores)."}
+        got = await ShopifyClient(st["shop_domain"], st["access_token"]).gql(
+            "query($q: String!, $n: Int!) { products(first: $n, query: $q) { nodes { legacyResourceId title handle status totalInventory } } }",
+            {"q": args.get("query") or "", "n": max(1, min(int(args.get("limit") or 20), 50))})
+        base, shop = await _store_url(st), st["shop_domain"].replace(".myshopify.com", "")
+        return {"products": [{"id": str(n["legacyResourceId"]), "title": n["title"], "status": n["status"], "stock": n.get("totalInventory"),
+                              "admin_link": f"https://admin.shopify.com/store/{shop}/products/{n['legacyResourceId']}",
+                              "store_link": f"{base}/products/{n['handle']}"} for n in (got.get("products") or {}).get("nodes") or []]}
+    if name == "google_product_issues":
+        st = _ads_store(args["store"])
+        try:
+            rows = await gads_manage._q(*_ads_args(st),
+                "SELECT shopping_product.item_id, shopping_product.title, shopping_product.status, shopping_product.issues, "
+                "shopping_product.feed_label FROM shopping_product WHERE shopping_product.status != 'ELIGIBLE'")
+        except gads.GoogleAdsError as e:
+            return {"error": f"Google didn't give product statuses: {str(e)[:300]}"}
+        base, shop = await _store_url(st), st["shop_domain"].replace(".myshopify.com", "")
+        pids = sorted({google_desk.parse_item((r.get("shoppingProduct") or {}).get("itemId") or "")[0] for r in rows} - {google_desk.UNLINKED})
+        info = await _product_info(st, [p for p in pids if p.isdigit()])
+        out = {}
+        for r in rows:
+            sp = r.get("shoppingProduct") or {}
+            pid = google_desk.parse_item(sp.get("itemId") or "")[0]
+            o = out.setdefault(pid, {"product_id": pid, "title": (info.get(pid) or {}).get("title") or sp.get("title"),
+                                     "google_status": sp.get("status"), "variants": 0, "issues": set(),
+                                     "admin_link": f"https://admin.shopify.com/store/{shop}/products/{pid}" if pid.isdigit() else None,
+                                     "store_link": f"{base}/products/{(info.get(pid) or {}).get('handle')}" if (info.get(pid) or {}).get("handle") else None})
+            o["variants"] += 1
+            for iss in sp.get("issues") or []:
+                o["issues"].add(iss.get("description") or iss.get("detail") or iss.get("errorCode") or str(iss)[:80])
+        res = sorted(out.values(), key=lambda x: x["title"] or "")
+        for x in res:
+            x["issues"] = sorted(x["issues"])[:5]
+        return {"count": len(res), "products": res[:60],
+                "note": "From Google Ads (read only). Fixes are made in Shopify / the Google app, not here."}
     if name == "create_schedule":
         try:
             hh, mm = [int(x) for x in str(args["time"]).split(":")[:2]]
@@ -7732,7 +7817,22 @@ async def _wa_handle(msg, contact_name=None):
         if t == "button":
             text = ((msg.get("button") or {}).get("text") or "").strip()
         note = ""
-        if t in ("image", "document", "video", "audio"):
+        if t == "audio":                                  # voice note -> text
+            try:
+                data, mime = await whatsapp.media((msg.get("audio") or {}).get("id"))
+                text = await whatsapp.transcribe(data, mime)
+                note = "voice note, transcribed"
+                await _wa_send(phone, f"🎙️ _{text[:600]}_")
+                _wa_log(phone, "in", f"(voice) {text}")
+            except whatsapp.WAError as e:
+                await _wa_send(phone, "I can't listen to voice notes yet: add an OpenAI key in ProfitDesk Settings → WhatsApp (voice notes)."
+                               if "NO_KEY" in str(e) else f"Couldn't understand the voice note ({e}). Please type it.")
+                return
+            if not text:
+                await _wa_send(phone, "The voice note came through empty. Please try again or type it.")
+                return
+            t = "text"
+        if t in ("image", "document", "video"):
             try:
                 _fid, note = await _wa_file(phone, user, msg)
             except whatsapp.WAError as e:
@@ -7761,7 +7861,8 @@ async def _wa_handle(msg, contact_name=None):
         with db._conn() as con:
             past = [dict(r) for r in con.execute("SELECT direction, text FROM wa_messages WHERE phone = ? ORDER BY id DESC LIMIT 14", (phone,))][::-1]
         hist = [{"role": "user" if m["direction"] == "in" else "assistant", "content": m["text"] or ""} for m in past[:-1] if m["text"]]
-        me = f"[WhatsApp from {user.get('name') or user.get('email')} ({user.get('email')}, {'owner' if user.get('role') == 'owner' else 'staff'})] "
+        me = (f"[WhatsApp from {user.get('name') or user.get('email')} ({user.get('email')}, {'owner' if user.get('role') == 'owner' else 'staff'}); "
+              "on WhatsApp they approve a proposed change by replying YES, there is no Confirm button] ")
         hist.append({"role": "user", "content": me + (f"[{note}] " if note else "") + (text or "(sent a file)")})
         today = max((_store_today(x) for x in db.list_stores() if not demo.is_demo(x)), default=datetime.now(CASH_TZ).date()).isoformat()
         try:
@@ -7813,13 +7914,14 @@ def api_wa_settings():
     return {"connected": whatsapp.ready(), "has_token": bool(c["token"]), "has_secret": bool(c["app_secret"]),
             "phone_id": c["phone_id"], "waba_id": c["waba_id"], "verify": c["verify"], "people": c["people"],
             "app_id": db.get_setting("wa_app_id") or "",
+            "has_voice_key": bool(db.get_setting("openai_api_key")),
             "webhook": f"{BASE_URL}/api/whatsapp/webhook", "users": users}
 
 
 @app.put("/api/whatsapp/settings")
 async def api_wa_settings_save(payload: dict):
     for k, s in (("token", "wa_token"), ("app_secret", "wa_app_secret"), ("phone_id", "wa_phone_id"), ("waba_id", "wa_waba_id"),
-                 ("app_id", "wa_app_id")):
+                 ("app_id", "wa_app_id"), ("openai_key", "openai_api_key")):
         v = (payload.get(k) or "").strip()
         if v:
             db.set_setting(s, v)

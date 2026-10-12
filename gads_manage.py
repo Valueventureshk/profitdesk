@@ -92,7 +92,7 @@ async def structure(refresh_token, customer_id, login_cid) -> dict:
     flt = await _q(refresh_token, customer_id, login_cid,
                    "SELECT asset_group_listing_group_filter.resource_name, asset_group_listing_group_filter.asset_group, "
                    "asset_group_listing_group_filter.type, asset_group_listing_group_filter.parent_listing_group_filter, "
-                   "asset_group_listing_group_filter.case_value.product_item_id.value, "
+                   "asset_group_listing_group_filter.case_value.product_item_id.value, asset_group_listing_group_filter.case_value.product_custom_attribute.index, asset_group_listing_group_filter.case_value.product_custom_attribute.value, asset_group_listing_group_filter.case_value.product_brand.value, asset_group_listing_group_filter.case_value.product_type.level, asset_group_listing_group_filter.case_value.product_type.value, asset_group_listing_group_filter.case_value.product_category.level, asset_group_listing_group_filter.case_value.product_category.category_id, asset_group_listing_group_filter.case_value.product_channel.channel, asset_group_listing_group_filter.case_value.product_condition.condition, "
                    "asset_group_listing_group_filter.listing_source FROM asset_group_listing_group_filter")
     for r in flt:
         f = r.get("assetGroupListingGroupFilter") or {}
@@ -100,7 +100,7 @@ async def structure(refresh_token, customer_id, login_cid) -> dict:
         if g is not None:
             cv = f.get("caseValue") or {}
             g["tree"].append({"resource": f.get("resourceName"), "type": f.get("type"), "parent": f.get("parentListingGroupFilter"),
-                              "dimension": next(iter(cv), None),
+                              "dimension": next(iter(cv), None), "case": cv,
                               "item": ((cv.get("productItemId") or {}).get("value")) if "productItemId" in cv else None,
                               "source": f.get("listingSource")})
     adg = await _q(refresh_token, customer_id, login_cid,
@@ -117,7 +117,7 @@ async def structure(refresh_token, customer_id, login_cid) -> dict:
         lg = await _q(refresh_token, customer_id, login_cid,
                       "SELECT ad_group_criterion.resource_name, ad_group_criterion.ad_group, ad_group_criterion.negative, "
                       "ad_group_criterion.listing_group.type, ad_group_criterion.listing_group.parent_ad_group_criterion, "
-                      "ad_group_criterion.listing_group.case_value.product_item_id.value, ad_group_criterion.cpc_bid_micros "
+                      "ad_group_criterion.listing_group.case_value.product_item_id.value, ad_group_criterion.listing_group.case_value.product_custom_attribute.index, ad_group_criterion.listing_group.case_value.product_custom_attribute.value, ad_group_criterion.listing_group.case_value.product_brand.value, ad_group_criterion.listing_group.case_value.product_type.level, ad_group_criterion.listing_group.case_value.product_type.value, ad_group_criterion.listing_group.case_value.product_category.level, ad_group_criterion.listing_group.case_value.product_category.category_id, ad_group_criterion.listing_group.case_value.product_channel.channel, ad_group_criterion.listing_group.case_value.product_condition.condition, ad_group_criterion.cpc_bid_micros "
                       "FROM ad_group_criterion WHERE ad_group_criterion.type = 'LISTING_GROUP' AND ad_group_criterion.status != 'REMOVED'")
         for r in lg:
             c = r.get("adGroupCriterion") or {}
@@ -126,7 +126,7 @@ async def structure(refresh_token, customer_id, login_cid) -> dict:
                 lgp = c.get("listingGroup") or {}
                 cv = lgp.get("caseValue") or {}
                 g["tree"].append({"resource": c.get("resourceName"), "type": lgp.get("type"), "parent": lgp.get("parentAdGroupCriterion"),
-                                  "dimension": next(iter(cv), None),
+                                  "dimension": next(iter(cv), None), "case": cv,
                                   "item": ((cv.get("productItemId") or {}).get("value")) if "productItemId" in cv else None,
                                   "negative": bool(c.get("negative")), "bid": _micros(c.get("cpcBidMicros"))})
     for g in groups.values():
@@ -271,10 +271,18 @@ def tree_ops(group: dict, mode: str, items: list, temp_start: int = 1) -> list:
     return ops
 
 
+GEO = {"AU": 2036, "US": 2840, "CA": 2124, "GB": 2826, "UK": 2826, "NZ": 2554, "IE": 2372, "DE": 2276, "FR": 2250, "NL": 2528,
+       "BE": 2056, "AT": 2040, "CH": 2756, "ES": 2724, "IT": 2380, "PT": 2620, "SE": 2752, "DK": 2208, "NO": 2578, "FI": 2246,
+       "SG": 2702, "HK": 2344, "AE": 2784, "SA": 2682, "ZA": 2710, "IN": 2356, "MY": 2458, "PH": 2608, "JP": 2392, "MX": 2484,
+       "LK": 2144, "PL": 2616, "CZ": 2203, "GR": 2300, "IL": 2376}
+
+
 async def create_pmax(rt, customer_id, login_cid, name: str, budget: float, merchant_id: str, final_url: str,
-                      items: list, target_roas=None, status="ENABLED", feed_label=None, validate_only=False) -> dict:
-    """A feed-only Performance Max campaign (no text / image assets: ads come from the product feed) running
-    just `items`, with its own daily budget."""
+                      items: list, target_roas=None, status="ENABLED", feed_label=None, validate_only=False,
+                      countries=None) -> dict:
+    """A feed-only Performance Max campaign (no text / image / video assets: ads come only from the product feed)
+    running just `items`, with its own daily budget, bidding for conversion value (optionally a target ROAS),
+    starting now with no end date, shown to people in `countries` (codes like AU)."""
     cid = str(customer_id).replace("-", "")
     budget_rn, camp_rn, ag_rn = (f"customers/{cid}/campaignBudgets/-1", f"customers/{cid}/campaigns/-2",
                                  f"customers/{cid}/assetGroups/-3")
@@ -288,11 +296,16 @@ async def create_pmax(rt, customer_id, login_cid, name: str, budget: float, merc
         {"campaignOperation": {"create": {
             "resourceName": camp_rn, "name": name, "status": status, "advertisingChannelType": "PERFORMANCE_MAX",
             "campaignBudget": budget_rn, "maximizeConversionValue": {"targetRoas": target_roas} if target_roas else {},
-            "shoppingSetting": shopping,
+            "shoppingSetting": shopping, "geoTargetTypeSetting": {"positiveGeoTargetType": "PRESENCE"},
             "containsEuPoliticalAdvertising": "DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING"}}},
         {"assetGroupOperation": {"create": {"resourceName": ag_rn, "campaign": camp_rn, "name": "Products",
                                             "finalUrls": [final_url], "status": "ENABLED"}}},
     ]
+    for code in countries or []:
+        geo = GEO.get(str(code).upper().strip())
+        if not geo:
+            raise gads.GoogleAdsError(f"Unknown country code “{code}” (use two letters, e.g. AU).")
+        ops.append({"campaignCriterionOperation": {"create": {"campaign": camp_rn, "location": {"geoTargetConstant": f"geoTargetConstants/{geo}"}}}})
     ops += tree_ops({"kind": "asset_group", "resource": ag_rn, "tree": []}, "only", items, temp_start=10)
     got = await mutate(rt, customer_id, login_cid, ops, validate_only)
     if validate_only:
@@ -362,3 +375,133 @@ async def campaign_totals(refresh_token, customer_id, login_cid, start, end) -> 
     except gads.GoogleAdsError:
         pass
     return out
+
+
+
+# ---------------------------------------------------------------- trees picked by labels / categories ("custom")
+
+def _included(n, kind) -> bool:
+    return n["type"] == "UNIT_INCLUDED" if kind == "asset_group" else (n["type"] == "UNIT" and not n.get("negative"))
+
+
+def plain_nodes(group: dict) -> list:
+    """A group's tree as plain nodes {key, parent, type, case, negative, bid} (keys are the current resource names)."""
+    return [{"key": n["resource"], "parent": n.get("parent"), "type": n["type"], "case": n.get("case") or {},
+             "negative": bool(n.get("negative")), "bid": n.get("bid") or 0} for n in group.get("tree") or []]
+
+
+def _item_of(node) -> str:
+    return ((node.get("case") or {}).get("productItemId") or {}).get("value")
+
+
+def custom_exclude(group: dict, items: list) -> list:
+    """Nodes of a label / category tree with these item ids left out: every included end of the tree gets split by
+    item id (those items excluded, everything else still included); ends already split by item id get the items
+    switched to excluded. The labels themselves are untouched."""
+    kind, nodes = group["kind"], plain_nodes(group)
+    items = {i.lower(): i for i in items}
+    kids = {}
+    for n in nodes:
+        kids.setdefault(n["parent"], []).append(n)
+    out, n_new = [], 0
+    for n in nodes:
+        out.append(dict(n))
+    for n in list(out):
+        if n["parent"] is None and len(nodes) == 1 and _included(n, kind):
+            pass                                            # a single "all products" root: split it below
+        ch = kids.get(n["key"], [])
+        by_item = [c for c in ch if "productItemId" in (c.get("case") or {})]
+        if by_item:                                         # already split by item id: flip / add the items
+            have = {(_item_of(c) or "").lower() for c in by_item if _item_of(c)}
+            for c in out:
+                if c["parent"] == n["key"] and (_item_of(c) or "").lower() in items and _included(c, kind):
+                    c.update(type="UNIT_EXCLUDED" if kind == "asset_group" else "UNIT", negative=kind != "asset_group")
+            for low, it in items.items():
+                if low not in have:
+                    n_new += 1
+                    out.append({"key": f"new{n_new}", "parent": n["key"], "type": "UNIT_EXCLUDED" if kind == "asset_group" else "UNIT",
+                                "case": {"productItemId": {"value": it}}, "negative": kind != "asset_group", "bid": 0})
+        elif not ch and _included(n, kind):                 # an included end: split it by item id
+            n["type"] = "SUBDIVISION"
+            n["negative"] = False
+            for it in items.values():
+                n_new += 1
+                out.append({"key": f"new{n_new}", "parent": n["key"], "type": "UNIT_EXCLUDED" if kind == "asset_group" else "UNIT",
+                            "case": {"productItemId": {"value": it}}, "negative": kind != "asset_group", "bid": 0})
+            n_new += 1
+            out.append({"key": f"new{n_new}", "parent": n["key"], "type": "UNIT_INCLUDED" if kind == "asset_group" else "UNIT",
+                        "case": {"productItemId": {}}, "negative": False, "bid": n.get("bid") or 0})
+    if len(out) > 950:
+        raise gads.GoogleAdsError(f"That would make {len(out)} product-list entries in “{group['name']}”; Google allows about 1,000. "
+                                  "Use fewer products.")
+    return out
+
+
+def custom_include(group: dict, items: list) -> list:
+    """Put products back into a label / category tree: only works for products that were excluded by item id
+    (labels decide everything else)."""
+    kind, nodes = group["kind"], plain_nodes(group)
+    items = {i.lower() for i in items}
+    found = False
+    out = []
+    for n in nodes:
+        it = (_item_of(n) or "").lower()
+        if it in items and not _included(n, kind) and n["type"] != "SUBDIVISION":
+            found = True
+            continue                                        # drop the exclusion: "everything else" includes it again
+        out.append(dict(n))
+    if not found:
+        raise gads.GoogleAdsError(f"“{group['name']}” picks products by labels / categories, so ProfitDesk can only put back "
+                                  "products it took out. To add new ones, give them the campaign's label in your feed app.")
+    return out
+
+
+def rebuild_ops(group: dict, nodes: list, temp_start: int = 1) -> list:
+    """Operations that replace a group's tree with `nodes` (any shape), parents before children."""
+    kind, tree = group["kind"], group.get("tree") or []
+    ops = []
+    if kind == "asset_group":
+        for n in sorted(tree, key=lambda n: -_depth(tree, n)):
+            ops.append({"assetGroupListingGroupFilterOperation": {"remove": n["resource"]}})
+    else:
+        for n in [n for n in tree if not n.get("parent")]:
+            ops.append({"adGroupCriterionOperation": {"remove": n["resource"]}})
+    cid, gid = _cid_of(group["resource"]), group["resource"].rsplit("/", 1)[1]
+    temp, k = {}, temp_start
+    order, placed = [], set()
+    while len(order) < len(nodes):                          # parents first
+        moved = False
+        for n in nodes:
+            if n["key"] in placed:
+                continue
+            if n["parent"] is None or n["parent"] in placed:
+                order.append(n)
+                placed.add(n["key"])
+                moved = True
+        if not moved:
+            raise gads.GoogleAdsError("The product list has a broken shape.")
+    for n in order:
+        rn = (f"customers/{cid}/assetGroupListingGroupFilters/{gid}~-{k}" if kind == "asset_group"
+              else f"customers/{cid}/adGroupCriteria/{gid}~-{k}")
+        temp[n["key"]] = rn
+        k += 1
+        if kind == "asset_group":
+            body = {"resourceName": rn, "assetGroup": group["resource"], "type": n["type"], "listingSource": "SHOPPING"}
+            if n["parent"]:
+                body["parentListingGroupFilter"] = temp[n["parent"]]
+            if n.get("case"):
+                body["caseValue"] = n["case"]
+            ops.append({"assetGroupListingGroupFilterOperation": {"create": body}})
+        else:
+            lg = {"type": n["type"]}
+            if n["parent"]:
+                lg["parentAdGroupCriterion"] = temp[n["parent"]]
+            if n.get("case"):
+                lg["caseValue"] = n["case"]
+            body = {"resourceName": rn, "adGroup": group["resource"], "status": "ENABLED", "listingGroup": lg}
+            if n["type"] == "UNIT":
+                body["negative"] = bool(n.get("negative"))
+                if n.get("bid") and not n.get("negative"):
+                    body["cpcBidMicros"] = str(int(n["bid"] * 1_000_000))
+            ops.append({"adGroupCriterionOperation": {"create": body}})
+    return ops
