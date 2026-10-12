@@ -62,6 +62,7 @@ query OrderLines($cursor: String, $q: String!) {
       cancelledAt
       test
       displayFulfillmentStatus
+      shippingAddress { countryCodeV2 }
       totalPriceSet { shopMoney { amount } }
       transactions(first: 6) {
         kind
@@ -79,6 +80,24 @@ query OrderLines($cursor: String, $q: String!) {
           variant { id }
           product { id }
           discountedTotalSet { shopMoney { amount } }
+        }
+      }
+    }
+  }
+}
+"""
+
+
+REFUND_LINES_QUERY = """
+query RefundLines($cursor: String, $q: String!) {
+  orders(first: 25, after: $cursor, query: $q) {
+    pageInfo { hasNextPage endCursor }
+    nodes {
+      name
+      refunds(first: 5) {
+        createdAt
+        refundLineItems(first: 15) {
+          nodes { quantity subtotalSet { shopMoney { amount } } lineItem { product { id } variant { id } } }
         }
       }
     }
@@ -346,6 +365,7 @@ class ShopifyClient:
                         "day": created.date().isoformat(),
                         "cancelled": bool(o.get("cancelledAt")),
                         "fulfillment": o.get("displayFulfillmentStatus") or "",
+                        "country": (o.get("shippingAddress") or {}).get("countryCodeV2") or "",
                         "total": float(((o.get("totalPriceSet") or {}).get("shopMoney") or {}).get("amount") or 0),
                         # The money taken for the order: a sale, or an authorisation captured later.
                         "payments": [{
@@ -361,6 +381,46 @@ class ShopifyClient:
                             "subtotal": float(((li.get("discountedTotalSet") or {}).get("shopMoney") or {}).get("amount") or 0),
                         } for li in o["lineItems"]["nodes"]],
                     })
+                if not conn["pageInfo"]["hasNextPage"]:
+                    break
+                cursor = conn["pageInfo"]["endCursor"]
+        return out
+
+    async def refund_lines(self, start: str, end: str, tz_name: str = "UTC") -> list:
+        """Every product refunded between two dates (store clock, refund date), from orders updated since:
+        [{day, order, product_id, variant_id, quantity, amount}] (store currency)."""
+        import asyncio as _aio
+        tz = _zone(tz_name)
+        lo = datetime.combine(datetime.fromisoformat(start).date(), time.min, tz)
+        hi = datetime.combine(datetime.fromisoformat(end).date(), time.max, tz)
+        q = (f"updated_at:>='{lo.astimezone(timezone.utc):%Y-%m-%dT%H:%M:%SZ}' "
+             "(financial_status:refunded OR financial_status:partially_refunded)")
+        out, cursor = [], None
+        async with httpx.AsyncClient(timeout=90) as client:
+            while True:
+                for attempt in range(6):
+                    try:
+                        data = await self._post(client, REFUND_LINES_QUERY, {"cursor": cursor, "q": q})
+                        break
+                    except ShopifyError as e:
+                        if "throttl" not in str(e).lower() and "rate" not in str(e).lower():
+                            raise
+                        await _aio.sleep(2 + attempt * 3)
+                else:
+                    raise ShopifyError(f"{self.domain} kept rate limiting us; try again shortly.")
+                conn = data["orders"]
+                for o in conn["nodes"]:
+                    for rf in o.get("refunds") or []:
+                        at = datetime.fromisoformat(rf["createdAt"].replace("Z", "+00:00")).astimezone(tz)
+                        if not lo <= at <= hi:
+                            continue
+                        for li in (rf.get("refundLineItems") or {}).get("nodes") or []:
+                            item = li.get("lineItem") or {}
+                            out.append({"day": at.date().isoformat(), "order": o["name"],
+                                        "product_id": (item.get("product") or {}).get("id"),
+                                        "variant_id": (item.get("variant") or {}).get("id"),
+                                        "quantity": int(li.get("quantity") or 0),
+                                        "amount": float(((li.get("subtotalSet") or {}).get("shopMoney") or {}).get("amount") or 0)})
                 if not conn["pageInfo"]["hasNextPage"]:
                     break
                 cursor = conn["pageInfo"]["endCursor"]

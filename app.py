@@ -195,7 +195,7 @@ _DESK_HOME = {"profit": "/", "cash": "/cash", "cog": "/cog", "inbox": "/inbox", 
 _EVERYONE = {"/api/me", "/api/me/password", "/api/logout", "/change-password",
              "/api/setup", "/api/chat"}
 # What "read & write" people may change (owners may change anything).
-_WRITE_OK = ("/api/invoices", "/api/suppliers/payee", "/api/disputes", "/api/cog/sync", "/api/inbox", "/api/expenses", "/api/scm", "/api/importer", "/api/sizecharts")
+_WRITE_OK = ("/api/googleads/tags", "/api/invoices", "/api/suppliers/payee", "/api/disputes", "/api/cog/sync", "/api/inbox", "/api/expenses", "/api/scm", "/api/importer", "/api/sizecharts")
 # What anyone with the desk may do, read-only people included (it changes nothing).
 _ANY_OK = ("/api/reports",)
 
@@ -5924,47 +5924,44 @@ async def _product_info(store, pids: list) -> dict:
     return out
 
 
-@app.get("/api/googleads")
-async def api_googleads(store: str = "", fresh: int = 0, min_spend: float = None, start: str = "", end: str = ""):
-    """One store's Google products for the picked period (default last 30 days) plus the last 7 / 14 / 30
-    days, one row per Shopify product (google_desk.py). Each store on its own, in its Google Ads account's
-    currency. Store days, today so far included (the dashboard's days); the summary totals come from the
-    dashboard's engine, so the two agree."""
+def _gd_store(store: str):
     stores = [x for x in db.list_stores() if x.get("google_customer_id") and not demo.is_demo(x)]
     listing = [{"id": x["id"], "name": x["name"].strip(), "currency": x["currency"], "timezone": x["timezone"],
                 "google_currency": x.get("google_currency"), "direct": x.get("google_source") != "sheet"} for x in stores]
-    st = next((x for x in stores if str(x["id"]) == store), None) or next((x for x in stores if x.get("google_source") != "sheet"), None)
-    if not st:
-        return {"stores": listing, "error": "No store reads Google Ads directly yet."}
-    if st.get("google_source") == "sheet":
-        return {"stores": listing, "store": st["id"],
-                "error": f"{st['name'].strip()}'s ad account isn't readable directly yet: give shop.valueventures@gmail.com "
-                         "access to it in Google Ads, then switch it from the Sheet."}
-    today = _store_today(st)
-    try:
-        sel_end = min(date.fromisoformat(end), today) if end else today
-        sel_start = date.fromisoformat(start) if start else sel_end - timedelta(days=29)
-    except ValueError:
-        raise HTTPException(400, "Pick the dates.")
-    if sel_start > sel_end:
-        raise HTTPException(400, "The start date has to be on or before the end date.")
-    if (sel_end - sel_start).days > 365:
-        raise HTTPException(400, "Pick up to a year at a time.")
+    st = next((x for x in stores if str(x["id"]) == str(store)), None) or next((x for x in stores if x.get("google_source") != "sheet"), None)
+    return st, listing
+
+
+def _gd_tags(store_id: int) -> dict:
+    with db._conn() as con:
+        tags = [dict(r) for r in con.execute("SELECT id, name, color FROM gads_tags WHERE store_id = ? ORDER BY name", (store_id,))]
+        links = {}
+        for tid, pid in con.execute("SELECT t.id, p.product_id FROM gads_tags t JOIN gads_tag_products p ON p.tag_id = t.id"
+                                    " WHERE t.store_id = ?", (store_id,)):
+            links.setdefault(pid, []).append(tid)
+    return {"tags": tags, "product_tags": links}
+
+
+async def _gdesk(st, windows: dict, fresh: int = 0, country: str = "", min_spend: float = None) -> dict:
+    """Every product of one store over the given store-day periods ({key: (first, last)}), in the Google Ads
+    account's currency. The summary totals come from the dashboard's engine (whole store, no country filter)."""
     min_spend = min_spend if min_spend is not None else float(db.get_setting(f"gads_min:{st['id']}") or 25)
-    key = (st["id"], min_spend, sel_start, sel_end, today)
+    today = _store_today(st)
+    key = (st["id"], min_spend, tuple(sorted(windows.items())), country, today)
     hit = _gdesk_cache.get(key)
     if hit and not fresh and time.time() - hit[0] < 1200:
-        return {**hit[1], "stores": listing, "cached_at": hit[0]}
+        return {**hit[1], "cached_at": hit[0]}
     auth = db.get_google_auth()
     if not auth:
         raise HTTPException(400, "Google isn't connected (Settings → Google Ads).")
-    lo = min(sel_start, today - timedelta(days=29))
-    windows = google_desk.windows_for(today, sel_start, sel_end)
+    lo = min(date.fromisoformat(a) for a, _ in windows.values())
+    hi = max(date.fromisoformat(b) for _, b in windows.values())
     args = (auth["refresh_token"], st["google_customer_id"], st["google_login_cid"])
     meta_conn = next((c for c in db.list_meta_connections() if c["id"] == st.get("meta_connection_id")), None)
+    client = ShopifyClient(st["shop_domain"], st["access_token"])
     try:
         (dash_rows, _notes), (_acct, gcur, atz) = await asyncio.gather(
-            _store_window(st, lo.isoformat(), today.isoformat(), auth, meta_conn),
+            _store_window(st, lo.isoformat(), hi.isoformat(), auth, meta_conn),
             gads.account_daily(*args, today.isoformat(), today.isoformat()))
         try:
             atzi = ZoneInfo(atz)
@@ -5974,16 +5971,22 @@ async def api_googleads(store: str = "", fresh: int = 0, min_spend: float = None
         g_day = lambda d, last=False: (datetime.combine(d + timedelta(days=1 if last else 0), clock.min, _zone(st))
                                        - timedelta(seconds=1 if last else 0)).astimezone(atzi).date().isoformat()
         g_windows = {k: (g_day(date.fromisoformat(a)), g_day(date.fromisoformat(b), True)) for k, (a, b) in windows.items()}
-        rows, gcur2 = await gads.product_report(*args, g_day(lo), g_day(today, True))
+        rows_task = gads.product_report(*args, g_day(lo), g_day(hi, True))
+        try:
+            (rows, gcur2), refunds = await asyncio.gather(rows_task, client.refund_lines(lo.isoformat(), hi.isoformat(), st["timezone"]))
+        except ShopifyError:
+            rows, gcur2 = await gads.product_report(*args, g_day(lo), g_day(hi, True))
+            refunds = []
         gcur = gcur or gcur2 or st.get("google_currency") or st["currency"]
     except gads.GoogleAdsError as e:
         raise HTTPException(400, str(e))
     with db._conn() as con:
         lines = [dict(r) for r in con.execute(
-            "SELECT day, product, variant_id, product_id, quantity, subtotal, cost_usd, cancelled FROM cog_lines"
-            " WHERE store_id = ? AND day >= ? AND day <= ?", (st["id"], lo.isoformat(), today.isoformat()))]
+            "SELECT day, product, variant_id, product_id, quantity, subtotal, cost_usd, cancelled, country FROM cog_lines"
+            " WHERE store_id = ? AND day >= ? AND day <= ?", (st["id"], lo.isoformat(), hi.isoformat()))]
         fee = con.execute("SELECT SUM(COALESCE(fee_actual, fee_est)), SUM(amount) FROM order_fees"
                           " WHERE store_id = ? AND day >= ?", (st["id"], lo.isoformat())).fetchone()
+        first_day = con.execute("SELECT MIN(day) FROM cog_lines WHERE store_id = ?", (st["id"],)).fetchone()[0]
     fee_rate = (fee[0] / fee[1]) if fee and fee[1] else 0.0
     pids = {google_desk.parse_item(r["item_id"])[0] for r in rows}
     pids |= {str(l["product_id"] or "").rsplit("/", 1)[-1] for l in lines if l.get("product_id")}
@@ -5997,17 +6000,135 @@ async def api_googleads(store: str = "", fresh: int = 0, min_spend: float = None
                 v["price"] *= f(st["currency"])
     tax = 1 + (st.get("google_tax_pct") or 0) / 100.0          # as the dashboard counts Google (e.g. ZAVA GST)
     out = await asyncio.to_thread(google_desk.build, rows, tax, lines, f("USD"), info, fee_rate, windows, g_windows,
-                                  min_spend, f(st["currency"]))
-    google_desk.with_dashboard(out, _in_currency(dash_rows, {**st, "google_currency": gcur}, table, gcur), windows)
+                                  min_spend, f(st["currency"]), refunds, country)
+    if not country:
+        google_desk.with_dashboard(out, _in_currency(dash_rows, {**st, "google_currency": gcur}, table, gcur), windows)
     out.update(store=st["id"], currency=gcur, store_currency=st["currency"], google_currency=gcur, fee_rate=fee_rate,
-               min_spend=min_spend, today=today.isoformat(), start=sel_start.isoformat(), end=sel_end.isoformat(),
-               account_timezone=atz, store_timezone=st["timezone"], shop=st["shop_domain"],
+               min_spend=min_spend, today=today.isoformat(), account_timezone=atz, store_timezone=st["timezone"],
+               shop=st["shop_domain"], country=country, data_from=first_day,
                fx_rate=None if gcur == st["currency"] else f(st["currency"]),
                missing_product_ids=not any(l.get("product_id") for l in lines),
                info_error=None if info else _gdesk_cache.get("_info_error"),
                sample_items=[r["item_id"] for r in rows[:3]] if not info else [])
     _gdesk_cache[key] = (time.time(), out)
-    return {**out, "stores": listing, "cached_at": time.time()}
+    return {**out, "cached_at": time.time()}
+
+
+def _gd_dates(start: str, end: str, today: date, default_days: int = 30):
+    try:
+        e = min(date.fromisoformat(end), today) if end else today
+        a = date.fromisoformat(start) if start else e - timedelta(days=default_days - 1)
+    except ValueError:
+        raise HTTPException(400, "Pick the dates.")
+    if a > e:
+        raise HTTPException(400, "The start date has to be on or before the end date.")
+    if (e - a).days > 731:
+        raise HTTPException(400, "Pick up to two years at a time.")
+    return a, e
+
+
+@app.get("/api/googleads")
+async def api_googleads(store: str = "", fresh: int = 0, min_spend: float = None, start: str = "", end: str = "",
+                        country: str = ""):
+    """One store's Google products for the picked period (default last 30 days) plus the last 7 / 14 / 30
+    days, one row per Shopify product (google_desk.py). Each store on its own, in its Google Ads account's
+    currency. Store days, today so far included (the dashboard's days); the summary totals come from the
+    dashboard's engine, so the two agree."""
+    st, listing = _gd_store(store)
+    if not st:
+        return {"stores": listing, "error": "No store reads Google Ads directly yet."}
+    if st.get("google_source") == "sheet":
+        return {"stores": listing, "store": st["id"],
+                "error": f"{st['name'].strip()}'s ad account isn't readable directly yet: give shop.valueventures@gmail.com "
+                         "access to it in Google Ads, then switch it from the Sheet."}
+    today = _store_today(st)
+    a, e = _gd_dates(start, end, today)
+    out = await _gdesk(st, google_desk.windows_for(today, a, e), fresh, country.upper()[:3], min_spend)
+    return {**out, "start": a.isoformat(), "end": e.isoformat(), "stores": listing, **_gd_tags(st["id"])}
+
+
+@app.get("/api/googleads/compare")
+async def api_googleads_compare(store: str, p1_start: str, p1_end: str, p2_start: str, p2_end: str, fresh: int = 0,
+                                country: str = ""):
+    """Period 1 against period 2 for every product (spend, revenue, ROAS, COG, net profit ...)."""
+    st, listing = _gd_store(store)
+    if not st or st.get("google_source") == "sheet":
+        raise HTTPException(400, "This store's Google Ads account isn't readable directly yet.")
+    today = _store_today(st)
+    a1, e1 = _gd_dates(p1_start, p1_end, today)
+    a2, e2 = _gd_dates(p2_start, p2_end, today)
+    out = await _gdesk(st, {"p1": (a1.isoformat(), e1.isoformat()), "p2": (a2.isoformat(), e2.isoformat())},
+                       fresh, country.upper()[:3])
+    return {**out, "stores": listing, **_gd_tags(st["id"])}
+
+
+@app.post("/api/googleads/tags")
+def api_googleads_tag_add(payload: dict):
+    name = (payload.get("name") or "").strip()[:40]
+    color = (payload.get("color") or "#7C3AED")[:9]
+    if not name:
+        raise HTTPException(400, "Give the tag a name.")
+    with db._conn() as con:
+        con.execute("INSERT INTO gads_tags (store_id, name, color) VALUES (?, ?, ?)", (int(payload["store"]), name, color))
+    return _gd_tags(int(payload["store"]))
+
+
+@app.delete("/api/googleads/tags/{tag_id}")
+def api_googleads_tag_delete(tag_id: int):
+    with db._conn() as con:
+        r = con.execute("SELECT store_id FROM gads_tags WHERE id = ?", (tag_id,)).fetchone()
+        if not r:
+            raise HTTPException(404, "Tag not found.")
+        con.execute("DELETE FROM gads_tag_products WHERE tag_id = ?", (tag_id,))
+        con.execute("DELETE FROM gads_tags WHERE id = ?", (tag_id,))
+    return _gd_tags(r[0])
+
+
+@app.post("/api/googleads/tags/{tag_id}/products")
+def api_googleads_tag_products(tag_id: int, payload: dict):
+    """{add: [product ids]} or {remove: [product ids]}."""
+    with db._conn() as con:
+        r = con.execute("SELECT store_id FROM gads_tags WHERE id = ?", (tag_id,)).fetchone()
+        if not r:
+            raise HTTPException(404, "Tag not found.")
+        con.executemany("INSERT OR IGNORE INTO gads_tag_products (tag_id, product_id) VALUES (?, ?)",
+                        [(tag_id, str(p)) for p in payload.get("add") or []])
+        con.executemany("DELETE FROM gads_tag_products WHERE tag_id = ? AND product_id = ?",
+                        [(tag_id, str(p)) for p in payload.get("remove") or []])
+    return _gd_tags(r[0])
+
+
+GD_STATUS = """mutation($p: ProductUpdateInput!) { productUpdate(product: $p) { product { id status } userErrors { message } } }"""
+
+
+@app.post("/api/googleads/status")
+async def api_googleads_status(payload: dict):
+    """Set products Active / Draft / Archived in Shopify straight from the desk: {store, products, status}."""
+    status = (payload.get("status") or "").upper()
+    if status not in ("ACTIVE", "DRAFT", "ARCHIVED"):
+        raise HTTPException(400, "Pick Active, Draft or Archived.")
+    st = next((x for x in db.list_stores() if str(x["id"]) == str(payload.get("store"))), None)
+    if not st:
+        raise HTTPException(404, "Store not found.")
+    pids = [str(p) for p in payload.get("products") or [] if str(p).isdigit()][:250]
+    client = ShopifyClient(st["shop_domain"], st["access_token"])
+    done, errors = [], []
+    for pid in pids:
+        try:
+            got = await client.gql(GD_STATUS, {"p": {"id": f"gid://shopify/Product/{pid}", "status": status}})
+            errs = (got.get("productUpdate") or {}).get("userErrors") or []
+            if errs:
+                errors.append(f"{pid}: {errs[0].get('message')}")
+            else:
+                done.append(pid)
+        except Exception as e:
+            errors.append(f"{pid}: {str(e)[:120]}")
+    for k, (_t, out) in list(_gdesk_cache.items()):         # show the new status without a full reload
+        if isinstance(k, tuple) and k and k[0] == st["id"]:
+            for p in out.get("products", []):
+                if p["pid"] in done:
+                    p["status"] = status.title()
+    return {"done": done, "errors": errors}
 
 
 @app.get("/api/googleads/check")
@@ -7185,7 +7306,7 @@ async def _cog_sync(days_back: int = None, store_ids: list = None) -> dict:
                 for n, line in enumerate(cog.cost_order(o, sid, catalog, rate)):
                     out.append({**line, "order": o["name"], "line_no": n, "day": o["day"],
                                 "created": o["created"], "cancelled": o["cancelled"],
-                                "fulfillment": o["fulfillment"]})
+                                "fulfillment": o["fulfillment"], "country": o.get("country")})
             return out
         for x in stores:
             if x["id"] not in fetched:

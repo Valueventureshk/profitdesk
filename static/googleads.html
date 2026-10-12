@@ -10,46 +10,126 @@
 <link rel="stylesheet" href="/static/skin.css">
 </head>
 <body>
-<div class="cash-page">
+<div class="cash-page gx-page">
   <header class="cash-top">
     <div class="brand" data-section-menu title="Switch section">
       <span class="brand-mark">PD</span>
       <span class="brand-name">ProfitDesk</span>
     </div>
     <div class="crumb">
-      <h1>Google Ads</h1>
-      <p id="sub">Every product's Google results next to its real Shopify sales, COG and profit.</p>
+      <h1 id="title">Google Ads</h1>
+      <p id="sub">Track your product performance and Google Ads metrics</p>
     </div>
     <div class="controls">
+      <span class="gx-tabs" id="view"><button data-v="dash" class="on">Dashboard</button><button data-v="compare">Compare periods</button></span>
       <select id="store" class="control" title="Each store on its own, in its Google Ads account's currency"></select>
-      <select id="period" class="control"><option value="today">Today</option><option value="yesterday">Yesterday</option>
-        <option value="7">Last 7 days</option><option value="14">Last 14 days</option><option value="30" selected>Last 30 days</option>
-        <option value="mtd">This month</option><option value="lastmonth">Last month</option><option value="90">Last 90 days</option><option value="custom">Custom…</option></select>
-      <span id="dates" class="gd-dates" hidden><input type="date" id="from" class="control"> – <input type="date" id="to" class="control"></span>
       <button id="refresh" class="btn btn-ghost">Refresh</button>
     </div>
   </header>
 
-  <main class="content">
+  <main class="content gx">
     <div id="problems" class="warnings"></div>
-    <section id="cards" class="cards gd-cards"></section>
-    <section class="panel gd-panel">
-      <div class="panel-head"><h2>Product performance <span class="hint" id="count"></span></h2>
-        <span class="gd-tools">
-          <input id="q" class="control" type="search" placeholder="Search products">
-          <select id="verdict" class="control"><option value="">Every verdict</option><option value="scale">Scale</option><option value="keep">Keep</option><option value="watch">Watch</option><option value="cut">Cut</option><option value="learning">Learning</option></select>
-          <select id="status" class="control"><option value="">Any status</option><option value="Active">Active</option><option value="Draft">Draft</option><option value="Archived">Archived</option></select>
-          <button class="btn btn-sm btn-ghost" id="csv">⬇ Export CSV</button>
-        </span></div>
-      <div class="table-wrap gd-wrap"><table class="table gd-table" id="table"><tbody><tr><td class="hint">Loading…</td></tr></tbody></table></div>
-      <div class="gd-more" id="more"></div>
-      <details class="gd-help"><summary class="hint">How these numbers work</summary><div class="hint" id="help"></div></details>
+
+    <!-- ============ dashboard view ============ -->
+    <section id="dashView">
+      <div class="gx-card gx-filters">
+        <div class="gx-frow">
+          <label class="gx-search"><span>⌕</span><input id="q" type="search" placeholder="Search by name, product id"></label>
+          <label class="gx-f">Min ROAS: <input id="minRoas" type="number" step="0.1" placeholder="Any"></label>
+          <label class="gx-f">Max ROAS: <input id="maxRoas" type="number" step="0.1" placeholder="Any"></label>
+          <label class="gx-f">Min Ad Days: <input id="minDays" type="number" step="1" placeholder="Any"></label>
+          <label class="gx-f">Min Cost: <input id="minCost" type="number" step="1" placeholder="Any"></label>
+          <label class="gx-f">Status: <select id="status"><option value="">All</option><option>Active</option><option>Draft</option><option>Archived</option></select></label>
+          <label class="gx-f">Country: <select id="country"><option value="">All Countries</option></select></label>
+          <label class="gx-f">Verdict: <select id="verdict"><option value="">All</option><option value="scale">Scale</option><option value="keep">Keep</option><option value="watch">Watch</option><option value="cut">Cut</option><option value="learning">Learning</option></select></label>
+          <span class="gx-dd"><button class="gx-btn" id="tagsBtn">Tags <span id="tagsN"></span> ▾</button><div class="gx-menu gx-tagmenu" id="tagsMenu" hidden></div></span>
+          <button class="gx-link" id="clearF" hidden>Clear filters</button>
+        </div>
+        <div class="gx-frow gx-frow2">
+          <span class="gx-perf">Performance Data • <b id="perfDates"></b></span>
+          <select id="period" class="gx-sel"><option value="today">Today</option><option value="yesterday">Yesterday</option>
+            <option value="7">Last 7 days</option><option value="14">Last 14 days</option><option value="30" selected>Last 30 days</option>
+            <option value="mtd">This month</option><option value="lastmonth">Last month</option><option value="90">Last 90 days</option><option value="custom">Custom…</option></select>
+          <span id="dates" class="gx-dates" hidden><input type="date" id="from"> – <input type="date" id="to"></span>
+          <button class="gx-icon" id="toCompare" title="Compare two periods">⇄</button>
+          <span class="gx-sync" id="sync"></span>
+          <button class="gx-btn" id="csv">⬇ Export CSV</button>
+        </div>
+      </div>
+
+      <section class="gx-cards" id="cards"></section>
+      <p class="gx-note" id="cardNote"></p>
+
+      <section class="gx-card gx-tablecard" id="tableCard">
+        <div class="gx-thead">
+          <div><h2>Product Performance Data</h2><p class="gx-muted" id="showing"></p></div>
+          <button class="gx-icon" id="full" title="Full screen">⛶</button>
+          <span class="gx-tright">
+            <span class="gx-dd"><button class="gx-btn" id="actBtn">Actions ▾</button>
+              <div class="gx-menu" id="actMenu" hidden>
+                <button data-act="DRAFT" data-manage-only>Set to Draft in Shopify</button>
+                <button data-act="ARCHIVED" data-manage-only>Archive in Shopify</button>
+                <button data-act="ACTIVE" data-manage-only>Set to Active in Shopify</button>
+                <hr><b class="gx-mh">Add tag</b><div id="actAdd"></div>
+                <b class="gx-mh">Remove tag</b><div id="actRemove"></div>
+                <hr><button data-act="csv">Export selected (CSV)</button>
+              </div></span>
+            <button class="gx-icon" id="manageTags" title="Manage tags">🏷</button>
+            <button class="gx-icon" id="colsBtn" title="Columns">▥</button>
+          </span>
+        </div>
+        <div class="gx-wrap" id="wrap"><table class="gx-table" id="table"><tbody><tr><td class="gx-muted">Loading…</td></tr></tbody></table></div>
+        <div class="gx-pager"><span class="gx-muted" id="showing2"></span><span id="pages"></span>
+          <label class="gx-muted">Show: <select id="per"><option>25</option><option>50</option><option>100</option><option>250</option></select> per page</label></div>
+      </section>
+      <details class="gx-help"><summary class="gx-muted">How these numbers work</summary><div class="gx-muted" id="help"></div></details>
     </section>
-    <div class="rec-modal" id="vModal" hidden><div class="rec-box gd-vbox"><div class="rec-head"><b id="vTitle">Variants</b>
-      <span><span class="exp-periods gd-win" id="vWin"><button data-w="sel" class="on">Picked period</button><button data-w="7">7 days</button><button data-w="14">14 days</button><button data-w="30">30 days</button></span>
-      <button class="btn btn-sm btn-ghost" id="vClose">Close</button></span></div>
-      <section class="cards gd-cards" id="vCards"></section>
-      <div class="table-wrap"><table class="table gd-table" id="vTable"></table></div></div></div>
+
+    <!-- ============ compare view ============ -->
+    <section id="cmpView" hidden>
+      <div class="gx-banner" id="avail"></div>
+      <div class="gx-card gx-cmpbar">
+        <div class="gx-cmphead"><span class="gx-p p1">P1</span> <b id="p1Label"></b> <span class="gx-muted" id="p1Days"></span>
+          <span class="gx-muted">vs</span> <span class="gx-p p2">P2</span> <b id="p2Label"></b> <span class="gx-muted" id="p2Days"></span></div>
+        <div class="gx-frow"><span class="gx-muted">Quick select:</span>
+          <button class="gx-chip" data-q="7">Week</button><button class="gx-chip" data-q="30">Month</button><button class="gx-chip" data-q="90">Quarter</button><button class="gx-chip" data-q="365">Year</button></div>
+        <div class="gx-frow"><span class="gx-p p1">P1</span><input type="date" id="p1s"> <span class="gx-muted">to</span> <input type="date" id="p1e">
+          <button class="gx-go" id="cmpGo">⇄ Comparing</button>
+          <span class="gx-p p2">P2</span><input type="date" id="p2s"> <span class="gx-muted">to</span> <input type="date" id="p2e"></div>
+        <div class="gx-frow"><label class="gx-search"><span>⌕</span><input id="cq" type="search" placeholder="Search by name, product id"></label>
+          <label class="gx-f">Status: <select id="cstatus"><option value="">All</option><option>Active</option><option>Draft</option><option>Archived</option></select></label>
+          <label class="gx-f">Country: <select id="ccountry"><option value="">All Countries</option></select></label>
+          <button class="gx-btn" id="ccsv">⬇ Export CSV</button></div>
+      </div>
+      <section class="gx-ccards" id="ccards"></section>
+      <p class="gx-muted" id="cshowing"></p>
+      <div class="gx-card gx-tablecard"><div class="gx-wrap"><table class="gx-table gx-ctable" id="ctable"></table></div>
+        <div class="gx-pager"><span class="gx-muted" id="cshowing2"></span><span id="cpages"></span>
+          <label class="gx-muted">Show: <select id="cper"><option>25</option><option>50</option><option>100</option></select> per page</label></div></div>
+    </section>
+
+    <!-- variant breakdown -->
+    <div class="rec-modal" id="vModal" hidden><div class="rec-box gx-vbox">
+      <div class="gx-vhead"><div><h2>Product Variant Breakdown</h2><p class="gx-muted" id="vTitle"></p></div><button class="gx-x" id="vX">×</button></div>
+      <section class="gx-vcards" id="vCards"></section>
+      <div class="gx-vbar"><div><h3>Variant Performance Details</h3><p class="gx-muted" id="vCount"></p></div>
+        <span class="gx-seg" id="vWin"><button data-w="sel" class="on">Picked period</button><button data-w="7">7 Days</button><button data-w="14">14 Days</button><button data-w="30">30 Days</button></span></div>
+      <div class="gx-wrap"><table class="gx-table gx-vtable" id="vTable"></table></div>
+      <div class="gx-vfoot"><button class="gx-go" id="vClose">Close</button></div></div></div>
+
+    <!-- tags -->
+    <div class="rec-modal" id="tModal" hidden><div class="rec-box gx-tbox">
+      <div class="gx-vhead"><h2>Manage Tags</h2><button class="gx-x" id="tX">×</button></div>
+      <div class="gx-frow"><input id="tName" class="gx-in" placeholder="e.g. Winter bestseller" maxlength="40"><input type="color" id="tColor" value="#7C3AED">
+        <button class="gx-go" id="tAdd">+ Add Tag</button></div>
+      <div id="tList"></div></div></div>
+
+    <!-- columns -->
+    <div class="rec-modal" id="cModal" hidden><div class="rec-box gx-tbox">
+      <div class="gx-vhead"><h2>Columns</h2><button class="gx-x" id="cX">×</button></div>
+      <p class="gx-muted">Tick the columns to show. Product, status and variants always show.</p>
+      <div id="cList" class="gx-clist"></div>
+      <div class="gx-vfoot"><button class="gx-link" id="cReset">Reset to default</button><button class="gx-go" id="cDone">Done</button></div></div></div>
   </main>
 </div>
 <div id="toast" class="toast" hidden></div>

@@ -143,6 +143,19 @@ CREATE TABLE IF NOT EXISTS cog_lines (
 );
 CREATE INDEX IF NOT EXISTS cog_lines_day ON cog_lines (store_id, day);
 
+-- Apps → Google Ads: the team's own product tags (per store), e.g. "Winter bestseller".
+CREATE TABLE IF NOT EXISTS gads_tags (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    store_id INTEGER NOT NULL,
+    name     TEXT    NOT NULL,
+    color    TEXT    NOT NULL DEFAULT '#7C3AED'
+);
+CREATE TABLE IF NOT EXISTS gads_tag_products (
+    tag_id     INTEGER NOT NULL,
+    product_id TEXT    NOT NULL,          -- Shopify product id (number) or Google item id
+    PRIMARY KEY (tag_id, product_id)
+);
+
 -- Each order's payment and the provider's fee on it: the actual fee from
 -- PayPal / Airwallex once they've posted it, otherwise the rate-card estimate.
 CREATE TABLE IF NOT EXISTS order_fees (
@@ -602,7 +615,7 @@ _ADDED_COLUMNS = {
         ("check_by", "TEXT"),
         ("check_at", "TEXT"),
     ],
-    "cog_lines": [("single_usd", "REAL"), ("product_id", "TEXT")],   # product_id: Shopify product GID     # the line at single-item prices (bundles show their discount)
+    "cog_lines": [("single_usd", "REAL"), ("product_id", "TEXT"), ("country", "TEXT")],   # country: shipping country code   # product_id: Shopify product GID     # the line at single-item prices (bundles show their discount)
     "shipments": [("province", "TEXT"), ("fulfillment_gid", "TEXT"), ("pushed", "TEXT NOT NULL DEFAULT ''"),
                   ("push_error", "TEXT")],
     "stores": [
@@ -829,12 +842,12 @@ def replace_cog_lines(store_id: int, start: str, end: str, rows: list):
                     (store_id, start, end))
         con.executemany(
             "INSERT OR REPLACE INTO cog_lines (store_id, order_name, line_no, day, created, cancelled,"
-            " fulfillment, product, sku, variant_id, quantity, subtotal, cost_usd, source, supplier, note, single_usd, product_id)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " fulfillment, product, sku, variant_id, quantity, subtotal, cost_usd, source, supplier, note, single_usd, product_id,"
+            " country) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [(store_id, r["order"], r["line_no"], r["day"], r["created"], int(r["cancelled"]),
               r.get("fulfillment"), r["product"], r.get("sku"), r.get("variant_id"), r["quantity"],
               r["subtotal"], r.get("cost"), r.get("source"), r.get("supplier"), r.get("note"), r.get("single"),
-              r.get("product_id"))
+              r.get("product_id"), r.get("country"))
              for r in rows])
 
 

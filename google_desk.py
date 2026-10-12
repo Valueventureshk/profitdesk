@@ -24,7 +24,14 @@ from datetime import date, timedelta
 
 WINDOWS = (7, 14, 30)
 ITEM = re.compile(r"^shopify_[a-z]{2,3}_(\d+)_(\d+)$", re.I)
-FIELDS = ("cost", "impressions", "clicks", "conversions", "value", "qty", "sales", "cog", "fees")
+FIELDS = ("cost", "impressions", "clicks", "conversions", "value", "qty", "sales", "cog", "fees", "refunds", "ref_units")
+ITEM_COUNTRY = re.compile(r"^shopify_([a-z]{2,3})_", re.I)
+
+
+def item_country(item_id: str) -> str:
+    """The feed country in a Shopify item id ("shopify_AU_…" -> "AU"), else ""."""
+    m = ITEM_COUNTRY.match((item_id or "").strip())
+    return m.group(1).upper() if m else ""
 
 
 def parse_item(item_id: str) -> tuple:
@@ -44,15 +51,17 @@ def _empty():
 
 
 def _finish(w: dict, fee_rate: float, unit_margin, min_spend: float) -> dict:
-    """Ratios and the verdict for one window's sums."""
+    """Ratios and the verdict for one window's sums. Net revenue = sales - refunds."""
     cost, sales = w["cost"], w["sales"]
-    w["profit"] = sales - w["cog"] - w["fees"] - cost
+    w["net_sales"] = sales - w["refunds"]
+    w["net_qty"] = w["qty"] - w["ref_units"]
+    w["profit"] = w["net_sales"] - w["cog"] - w["fees"] - cost
     w["roas"] = sales / cost if cost else None
     w["groas"] = w["value"] / cost if cost else None
     w["poas"] = w["profit"] / cost if cost else None
     w["ctr"] = w["clicks"] / w["impressions"] if w["impressions"] else None
     w["cpc"] = cost / w["clicks"] if w["clicks"] else None
-    margin = (sales - w["cog"] - w["fees"]) / sales if sales else unit_margin
+    margin = (w["net_sales"] - w["cog"] - w["fees"]) / sales if sales else unit_margin
     w["be_roas"] = 1 / margin if margin and margin > 0 else None
     if cost < min_spend:
         w["verdict"] = "learning"
@@ -86,6 +95,7 @@ def with_dashboard(out: dict, rows: list, windows: dict) -> dict:
         s["cost_other"] = cost - s["cost_products"]
         s["sales"] = sum(r["sales"] for r in days)
         s["refunds"] = sum(r["refunds"] + r["chargebacks"] for r in days)
+        s["net_sales"] = s["sales"] - s["refunds"]
         s["cog"] = sum(r["cogs"] for r in days)
         s["fees"] = sum(r["processing_fee"] for r in days)
         s["orders"] = sum(r["orders"] for r in days)
@@ -100,7 +110,8 @@ def with_dashboard(out: dict, rows: list, windows: dict) -> dict:
 
 
 def build(google_rows: list, g_factor: float, lines: list, usd_factor: float, products: dict,
-          fee_rate: float, windows: dict, g_windows: dict, min_spend: float = 25.0, s_factor: float = 1.0) -> dict:
+          fee_rate: float, windows: dict, g_windows: dict, min_spend: float = 25.0, s_factor: float = 1.0,
+          refunds: list = (), country: str = "") -> dict:
     """google_rows: gads.product_report rows (account currency x g_factor = store currency);
     lines: cog_lines rows of the last 30 store days (cost_usd x usd_factor = store currency);
     products: {product id: {title, image, status, handle, variants: {variant id: {title, price, image}}}};
@@ -117,9 +128,15 @@ def build(google_rows: list, g_factor: float, lines: list, usd_factor: float, pr
         p = prods.setdefault(pid, {"pid": pid, "gtitle": title, "variants": {}})
         if title and not p["gtitle"]:
             p["gtitle"] = title
-        return p["variants"].setdefault(vid, {"vid": vid, "w": {w: _empty() for w in W}, "units_cost": [0.0, 0]})
+        return p["variants"].setdefault(vid, {"vid": vid, "w": {w: _empty() for w in W}, "units_cost": [0.0, 0],
+                                              "days": {w: set() for w in W}})
 
+    countries = set()
     for r in google_rows:
+        c = item_country(r["item_id"])
+        countries.add(c)
+        if country and c and c != country:
+            continue
         pid, vid = parse_item(r["item_id"])
         variant_of.setdefault(vid, pid)
         v = slot(pid, vid, r["title"])
@@ -131,8 +148,13 @@ def build(google_rows: list, g_factor: float, lines: list, usd_factor: float, pr
                 t["impressions"] += r["impressions"]
                 t["clicks"] += r["clicks"]
                 t["conversions"] += r["conversions"]
+                if r["cost"]:
+                    v["days"][w].add(r["date"])
     for l in lines:
         if l.get("cancelled"):
+            continue
+        countries.add(l.get("country") or "")
+        if country and (l.get("country") or "") != country:
             continue
         vid = _num(l.get("variant_id"))
         pid = _num(l.get("product_id")) or variant_of.get(vid)
@@ -151,6 +173,16 @@ def build(google_rows: list, g_factor: float, lines: list, usd_factor: float, pr
                 t["sales"] += sales
                 t["cog"] += cog
                 t["fees"] += sales * fee_rate
+    for x in refunds:                                 # refunds count on the day they're made
+        vid = _num(x.get("variant_id"))
+        pid = _num(x.get("product_id")) or variant_of.get(vid)
+        if not pid or pid not in prods:
+            continue
+        v = slot(pid, vid)
+        for w in W:
+            if windows[w][0] <= x["day"] <= windows[w][1]:
+                v["w"][w]["refunds"] += x["amount"] * s_factor
+                v["w"][w]["ref_units"] += x["quantity"]
 
     out = []
     for pid, p in prods.items():
@@ -165,12 +197,14 @@ def build(google_rows: list, g_factor: float, lines: list, usd_factor: float, pr
             for w in W:
                 for k in FIELDS:
                     totals[w][k] += v["w"][w][k]
+                v["w"][w]["ad_days"] = len(v["days"][w])
                 _finish(v["w"][w], fee_rate, unit_margin, min_spend / 2)
             variants.append({"vid": vid, "title": vi.get("title") or ("Variant " + vid if vid else "?"),
                              "price": price, "unit_cog": unit_cog, "image": vi.get("image"), "w": v["w"]})
         known = [x for x in variants if x["price"] and x["unit_cog"] is not None]
         unit_margin = (sum(1 - x["unit_cog"] / x["price"] for x in known) / len(known) - fee_rate) if known else None
         for w in W:
+            totals[w]["ad_days"] = len(set().union(*(p["variants"][x["vid"]]["days"][w] for x in variants))) if variants else 0
             _finish(totals[w], fee_rate, unit_margin, min_spend)
         variants.sort(key=lambda x: -x["w"]["sel"]["cost"])
         out.append({"pid": pid, "title": info.get("title") or p["gtitle"] or pid, "image": info.get("image"),
@@ -187,5 +221,5 @@ def build(google_rows: list, g_factor: float, lines: list, usd_factor: float, pr
         s["cost_other"] = 0.0
         summary[w] = _finish(s, fee_rate, None, 0)
         summary[w]["products"] = sum(1 for p in out if p["w"][w]["cost"] or p["w"][w]["sales"])
-    return {"products": out, "summary": summary, "windows": W,
+    return {"products": out, "summary": summary, "windows": W, "countries": sorted(c for c in countries if c),
             "ranges": {w: {"start": windows[w][0], "end": windows[w][1], "g_start": g_windows[w][0], "g_end": g_windows[w][1]} for w in W}}
