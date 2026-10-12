@@ -7033,7 +7033,7 @@ async def _gconv_run(st):
                 retry = (not r["ok"]) and any(c in (r["error"] or "") for c in gads_conv.RETRY_CODES)
                 age = datetime.now(timezone.utc) - datetime.fromisoformat(i["at"])
                 rows.append({**i, "value": u["value"], "currency": u["currency"], "click": next(iter(i["click"])),
-                             "status": "sent" if r["ok"] else ("retry" if retry and age < timedelta(hours=48) else "failed"),
+                             "status": "sent" if r["ok"] else ("retry" if retry and age < timedelta(hours=48 if "NEEDS_SIGN_IN" not in (r["error"] or "") and "API_OFF" not in (r["error"] or "") else 24 * 7) else "failed"),
                              "error": r.get("error")})
     await asyncio.to_thread(gads_conv.save, st["id"], rows)
 
@@ -7127,6 +7127,8 @@ async def _gconv_autoswitch(st):
 async def _gconv_loop():
     """Every 10 minutes: send each switched-on store's new Google-click events; once an hour, the auto switch."""
     await asyncio.sleep(200)
+    with db._conn() as con:      # rejected by the old upload method (Google moved new integrations to Data Manager): send again
+        con.execute("DELETE FROM gconv_uploads WHERE status = 'failed' AND error LIKE '%Data Manager API%'")
     n = 0
     while True:
         for st in db.list_stores():
@@ -7339,6 +7341,9 @@ async def _store_health(st) -> dict:
             rec = sum(a["conversions_30d"] for a in prim)
             if not prim:
                 probs.append("Google: no primary purchase action — Google bids on nothing")
+            elif rec <= 0 and any(a["name"] == gads_conv.ACTION_NAMES["purchase"] for a in prim) and _gconv_cfg(sid).get("started_at") \
+                    and datetime.now(timezone.utc) - datetime.fromisoformat(_gconv_cfg(sid)["started_at"]) < timedelta(days=14):
+                ok.append("Google: ProfitDesk Purchase is primary and new (started under 14 days ago), still building up")
             elif rec <= 0:
                 probs.append(f"Google: primary purchase action ({', '.join(a['name'] for a in prim)}) recorded 0 in 30 days")
             else:
@@ -7353,6 +7358,11 @@ async def _store_health(st) -> dict:
                           f"{p.get('no_click', 0)} without a Google click, {p.get('failed', 0)} failed")
                 if p.get("failed"):
                     probs.append(f"ProfitDesk → Google: {p['failed']} purchase uploads failed in 7 days")
+                stuck = p.get("retry", 0)
+                if stuck:
+                    with db._conn() as con:
+                        why = con.execute("SELECT error FROM gconv_uploads WHERE store_id = ? AND status = 'retry' ORDER BY at DESC LIMIT 1", (sid,)).fetchone()
+                    probs.append(f"ProfitDesk → Google: {stuck} purchases waiting to be re-sent" + (f" ({why[0][:160]})" if why and why[0] else ""))
             with db._conn() as con:
                 orders = con.execute("SELECT COUNT(DISTINCT order_name) FROM cog_lines WHERE store_id = ? AND day >= ? AND cancelled = 0",
                                      (sid, (_store_today(st) - timedelta(days=29)).isoformat())).fetchone()[0]

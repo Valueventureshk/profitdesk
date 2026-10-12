@@ -23,6 +23,8 @@ TOKEN_URL = "https://oauth2.googleapis.com/token"
 USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo"
 SCOPES = [
     "https://www.googleapis.com/auth/adwords",
+    # Sending conversions (purchases, adds to cart) to Google Ads: Google's Data Manager API (gads_conv.py).
+    "https://www.googleapis.com/auth/datamanager",
     "https://www.googleapis.com/auth/userinfo.email",
     # View-only, for the spend Sheet the Google Ads script fills (google_sheet.py).
     "https://www.googleapis.com/auth/spreadsheets.readonly",

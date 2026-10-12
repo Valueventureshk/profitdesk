@@ -174,34 +174,49 @@ def _gtime(iso: str) -> str:
 
 
 async def upload(rt, customer_id, login_cid, action_resource: str, items: list, with_ids: bool = True) -> list:
-    """Upload click conversions: items [{order, created, value, currency, click: {gclid|gbraid|wbraid}, email, phone}].
-    Returns [{order, ok, error}] in the same order. Partial failure: one bad row doesn't stop the rest."""
-    version, cid, headers = await gads_manage._ctx(rt, customer_id, login_cid)
-    convs = []
-    for it in items:
-        c = {"conversionAction": action_resource, "conversionDateTime": _gtime(it["created"]),
-             "conversionValue": it["value"], "currencyCode": it["currency"], "orderId": it["order"], **it["click"]}
-        if with_ids:
-            ids = identifiers(it.get("email"), it.get("phone"))
-            if ids:
-                c["userIdentifiers"] = ids
-        convs.append(c)
-    url = f"https://googleads.googleapis.com/{version}/customers/{cid}:uploadClickConversions"
-    async with httpx.AsyncClient(timeout=90) as client:
-        r = await client.post(url, headers=headers, json={"conversions": convs, "partialFailure": True})
-    if r.status_code >= 400:
-        raise gads.GoogleAdsError(f"Google refused the upload: {gads._why(r)}")
-    body = r.json()
-    bad = {}
-    for d in ((body.get("partialFailureError") or {}).get("details") or []):
-        for e in d.get("errors") or []:
-            idx = next((int(f.get("index", 0)) for f in (e.get("location") or {}).get("fieldPathElements") or []
-                        if f.get("fieldName") == "conversions"), None)
-            if idx is not None:
-                code = "".join(f"{k}={v}" for k, v in (e.get("errorCode") or {}).items())
-                bad[idx] = f"{e.get('message', '')} ({code})"
-    return [{"order": it["order"], "ok": i not in bad, "error": bad.get(i)} for i, it in enumerate(items)]
-
+    """Send conversions to Google Ads through Google's Data Manager API (events:ingest), the way Google requires for
+    new integrations: items [{order, created, value, currency, click: {gclid|gbraid|wbraid}, email, phone}].
+    One event per request (Data Manager rejects a whole request when one event is bad), so one bad order can't block
+    the rest. Returns [{order, ok, error}] in the same order."""
+    access = await gads._access_token(rt)
+    cid = str(customer_id).replace("-", "")
+    login = str(login_cid or customer_id).replace("-", "")
+    dest = {"operatingAccount": {"accountType": "GOOGLE_ADS", "accountId": cid},
+            "loginAccount": {"accountType": "GOOGLE_ADS", "accountId": login},
+            "productDestinationId": action_resource.rsplit("/", 1)[-1]}
+    headers = {"Authorization": f"Bearer {access}", "Content-Type": "application/json"}
+    out = []
+    async with httpx.AsyncClient(timeout=60) as client:
+        for it in items:
+            ev = {"adIdentifiers": dict(it["click"]), "eventTimestamp": datetime.fromisoformat(it["created"].replace("Z", "+00:00")).isoformat(),
+                  "transactionId": str(it["order"]), "conversionValue": it["value"], "currency": it["currency"], "eventSource": "WEB"}
+            if with_ids:
+                ids = []
+                for u in identifiers(it.get("email"), it.get("phone")):
+                    ids.append({"emailAddress": u["hashedEmail"]} if "hashedEmail" in u else {"phoneNumber": u["hashedPhoneNumber"]})
+                if ids:
+                    ev["userData"] = {"userIdentifiers": ids}
+            body = {"destinations": [dest], "encoding": "HEX", "events": [ev],
+                    "consent": {"adUserData": "CONSENT_GRANTED", "adPersonalization": "CONSENT_GRANTED"}}
+            try:
+                r = await client.post("https://datamanager.googleapis.com/v1/events:ingest", headers=headers, json=body)
+            except httpx.RequestError as e:
+                out.append({"order": it["order"], "ok": False, "error": f"Couldn't reach Google (TRANSIENT {type(e).__name__})"})
+                continue
+            if r.status_code < 300:
+                out.append({"order": it["order"], "ok": True, "error": None})
+                continue
+            try:
+                err = r.json().get("error") or {}
+                msg = f"{err.get('status', r.status_code)}: {err.get('message', '')[:300]}"
+            except ValueError:
+                msg = f"{r.status_code}: {r.text[:300]}"
+            if r.status_code == 403 and ("scope" in msg.lower() or "insufficient" in msg.lower()):
+                msg = "NEEDS_SIGN_IN: sign in to Google again in Settings (ProfitDesk needs the new Data Manager permission). " + msg
+            elif r.status_code == 403 and ("disabled" in msg.lower() or "has not been used" in msg.lower()):
+                msg = "API_OFF: switch on the Data Manager API in the Google Cloud project. " + msg
+            out.append({"order": it["order"], "ok": False, "error": msg})
+    return out
 
 # ---------------------------------------------------------------- what to send (from the ProfitDesk pixel)
 
@@ -270,8 +285,9 @@ def todo(store_id: int, since: str, retry_hours: int = 48) -> list:
     return out
 
 
-RETRY_CODES = ("TOO_RECENT", "CLICK_NOT_FOUND", "CONVERSION_PRECEDES_GCLID", "RESOURCE_EXHAUSTED", "INTERNAL", "TRANSIENT")
-TERMS_CODES = ("CUSTOMER_NOT_ACCEPTED_CUSTOMER_DATA_TERMS", "CUSTOMER_DATA_POLICY", "ENHANCED_CONVERSIONS")
+RETRY_CODES = ("TOO_RECENT", "CLICK_NOT_FOUND", "CONVERSION_PRECEDES_GCLID", "RESOURCE_EXHAUSTED", "INTERNAL", "TRANSIENT",
+               "NEEDS_SIGN_IN", "API_OFF", "UNAVAILABLE", "DEADLINE_EXCEEDED", "429", "500", "503")
+TERMS_CODES = ("CUSTOMER_NOT_ACCEPTED_CUSTOMER_DATA_TERMS", "CUSTOMER_DATA_POLICY", "ENHANCED_CONVERSIONS", "customer data terms")
 
 
 def save(store_id: int, rows: list):
