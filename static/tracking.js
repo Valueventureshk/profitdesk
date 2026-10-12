@@ -481,6 +481,7 @@ async function drawOurs() {
       <span><b>${n("purchase", "sent")}</b> purchases sent</span><span><b>${n("add_to_cart", "sent")}</b> adds to cart sent</span>
       <span><b>${n("begin_checkout", "sent")}</b> checkouts sent</span>
       <span>${n("purchase", "no_click")} purchases had no Google click</span>
+      ${(d.adjusted.done || 0) + (d.adjusted.final || 0) ? `<span>${(d.adjusted.done || 0) + (d.adjusted.final || 0)} refunds / cancellations corrected in Google</span>` : ""}
       ${n("purchase", "retry") + n("purchase", "failed") ? `<span class="neg">${n("purchase", "retry")} waiting to retry · ${n("purchase", "failed")} failed</span>` : ""}</div>
     ${rows ? `<details${c.enabled ? " open" : ""}><summary class="hint">Purchases per day as Google counts them: ProfitDesk vs the others</summary>
       <div class="table-wrap"><table class="table"><thead><tr><th>Day</th><th>ProfitDesk Purchase</th>${Object.keys(cmp.others).map((k) => `<th>${esc(k)}${cmp.primary.includes(k) ? " (primary)" : ""}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div></details>` : ""}

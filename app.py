@@ -6655,7 +6655,17 @@ async def api_ads_manage(store: int, fresh: int = 0, start: str = "", end: str =
         chat = [dict(r) for r in con.execute("SELECT role, content, who, created_at FROM ads_chat WHERE store_id = ? ORDER BY id DESC LIMIT 60", (st["id"],))]
     for m in chat:
         m["content"] = json.loads(m["content"])
-    return {"store": st["id"], "name": st["name"].strip(), "settings": _ads_settings(st["id"]), "structure": s,
+    # the store's breakeven ROAS over the last 30 days (dashboard figures): below it, ads lose money
+    be = None
+    try:
+        rows, _n = await _store_window(st, (today - timedelta(days=29)).isoformat(), today.isoformat(), db.get_google_auth(),
+                                       next((c for c in db.list_meta_connections() if c["id"] == st.get("meta_connection_id")), None))
+        t = metrics.summarize(rows)
+        kept = t["sales"] - t["refunds"] - t["chargebacks"] - t["cogs"] - t["processing_fee"]
+        be = round(t["sales"] / kept, 2) if kept > 0 else None
+    except Exception:
+        pass
+    return {"store": st["id"], "name": st["name"].strip(), "settings": _ads_settings(st["id"]), "structure": s, "breakeven_roas": be,
             "rules": _ads_rules_of(st["id"], names), "actions": _ads_actions_of(st["id"]), "chat": chat[::-1],
             "has_ai": bool(db.get_setting("anthropic_api_key")), "today": _store_today(st).isoformat()}
 
@@ -7017,6 +7027,47 @@ async def _gconv_run(st):
     await asyncio.to_thread(gads_conv.save, st["id"], rows)
 
 
+async def _gconv_adjust(st):
+    """Refunds and cancellations of purchases ProfitDesk sent (last 50 days): Google gets the order's new value
+    (total now, less tax) or drops it when cancelled / fully refunded, so its ROAS is on real revenue."""
+    cfg = _gconv_cfg(st["id"])
+    if not cfg["enabled"]:
+        return
+    since = (datetime.now(timezone.utc) - timedelta(days=50)).isoformat(timespec="seconds")
+    sent = await asyncio.to_thread(gads_conv.sent_purchases, st["id"], since)
+    if not sent:
+        return
+    client = ShopifyClient(st["shop_domain"], st["access_token"])
+    acts = await _gconv_actions(st, cfg)
+    todo = []
+    for k in range(0, len(sent), 50):
+        part = sent[k:k + 50]
+        got = await client.gql("query($ids: [ID!]!) { nodes(ids: $ids) { ... on Order { legacyResourceId name cancelledAt "
+                               "currentTotalPriceSet { shopMoney { amount currencyCode } } currentTotalTaxSet { shopMoney { amount } } } } }",
+                               {"ids": [f"gid://shopify/Order/{x['ref']}" for x in part]})
+        by = {str(n["legacyResourceId"]): n for n in got.get("nodes") or [] if n}
+        for x in part:
+            n = by.get(str(x["ref"]))
+            if not n:
+                continue
+            tot = (n.get("currentTotalPriceSet") or {}).get("shopMoney") or {}
+            tax = float(((n.get("currentTotalTaxSet") or {}).get("shopMoney") or {}).get("amount") or 0)
+            new = 0.0 if n.get("cancelledAt") else max(0.0, round(float(tot.get("amount") or 0) - tax, 2))
+            known = x["adj_value"] if x["adj_value"] is not None else x["value"]
+            if known is not None and abs(new - known) >= 0.5:
+                todo.append({"ref": x["ref"], "order": n["name"], "value": new, "currency": tot.get("currencyCode") or x.get("currency")})
+    if not todo:
+        return
+    res = await gads_conv.adjust(*_ads_args(st), acts["purchase"]["resource"], todo)
+    for t, r in zip(todo, res):
+        if r["ok"]:
+            await asyncio.to_thread(gads_conv.save_adj, st["id"], t["ref"], t["value"], "final" if t["value"] <= 0 else "done")
+        elif any(c in (r["error"] or "") for c in gads_conv.ADJ_RETRY):
+            await asyncio.to_thread(gads_conv.save_adj, st["id"], t["ref"], None, "retry", r["error"])
+        else:
+            await asyncio.to_thread(gads_conv.save_adj, st["id"], t["ref"], None, "failed", r["error"])
+
+
 async def _gconv_compare(st, days: int = 14) -> dict:
     """Last N days, Google's own count per day: ProfitDesk Purchase against the other purchase actions."""
     args = _ads_args(st)
@@ -7073,6 +7124,7 @@ async def _gconv_loop():
                     await _gconv_run(st)
                     if n % 6 == 0:
                         await _gconv_autoswitch(st)
+                        await _gconv_adjust(st)
                     _gconv_state.setdefault(st["id"], {}).update(last_run=time.time(), last_error=None)
             except Exception as e:
                 _gconv_state.setdefault(st["id"], {}).update(last_error=str(getattr(e, "detail", None) or e)[:300])
@@ -7096,7 +7148,11 @@ async def api_tracking_google_status(store: int):
         visitors = con.execute("SELECT COUNT(*) FROM px_visitors WHERE store_id = ? AND g_click IS NOT NULL AND g_at >= ?",
                                (st["id"], since)).fetchone()[0]
     s = _gconv_state.get(st["id"], {})
+    with db._conn() as con:
+        adj = {r[0]: r[1] for r in con.execute("SELECT adj_status, COUNT(*) FROM gconv_uploads WHERE store_id = ? AND kind = 'purchase' "
+                                               "AND adj_status IS NOT NULL GROUP BY adj_status", (st["id"],))}
     return {"store": st["id"], "settings": cfg, "ours_primary": _gconv_ours_primary(cfg), "counts": gads_conv.counts(st["id"], since),
+            "adjusted": adj,
             "google_visitors_14d": visitors, "compare": cmp_, "errors": errs,
             "last_run": s.get("last_run"), "last_error": s.get("last_error"), "pixel": bool(db.get_setting(f"px_key:{st['id']}"))}
 

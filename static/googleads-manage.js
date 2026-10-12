@@ -61,7 +61,7 @@ function drawManage() {
 
   const camps = mg.structure.campaigns;
   const st = mg.structure;
-  $("mgCampNote").textContent = `${camps.length} campaigns · ${MG_PERIOD[mgPeriod]}: ${st.start === st.end ? st.start : `${st.start} to ${st.end}`} · ${st.currency} · ROAS = Shopify sales ÷ spend, G ROAS = Google's conversion value ÷ spend`;
+  $("mgCampNote").textContent = `${mg.breakeven_roas ? `Breakeven ROAS ${mg.breakeven_roas} (last 30 days: sales ÷ (sales − refunds − COG − fees)) · ` : ""}${camps.length} campaigns · ${MG_PERIOD[mgPeriod]}: ${st.start === st.end ? st.start : `${st.start} to ${st.end}`} · ${st.currency} · ROAS = Shopify sales ÷ spend, G ROAS = Google's conversion value ÷ spend`;
   const tracks = camps.some((c) => c.p.conversions || c.p.atc);
   const plist = (c) => c.groups.map((g) => {
     const p = g.products, w = { all: "all products", only: `${p.count} variants`, except: `all but ${p.count}`, custom: "by labels (read-only)", none: "no products" }[p.mode] || p.mode;
@@ -73,7 +73,7 @@ function drawManage() {
       <td class="gx-cname"><b>${esc(c.name)}</b><span class="gx-muted">ID ${c.id}</span></td>
       <td><span class="gx-status ${c.status === "ENABLED" ? "active" : "draft"}">${c.status === "ENABLED" ? "Enabled" : "Paused"}</span></td>
       <td class="gx-muted">${esc((c.type || "").replace("PERFORMANCE_MAX", "PMax").replace("_", " ").toLowerCase())}</td>
-      <td>${mgMoney(c.budget)}</td><td>${c.target_roas ?? "—"}</td><td class="gx-pls">${plist(c) || "—"}</td>
+      <td>${mgMoney(c.budget)}</td><td>${troas(c)}</td><td class="gx-pls">${plist(c) || "—"}</td>
       <td>${mgMoney(c.p.cost)}</td><td>${mgMoney(c.p.sales)}</td><td class="gx-hc ${roasCls(c.p.roas)}">${r2(c.p.roas)}</td>
       <td>${c.p.clicks.toLocaleString()}</td><td class="gx-purple">${c.p.conversions.toFixed(1)}</td><td>${mgMoney(c.p.value)}</td>
       <td>${r2(c.p.groas)}</td><td>${c.p.atc ? c.p.atc.toFixed(0) : "—"}</td>
@@ -94,6 +94,14 @@ function drawManage() {
     if (confirm(`${to === "PAUSED" ? "Pause" : "Enable"} “${c.name}” in Google Ads?`)) manual("set_status", { campaign: c.id, status: to });
   };
   drawPending(); drawRules(); drawLog(); drawChat();
+}
+// target ROAS against the store's breakeven: Google's ROAS is revenue ÷ spend, so a target under breakeven aims at a loss
+function troas(c) {
+  const be = mg.breakeven_roas;
+  if (!c.target_roas) return c.type === "SEARCH" ? "—" : `<span class="gx-muted" title="No target: Google spends the whole budget for the most value">none</span>`;
+  if (!be) return c.target_roas;
+  const ok = c.target_roas >= be;
+  return `<span class="${ok ? "gx-posc" : "gx-negc"}" title="Breakeven ROAS ${be}: ${ok ? "the target is at or above breakeven" : "the target is under breakeven, so Google may buy sales that lose money"}">${c.target_roas}${ok ? "" : " ⚠"}</span>`;
 }
 const roasCls = (r) => (r === null || r === undefined ? "" : r >= 3 ? "gx-h4" : r >= 2 ? "gx-h3" : r >= 1.5 ? "gx-h2" : "gx-h1");
 

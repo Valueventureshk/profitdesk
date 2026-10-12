@@ -309,3 +309,52 @@ async def daily_by_action(rt, customer_id, login_cid, start, end) -> dict:
         nm = s.get("conversionActionName")
         out.setdefault(nm, {})[s.get("date")] = out.get(nm, {}).get(s.get("date"), 0) + float((r.get("metrics") or {}).get("allConversions") or 0)
     return out
+
+
+# ---------------------------------------------------------------- refunds and cancellations (adjustments)
+
+async def adjust(rt, customer_id, login_cid, action_resource: str, items: list) -> list:
+    """items [{order (name sent as orderId), value (new value; 0 = cancelled / fully refunded), currency}].
+    Value 0 -> RETRACTION (Google drops the purchase), else RESTATEMENT (Google uses the new value).
+    Returns [{order, ok, error}]."""
+    version, cid, headers = await gads_manage._ctx(rt, customer_id, login_cid)
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S+00:00")
+    adj = []
+    for it in items:
+        a = {"conversionAction": action_resource, "orderId": it["order"], "adjustmentDateTime": now,
+             "adjustmentType": "RETRACTION" if it["value"] <= 0 else "RESTATEMENT"}
+        if it["value"] > 0:
+            a["restatementValue"] = {"adjustedValue": it["value"], "currencyCode": it["currency"]}
+        adj.append(a)
+    url = f"https://googleads.googleapis.com/{version}/customers/{cid}:uploadConversionAdjustments"
+    async with httpx.AsyncClient(timeout=90) as client:
+        r = await client.post(url, headers=headers, json={"conversionAdjustments": adj, "partialFailure": True})
+    if r.status_code >= 400:
+        raise gads.GoogleAdsError(f"Google refused the corrections: {gads._why(r)}")
+    bad = {}
+    for d in ((r.json().get("partialFailureError") or {}).get("details") or []):
+        for e in d.get("errors") or []:
+            idx = next((int(f.get("index", 0)) for f in (e.get("location") or {}).get("fieldPathElements") or []
+                        if f.get("fieldName") == "conversion_adjustments"), None)
+            if idx is not None:
+                code = "".join(f"{k}={v}" for k, v in (e.get("errorCode") or {}).items())
+                bad[idx] = f"{e.get('message', '')} ({code})"
+    return [{"order": it["order"], "ok": i not in bad, "error": bad.get(i)} for i, it in enumerate(items)]
+
+
+ADJ_RETRY = ("TOO_RECENT", "CONVERSION_NOT_FOUND", "RESOURCE_EXHAUSTED", "INTERNAL", "TRANSIENT")
+
+
+def sent_purchases(store_id: int, since: str) -> list:
+    """Purchases sent to Google since `since` that may still need a correction: [{ref, value, adj_value, adj_status}]."""
+    with db._conn() as con:
+        return [dict(r) for r in con.execute(
+            "SELECT ref, value, currency, adj_value, adj_status FROM gconv_uploads WHERE store_id = ? AND kind = 'purchase' "
+            "AND status = 'sent' AND at >= ? AND COALESCE(adj_status, '') != 'final'", (store_id, since))]
+
+
+def save_adj(store_id: int, ref: str, value: float, status: str, error: str = None):
+    with db._conn() as con:
+        con.execute("UPDATE gconv_uploads SET adj_value = ?, adj_status = ?, adj_at = ?, adj_error = ? WHERE store_id = ? "
+                    "AND kind = 'purchase' AND ref = ?", (value, status, datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                                                          error, store_id, ref))
