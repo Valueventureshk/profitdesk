@@ -7761,7 +7761,8 @@ async def _wa_handle(msg, contact_name=None):
         with db._conn() as con:
             past = [dict(r) for r in con.execute("SELECT direction, text FROM wa_messages WHERE phone = ? ORDER BY id DESC LIMIT 14", (phone,))][::-1]
         hist = [{"role": "user" if m["direction"] == "in" else "assistant", "content": m["text"] or ""} for m in past[:-1] if m["text"]]
-        hist.append({"role": "user", "content": (f"[{note}] " if note else "") + (text or "(sent a file)")})
+        me = f"[WhatsApp from {user.get('name') or user.get('email')} ({user.get('email')}, {'owner' if user.get('role') == 'owner' else 'staff'})] "
+        hist.append({"role": "user", "content": me + (f"[{note}] " if note else "") + (text or "(sent a file)")})
         today = max((_store_today(x) for x in db.list_stores() if not demo.is_demo(x)), default=datetime.now(CASH_TZ).date()).isoformat()
         try:
             got = await ai_chat.reply(key, hist, lambda n, a: _chat_tool(n, a, user), today, _display_currency())
