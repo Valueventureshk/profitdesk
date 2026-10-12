@@ -8071,6 +8071,21 @@ async def api_wa_setup():
     return out
 
 
+@app.post("/api/whatsapp/send")
+async def api_wa_send(payload: dict):
+    """Owner: send a message from ProfitDesk's WhatsApp to an allowed number (inside the 24-hour window)."""
+    phone = whatsapp.norm_phone(payload.get("phone"))
+    if not whatsapp.person(phone):
+        raise HTTPException(400, "That number isn't in 'Who can use it'.")
+    if not _wa_window_open(phone):
+        raise HTTPException(400, "They haven't messaged in the last 24 hours, so Meta only allows the approved template.")
+    try:
+        await _wa_send(phone, payload.get("text") or "")
+    except whatsapp.WAError as e:
+        raise HTTPException(400, str(e))
+    return {"sent": True}
+
+
 @app.post("/api/whatsapp/test")
 async def api_wa_test(payload: dict):
     """Send a test message to one allowed number (it must have messaged ProfitDesk's number in the last 24 h,
