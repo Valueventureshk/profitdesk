@@ -6882,6 +6882,7 @@ async def api_tracking_google_peek(store: int, days: int = 7):
     clicked = [o for o in got if o["click"]]
     return {"orders": len(got), "with_google_click": len(clicked), "value_with_click": round(sum(o["value"] for o in clicked), 2),
             "examples": [{"order": o["name"], "value": o["value"], "click": list(o["click"])} for o in clicked[:5]],
+            "landing_samples": [{"order": o["name"], "landing": o["landing"]} for o in got[-8:]],
             "conversion_actions": acts}
 
 

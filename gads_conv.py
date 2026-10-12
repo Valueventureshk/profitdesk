@@ -77,7 +77,8 @@ async def orders(client, start_iso: str) -> list:
                 tax = ((o.get("currentTotalTaxSet") or {}).get("shopMoney") or {}).get("amount") or 0
                 out.append({"name": o["name"], "created": o["createdAt"], "cancelled": bool(o.get("cancelledAt")),
                             "value": round(float(tot.get("amount") or 0) - float(tax or 0), 2), "currency": tot.get("currencyCode"),
-                            "email": o.get("email"), "phone": o.get("phone"), "click": order_click(o)})
+                            "email": o.get("email"), "phone": o.get("phone"), "click": order_click(o),
+                            "landing": [((o.get("customerJourneySummary") or {}).get(k) or {}).get("landingPage") for k in ("firstVisit", "lastVisit")]})
             if not conn["pageInfo"]["hasNextPage"]:
                 return out
             cursor = conn["pageInfo"]["endCursor"]
