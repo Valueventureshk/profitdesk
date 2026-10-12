@@ -127,6 +127,7 @@ async def lifespan(app):
     reader = asyncio.create_task(_mail_loop())
     snapper = asyncio.create_task(_snapshot_loop())
     tracker = asyncio.create_task(_scm_loop())
+    asyncio.create_task(_outside_loop())
     for i in db.list_invoices():                     # AI double-checks cut off by a restart
         if i.get("ai_check") == "pending":
             asyncio.create_task(_ai_check_invoice(i["id"]))
@@ -6524,13 +6525,20 @@ async def _dashboard_compute(scope: str = "all", start: str = None, end: str = N
 _outside_cache: dict = {}
 
 
-async def _outside_refunds(stores: list, start: str, end: str, base: str, fx_table, same_time: bool) -> list:
+async def _outside_refunds(stores: list, start: str, end: str, base: str, fx_table, same_time: bool,
+                           live: bool = False) -> list:
     """Daily rows (display currency, Hong Kong days) of money returned to customers outside Shopify:
     PayPal / Airwallex refunds that match no Shopify refund (same amount within 3 days), plus
     every chargeback / dispute debit (money won back counts negative, on the day it returns)."""
     ck = (start, end, base)
     hit = _outside_cache.get(ck)
-    if hit and time.time() - hit[0] < 300:
+    saved = db.outside_days(start, end, base) if not hit and not live else None
+    if saved is not None:                             # kept fresh by _outside_loop every 15 minutes
+        rows = [metrics.day(r["date"], 0.0, 0, 0.0, 0.0, 0.0, refunds=r["refunds"], refund_count=r["count"],
+                            chargebacks=r["chargebacks"]) for r in saved
+                if r["refunds"] or r["chargebacks"] or r["count"]]
+        _outside_cache[ck] = (time.time(), rows)
+    elif hit and time.time() - hit[0] < 300:
         rows = hit[1]
     else:
         since = datetime.combine(date.fromisoformat(start) - timedelta(days=3), clock.min, CASH_TZ)
@@ -6580,6 +6588,38 @@ async def _outside_refunds(stores: list, start: str, end: str, base: str, fx_tab
                             chargebacks=v["chargebacks"]) for d, v in sorted(days.items())]
         _outside_cache[ck] = (time.time(), rows)
     return rows
+
+
+async def _outside_loop():
+    """Every 15 minutes: work out the recent days (all 190 every 6 hours) of refunds / chargebacks made outside Shopify and
+    save them, so the dashboard reads them instead of downloading PayPal and Airwallex history."""
+    await asyncio.sleep(90)
+    n = 0
+    while True:
+        try:
+            if db.list_cash_connections():
+                stores = [x for x in db.list_stores() if not demo.is_demo(x) and x.get("access_token")]
+                base = _display_currency().upper()
+                end = datetime.now(CASH_TZ).date()
+                # all 190 days (a 90-day view compares with the 90 before) every 6 hours, else the last 30
+                start = end - timedelta(days=189 if n % 24 == 0 else 29)
+                _outside_cache.pop((start.isoformat(), end.isoformat(), base), None)
+                rows = await _outside_refunds_live(stores, start.isoformat(), end.isoformat(), base)
+                got = {r["date"]: {"refunds": r["refunds"], "count": r["refund_count"], "chargebacks": r["chargebacks"]}
+                       for r in rows}
+                await asyncio.to_thread(db.save_outside_days, {
+                    d: got.get(d, {"refunds": 0.0, "count": 0, "chargebacks": 0.0})
+                    for d in _dates(start.isoformat(), end.isoformat())}, base)
+                _outside_cache.clear()
+        except Exception as e:
+            print(f"Outside refunds refresh failed: {e}", flush=True)
+        n += 1
+        await asyncio.sleep(900)
+
+
+async def _outside_refunds_live(stores: list, start: str, end: str, base: str) -> list:
+    """The full calculation, bypassing the saved days (used by _outside_loop)."""
+    return await _outside_refunds(stores, start, end, base, None, False, live=True)
 
 
 async def _store_window(store, start, end, auth, meta_auth):

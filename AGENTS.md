@@ -171,6 +171,10 @@ file and have it work.
   Heavy work (COG costing, re-costing, Google desk maths) runs in threads (`asyncio.to_thread`) so pages
   never queue behind it. A watchdog notes any stall over 0.6 s with the ProfitDesk code that caused it:
   owner route `/api/debug/stalls`, counts in `/healthz` (`stalls_10min`). New slow code: check there first.
+- Dashboard: answers with its last figures and refreshes in the background (`_dash`, "refreshing");
+  completed Shopify days and refunds come from `shopify_days` / `refund_days` (saved every 6 h and on
+  read), only the last `LIVE_DAYS` live; outside-Shopify refunds + chargebacks come from `outside_days`
+  (`_outside_loop`: last 30 days every 15 min, 190 days every 6 h). Step timings: `/api/debug/timing`.
 - Ads payable (Google): stores read directly use `gads.hourly_tab` (hourly spend, account clock) instead of
   the Sheet; the Sheet is the fallback.
 - Business clock is Hong Kong (`CASH_TIMEZONE`). Each store has its own clock;

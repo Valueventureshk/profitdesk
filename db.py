@@ -288,6 +288,14 @@ CREATE TABLE IF NOT EXISTS cash_snapshots (
 -- Expenses desk: the owner's category picks. key = a payee ("payee:pgs tech
 -- limited", "merchant:canva") or one transaction ("tx:<id>"). Suggestions are
 -- the AI's guesses for payees nobody has picked yet.
+CREATE TABLE IF NOT EXISTS outside_days (
+    date        TEXT PRIMARY KEY,         -- Hong Kong day: PayPal / Airwallex refunds not in Shopify + chargebacks
+    currency    TEXT NOT NULL,            -- the display currency they were converted to
+    refunds     REAL NOT NULL DEFAULT 0,
+    count       INTEGER NOT NULL DEFAULT 0,
+    chargebacks REAL NOT NULL DEFAULT 0,
+    saved_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
 CREATE TABLE IF NOT EXISTS refund_days (
     store_id   INTEGER NOT NULL,          -- Shopify refunds per day (store clock), saved like shopify_days
     date       TEXT    NOT NULL,
@@ -1610,3 +1618,23 @@ def saved_refund_days(store_id: int, start: str, end: str, tz: str = None) -> di
                            + (" AND timezone = ?" if tz else ""),
                            (store_id, start, end, *([tz] if tz else []))).fetchall()
     return {r["date"]: {"refunds": r["refunds"], "count": r["count"]} for r in rows}
+
+
+def save_outside_days(days: dict, currency: str):
+    """days: {date: {"refunds", "count", "chargebacks"}} for every day of the window (zeros too)."""
+    with _conn() as con:
+        con.executemany(
+            "INSERT OR REPLACE INTO outside_days (date, currency, refunds, count, chargebacks, saved_at)"
+            " VALUES (?,?,?,?,?, datetime('now'))",
+            [(d, currency, v["refunds"], v["count"], v["chargebacks"]) for d, v in days.items()])
+
+
+def outside_days(start: str, end: str, currency: str, max_age_minutes: int = 400):
+    """Saved rows for start..end, or None when any day is missing, in another currency, or stale."""
+    with _conn() as con:
+        rows = [dict(r) for r in con.execute(
+            "SELECT * FROM outside_days WHERE date BETWEEN ? AND ? AND currency = ?"
+            " AND saved_at >= datetime('now', ?)", (start, end, currency, f"-{int(max_age_minutes)} minutes"))]
+    from datetime import date as _d, timedelta as _t
+    want = (_d.fromisoformat(end) - _d.fromisoformat(start)).days + 1
+    return rows if len(rows) >= want else None
