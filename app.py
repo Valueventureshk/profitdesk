@@ -5959,10 +5959,18 @@ async def _gdesk(st, windows: dict, fresh: int = 0, country: str = "", min_spend
     args = (auth["refresh_token"], st["google_customer_id"], st["google_login_cid"])
     meta_conn = next((c for c in db.list_meta_connections() if c["id"] == st.get("meta_connection_id")), None)
     client = ShopifyClient(st["shop_domain"], st["access_token"])
+    tm, t0 = {}, time.time()
+
+    async def timed(name, coro):
+        t = time.time()
+        try:
+            return await coro
+        finally:
+            tm[name] = round(time.time() - t, 2)
     try:
         (dash_rows, _notes), (_acct, gcur, atz) = await asyncio.gather(
-            _store_window(st, lo.isoformat(), hi.isoformat(), auth, meta_conn),
-            gads.account_daily(*args, today.isoformat(), today.isoformat()))
+            timed("dashboard", _store_window(st, lo.isoformat(), hi.isoformat(), auth, meta_conn)),
+            timed("account", gads.account_daily(*args, today.isoformat(), today.isoformat())))
         try:
             atzi = ZoneInfo(atz)
         except (ZoneInfoNotFoundError, ValueError):
@@ -5973,7 +5981,8 @@ async def _gdesk(st, windows: dict, fresh: int = 0, country: str = "", min_spend
         g_windows = {k: (g_day(date.fromisoformat(a)), g_day(date.fromisoformat(b), True)) for k, (a, b) in windows.items()}
         rows_task = gads.product_report(*args, g_day(lo), g_day(hi, True))
         try:
-            (rows, gcur2), refunds = await asyncio.gather(rows_task, client.refund_lines(lo.isoformat(), hi.isoformat(), st["timezone"]))
+            (rows, gcur2), refunds = await asyncio.gather(timed("products", rows_task),
+                                                          timed("refunds", client.refund_lines(lo.isoformat(), hi.isoformat(), st["timezone"])))
         except ShopifyError:
             rows, gcur2 = await gads.product_report(*args, g_day(lo), g_day(hi, True))
             refunds = []
@@ -5990,7 +5999,7 @@ async def _gdesk(st, windows: dict, fresh: int = 0, country: str = "", min_spend
     fee_rate = (fee[0] / fee[1]) if fee and fee[1] else 0.0
     pids = {google_desk.parse_item(r["item_id"])[0] for r in rows}
     pids |= {str(l["product_id"] or "").rsplit("/", 1)[-1] for l in lines if l.get("product_id")}
-    info = await _product_info(st, sorted(p for p in pids if p))
+    info = await timed("shopify_products", _product_info(st, sorted(p for p in pids if p)))
     # everything in the Google Ads account's currency (this desk is for running the ads)
     table = await fx.table(gcur)
     f = lambda c: fx.factor(table, c, gcur) if table and c else 1.0
@@ -5999,13 +6008,13 @@ async def _gdesk(st, windows: dict, fresh: int = 0, country: str = "", min_spend
             if v.get("price"):
                 v["price"] *= f(st["currency"])
     tax = 1 + (st.get("google_tax_pct") or 0) / 100.0          # as the dashboard counts Google (e.g. ZAVA GST)
-    out = await asyncio.to_thread(google_desk.build, rows, tax, lines, f("USD"), info, fee_rate, windows, g_windows,
-                                  min_spend, f(st["currency"]), refunds, country)
+    out = await timed("maths", asyncio.to_thread(google_desk.build, rows, tax, lines, f("USD"), info, fee_rate, windows, g_windows,
+                                                 min_spend, f(st["currency"]), refunds, country))
     if not country:
         google_desk.with_dashboard(out, _in_currency(dash_rows, {**st, "google_currency": gcur}, table, gcur), windows)
     out.update(store=st["id"], currency=gcur, store_currency=st["currency"], google_currency=gcur, fee_rate=fee_rate,
                min_spend=min_spend, today=today.isoformat(), account_timezone=atz, store_timezone=st["timezone"],
-               shop=st["shop_domain"], country=country, data_from=first_day,
+               shop=st["shop_domain"], country=country, data_from=first_day, timing={**tm, "total": round(time.time() - t0, 2)},
                fx_rate=None if gcur == st["currency"] else f(st["currency"]),
                missing_product_ids=not any(l.get("product_id") for l in lines),
                info_error=None if info else _gdesk_cache.get("_info_error"),
