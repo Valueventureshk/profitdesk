@@ -5975,6 +5975,49 @@ async def api_googleads(store: str = "", fresh: int = 0, min_spend: float = None
     return {**out, "stores": listing, "cached_at": time.time()}
 
 
+@app.get("/api/googleads/check")
+async def api_googleads_check(store: int):
+    """Last 30 days of one store's Google spend four ways, to find where figures differ:
+    Google's own "Last 30 days" (account clock, yesterday back), every campaign, the product report the
+    desk uses, and the dashboard's store-clock days. All in the ad account's currency."""
+    st = next((x for x in db.list_stores() if x["id"] == store and x.get("google_customer_id")), None)
+    if not st:
+        raise HTTPException(404, "Store has no Google Ads account.")
+    auth = db.get_google_auth()
+    if not auth:
+        raise HTTPException(400, "Google isn't connected.")
+    args = (auth["refresh_token"], st["google_customer_id"], st["google_login_cid"])
+    probe, cur, atz = await gads.campaign_spend(*args, date.today().isoformat(), date.today().isoformat())
+    try:
+        a_today = datetime.now(ZoneInfo(atz)).date()
+    except (ZoneInfoNotFoundError, ValueError):
+        a_today = date.today()
+    g_end, g_start = a_today - timedelta(days=1), a_today - timedelta(days=30)
+    s_today = _now_in(st).date()
+    d_start = s_today - timedelta(days=29)
+    try:
+        camps, cur, atz = await gads.campaign_spend(*args, g_start.isoformat(), g_end.isoformat())
+        prods, _ = await gads.product_report(*args, d_start.isoformat(), s_today.isoformat())
+        camps_desk, _, _ = await gads.campaign_spend(*args, d_start.isoformat(), s_today.isoformat())
+        dash = await gads.daily_spend(*args, d_start.isoformat(), s_today.isoformat(), st["timezone"])
+    except gads.GoogleAdsError as e:
+        raise HTTPException(400, str(e))
+    by = {}
+    for c in camps:
+        b = by.setdefault(c["campaign"], {**c, "cost": 0.0, "clicks": 0, "impressions": 0, "conversions": 0.0, "value": 0.0})
+        for k in ("cost", "clicks", "impressions", "conversions", "value"):
+            b[k] += c[k]
+    return {"store": st["name"].strip(), "account": st.get("google_account_name") or st["google_customer_id"],
+            "currency": cur, "account_timezone": atz, "store_timezone": st["timezone"], "store_currency": st["currency"],
+            "google_last30": {"start": g_start.isoformat(), "end": g_end.isoformat(), "cost": round(sum(c["cost"] for c in camps), 2)},
+            "campaigns": sorted(({**v, "cost": round(v["cost"], 2)} for v in by.values() if v["cost"]), key=lambda x: -x["cost"]),
+            "desk_window": {"start": d_start.isoformat(), "end": s_today.isoformat(),
+                            "all_campaigns": round(sum(c["cost"] for c in camps_desk), 2),
+                            "products_only": round(sum(r["cost"] for r in prods), 2),
+                            "dashboard_store_days": round(sum(dash.values()), 2)},
+            "google_tax_pct": st.get("google_tax_pct")}
+
+
 @app.put("/api/googleads/settings/{store_id}")
 def api_googleads_settings(store_id: int, payload: dict):
     try:

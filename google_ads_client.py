@@ -289,6 +289,28 @@ async def product_report(refresh_token, customer_id, login_cid, start, end):
     return out, currency
 
 
+async def campaign_spend(refresh_token, customer_id, login_cid, start, end):
+    """Every campaign's cost between start and end (account days), with its type, plus the account's
+    currency and clock: ([{campaign, type, status, cost, impressions, clicks, conversions, value}], currency, tz)."""
+    _, _, dev_token, version = _cfg()
+    access = await _access_token(refresh_token)
+    query = ("SELECT customer.currency_code, customer.time_zone, campaign.name, campaign.advertising_channel_type, "
+             "campaign.status, metrics.cost_micros, metrics.impressions, metrics.clicks, metrics.conversions, "
+             f"metrics.conversions_value FROM campaign WHERE segments.date BETWEEN '{start}' AND '{end}'")
+    cid = str(customer_id).replace("-", "")
+    async with httpx.AsyncClient(timeout=60) as client:
+        rows = await _search(client, version, cid, query, _headers(access, dev_token, login_cid or customer_id))
+    out, currency, tz = [], "", "UTC"
+    for r in rows:
+        c, camp, m = r.get("customer") or {}, r.get("campaign") or {}, r.get("metrics") or {}
+        currency, tz = currency or c.get("currencyCode", ""), c.get("timeZone") or tz
+        out.append({"campaign": camp.get("name") or "", "type": camp.get("advertisingChannelType") or "",
+                    "status": camp.get("status") or "", "cost": int(m.get("costMicros", 0) or 0) / 1_000_000,
+                    "impressions": int(m.get("impressions", 0) or 0), "clicks": int(m.get("clicks", 0) or 0),
+                    "conversions": float(m.get("conversions", 0) or 0), "value": float(m.get("conversionsValue", 0) or 0)})
+    return out, currency, tz
+
+
 async def hourly_tab(refresh_token, customer_id, login_cid, start):
     """Spend by the hour since `start` (account days), shaped like a spend-Sheet tab, for Ads payable:
     {"meta": {"currency", "timezone"}, "rows": [(date, hour, cost)]}."""

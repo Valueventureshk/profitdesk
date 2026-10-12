@@ -246,21 +246,6 @@ async def billing(token: str) -> dict:
     return {str(a.get("account_id")): a for a in rows if a.get("account_id")}
 
 
-_acct_tz: dict = {}
-
-
-async def account_timezone(token: str, account_id: str) -> str:
-    """The ad account's own clock (Meta reports days and hours on it). Cached."""
-    acct = str(account_id).removeprefix("act_")
-    if acct not in _acct_tz:
-        async with httpx.AsyncClient(timeout=30) as client:
-            r = await client.get(f"{GRAPH}/{_version()}/act_{acct}", params=_params(token, {"fields": "timezone_name"}))
-            if r.status_code >= 400:
-                raise _explain(r)
-            _acct_tz[acct] = r.json().get("timezone_name") or "UTC"
-    return _acct_tz[acct]
-
-
 async def level_spend(token: str, account_id: str, since: str, until: str, level: str, hour: int | None = None) -> list:
     """Spend per campaign / ad set / ad over since..until (ad account days):
     [{"id", "name", "campaign", "adset", "spend", "impressions", "clicks"}]. For the Tracking report.
