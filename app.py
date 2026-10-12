@@ -129,6 +129,7 @@ async def lifespan(app):
     snapper = asyncio.create_task(_snapshot_loop())
     tracker = asyncio.create_task(_scm_loop())
     asyncio.create_task(_outside_loop())
+    asyncio.create_task(_gdesk_loop())
     for i in db.list_invoices():                     # AI double-checks cut off by a restart
         if i.get("ai_check") == "pending":
             asyncio.create_task(_ai_check_invoice(i["id"]))
@@ -5962,7 +5963,7 @@ async def _gdesk(st, windows: dict, fresh: int = 0, country: str = "", min_spend
     today = _store_today(st)
     key = (st["id"], min_spend, tuple(sorted(windows.items())), country, today)
     hit = _gdesk_cache.get(key)
-    if hit and not fresh and time.time() - hit[0] < 1200:
+    if hit and not fresh and time.time() - hit[0] < 2400:
         return {**hit[1], "cached_at": hit[0]}
     auth = db.get_google_auth()
     if not auth:
@@ -7041,6 +7042,21 @@ async def _outside_refunds(stores: list, start: str, end: str, base: str, fx_tab
                             chargebacks=v["chargebacks"]) for d, v in sorted(days.items())]
         _outside_cache[ck] = (time.time(), rows)
     return rows
+
+
+async def _gdesk_loop():
+    """Every 30 minutes: read each Google store's default Google Ads desk view (last 30 days) ahead, so the
+    page opens at once. About 7 x 48 product reports a day, well inside Explorer access (2,880 a day)."""
+    await asyncio.sleep(150)
+    while True:
+        for st in [x for x in db.list_stores() if x.get("google_customer_id") and not demo.is_demo(x)
+                   and x.get("google_source") != "sheet" and x.get("access_token")]:
+            try:
+                today = _store_today(st)
+                await _gdesk(st, google_desk.windows_for(today, today - timedelta(days=29), today), fresh=1)
+            except Exception as e:
+                print(f"Google desk refresh failed for {st['name']}: {str(e)[:200]}", flush=True)
+        await asyncio.sleep(1800)
 
 
 async def _outside_loop():
