@@ -53,7 +53,7 @@
 
   function draw(pending) {
     log.innerHTML = (history.length ? history : [{ role: "assistant",
-      content: "Ask me about profit, cash flow, COG, the support inbox, or ask for a report to download." }])
+      content: "Ask me about profit, cash flow, COG, the support inbox, store health, live tracking, Google Ads, or ask for a report. You can also say \"every day at 5pm send me a performance report\" or \"tell me when Meta brings 20+ adds to cart in an hour\"." }])
       .map((m) => `<div class="pd-msg ${m.role}">${m.role === "user" ? esc(m.content) : md(m.content)}
         ${(m.links || []).map((l) => `<a class="btn btn-sm btn-ghost pd-dl" href="${esc(l.url)}">⬇ ${esc(l.title)}</a>`).join("")}
         ${(m.actions || []).map((a) => `<div class="pd-act${a.done ? " done" : ""}"><b>${esc(a.title)}</b><span>${esc(a.detail)}</span>
@@ -82,7 +82,30 @@
   }
   function save() { try { sessionStorage.setItem(KEY, JSON.stringify(history.slice(-20))); } catch { /* ignore */ } }
 
-  btn.onclick = () => { box.hidden = !box.hidden; if (!box.hidden) { draw(); input.focus(); } };
+  // Messages the assistant sent by itself (scheduled reports, alerts): a badge on the button, shown in the chat when opened.
+  let inbox = [];
+  async function pollInbox() {
+    try {
+      const r = await fetch("/api/assistant/inbox?unread=1");
+      if (!r.ok) return;
+      inbox = (await r.json()).messages || [];
+      btn.innerHTML = inbox.length ? `✦ Ask <span class="pd-badge">${inbox.length}</span>` : "✦ Ask";
+      if (!box.hidden && inbox.length) showInbox();
+    } catch { /* offline */ }
+  }
+  function showInbox() {
+    if (!inbox.length) return;
+    for (const m of inbox) history.push({ role: "assistant", content: `**${m.title}**\n${m.body}` });
+    const ids = inbox.map((m) => m.id);
+    inbox = [];
+    btn.innerHTML = "✦ Ask";
+    fetch("/api/assistant/inbox/read", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids }) });
+    save();
+    draw();
+  }
+  pollInbox();
+  setInterval(pollInbox, 60000);
+  btn.onclick = () => { box.hidden = !box.hidden; if (!box.hidden) { showInbox(); draw(); input.focus(); } };
   box.querySelector("[data-close]").onclick = () => { box.hidden = true; };
   box.querySelector("[data-clear]").onclick = () => { history = []; save(); draw(); };
   input.addEventListener("keydown", (e) => {

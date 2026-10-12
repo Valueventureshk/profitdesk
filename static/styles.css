@@ -2025,3 +2025,4 @@ td.gx-dcn { color: var(--gx-muted); }
 .gstats { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 6px 0; font-size: 12.5px; }
 .gours .neg, .gstats .neg { color: #B91C1C; }
 html[data-theme="dark"] .gpl { background: #1E1B4B; border-color: #3730A3; }
+.pd-badge { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px; margin-left: 4px; border-radius: 9px; background: #DC2626; color: #fff; font-size: 11px; font-weight: 700; }

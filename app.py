@@ -136,6 +136,7 @@ async def lifespan(app):
     asyncio.create_task(_gdesk_loop())
     asyncio.create_task(_ads_loop())
     asyncio.create_task(_gconv_loop())
+    asyncio.create_task(_assist_loop())
     for i in db.list_invoices():                     # AI double-checks cut off by a restart
         if i.get("ai_check") == "pending":
             asyncio.create_task(_ai_check_invoice(i["id"]))
@@ -200,7 +201,7 @@ _DESK_HOME = {"profit": "/", "cash": "/cash", "cog": "/cog", "inbox": "/inbox", 
              "tracking": "/tracking"}
 # Shared by every desk's pages: the user's own details and the dropdown lists.
 _EVERYONE = {"/api/me", "/api/me/password", "/api/logout", "/change-password",
-             "/api/setup", "/api/chat"}
+             "/api/setup", "/api/chat", "/api/assistant/inbox", "/api/assistant/inbox/read"}
 # What "read & write" people may change (owners may change anything).
 _WRITE_OK = ("/api/googleads/tags", "/api/invoices", "/api/suppliers/payee", "/api/disputes", "/api/cog/sync", "/api/inbox", "/api/expenses", "/api/scm", "/api/importer", "/api/sizecharts")
 # What anyone with the desk may do, read-only people included (it changes nothing).
@@ -2656,6 +2657,13 @@ async def api_chat_action(action_id: str, payload: dict, request: Request):
     if payload.get("confirm") is not True:
         _chat_actions.pop(action_id, None)
         return {"ok": True, "text": "Cancelled. Nothing was changed."}
+    if a["kind"] == "ads_plan":
+        if not auth.at_least(user, "googleads", "manage"):
+            raise HTTPException(403, "You need Manage access to the Google Ads desk to confirm this.")
+        _chat_actions.pop(action_id, None)
+        st = _ads_store(a["payload"]["store"])
+        done = await _ads_run_batch(st, a["payload"]["batch"], user.get("email", ""))
+        return {"ok": True, "text": "Done in Google Ads: " + "; ".join(done)}
     if not auth.at_least(user, "cog", "work"):
         raise HTTPException(403, "You need Work access to the COG desk to confirm this.")
     _chat_actions.pop(action_id, None)
@@ -2667,6 +2675,9 @@ async def api_chat_action(action_id: str, payload: dict, request: Request):
 
 async def _chat_tool(name: str, args: dict, user: dict) -> dict:
     cur = _display_currency()
+    got = await _assist_tool(name, args, user)
+    if got is not None:
+        return got
     if name == "get_price_changes":
         _need(user, "cog")
         groups = _price_groups(args.get("direction") or "all", args.get("store") or "all", args.get("product_contains") or "")
@@ -7246,6 +7257,331 @@ async def api_tracking_google_plan_do(request: Request):
         except (gads.GoogleAdsError, HTTPException) as e:
             failed.append(f"{sp['name']}: {str(getattr(e, 'detail', None) or e)[:200]}")
     return {"done": done, "failed": failed}
+
+
+# ---------------------------------------------------------------- the assistant: store health, live tracking, Google Ads
+# control, schedules and alerts (Ask chat now; WhatsApp uses the same tools)
+
+HEALTH_PRODUCTS = """{ products(first: 250, query: "status:active") { nodes { legacyResourceId title totalInventory tracksInventory
+  featuredImage { url } variants(first: 5) { nodes { price } } } } }"""
+
+
+def _src_of_click(a_click, a_source) -> str:
+    c, s = (a_click or "").lower(), (a_source or "").lower()
+    if c == "fbclid" or s in ("facebook", "fb", "meta", "instagram", "ig"):
+        return "meta"
+    if c in ("gclid", "gbraid", "wbraid") or s in ("google", "youtube"):
+        return "google"
+    if c == "ttclid" or s == "tiktok":
+        return "tiktok"
+    return "other"
+
+
+def _live_hours(store_ids: list, hours: int) -> dict:
+    """{store id: {hour (UTC ISO, start): {source: {atc, ic, purchase}}}} from the pixel, last N clock hours."""
+    since = (datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0) - timedelta(hours=max(1, min(hours, 48)) - 1))
+    out = {}
+    with db._conn() as con:
+        rows = con.execute(
+            f"SELECT store_id, substr(at, 1, 13), name, a_click, a_source, COUNT(*) FROM px_events WHERE at >= ? AND store_id IN "
+            f"({','.join('?' * len(store_ids))}) AND name IN ('product_added_to_cart', 'checkout_started', 'checkout_completed') "
+            "GROUP BY 1, 2, 3, 4, 5", (since.isoformat(timespec="seconds"), *store_ids)).fetchall()
+    key = {"product_added_to_cart": "atc", "checkout_started": "ic", "checkout_completed": "purchase"}
+    for sid, hr, name, clk, src, n in rows:
+        slot = out.setdefault(sid, {}).setdefault(hr + ":00", {})
+        s = slot.setdefault(_src_of_click(clk, src), {"atc": 0, "ic": 0, "purchase": 0})
+        s[key[name]] += n
+    return out
+
+
+async def _store_health(st) -> dict:
+    """Everything that can quietly go wrong in one store, problems first."""
+    probs, ok, info = [], [], {}
+    sid = st["id"]
+    # Shopify: permissions and products
+    try:
+        _scopes.pop(sid, None)
+        got = await _granted(st)
+        have = got | {"read_" + g[6:] for g in got if g.startswith("write_")}
+        miss = sorted(WANTED_SCOPES - have)
+        (probs if miss else ok).append(f"Shopify permissions: {'missing ' + ', '.join(miss) if miss else 'all granted'}")
+    except Exception as e:
+        probs.append(f"Shopify: couldn't connect ({str(e)[:100]})")
+    try:
+        got = await ShopifyClient(st["shop_domain"], st["access_token"]).gql(HEALTH_PRODUCTS, {})
+        nodes = (got.get("products") or {}).get("nodes") or []
+        no_img = [n["title"] for n in nodes if not n.get("featuredImage")]
+        no_price = [n["title"] for n in nodes if any(float(v.get("price") or 0) <= 0 for v in (n.get("variants") or {}).get("nodes") or [])]
+        no_stock = [n["title"] for n in nodes if n.get("tracksInventory") and (n.get("totalInventory") or 0) <= 0]
+        info["active_products_checked"] = len(nodes)
+        for label, lst in (("active without an image", no_img), ("with a variant priced 0", no_price), ("active but out of stock", no_stock)):
+            if lst:
+                probs.append(f"{len(lst)} product(s) {label}: " + ", ".join(lst[:5]) + (" …" if len(lst) > 5 else ""))
+        if not (no_img or no_price or no_stock):
+            ok.append(f"Products: {len(nodes)} active checked, no image / price / stock problems")
+    except Exception as e:
+        probs.append(f"Products: couldn't read ({str(e)[:100]})")
+    # tracking pixel
+    h = tracking.health(sid)
+    if not db.get_setting(f"px_key:{sid}"):
+        info["pixel"] = "not installed"
+    elif not h.get("last"):
+        probs.append("Tracking pixel: installed but no events yet")
+    else:
+        last = datetime.fromisoformat(h["last"])
+        (probs if datetime.now(timezone.utc) - last > timedelta(hours=6) else ok).append(
+            f"Tracking pixel: last event {last.strftime('%d %b %H:%M')} UTC, {h.get('hour', 0)} in the last hour")
+    # Google: conversion tracking + ProfitDesk uploads + share of Shopify orders Google sees
+    if st.get("google_customer_id") and st.get("google_source") != "sheet":
+        try:
+            acts = await gads_conv.all_actions(*_ads_args(st))
+            prim = [a for a in acts if a["category"] == "PURCHASE" and a["primary"]]
+            rec = sum(a["conversions_30d"] for a in prim)
+            if not prim:
+                probs.append("Google: no primary purchase action — Google bids on nothing")
+            elif rec <= 0:
+                probs.append(f"Google: primary purchase action ({', '.join(a['name'] for a in prim)}) recorded 0 in 30 days")
+            else:
+                ok.append(f"Google: primary purchase = {', '.join(a['name'] for a in prim)} ({rec:g} in 30 days)")
+            if len([a for a in prim if a["conversions_30d"] > 0]) > 1:
+                probs.append("Google: more than one recording primary purchase action — purchases may count twice")
+            cfg = _gconv_cfg(sid)
+            if cfg["enabled"]:
+                c = gads_conv.counts(sid, (datetime.now(timezone.utc) - timedelta(days=7)).isoformat(timespec="seconds"))
+                p = c.get("purchase", {})
+                ok.append(f"ProfitDesk → Google ({cfg['mode']}): last 7 days {p.get('sent', 0)} purchases sent, "
+                          f"{p.get('no_click', 0)} without a Google click, {p.get('failed', 0)} failed")
+                if p.get("failed"):
+                    probs.append(f"ProfitDesk → Google: {p['failed']} purchase uploads failed in 7 days")
+            with db._conn() as con:
+                orders = con.execute("SELECT COUNT(DISTINCT order_name) FROM cog_lines WHERE store_id = ? AND day >= ? AND cancelled = 0",
+                                     (sid, (_store_today(st) - timedelta(days=29)).isoformat())).fetchone()[0]
+            info["google_vs_shopify_orders_30d"] = f"Google primary {rec:g} vs Shopify {orders} orders (all channels)"
+        except Exception as e:
+            probs.append(f"Google: couldn't read ({str(e)[:120]})")
+    if st.get("meta_account_id"):
+        conn = next((c for c in db.list_meta_connections() if c["id"] == st.get("meta_connection_id")), None)
+        (ok if conn else probs).append("Meta: ad account linked" if conn else "Meta: ad account's business isn't connected")
+    # COG / invoices
+    with db._conn() as con:
+        since = (_store_today(st) - timedelta(days=14)).isoformat()
+        src = dict(con.execute("SELECT COALESCE(source, '?'), COUNT(*) FROM cog_lines WHERE store_id = ? AND day >= ? GROUP BY 1",
+                               (sid, since)).fetchall())
+        last_inv = con.execute("SELECT MAX(uploaded_at) FROM invoices WHERE store_id = ? OR store_id IS NULL", (sid,)).fetchone()[0]
+    tot = sum(v for k, v in src.items() if k != "cancelled")
+    if tot:
+        est = src.get("estimate", 0) / tot
+        line = (f"COG last 14 days: {src.get('invoice', 0)} lines from invoices, {src.get('catalog', 0)} from history, "
+                f"{src.get('estimate', 0)} estimated ({est:.0%})")
+        (probs if est > 0.25 else ok).append(line + (" — invoices may be behind" if est > 0.25 else ""))
+    info["last_invoice_uploaded"] = last_inv
+    return {"store": st["name"].strip(), "problems": probs, "fine": ok, "info": info}
+
+
+def _assist_user(user) -> str:
+    return (user or {}).get("email") or "owner"
+
+
+async def _assist_tool(name: str, args: dict, user: dict):
+    """The assistant's newer tools; None when the name isn't one of them."""
+    real = [x for x in db.list_stores() if not demo.is_demo(x) and x.get("access_token")]
+    pick = lambda sid: [x for x in real if sid in (None, "", "all") or str(x["id"]) == str(sid)]
+    if name == "store_health":
+        sts = pick(args.get("store"))
+        got = await asyncio.gather(*(_store_health(x) for x in sts), return_exceptions=True)
+        return {"stores": [g if not isinstance(g, Exception) else {"error": str(g)[:200]} for g in got]}
+    if name == "tracking_live":
+        sts = pick(args.get("store"))
+        data = await asyncio.to_thread(_live_hours, [x["id"] for x in sts], int(args.get("hours") or 3))
+        names = {x["id"]: x["name"].strip() for x in sts}
+        return {"hours_utc": "clock hours in UTC", "stores": {names[k]: v for k, v in data.items()},
+                "note": "Only stores with the ProfitDesk pixel; only shoppers who allowed tracking."}
+    if name in ("google_campaigns", "google_products", "propose_google_change"):
+        _need(user, "googleads")
+        st = _ads_store(args["store"])
+        if name == "google_campaigns":
+            today = _store_today(st)
+            a7 = await _ads_overview(st, *ads_engine.window(today, 7))
+            t = await _ads_overview(st, today.isoformat(), today.isoformat())
+            tp = {c["id"]: c["p"] for c in t["campaigns"]}
+            mg = await api_ads_manage(st["id"], 0, today.isoformat(), today.isoformat())
+            return _round({"currency": a7["currency"], "breakeven_roas": mg.get("breakeven_roas"), "campaigns": [{
+                "id": c["id"], "name": c["name"], "status": c["status"], "type": c["type"], "budget": c["budget"],
+                "target_roas": c["target_roas"], "today": tp.get(c["id"]), "last_7_days": c["p"],
+                "products": [f"{g['name']}: {g['products']['mode']} {g['products']['count'] or ''}".strip() for g in c["groups"]]}
+                for c in a7["campaigns"]]})
+        if name == "google_products":
+            return await _ads_tool(st, "find_products", {**args, "basis": "shopify"}, _assist_user(user), {"plans": [], "rules": []})
+        if not auth.at_least(user or {}, "googleads", "manage"):
+            return {"error": "Changing Google Ads needs Manage access to the Google Ads desk."}
+        made = {"plans": [], "rules": []}
+        got = await _ads_tool(st, "propose_plan", {"summary": args.get("summary"), "steps": args.get("steps") or []},
+                              _assist_user(user), made)
+        if got.get("error"):
+            return got
+        steps = "; ".join(f"{sp.get('kind')}: " + ", ".join(f"{k}={v if not isinstance(v, list) else str(len(v)) + ' products'}"
+                                                             for k, v in sp.items() if k not in ("kind", "summary"))
+                          for sp in args.get("steps") or [])
+        return _propose(user, "ads_plan", f"{st['name'].strip()}: {args.get('summary') or 'Google Ads change'}", steps[:600],
+                        {"store": st["id"], "batch": made["plans"][0]})
+    if name == "create_schedule":
+        try:
+            hh, mm = [int(x) for x in str(args["time"]).split(":")[:2]]
+            ZoneInfo(args.get("timezone") or "Asia/Hong_Kong")
+        except (ValueError, ZoneInfoNotFoundError):
+            return {"error": "Time must be HH:MM and the time zone an IANA name like Asia/Hong_Kong."}
+        spec = {"instruction": args["instruction"], "time": f"{hh:02d}:{mm:02d}", "days": (args.get("days") or "daily").lower(),
+                "timezone": args.get("timezone") or "Asia/Hong_Kong"}
+        return _assist_job(user, "schedule", args["name"], spec)
+    if name == "create_alert":
+        spec = {"kind": args["kind"], "store": str(args.get("store") or "all"), "threshold": float(args.get("threshold") or 0)}
+        return _assist_job(user, "alert", args["name"], spec)
+    if name == "list_schedules_alerts":
+        with db._conn() as con:
+            rows = [dict(r) for r in con.execute("SELECT id, kind, name, spec, enabled, last_fire FROM assistant_jobs WHERE user_email = ?",
+                                                 (_assist_user(user),))]
+        for r in rows:
+            r["spec"] = json.loads(r["spec"])
+        return {"jobs": rows}
+    if name == "delete_schedule_alert":
+        with db._conn() as con:
+            n = con.execute("DELETE FROM assistant_jobs WHERE id = ? AND user_email = ?", (int(args["id"]), _assist_user(user))).rowcount
+        return {"deleted": bool(n)}
+    return None
+
+
+def _assist_job(user, kind, name, spec) -> dict:
+    with db._conn() as con:
+        cur = con.execute("INSERT INTO assistant_jobs (user_email, kind, name, spec, created_at) VALUES (?,?,?,?,?)",
+                          (_assist_user(user), kind, name[:80], json.dumps(spec), datetime.now(timezone.utc).isoformat(timespec="seconds")))
+    return {"saved": cur.lastrowid, "kind": kind, "spec": spec, "note": "Active now. Messages arrive in the Ask chat (and WhatsApp once connected)."}
+
+
+def _assist_deliver(email: str, title: str, body: str, source: str):
+    with db._conn() as con:
+        con.execute("INSERT INTO assistant_inbox (user_email, title, body, source, created_at) VALUES (?,?,?,?,?)",
+                    (email, title[:200], body[:20000], source, datetime.now(timezone.utc).isoformat(timespec="seconds")))
+
+
+def _assist_user_row(email: str) -> dict:
+    return next((u for u in db.list_users() if u.get("email") == email), None) or {"email": email, "role": "owner"}
+
+
+async def _assist_run_schedule(job: dict):
+    key = db.get_setting("anthropic_api_key")
+    if not key:
+        return
+    spec = json.loads(job["spec"])
+    user = _assist_user_row(job["user_email"])
+    today = max((_store_today(x) for x in db.list_stores() if not demo.is_demo(x)), default=datetime.now(CASH_TZ).date()).isoformat()
+    hist = [{"role": "user", "content": f"(Scheduled message '{job['name']}': no one is waiting in the chat, so don't ask "
+                                         f"questions, just do it and report.) {spec['instruction']}"}]
+    try:
+        got = await ai_chat.reply(key, hist, lambda n, a: _chat_tool(n, a, user), today, _display_currency())
+        _assist_deliver(job["user_email"], f"📅 {job['name']}", got["text"], f"schedule:{job['id']}")
+    except Exception as e:
+        _assist_deliver(job["user_email"], f"📅 {job['name']} (failed)", f"Couldn't make it: {str(e)[:300]}", f"schedule:{job['id']}")
+
+
+async def _assist_check_alert(job: dict):
+    spec = json.loads(job["spec"])
+    stores = [x for x in db.list_stores() if not demo.is_demo(x) and (spec["store"] in ("all", "") or str(x["id"]) == spec["store"])]
+    now = datetime.now(timezone.utc)
+    k, thr = spec["kind"], spec["threshold"]
+    hits = []
+    if k in ("meta_atc_hour", "atc_hour", "purchases_hour"):
+        data = await asyncio.to_thread(_live_hours, [x["id"] for x in stores], 1)
+        slot = now.strftime("%Y-%m-%dT%H") + ":00"
+        for x in stores:
+            s = (data.get(x["id"]) or {}).get(slot) or {}
+            if k == "meta_atc_hour":
+                n = (s.get("meta") or {}).get("atc", 0)
+            elif k == "atc_hour":
+                n = sum(v.get("atc", 0) for v in s.values())
+            else:
+                n = sum(v.get("purchase", 0) for v in s.values())
+            if n >= thr:
+                hits.append((f"{slot}:{x['id']}", f"{x['name'].strip()}: {n:g} {'adds to cart from Meta' if k == 'meta_atc_hour' else 'adds to cart' if k == 'atc_hour' else 'purchases'} "
+                                                   f"this hour (since {now.strftime('%H')}:00 UTC)"))
+    elif k == "no_events":
+        for x in stores:
+            if not db.get_setting(f"px_key:{x['id']}"):
+                continue
+            h = tracking.health(x["id"])
+            if h.get("last") and now - datetime.fromisoformat(h["last"]) > timedelta(hours=thr or 3):
+                hits.append((f"{now.strftime('%Y-%m-%d')}:{x['id']}", f"{x['name'].strip()}: no pixel events for {thr or 3:g}+ hours"))
+    elif k == "google_tracking_stopped":
+        day = (now - timedelta(days=1)).isoformat(timespec="seconds")
+        with db._conn() as con:
+            for x in stores:
+                if not _gconv_cfg(x["id"])["enabled"]:
+                    continue
+                sent = con.execute("SELECT COUNT(*) FROM gconv_uploads WHERE store_id = ? AND status = 'sent' AND at >= ?", (x["id"], day)).fetchone()[0]
+                vis = con.execute("SELECT COUNT(*) FROM px_visitors WHERE store_id = ? AND g_at >= ?", (x["id"], day)).fetchone()[0]
+                if vis >= max(thr, 20) and sent == 0:
+                    hits.append((f"{now.strftime('%Y-%m-%d')}:{x['id']}", f"{x['name'].strip()}: {vis} Google visitors in 24 h but nothing sent to Google"))
+    fired = set(json.loads(job["last_key"] or "[]"))
+    new = [(key, text) for key, text in hits if key not in fired]
+    if new:
+        _assist_deliver(job["user_email"], f"🔔 {job['name']}", "\n".join(t for _, t in new), f"alert:{job['id']}")
+        fired = sorted(fired | {key for key, _ in new})[-200:]
+        with db._conn() as con:
+            con.execute("UPDATE assistant_jobs SET last_fire = ?, last_key = ? WHERE id = ?",
+                        (now.isoformat(timespec="seconds"), json.dumps(fired), job["id"]))
+
+
+DAY_NAMES = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+
+async def _assist_loop():
+    """Every minute: schedules that are due; every 5 minutes: alerts."""
+    await asyncio.sleep(120)
+    n = 0
+    while True:
+        try:
+            with db._conn() as con:
+                jobs = [dict(r) for r in con.execute("SELECT * FROM assistant_jobs WHERE enabled = 1")]
+            for j in jobs:
+                spec = json.loads(j["spec"])
+                if j["kind"] == "schedule":
+                    now = datetime.now(ZoneInfo(spec.get("timezone") or "Asia/Hong_Kong"))
+                    days = spec.get("days", "daily")
+                    today = DAY_NAMES[now.weekday()]
+                    due_day = days == "daily" or (days == "weekdays" and now.weekday() < 5) or today in days
+                    key = now.strftime("%Y-%m-%d")
+                    hh, mm = [int(x) for x in spec["time"].split(":")]
+                    late = (now.hour * 60 + now.minute) - (hh * 60 + mm)          # minutes past the set time
+                    if due_day and 0 <= late < 120 and j.get("last_key") != key:
+                        with db._conn() as con:
+                            con.execute("UPDATE assistant_jobs SET last_key = ?, last_run = ? WHERE id = ?",
+                                        (key, datetime.now(timezone.utc).isoformat(timespec="seconds"), j["id"]))
+                        asyncio.create_task(_assist_run_schedule(j))
+                elif n % 5 == 0:
+                    await _assist_check_alert(j)
+        except Exception as e:
+            print(f"Assistant loop: {str(e)[:300]}", flush=True)
+        n += 1
+        await asyncio.sleep(60)
+
+
+@app.get("/api/assistant/inbox")
+def api_assistant_inbox(request: Request, unread: int = 1):
+    me = _assist_user(getattr(request.state, "user", None))
+    with db._conn() as con:
+        rows = [dict(r) for r in con.execute(
+            "SELECT id, title, body, created_at, read_at FROM assistant_inbox WHERE user_email = ?" + (" AND read_at IS NULL" if unread else "")
+            + " ORDER BY id DESC LIMIT 30", (me,))]
+    return {"messages": rows[::-1]}
+
+
+@app.post("/api/assistant/inbox/read")
+def api_assistant_read(request: Request, payload: dict):
+    me = _assist_user(getattr(request.state, "user", None))
+    ids = [int(i) for i in payload.get("ids") or []]
+    with db._conn() as con:
+        con.executemany("UPDATE assistant_inbox SET read_at = ? WHERE id = ? AND user_email = ?",
+                        [(datetime.now(timezone.utc).isoformat(timespec="seconds"), i, me) for i in ids])
+    return {"ok": True}
 
 
 @app.get("/api/googleads/check")

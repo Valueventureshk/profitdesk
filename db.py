@@ -143,6 +143,31 @@ CREATE TABLE IF NOT EXISTS cog_lines (
 );
 CREATE INDEX IF NOT EXISTS cog_lines_day ON cog_lines (store_id, day);
 
+-- The assistant (Ask chat, later WhatsApp): each person's scheduled messages and alerts, and the messages it
+-- sent them (reports, alerts) waiting to be read.
+CREATE TABLE IF NOT EXISTS assistant_jobs (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_email TEXT    NOT NULL,
+    kind       TEXT    NOT NULL,          -- schedule | alert
+    name       TEXT    NOT NULL,
+    spec       TEXT    NOT NULL,          -- JSON
+    enabled    INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT    NOT NULL,
+    last_run   TEXT,
+    last_fire  TEXT,
+    last_key   TEXT                       -- the slot it last fired for (no repeats)
+);
+CREATE TABLE IF NOT EXISTS assistant_inbox (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_email TEXT    NOT NULL,
+    title      TEXT    NOT NULL,
+    body       TEXT    NOT NULL,
+    source     TEXT,                      -- schedule:<id> | alert:<id>
+    created_at TEXT    NOT NULL,
+    read_at    TEXT,
+    sent_wa    TEXT                       -- when it went out on WhatsApp
+);
+
 -- Apps → Google Ads → Manage: rules the ads AI set up, every change (planned / proposed / done / undone)
 -- with what it was before, and the chat with the ads AI, per store.
 CREATE TABLE IF NOT EXISTS ads_rules (
