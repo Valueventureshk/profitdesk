@@ -68,6 +68,7 @@ import google_sheet as gsheet
 import meta_ads_client as meta
 import metrics
 import shopify_client as shop
+import checkout as co
 from shopify_client import ShopifyClient, ShopifyError
 
 # On Railway (or any host that sets RAILWAY_ENVIRONMENT) listen on all
@@ -125,6 +126,7 @@ def _watchdog(loop_thread_id: int):
 @asynccontextmanager
 async def lifespan(app):
     db.init()
+    co.init()
     import threading
     asyncio.create_task(_heartbeat())
     threading.Thread(target=_watchdog, args=(threading.get_ident(),), daemon=True).start()
@@ -138,6 +140,7 @@ async def lifespan(app):
     asyncio.create_task(_ads_loop())
     asyncio.create_task(_gconv_loop())
     asyncio.create_task(_assist_loop())
+    asyncio.create_task(_co_loop())
     for i in db.list_invoices():                     # AI double-checks cut off by a restart
         if i.get("ai_check") == "pending":
             asyncio.create_task(_ai_check_invoice(i["id"]))
@@ -194,12 +197,13 @@ _DESK_PATHS = {
     "recordings": ("/recordings", "/api/recordings"),
     "googleads": ("/googleads", "/api/googleads", "/api/ads"),
     "tracking": ("/tracking", "/api/tracking"),
+    "checkout": ("/checkout", "/api/checkout"),
 }
 _DESK_HOME = {"profit": "/", "cash": "/cash", "cog": "/cog", "inbox": "/inbox", "reports": "/reports",
              "expenses": "/expenses", "scm": "/scm", "importer": "/importer",
              "sizecharts": "/sizecharts", "disputes": "/disputes",
              "recordings": "/recordings", "googleads": "/googleads",
-             "tracking": "/tracking"}
+             "tracking": "/tracking", "checkout": "/checkout"}
 # Shared by every desk's pages: the user's own details and the dropdown lists.
 _EVERYONE = {"/api/me", "/api/me/password", "/api/logout", "/change-password",
              "/api/setup", "/api/chat", "/api/assistant/inbox", "/api/assistant/inbox/read"}
@@ -283,7 +287,7 @@ async def _require_login(request: Request, call_next):
     path = request.url.path
     user = auth.user_for(request.cookies.get(auth.SESSION_COOKIE))
     request.state.user = user
-    if path in _OPEN or path.startswith(("/static/", "/proxy/", "/apps/", "/w/", "/t/")) or path == "/proxy":
+    if path in _OPEN or path.startswith(("/static/", "/proxy/", "/apps/", "/w/", "/t/", "/pay/")) or path == "/proxy":
         return await call_next(request)
     launched = _shopify_launch(request)
     if launched:
@@ -8170,6 +8174,362 @@ def api_googleads_settings(store_id: int, payload: dict):
 
 
 # ---------------------------------------------------------------- Apps → Session Recordings
+
+# ---------------------------------------------------------------- Checkout (own payment page, Airwallex)
+
+_co_locks: dict = defaultdict(asyncio.Lock)
+_co_hits: dict = defaultdict(list)          # ip -> start times (card-testing guard)
+
+
+def _co_store(sid: int):
+    return next((x for x in db.list_stores() if x["id"] == sid), None)
+
+
+@app.get("/checkout", response_class=HTMLResponse)
+def checkout_page():
+    return _page("checkout.html", ("checkout.js", "nav.js", "styles.css", "skin.css", "chat.js"))
+
+
+@app.get("/api/checkout")
+def api_checkout(store: int = None):
+    k = co.keys()
+    stores = [{"id": x["id"], "name": x["name"].strip(), "currency": x["currency"]} for x in db.list_stores()
+              if not demo.is_demo(x) and x.get("access_token")]
+    return {"offers": co.offers(store), "stores": stores, "test": co.test_mode(), "cap": co.CAP,
+            "keys_set": bool(k.get("client_id") and k.get("api_key")), "webhook_set": bool(k.get("webhook_secret")),
+            "webhook_url": f"{BASE_URL}/pay/webhook", "base_url": BASE_URL, **co.listing(store)}
+
+
+@app.get("/api/checkout/variants")
+async def api_checkout_variants(store: int, q: str = ""):
+    st = _co_store(store)
+    if not st:
+        raise HTTPException(404, "No such store.")
+    got = await ShopifyClient(st["shop_domain"], st["access_token"]).gql(
+        "query P($q: String!) { products(first: 10, query: $q, sortKey: RELEVANCE) { nodes { id title status"
+        " featuredMedia { preview { image { url } } } variants(first: 30) { nodes { id title price } } } } }",
+        {"q": q or ""})
+    out = []
+    for p in got["products"]["nodes"]:
+        img = (((p.get("featuredMedia") or {}).get("preview") or {}).get("image") or {}).get("url")
+        for v in p["variants"]["nodes"]:
+            out.append({"variant_id": v["id"], "product_title": p["title"] + ("" if v["title"] == "Default Title" else f" - {v['title']}"),
+                        "price": float(v["price"] or 0), "image": img, "status": p["status"]})
+    return {"variants": out, "currency": st["currency"]}
+
+
+@app.post("/api/checkout/offer")
+def api_checkout_offer(payload: dict):
+    if not payload.get("id"):
+        st = _co_store(int(payload.get("store_id") or 0))
+        if not st:
+            raise HTTPException(400, "Pick a store.")
+        payload["currency"] = st["currency"]
+    try:
+        return co.save_offer(payload)
+    except co.CheckoutError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/checkout/sub/{sid}")
+async def api_checkout_sub(sid: int, payload: dict):
+    s = co.sub(sid)
+    if not s:
+        raise HTTPException(404, "No such subscription.")
+    act = payload.get("action")
+    if act == "cancel":
+        co.update_sub(sid, status="cancelled", ended_at=co._now())
+    elif act == "pause":
+        co.update_sub(sid, status="paused")
+    elif act in ("resume", "restart"):
+        co.update_sub(sid, status="active", fails=0, last_error=None,
+                      next_at=max(s["next_at"], co._now()) if act == "resume" else co._now())
+    elif act == "charge_now":
+        if s["status"] != "active":
+            raise HTTPException(400, "Only an active subscription can be charged.")
+        return await _co_renew(s)
+    else:
+        raise HTTPException(400, "Unknown action.")
+    return co.sub(sid) | {"token": None, "method_id": None}
+
+
+@app.post("/api/checkout/order/{ref}")
+async def api_checkout_order(ref: str, payload: dict):
+    """Owner / manager: refund a checkout payment, or create its Shopify order again after a Shopify error."""
+    od = co.order(ref=ref)
+    if not od or not od["intent_id"]:
+        raise HTTPException(404, "No such payment.")
+    try:
+        if payload.get("action") == "refund":
+            await co.refund(od["intent_id"], reason=payload.get("reason") or "Refund from ProfitDesk")
+            co.update_order(od["id"], status="refunded")
+        elif payload.get("action") == "reorder":
+            await _co_complete(ref, od["intent_id"])
+        else:
+            raise HTTPException(400, "Unknown action.")
+    except co.CheckoutError as e:
+        raise HTTPException(400, str(e))
+    return co.order(ref=ref)
+
+
+@app.get("/api/settings/checkout")
+def api_checkout_keys():
+    k = co.keys()
+    return {"client_id": (k.get("client_id") or "")[:4] + "…" if k.get("client_id") else "", "account_id": k.get("account_id") or "",
+            "api_key_set": bool(k.get("api_key")), "webhook_set": bool(k.get("webhook_secret")), "test": co.test_mode()}
+
+
+@app.put("/api/settings/checkout")
+async def api_checkout_keys_put(payload: dict):
+    """Owner: the checkout's own Airwallex key (blank fields keep what's saved), test mode."""
+    k = co.keys()
+    for f in ("client_id", "api_key", "account_id", "webhook_secret"):
+        v = (payload.get(f) or "").strip()
+        if v:
+            k[f] = v
+        elif f == "account_id" and payload.get("clear_account"):
+            k.pop(f, None)
+    db.set_setting("co_awx", json.dumps(k))
+    if "test" in payload:
+        db.set_setting("co_test", "1" if payload["test"] else "0")
+    if payload.get("check") and k.get("client_id"):
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                await awx._token(client, k["client_id"], k["api_key"], k.get("account_id") or None)
+            await co._call("GET", "/api/v1/pa/payment_intents?page_size=1", None, "payments")
+        except (co.CheckoutError, awx.AirwallexError) as e:
+            raise HTTPException(400, str(e))
+    return api_checkout_keys()
+
+
+# public: the payment page, its two calls, the customer's manage page, Airwallex's webhook
+
+@app.get("/pay/{slug}", response_class=HTMLResponse)
+def pay_page(slug: str):
+    o = co.offer_by_slug(slug)
+    if not o:
+        return HTMLResponse("<!doctype html><meta charset='utf-8'><p style='font-family:sans-serif'>This page isn't available.</p>", 404)
+    st = _co_store(o["store_id"]) or {}
+    with open(os.path.join(STATIC_DIR, "pay.html")) as f:
+        page = f.read()
+    data = co.public_offer(o) | {"store": (st.get("name") or "").strip()}
+    page = page.replace("__OFFER__", json.dumps(data).replace("</", "<\\/")).replace("__STORE__", html.escape(data["store"]))
+    for name in ("pay.js", "pay.css"):
+        page = page.replace(f"/static/{name}", f"/static/{name}?v={_stamp(name)}")
+    return HTMLResponse(page, headers={"Cache-Control": "no-cache"})
+
+
+@app.post("/pay/api/start")
+async def pay_start(request: Request, payload: dict):
+    """The shopper's details -> an Airwallex payment (and customer, for a subscription) for the price set here."""
+    ip = _client_ip(request)
+    now = time.time()
+    _co_hits[ip] = [t for t in _co_hits[ip] if now - t < 3600] + [now]
+    if len(_co_hits[ip]) > 12:
+        raise HTTPException(429, "Too many tries. Please wait a while and try again.")
+    o = co.offer_by_slug(payload.get("slug") or "")
+    if not o:
+        raise HTTPException(404, "This offer isn't available.")
+    plan = "first" if payload.get("plan") == "sub" else "one"
+    price = o["sub_price"] if plan == "first" else o["one_price"]
+    if not price:
+        raise HTTPException(400, "That option isn't available.")
+    addr = payload.get("address") or {}
+    who = {"email": (payload.get("email") or "").strip(), "name": (payload.get("name") or "").strip(),
+           "phone": (payload.get("phone") or "").strip(),
+           "address": {k: str(addr.get(k) or "").strip()[:120] for k in ("address1", "address2", "city", "province", "zip", "country")}}
+    if "@" not in who["email"] or not who["name"] or not who["address"]["address1"] or not who["address"]["city"]:
+        raise HTTPException(400, "Please fill in your email, name and address.")
+    if who["address"]["country"] not in o["countries"].split(","):
+        raise HTTPException(400, "Sorry, we don't ship there.")
+    if plan == "first" and not payload.get("agree"):
+        raise HTTPException(400, "Please tick the box to agree to the subscription terms.")
+    amount = round(price + (o["shipping"] or 0), 2)
+    if co.test_mode() and amount > co.CAP:
+        raise HTTPException(400, f"Test mode: payments over {co.CAP:.2f} are blocked.")
+    od = None
+    try:
+        cust = await co.create_customer(who["email"], who["name"], who["phone"]) if plan == "first" else None
+        od = co.new_order(o, plan, amount, who, customer_id=cust and cust["id"])
+        intent = await co.create_intent(amount, o["currency"], od["ref"], cust and cust["id"],
+                                        descriptor=(_co_store(o["store_id"]) or {}).get("name", "").strip(),
+                                        metadata={"ref": od["ref"], "kind": plan})
+    except co.CheckoutError as e:
+        if od:
+            co.update_order(od["id"], status="failed", error=str(e)[:300])
+        raise HTTPException(400, str(e))
+    co.update_order(od["id"], intent_id=intent["id"])
+    return {"ref": od["ref"], "intent_id": intent["id"], "client_secret": intent["client_secret"],
+            "currency": o["currency"], "amount": amount, "customer_id": cust and cust["id"],
+            "country": who["address"]["country"], "env": "prod"}
+
+
+async def _co_shopify(o: dict, od: dict, intent_id: str, token: str = None, shipping: float = None):
+    st = _co_store(o["store_id"])
+    try:
+        got = await ShopifyClient(st["shop_domain"], st["access_token"]).gql(co.ORDER_CREATE, {
+            "order": co.shopify_order_input(o, od, intent_id, token, BASE_URL, shipping),
+            "options": {"sendReceipt": True, "sendFulfillmentReceipt": True, "inventoryBehaviour": "DECREMENT_OBEYING_POLICY"}})
+        res = got["orderCreate"]
+        if res.get("userErrors"):
+            raise ShopifyError("; ".join(e["message"] for e in res["userErrors"]))
+        co.update_order(od["id"], status="ordered", shopify_id=res["order"]["id"], shopify_name=res["order"]["name"], error=None)
+    except Exception as e:
+        # paid, but Shopify didn't take the order: the desk shows it with "Create the order again"
+        co.update_order(od["id"], status="paid", error=f"Shopify order not created: {str(e)[:300]}")
+
+
+async def _co_complete(ref: str, intent_id: str, consent_id: str = None) -> dict:
+    """After the shopper paid: check with Airwallex, start the subscription, create the Shopify order. Safe to run
+    twice (the page and the webhook both call it)."""
+    async with _co_locks[ref]:
+        od = co.order(ref=ref)
+        if not od or od["intent_id"] != intent_id:
+            raise HTTPException(404, "Payment not found.")
+        if od["status"] == "ordered":
+            return od
+        intent = await co.get_intent(intent_id)
+        if not co.intent_paid(intent, od):
+            raise HTTPException(409, f"The payment isn't complete ({intent.get('status')}).")
+        if od["status"] == "started":
+            co.update_order(od["id"], status="paid", paid_at=co._now())
+        o = co.offer(od["offer_id"])
+        token = None
+        if od["kind"] == "first":
+            s = co.sub(od["sub_id"]) if od["sub_id"] else None
+            if not s:
+                consent_id = intent.get("payment_consent_id") or consent_id
+                mid, mtype = co.method_of(intent)
+                if consent_id:
+                    try:
+                        c = await co.get_consent(consent_id)
+                        if c.get("customer_id") and c["customer_id"] != od["customer_id"]:
+                            consent_id = None
+                        else:
+                            pm = c.get("payment_method") or {}
+                            mid, mtype = pm.get("id") or mid, pm.get("type") or mtype
+                    except co.CheckoutError:
+                        pass
+                s = co.new_sub(o, co.order(ref=ref), consent_id, mid, mtype)
+            token = s["token"]
+        await _co_shopify(o, co.order(ref=ref), intent_id, token)
+        return co.order(ref=ref) | {"manage": f"{BASE_URL}/pay/manage/{token}" if token else None}
+
+
+@app.post("/pay/api/done")
+async def pay_done(payload: dict):
+    try:
+        od = await _co_complete(payload.get("ref") or "", payload.get("intent_id") or "", payload.get("consent_id"))
+    except co.CheckoutError as e:
+        raise HTTPException(400, str(e))
+    s = co.sub(od["sub_id"]) if od.get("sub_id") else None
+    return {"ok": True, "order": od.get("shopify_name"), "pending": od["status"] != "ordered",
+            "manage": f"{BASE_URL}/pay/manage/{s['token']}" if s else None, "next": s and s["next_at"]}
+
+
+async def _co_renew(s: dict) -> dict:
+    """Charge one subscription's next delivery with the saved card and create its Shopify order."""
+    o = co.offer(s["offer_id"])
+    amount = round(s["price"] + (s["shipping"] or 0), 2)
+    who = {"email": s["email"], "name": s["name"], "phone": s["phone"], "address": json.loads(s["address"] or "{}")}
+    od = co.new_order(o | {"currency": s["currency"]}, "renewal", amount, who, sub_id=s["id"], customer_id=s["customer_id"])
+    try:
+        if not s.get("method_id"):
+            raise co.CheckoutError("No saved card for this subscription.")
+        intent = await co.charge_saved(s, amount, od["ref"])
+        co.update_order(od["id"], intent_id=intent.get("id"))
+        if not co.intent_paid(intent, od):
+            raise co.CheckoutError(f"Payment {intent.get('status') or 'failed'}")
+        co.update_order(od["id"], status="paid", paid_at=co._now())
+        nxt = (datetime.now(timezone.utc) + timedelta(days=s["interval_days"])).isoformat(timespec="seconds")
+        co.update_sub(s["id"], next_at=nxt, fails=0, last_error=None, renewals=s["renewals"] + 1)
+        await _co_shopify(o, co.order(ref=od["ref"]), intent["id"], s["token"], s["shipping"])
+    except Exception as e:
+        fails = s["fails"] + 1
+        co.update_order(od["id"], status="failed", error=str(e)[:300])
+        if fails > len(co.RETRY_DAYS):
+            co.update_sub(s["id"], fails=fails, last_error=str(e)[:300], status="failed", ended_at=co._now())
+        else:
+            co.update_sub(s["id"], fails=fails, last_error=str(e)[:300],
+                          next_at=(datetime.now(timezone.utc) + timedelta(days=co.RETRY_DAYS[fails - 1])).isoformat(timespec="seconds"))
+    return co.order(ref=od["ref"])
+
+
+async def _co_loop():
+    await asyncio.sleep(300)
+    while True:
+        try:
+            if co.keys().get("api_key"):
+                for s in co.due_subs():
+                    await _co_renew(s)
+        except Exception as e:
+            print(f"Checkout renewals: {e}", flush=True)
+        await asyncio.sleep(600)
+
+
+@app.get("/pay/manage/{token}", response_class=HTMLResponse)
+def pay_manage_page(token: str):
+    s = co.sub(token=token)
+    if not s:
+        return HTMLResponse("<!doctype html><meta charset='utf-8'><p style='font-family:sans-serif'>This link isn't valid.</p>", 404)
+    with open(os.path.join(STATIC_DIR, "pay-manage.html")) as f:
+        page = f.read()
+    return HTMLResponse(page.replace("__SUB__", json.dumps(_pay_sub_view(s)).replace("</", "<\\/"))
+                        .replace("/static/pay.css", f"/static/pay.css?v={_stamp('pay.css')}"), headers={"Cache-Control": "no-cache"})
+
+
+def _pay_sub_view(s: dict) -> dict:
+    o = co.offer(s["offer_id"]) or {}
+    st = _co_store(s["store_id"]) or {}
+    return {"store": (st.get("name") or "").strip(), "product": o.get("title"), "image": o.get("image"),
+            "price": s["price"], "shipping": s["shipping"], "currency": s["currency"], "every": s["interval_days"],
+            "status": s["status"], "next": s["next_at"], "email": s["email"]}
+
+
+@app.post("/pay/api/manage/{token}")
+def pay_manage(token: str, payload: dict):
+    s = co.sub(token=token)
+    if not s:
+        raise HTTPException(404, "This link isn't valid.")
+    act = payload.get("action")
+    if act == "cancel" and s["status"] in ("active", "paused"):
+        co.update_sub(s["id"], status="cancelled", ended_at=co._now())
+    elif act == "skip" and s["status"] == "active":
+        nxt = datetime.fromisoformat(s["next_at"]) + timedelta(days=s["interval_days"])
+        co.update_sub(s["id"], next_at=nxt.isoformat(timespec="seconds"))
+    elif act == "pause" and s["status"] == "active":
+        co.update_sub(s["id"], status="paused")
+    elif act == "resume" and s["status"] == "paused":
+        co.update_sub(s["id"], status="active", next_at=max(s["next_at"], co._now()))
+    else:
+        raise HTTPException(400, "That can't be done right now.")
+    return _pay_sub_view(co.sub(token=token))
+
+
+@app.post("/pay/webhook")
+async def pay_webhook(request: Request):
+    """Airwallex's notifications (signed with the webhook's secret). Backup for a shopper who closed the page
+    before we heard back: a paid first payment still gets its subscription and Shopify order."""
+    body = await request.body()
+    if not co.webhook_ok(body, request.headers.get("x-timestamp", ""), request.headers.get("x-signature", "")):
+        raise HTTPException(401, "Bad signature.")
+    try:
+        ev = json.loads(body)
+    except ValueError:
+        return {"ok": True}
+    obj = (ev.get("data") or {}).get("object") or {}
+    if ev.get("name") == "payment_intent.succeeded" and obj.get("id"):
+        od = co.order(intent_id=obj["id"])
+        if od and od["kind"] in ("one", "first") and od["status"] != "ordered":
+            async def later():
+                await asyncio.sleep(20)          # let the page's own call finish first
+                try:
+                    await _co_complete(od["ref"], obj["id"])
+                except Exception as e:
+                    print(f"Checkout webhook {od['ref']}: {e}", flush=True)
+            asyncio.create_task(later())
+    return {"ok": True}
+
 
 @app.get("/recordings", response_class=HTMLResponse)
 def recordings_page():

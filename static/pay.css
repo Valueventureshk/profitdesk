@@ -1,0 +1,76 @@
+/* ProfitDesk checkout: the store's payment page. Plain and familiar, like Shopify's own checkout. */
+:root { --ink: #1a1a1a; --muted: #707070; --line: #dedede; --bg: #fff; --side: #f5f5f5; --accent: #1773b0; --err: #c0392b; }
+* { box-sizing: border-box; }
+body { margin: 0; font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: var(--ink); background: var(--bg); font-size: 15px; }
+.pay-head { display: flex; justify-content: space-between; align-items: center; padding: 18px 24px; border-bottom: 1px solid var(--line); }
+.pay-store { font-size: 22px; font-weight: 700; letter-spacing: -0.01em; }
+.pay-lock { color: var(--muted); font-size: 13px; }
+.pay-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); min-height: calc(100vh - 66px); }
+.pay-main { padding: 32px max(24px, calc((100% - 560px))) 40px 24px; justify-self: end; width: 100%; max-width: 620px; }
+.pay-side { background: var(--side); border-left: 1px solid var(--line); padding: 32px 24px; }
+.pay-side > * { max-width: 460px; }
+.pay-card h2 { font-size: 18px; font-weight: 600; margin: 26px 0 12px; }
+.pay-card h2:first-child { margin-top: 0; }
+input, select { width: 100%; font: inherit; padding: 13px 12px; border: 1px solid var(--line); border-radius: 6px; margin-bottom: 10px; background: #fff; color: var(--ink); }
+input:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.row2, .row3 { display: grid; gap: 10px; grid-template-columns: 1fr 1fr; }
+.row3 { grid-template-columns: 1.3fr 1fr 0.8fr; }
+.plans { display: grid; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.plan { display: flex; gap: 12px; align-items: flex-start; padding: 14px; cursor: pointer; border-bottom: 1px solid var(--line); }
+.plan:last-child { border-bottom: 0; }
+.plan.on { background: #f0f6fb; box-shadow: inset 0 0 0 1px var(--accent); }
+.plan input { width: auto; margin: 3px 0 0; }
+.plan-t { flex: 1; }
+.plan-t b { display: block; }
+.plan-t span { color: var(--muted); font-size: 13px; }
+.plan-badge { background: #1f6f5c; color: #fff; font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 10px; margin-left: 6px; }
+.plan-p { font-weight: 600; font-variant-numeric: tabular-nums; }
+.agree { display: flex; gap: 10px; align-items: flex-start; font-size: 13px; color: #444; margin: 8px 0 4px; line-height: 1.45; }
+.agree input { width: auto; margin: 2px 0 0; }
+.pay-btn { width: 100%; margin-top: 16px; padding: 17px; font: inherit; font-weight: 600; font-size: 16px; color: #fff; background: var(--accent); border: 0; border-radius: 6px; cursor: pointer; }
+.pay-btn:disabled { opacity: 0.6; cursor: default; }
+.pay-link { background: none; border: 0; color: var(--accent); font: inherit; padding: 0; cursor: pointer; margin-bottom: 14px; }
+.pay-muted { color: var(--muted); font-size: 13px; }
+.pay-err { background: #fdecea; color: var(--err); border-radius: 6px; padding: 10px 12px; margin-top: 10px; font-size: 14px; }
+.pay-test { background: #fff4d6; border: 1px solid #f1d27a; border-radius: 6px; padding: 9px 12px; margin-bottom: 18px; font-size: 13px; }
+.pay-review { border: 1px solid var(--line); border-radius: 6px; padding: 4px 12px; margin: 12px 0 16px; font-size: 13px; }
+.pay-review div { display: flex; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--line); }
+.pay-review div:last-child { border-bottom: 0; }
+.pay-review span { color: var(--muted); width: 70px; flex: none; }
+.pay-dropin { min-height: 120px; }
+.pay-done { text-align: center; padding-top: 30px; }
+.pay-tick { width: 56px; height: 56px; border-radius: 50%; background: #1f6f5c; color: #fff; font-size: 30px; line-height: 56px; margin: 0 auto 10px; }
+.pay-done a { color: var(--accent); }
+.pay-foot { margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+.pay-item { display: flex; gap: 14px; align-items: center; }
+.pay-thumb { position: relative; width: 64px; height: 64px; border: 1px solid var(--line); border-radius: 8px; background: #fff; flex: none; }
+.pay-thumb img { width: 100%; height: 100%; object-fit: cover; border-radius: 8px; }
+.pay-qty { position: absolute; top: -8px; right: -8px; background: #666; color: #fff; font-size: 12px; min-width: 20px; height: 20px; border-radius: 10px; text-align: center; line-height: 20px; }
+.pay-item-t { flex: 1; display: grid; gap: 2px; }
+.pay-num { font-variant-numeric: tabular-nums; }
+.pay-lines { margin-top: 22px; display: grid; gap: 8px; font-size: 14px; }
+.pay-lines div, .pay-total { display: flex; justify-content: space-between; }
+.pay-total { margin-top: 14px; font-size: 18px; align-items: baseline; }
+.pay-total small { color: var(--muted); font-size: 12px; }
+.pay-then { margin-top: 8px; }
+.pay-desc { margin-top: 22px; line-height: 1.5; white-space: pre-line; }
+.pay-summary-toggle { display: none; }
+@media (max-width: 860px) {
+  .pay-grid { grid-template-columns: 1fr; }
+  .pay-main { justify-self: stretch; max-width: none; padding: 20px 16px 32px; }
+  .pay-side { order: -1; border-left: 0; border-bottom: 1px solid var(--line); padding: 18px 16px; display: none; }
+  .pay-side.open { display: block; }
+  .pay-head { padding: 14px 16px; }
+  .pay-summary-toggle { display: flex; justify-content: space-between; width: 100%; padding: 14px 16px; background: var(--side); border: 0; border-bottom: 1px solid var(--line); font: inherit; color: var(--accent); cursor: pointer; }
+  .pay-summary-toggle b { color: var(--ink); }
+  .row3 { grid-template-columns: 1fr 1fr; }
+  .row3 #city { grid-column: 1 / -1; }
+}
+/* manage page */
+.mg { max-width: 520px; margin: 0 auto; padding: 28px 16px; }
+.mg-card { border: 1px solid var(--line); border-radius: 10px; padding: 20px; }
+.mg-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+.mg-row:last-child { border-bottom: 0; }
+.mg-btns { display: grid; gap: 10px; margin-top: 18px; }
+.mg-btn { padding: 13px; font: inherit; font-weight: 600; border-radius: 6px; border: 1px solid var(--line); background: #fff; cursor: pointer; }
+.mg-btn.danger { color: var(--err); }

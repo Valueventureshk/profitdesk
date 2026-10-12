@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Your subscription</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/static/pay.css">
+</head>
+<body>
+<div class="mg">
+  <h1 id="store" style="font-size:22px"></h1>
+  <div class="mg-card">
+    <div class="pay-item" style="margin-bottom:14px">
+      <div class="pay-thumb"><img id="img" alt=""></div>
+      <div class="pay-item-t"><b id="product"></b><span class="pay-muted" id="every"></span></div>
+    </div>
+    <div class="mg-row"><span>Status</span><b id="status"></b></div>
+    <div class="mg-row"><span>Each delivery</span><b class="pay-num" id="price"></b></div>
+    <div class="mg-row" id="nextRow"><span>Next charge</span><b id="next"></b></div>
+    <div class="mg-row"><span>Email</span><span id="email"></span></div>
+    <div class="mg-btns" id="btns"></div>
+    <div id="err" class="pay-err" hidden></div>
+  </div>
+  <p class="pay-muted" style="margin-top:16px">Changes take effect straight away. Questions? Reply to your order confirmation email.</p>
+</div>
+<script>
+const S0 = __SUB__;
+(function () {
+  let S = S0;
+  const $ = (id) => document.getElementById(id);
+  const money = (v) => new Intl.NumberFormat(undefined, { style: "currency", currency: S.currency }).format(v || 0);
+  const every = (d) => (d === 30 || d === 31 ? "month" : d === 7 ? "week" : d === 1 ? "day" : `${d} days`);
+  const LABEL = { active: "Active", paused: "Paused", cancelled: "Cancelled", failed: "Stopped (payment failed)" };
+  async function act(action) {
+    if (action === "cancel" && !confirm("Cancel your subscription? You won't be charged again.")) return;
+    const r = await fetch(location.pathname.replace("/pay/manage/", "/pay/api/manage/"), {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { $("err").textContent = j.detail || "That didn't work. Please try again."; $("err").hidden = false; return; }
+    S = j; draw();
+  }
+  function draw() {
+    $("store").textContent = S.store;
+    $("img").src = S.image || ""; $("img").hidden = !S.image;
+    $("product").textContent = S.product;
+    $("every").textContent = `Every ${every(S.every)}`;
+    $("status").textContent = LABEL[S.status] || S.status;
+    $("price").textContent = money(S.price + (S.shipping || 0));
+    $("next").textContent = new Date(S.next).toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" });
+    $("nextRow").hidden = S.status !== "active";
+    $("email").textContent = S.email;
+    const b = [];
+    if (S.status === "active") b.push(["skip", "Skip the next delivery"], ["pause", "Pause"], ["cancel", "Cancel subscription"]);
+    if (S.status === "paused") b.push(["resume", "Resume"], ["cancel", "Cancel subscription"]);
+    $("btns").innerHTML = b.map(([a, t]) => `<button class="mg-btn${a === "cancel" ? " danger" : ""}" data-a="${a}">${t}</button>`).join("");
+    $("btns").querySelectorAll("button").forEach((x) => (x.onclick = () => act(x.dataset.a)));
+  }
+  draw();
+})();
+</script>
+</body>
+</html>

@@ -32,6 +32,7 @@ window.PDUrl = {
     { href: "/sizecharts", desk: "sizecharts", label: "Size Charts", note: "Size charts for every store, with AI", group: "Apps" },
     { href: "/importer", desk: "importer", label: "Product Importer", note: "Copy products from any Shopify store", group: "Apps" },
     { href: "/recordings", desk: "recordings", label: "Session Recordings", note: "Watch what shoppers did on your stores", group: "Apps" },
+    { href: "/checkout", desk: "checkout", label: "Checkout", note: "Own payment page with subscriptions (Airwallex)", group: "Apps" },
   ];
   // a group's title goes above its first item
   const headed = (list, title) => (s, i) => (s.group && (i === 0 || list[i - 1].group !== s.group) ? title(s.group) : "");

@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>__STORE__ · Checkout</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/static/pay.css">
+<script src="https://static.airwallex.com/components/sdk/v1/index.js"></script>
+</head>
+<body>
+<script>window.OFFER = __OFFER__;</script>
+<div class="pay">
+  <header class="pay-head"><div class="pay-store">__STORE__</div><div class="pay-lock">🔒 Secure checkout</div></header>
+
+  <button class="pay-summary-toggle" id="sumToggle" type="button">
+    <span>Show order summary ▾</span><b id="sumTotalTop"></b>
+  </button>
+
+  <div class="pay-grid">
+    <main class="pay-main">
+      <div id="testbar" class="pay-test" hidden>Test mode: payments are limited to small amounts.</div>
+
+      <section class="pay-card" id="step-details">
+        <h2>Choose how you buy</h2>
+        <div id="plans" class="plans"></div>
+
+        <h2>Contact</h2>
+        <input id="email" type="email" placeholder="Email" autocomplete="email">
+
+        <h2>Delivery</h2>
+        <select id="country" autocomplete="country"></select>
+        <div class="row2">
+          <input id="first" placeholder="First name" autocomplete="given-name">
+          <input id="last" placeholder="Last name" autocomplete="family-name">
+        </div>
+        <input id="address1" placeholder="Address" autocomplete="address-line1">
+        <input id="address2" placeholder="Apartment, suite, etc. (optional)" autocomplete="address-line2">
+        <div class="row3">
+          <input id="city" placeholder="City / suburb" autocomplete="address-level2">
+          <select id="province" autocomplete="address-level1"></select>
+          <input id="zip" placeholder="Postcode" autocomplete="postal-code" inputmode="numeric">
+        </div>
+        <input id="phone" type="tel" placeholder="Phone (for delivery updates)" autocomplete="tel">
+
+        <label class="agree" id="agreeWrap" hidden><input type="checkbox" id="agree"> <span id="agreeText"></span></label>
+        <div id="err" class="pay-err" hidden></div>
+        <button id="go" class="pay-btn" type="button">Continue to payment</button>
+      </section>
+
+      <section class="pay-card" id="step-pay" hidden>
+        <button id="edit" class="pay-link" type="button">← Change details</button>
+        <h2>Payment</h2>
+        <p class="pay-muted">All transactions are secure and encrypted.</p>
+        <div class="pay-review" id="review"></div>
+        <div id="dropin" class="pay-dropin"><div class="pay-muted">Loading secure payment…</div></div>
+        <div id="err2" class="pay-err" hidden></div>
+      </section>
+
+      <section class="pay-card pay-done" id="step-done" hidden>
+        <div class="pay-tick">✓</div>
+        <h2 id="doneTitle">Thank you!</h2>
+        <p id="doneText"></p>
+        <p id="doneSub" class="pay-muted"></p>
+      </section>
+
+      <footer class="pay-foot">Payments processed securely by Airwallex. Your card details never reach this store.</footer>
+    </main>
+
+    <aside class="pay-side" id="side">
+      <div class="pay-item">
+        <div class="pay-thumb"><img id="img" alt=""><span class="pay-qty">1</span></div>
+        <div class="pay-item-t"><b id="ptitle"></b><span id="pplan" class="pay-muted"></span></div>
+        <div class="pay-num" id="pprice"></div>
+      </div>
+      <div class="pay-lines">
+        <div><span>Subtotal</span><span class="pay-num" id="sub"></span></div>
+        <div><span>Shipping</span><span class="pay-num" id="ship"></span></div>
+      </div>
+      <div class="pay-total"><span>Total</span><span><small id="cur"></small> <b class="pay-num" id="total"></b></span></div>
+      <div class="pay-then pay-muted" id="then"></div>
+      <div class="pay-desc pay-muted" id="desc"></div>
+    </aside>
+  </div>
+</div>
+<script src="/static/pay.js"></script>
+</body>
+</html>
