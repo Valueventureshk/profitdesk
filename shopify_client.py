@@ -80,6 +80,7 @@ query OrderLines($cursor: String, $q: String!) {
           variant { id }
           product { id }
           discountedTotalSet { shopMoney { amount } }
+          originalTotalSet { shopMoney { amount } }
         }
       }
     }
@@ -379,6 +380,8 @@ class ShopifyClient:
                             "variant_id": (li.get("variant") or {}).get("id"),
                             "product_id": (li.get("product") or {}).get("id"),
                             "subtotal": float(((li.get("discountedTotalSet") or {}).get("shopMoney") or {}).get("amount") or 0),
+                            # the price before discounts: what a free replacement / shipping-only order's item is worth
+                            "original": float(((li.get("originalTotalSet") or {}).get("shopMoney") or {}).get("amount") or 0),
                         } for li in o["lineItems"]["nodes"]],
                     })
                 if not conn["pageInfo"]["hasNextPage"]:

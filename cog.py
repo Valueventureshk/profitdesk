@@ -354,8 +354,13 @@ def cost_order(order: dict, store, catalog: Catalog, usd_to_store: float) -> lis
             continue
         # 3. never bought: the store's average COG %
         if pct is not None:
-            line.update(cost=li["subtotal"] * pct / usd_to_store if usd_to_store else None,
-                        source="estimate", note=f"No cost history; store average {pct * 100:.1f}% of sales")
+            # A free replacement or a shipping-only order still ships the item: estimate from its normal price
+            # (before discounts) when the customer paid much less than that, never from $0.
+            paid, normal = li.get("subtotal") or 0.0, li.get("original") or 0.0
+            base = normal if normal > 0 and paid < 0.5 * normal else paid
+            line.update(cost=base * pct / usd_to_store if usd_to_store else None, source="estimate",
+                        note=f"No cost history; store average {pct * 100:.1f}% of "
+                             + (f"its normal price {normal:.2f} (customer paid {paid:.2f})" if base == normal and paid < normal else "sales"))
         else:
             line.update(source="estimate", note="No cost history for this store yet")
         out.append(line)

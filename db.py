@@ -730,7 +730,7 @@ _ADDED_COLUMNS = {
     ],
     "px_visitors": [("g_click", "TEXT"), ("g_at", "TEXT")],
     "gconv_uploads": [("adj_value", "REAL"), ("adj_status", "TEXT"), ("adj_at", "TEXT"), ("adj_error", "TEXT")],  # refund / cancel corrections   # the latest Google click (JSON {gclid|gbraid|wbraid}) and when
-    "cog_lines": [("single_usd", "REAL"), ("product_id", "TEXT"), ("country", "TEXT")],   # country: shipping country code   # product_id: Shopify product GID     # the line at single-item prices (bundles show their discount)
+    "cog_lines": [("single_usd", "REAL"), ("product_id", "TEXT"), ("country", "TEXT"), ("original", "REAL")],  # original: price before discounts   # country: shipping country code   # product_id: Shopify product GID     # the line at single-item prices (bundles show their discount)
     "shipments": [("province", "TEXT"), ("fulfillment_gid", "TEXT"), ("pushed", "TEXT NOT NULL DEFAULT ''"),
                   ("push_error", "TEXT")],
     "stores": [
@@ -958,11 +958,11 @@ def replace_cog_lines(store_id: int, start: str, end: str, rows: list):
         con.executemany(
             "INSERT OR REPLACE INTO cog_lines (store_id, order_name, line_no, day, created, cancelled,"
             " fulfillment, product, sku, variant_id, quantity, subtotal, cost_usd, source, supplier, note, single_usd, product_id,"
-            " country) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " country, original) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [(store_id, r["order"], r["line_no"], r["day"], r["created"], int(r["cancelled"]),
               r.get("fulfillment"), r["product"], r.get("sku"), r.get("variant_id"), r["quantity"],
               r["subtotal"], r.get("cost"), r.get("source"), r.get("supplier"), r.get("note"), r.get("single"),
-              r.get("product_id"), r.get("country"))
+              r.get("product_id"), r.get("country"), r.get("original"))
              for r in rows])
 
 

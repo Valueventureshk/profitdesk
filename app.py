@@ -9448,7 +9448,7 @@ async def _recost(store_id: int, order_names: set):
             o = orders.setdefault(r["order_name"], {"name": r["order_name"], "cancelled": bool(r["cancelled"]),
                                                     "lines": [], "nos": []})
             o["lines"].append({"title": r["product"], "variant": "", "quantity": r["quantity"],
-                               "subtotal": r["subtotal"], "sku": r["sku"]})
+                               "subtotal": r["subtotal"], "sku": r["sku"], "original": r.get("original") or 0.0})
             o["nos"].append(r["line_no"])
         updates = []
         for o in orders.values():
