@@ -6886,6 +6886,26 @@ async def api_tracking_google_peek(store: int, days: int = 7):
             "conversion_actions": acts}
 
 
+@app.post("/api/tracking/google/primary")
+async def api_tracking_google_primary(payload: dict):
+    """Set Google conversion actions primary (used for bidding) or secondary: {store, primary: [names], secondary: [names]}."""
+    st = _ads_store(payload["store"])
+    args = _ads_args(st)
+    acts = {a["name"]: a for a in await gads_conv.all_actions(*args)}
+    cid = str(st["google_customer_id"]).replace("-", "")
+    ops = []
+    for flag, names in ((True, payload.get("primary") or []), (False, payload.get("secondary") or [])):
+        for nm in names:
+            a = acts.get(nm)
+            if not a:
+                raise HTTPException(400, f"No conversion action called “{nm}”.")
+            ops.append({"conversionActionOperation": {"update": {"resourceName": f"customers/{cid}/conversionActions/{a['id']}",
+                                                                 "primaryForGoal": flag}, "updateMask": "primary_for_goal"}})
+    await gads_manage.mutate(*args, ops, validate_only=True)
+    await gads_manage.mutate(*args, ops)
+    return {"ok": True, "actions": await gads_conv.all_actions(*args)}
+
+
 @app.get("/api/googleads/check")
 async def api_googleads_check(store: int):
     """Last 30 days of one store's Google spend four ways, to find where figures differ:
