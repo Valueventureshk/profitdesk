@@ -341,6 +341,7 @@ def healthz():
     return {"ok": True, "db_path": path, "volume_mount": vol or None,
             "db_on_volume": bool(vol) and path.startswith(vol.rstrip("/") + "/"),
             "has_accounts": auth.has_users(),
+            "google_requests_today": gads.ops_today(), "google_paused": gads.busy(),
             "stalls_10min": [x[:2] for x in _stalls if x[0] >= (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat(timespec="seconds")],
             "version": (os.getenv("RAILWAY_GIT_COMMIT_SHA") or "")[:7] or None}
 
@@ -6197,6 +6198,56 @@ async def api_ads_structure(store: int):
         raise HTTPException(400, str(e))
 
 
+_glive: dict = {}            # (store id, start, end) -> (time, {day: spend}) for days still moving
+
+
+async def _google_days(store, start: str, end: str, auth) -> dict:
+    """Google spend per store day. Days before yesterday (store clock) are read from Google once and kept in
+    google_days; only yesterday and today are read live (at most every 10 minutes). The dashboard used to ask
+    Google for the whole period on every view, which used up the API's daily allowance."""
+    today = _store_today(store)
+    live_from = (today - timedelta(days=1)).isoformat()
+    out = {}
+    if start < live_from:
+        last_done = min(end, (today - timedelta(days=2)).isoformat())
+        with db._conn() as con:
+            have = {r[0]: r[1] for r in con.execute("SELECT date, spend FROM google_days WHERE store_id = ? AND date BETWEEN ? AND ?",
+                                                    (store["id"], start, last_done))}
+        missing = [d for d in _dates(start, last_done) if d not in have]
+        if missing:
+            try:
+                got = await gads.daily_spend(auth["refresh_token"], store["google_customer_id"], store["google_login_cid"],
+                                             missing[0], missing[-1], store["timezone"])
+                now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                with db._conn() as con:
+                    con.executemany("INSERT OR REPLACE INTO google_days (store_id, date, spend, saved_at) VALUES (?,?,?,?)",
+                                    [(store["id"], d, got.get(d, 0.0), now) for d in _dates(missing[0], missing[-1])])
+                for d in _dates(missing[0], missing[-1]):
+                    have[d] = got.get(d, 0.0)
+            except gads.GoogleAdsError:
+                if not have:
+                    raise
+        out.update(have)
+    a = max(start, live_from)
+    if a <= end:
+        key = (store["id"], a, end)
+        hit = _glive.get(key)
+        if hit and time.time() - hit[0] < 600:
+            out.update(hit[1])
+        else:
+            try:
+                got = await gads.daily_spend(auth["refresh_token"], store["google_customer_id"], store["google_login_cid"],
+                                             a, end, store["timezone"])
+                _glive[key] = (time.time(), got)
+                out.update(got)
+            except gads.GoogleAdsError:
+                if hit:
+                    out.update(hit[1])
+                else:
+                    raise
+    return out
+
+
 _store_urls: dict = {}
 
 
@@ -6646,7 +6697,7 @@ async def _ads_loop():
     while True:
         for st in db.list_stores():
             try:
-                if st.get("google_customer_id") and _ads_settings(st["id"])["enabled"]:
+                if st.get("google_customer_id") and _ads_settings(st["id"])["enabled"] and not gads.busy():
                     await _ads_run_rules(st)
             except Exception as e:
                 print(f"Ads rules failed for {st['name']}: {str(getattr(e, 'detail', None) or e)[:300]}", flush=True)
@@ -7235,7 +7286,7 @@ async def _gconv_loop():
             try:
                 if st.get("google_customer_id") and _gconv_cfg(st["id"])["enabled"]:
                     await _gconv_run(st)
-                    if n % 6 == 0:
+                    if n % 6 == 0 and not gads.busy():
                         await _gconv_autoswitch(st)
                         await _gconv_adjust(st)
                     _gconv_state.setdefault(st["id"], {}).update(last_run=time.time(), last_error=None)
@@ -8924,12 +8975,14 @@ async def _gdesk_loop():
     while True:
         for st in [x for x in db.list_stores() if x.get("google_customer_id") and not demo.is_demo(x)
                    and x.get("google_source") != "sheet" and x.get("access_token")]:
+            if gads.busy():
+                break
             try:
                 today = _store_today(st)
                 await _gdesk(st, google_desk.windows_for(today, today - timedelta(days=29), today), fresh=1)
             except Exception as e:
                 print(f"Google desk refresh failed for {st['name']}: {str(e)[:200]}", flush=True)
-        await asyncio.sleep(1800)
+        await asyncio.sleep(3 * 3600)
 
 
 async def _outside_loop():
@@ -9031,10 +9084,7 @@ async def _store_window(store, start, end, auth, meta_auth):
             got = await gsheet.daily_spend(auth["refresh_token"], store["google_customer_id"],
                                            start, end_for_api, store["timezone"])
         else:
-            got = await gads.daily_spend(
-                auth["refresh_token"], store["google_customer_id"],
-                store["google_login_cid"], start, end_for_api, store["timezone"],
-            )
+            got = await _google_days(store, start, end_for_api, auth)
         return {d: metrics.with_google_tax(v, store["google_tax_pct"]) for d, v in got.items()}
 
     async def meta_spend():

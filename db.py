@@ -143,6 +143,15 @@ CREATE TABLE IF NOT EXISTS cog_lines (
 );
 CREATE INDEX IF NOT EXISTS cog_lines_day ON cog_lines (store_id, day);
 
+-- Google Ads spend per completed store day (read once from Google, kept), like shopify_days.
+CREATE TABLE IF NOT EXISTS google_days (
+    store_id   INTEGER NOT NULL,
+    date       TEXT    NOT NULL,
+    spend      REAL    NOT NULL,
+    saved_at   TEXT    NOT NULL,
+    PRIMARY KEY (store_id, date)
+);
+
 -- WhatsApp: every message in / out (one conversation per phone number) and the files people sent.
 CREATE TABLE IF NOT EXISTS wa_messages (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,

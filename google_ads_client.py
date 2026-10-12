@@ -150,10 +150,47 @@ def _why(r) -> str:
         return r.text[:300]
 
 
+# Google Ads API requests per Pacific day (Explorer access allows 2,880). Background jobs check busy() and wait
+# when the day's requests run low, so pages people open keep working.
+DAILY_LIMIT = 2880
+RESERVE = 600                    # kept for people opening pages
+_ops = {"day": None, "n": 0}
+
+
+def _pacific_day() -> str:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    return datetime.now(ZoneInfo("America/Los_Angeles")).date().isoformat()
+
+
+def ops_today() -> int:
+    d = _pacific_day()
+    if _ops["day"] != d:
+        _ops["day"] = d
+        try:
+            _ops["n"] = int(db.get_setting(f"gads_ops:{d}") or 0)
+        except ValueError:
+            _ops["n"] = 0
+    return _ops["n"]
+
+
+def _count():
+    ops_today()
+    _ops["n"] += 1
+    if _ops["n"] % 10 == 0:
+        db.set_setting(f"gads_ops:{_ops['day']}", str(_ops["n"]))
+
+
+def busy() -> bool:
+    """True when background work should wait: the day's requests are close to Google's limit (or Google said so)."""
+    return ops_today() >= DAILY_LIMIT - RESERVE or _ops.get("blocked_until", 0) > __import__("time").time()
+
+
 async def _search(client, version, customer_id, query, headers):
     url = f"https://googleads.googleapis.com/{version}/customers/{customer_id}/googleAds:search"
     rows, page = [], None
     while True:
+        _count()
         body = {"query": query}                     # Google fixes the page size (10,000 rows)
         if page:
             body["pageToken"] = page
@@ -164,6 +201,12 @@ async def _search(client, version, customer_id, query, headers):
                 "project is still on Test access (Google Cloud Console > Google Ads API "
                 f"> Access levels), or this Google login can't see that ad account. (Google: {_why(r)})"
             )
+        if r.status_code == 429 or "RESOURCE_EXHAUSTED" in r.text[:2000]:
+            import re as _re, time as _t
+            m = _re.search(r"Retry in (\d+) seconds", r.text)
+            _ops["blocked_until"] = _t.time() + (int(m.group(1)) if m else 3600)
+            raise GoogleAdsError("Google Ads' daily request allowance is used up; it resets within "
+                                 f"{(int(m.group(1)) // 3600 + 1) if m else 1} hours. Saved figures are shown meanwhile.")
         if r.status_code >= 400:
             raise GoogleAdsError(f"Google Ads error {r.status_code}: {_why(r)}")
         payload = r.json()
