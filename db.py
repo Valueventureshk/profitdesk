@@ -521,8 +521,12 @@ class AlreadyLinked(RuntimeError):
 
 @contextmanager
 def _conn():
-    con = sqlite3.connect(DB_PATH)
+    # WAL: readers never wait for a writer (background jobs copy mail, re-cost orders... while pages
+    # read). busy_timeout: a second writer waits up to 10 s instead of failing.
+    con = sqlite3.connect(DB_PATH, timeout=10)
     con.row_factory = sqlite3.Row
+    con.execute("PRAGMA busy_timeout = 10000")
+    con.execute("PRAGMA synchronous = NORMAL")
     try:
         yield con
         con.commit()
@@ -638,7 +642,21 @@ def restore_bytes(data: bytes):
         if missing:
             raise ValueError("That file isn't a ProfitDesk backup (missing "
                              + ", ".join(sorted(missing)) + ").")
+        # WAL: write everything into the main file and drop the side files first, so nothing of
+        # the old database can be replayed onto the restored one
+        try:
+            old = sqlite3.connect(DB_PATH, timeout=30)
+            old.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            old.close()
+        except sqlite3.Error:
+            pass
         os.replace(tmp, DB_PATH)
+        for side in (DB_PATH + "-wal", DB_PATH + "-shm"):
+            try:
+                os.remove(side)
+            except OSError:
+                pass
+        _wal()
     except Exception:
         if os.path.exists(tmp):
             os.remove(tmp)
@@ -646,7 +664,18 @@ def restore_bytes(data: bytes):
     init()  # bring an older backup's tables up to date
 
 
+def _wal():
+    """Switch the database to WAL once (it's stored in the file and stays on)."""
+    try:
+        con = sqlite3.connect(DB_PATH, timeout=30)
+        con.execute("PRAGMA journal_mode = WAL")
+        con.close()
+    except sqlite3.Error:
+        pass
+
+
 def init():
+    _wal()
     with _conn() as con:
         con.executescript(SCHEMA)
         for table, cols in _ADDED_COLUMNS.items():
