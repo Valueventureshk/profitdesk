@@ -45,6 +45,7 @@ import suppliers
 import disputes
 import recordings
 import google_desk
+import tracking
 import mail_client
 import gmail_send
 import mail_labels
@@ -183,11 +184,13 @@ _DESK_PATHS = {
     "disputes": ("/disputes", "/api/disputes"),
     "recordings": ("/recordings", "/api/recordings"),
     "googleads": ("/googleads", "/api/googleads"),
+    "tracking": ("/tracking", "/api/tracking"),
 }
 _DESK_HOME = {"profit": "/", "cash": "/cash", "cog": "/cog", "inbox": "/inbox", "reports": "/reports",
              "expenses": "/expenses", "scm": "/scm", "importer": "/importer",
              "sizecharts": "/sizecharts", "disputes": "/disputes",
-             "recordings": "/recordings", "googleads": "/googleads"}
+             "recordings": "/recordings", "googleads": "/googleads",
+             "tracking": "/tracking"}
 # Shared by every desk's pages: the user's own details and the dropdown lists.
 _EVERYONE = {"/api/me", "/api/me/password", "/api/logout", "/change-password",
              "/api/setup", "/api/chat"}
@@ -271,7 +274,7 @@ async def _require_login(request: Request, call_next):
     path = request.url.path
     user = auth.user_for(request.cookies.get(auth.SESSION_COOKIE))
     request.state.user = user
-    if path in _OPEN or path.startswith(("/static/", "/proxy/", "/apps/", "/w/")) or path == "/proxy":
+    if path in _OPEN or path.startswith(("/static/", "/proxy/", "/apps/", "/w/", "/t/")) or path == "/proxy":
         return await call_next(request)
     launched = _shopify_launch(request)
     if launched:
@@ -5665,6 +5668,147 @@ async def _sc_script(store, on: bool) -> str:
     except Exception as e:
         return str(e)[:200]
     return ""
+
+
+# ---------------------------------------------------------------- Apps → Tracking (tracking.py)
+
+@app.get("/tracking", response_class=HTMLResponse)
+def tracking_page():
+    return _page("tracking.html", ("tracking.js", "nav.js", "styles.css", "skin.css", "chat.js"))
+
+
+_px_hits: dict = {}
+_px_keys: dict = {"at": 0.0, "map": {}}
+
+
+def _px_store_for(key: str):
+    """Store id for a pixel key (cached a minute)."""
+    if time.time() - _px_keys["at"] > 60:
+        m = {}
+        for x in db.list_stores():
+            k = db.get_setting(f"px_key:{x['id']}")
+            if k:
+                m[k] = x["id"]
+        _px_keys.update(at=time.time(), map=m)
+    return _px_keys["map"].get(key)
+
+
+@app.options("/t/e")
+def px_options():
+    return Response(status_code=204, headers={"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "POST",
+                                              "Access-Control-Allow-Headers": "Content-Type", "Access-Control-Max-Age": "86400"})
+
+
+@app.post("/t/e")
+async def px_event(request: Request):
+    """One shopper event from the ProfitDesk pixel (open: shoppers' browsers send it)."""
+    cors = {"Access-Control-Allow-Origin": "*"}
+    body = await request.body()
+    if len(body) > 20000:
+        return Response(status_code=413, headers=cors)
+    try:
+        ev = json.loads(body)
+    except ValueError:
+        return Response(status_code=400, headers=cors)
+    sid = _px_store_for(str(ev.get("k") or ""))
+    if not sid:
+        return Response(status_code=403, headers=cors)
+    ip = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip() or (request.client.host if request.client else "")
+    now = time.time()
+    hits = [t for t in _px_hits.get(ip, []) if now - t < 60]
+    if len(hits) > 120:                                # one browser can't flood it
+        return Response(status_code=429, headers=cors)
+    _px_hits[ip] = hits + [now]
+    await asyncio.to_thread(tracking.record, sid, ev, ip)
+    return Response(status_code=204, headers=cors)
+
+
+PX_QUERY = "query { webPixel { id settings } }"
+PX_CREATE = """mutation C($p: WebPixelInput!) { webPixelCreate(webPixel: $p) { webPixel { id settings } userErrors { field message code } } }"""
+PX_UPDATE = """mutation U($id: ID!, $p: WebPixelInput!) { webPixelUpdate(id: $id, webPixel: $p) { webPixel { id settings } userErrors { field message code } } }"""
+
+
+def _px_cfg(store_id: int) -> dict:
+    try:
+        cfg = json.loads(db.get_setting(f"px:{store_id}") or "{}")
+    except ValueError:
+        cfg = {}
+    return {"mode": cfg.get("mode") or "watch", "meta_pixel": cfg.get("meta_pixel") or "",
+            "has_token": bool(db.get_setting(f"px_meta_token:{store_id}"))}
+
+
+@app.get("/api/tracking/stores")
+async def api_tracking_stores():
+    stores = [x for x in db.list_stores() if not demo.is_demo(x) and x.get("access_token")]
+    out = []
+    for x in stores:
+        out.append({"id": x["id"], "name": x["name"].strip(), "domain": x["shop_domain"], "currency": x["currency"],
+                    "timezone": x["timezone"], "installed": bool(db.get_setting(f"px_key:{x['id']}")),
+                    "cfg": _px_cfg(x["id"]), "health": tracking.health(x["id"])})
+    return {"stores": out}
+
+
+@app.post("/api/tracking/install/{store_id}")
+async def api_tracking_install(store_id: int):
+    """Switch the ProfitDesk pixel on in a store (the app version must include the pixel extension)."""
+    store = next((x for x in db.list_stores() if x["id"] == store_id), None)
+    if not store:
+        raise HTTPException(404, "Store not found.")
+    key = db.get_setting(f"px_key:{store_id}") or secrets.token_urlsafe(18)
+    settings = json.dumps({"accountID": key, "endpoint": f"{BASE_URL}/t/e"})
+    client = ShopifyClient(store["shop_domain"], store["access_token"])
+    try:
+        cur = (await client.gql(PX_QUERY)).get("webPixel")
+    except Exception:
+        cur = None
+    try:
+        if cur:
+            r = (await client.gql(PX_UPDATE, {"id": cur["id"], "p": {"settings": settings}}))["webPixelUpdate"]
+        else:
+            r = (await client.gql(PX_CREATE, {"p": {"settings": settings}}))["webPixelCreate"]
+    except Exception as e:
+        raise HTTPException(400, f"Shopify didn't accept it: {str(e)[:200]}. The store's ProfitDesk app needs the "
+                                 "new version with the tracking pixel first.")
+    if r.get("userErrors"):
+        raise HTTPException(400, "Shopify said: " + "; ".join(e["message"] for e in r["userErrors"]))
+    db.set_setting(f"px_key:{store_id}", key)
+    _px_keys["at"] = 0
+    return {"ok": True}
+
+
+@app.put("/api/tracking/settings/{store_id}")
+def api_tracking_settings(store_id: int, payload: dict):
+    cfg = _px_cfg(store_id)
+    if "meta_pixel" in payload:
+        pid = re.sub(r"\D", "", str(payload.get("meta_pixel") or ""))
+        if pid and not 10 <= len(pid) <= 20:
+            raise HTTPException(400, "A Meta pixel (dataset) ID is 15-16 digits.")
+        cfg["meta_pixel"] = pid
+    if payload.get("meta_token"):
+        db.set_setting(f"px_meta_token:{store_id}", str(payload["meta_token"]).strip())
+    if payload.get("mode") in ("watch", "send"):
+        if payload["mode"] == "send":
+            raise HTTPException(400, "Sending to Meta comes next, after the watch-only week.")
+        cfg["mode"] = payload["mode"]
+    db.set_setting(f"px:{store_id}", json.dumps({k: cfg[k] for k in ("mode", "meta_pixel")}))
+    return {"ok": True}
+
+
+@app.get("/api/tracking/report")
+async def api_tracking_report(store: int, start: str, end: str, field: str = "a_campaign"):
+    """Rows like wetracked.io's report: adds to cart, checkouts and purchases (count + value) per
+    campaign / ad set / ad or any UTM. Days are the store's own."""
+    st = next((x for x in db.list_stores() if x["id"] == store), None)
+    if not st:
+        raise HTTPException(404, "Store not found.")
+    tz = _zone(st)
+    try:
+        a = datetime.combine(date.fromisoformat(start), clock.min, tz).astimezone(timezone.utc)
+        b = datetime.combine(date.fromisoformat(end) + timedelta(days=1), clock.min, tz).astimezone(timezone.utc)
+    except ValueError:
+        raise HTTPException(400, "Pick the dates.")
+    out = await asyncio.to_thread(tracking.report, store, a.isoformat(timespec="seconds"), b.isoformat(timespec="seconds"), field)
+    return {**out, "currency": st["currency"], "health": tracking.health(store)}
 
 
 # ---------------------------------------------------------------- Apps → Google Ads desk

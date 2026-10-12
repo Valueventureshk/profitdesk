@@ -15,3 +15,10 @@ server.log
 # Script copy with your Sheet link filled in (kept off GitHub)
 google-ads-script-READY.js
 shopify-email-templates/
+*.db-wal
+*.db-shm
+
+# Shopify app tool (pixel extension build)
+shopify-app/node_modules/
+shopify-app/.shopify/
+shopify-app/extensions/*/dist/

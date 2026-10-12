@@ -1618,3 +1618,43 @@ body.rail-slim .pd-rail-group { font-size: 0; padding: 6px 0 0; border-top: 1px 
 .gd-help p { margin: 6px 0; max-width: 900px; }
 .gd-vbox { width: min(1500px, 100%); }
 .gd-vbox .cards { margin: 10px 0; }
+
+/* Apps → Tracking: wetracked.io-style report */
+.trk { display: flex; flex-direction: column; gap: 14px; }
+.trk-note { position: relative; background: #FFF5EB; border-radius: 10px; padding: 14px 40px 14px 16px; font-size: 13px; display: flex; flex-direction: column; gap: 4px; color: #3D3A35; }
+.trk-note b { font-size: 13.5px; }
+.trk-note::before { content: "!"; position: absolute; left: -9999px; }
+.trk-x { position: absolute; top: 10px; right: 12px; border: 0; background: none; font-size: 18px; cursor: pointer; color: #555; }
+html[data-theme="dark"] .trk-note { background: #3A2A18; color: #F3E6D6; }
+.trk-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.trk-store { min-width: 260px; }
+.trk-right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.trk-cur { font-size: 12px; font-weight: 600; border: 1px solid var(--rule); border-radius: 6px; padding: 5px 9px; }
+.trk-health { font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
+.trk-dot { width: 8px; height: 8px; border-radius: 50%; background: #B9B6AE; display: inline-block; }
+.trk-dot.on { background: var(--profit); box-shadow: 0 0 0 3px color-mix(in srgb, var(--profit) 20%, transparent); }
+.trk-seg { display: inline-flex; border: 1px solid var(--rule); border-radius: 7px; overflow: hidden; }
+.trk-seg button { border: 0; background: color-mix(in srgb, var(--rule) 45%, transparent); padding: 6px 12px; font: inherit; font-size: 13px; cursor: pointer; color: var(--muted); }
+.trk-seg button + button { border-left: 1px solid var(--rule); }
+.trk-seg button.on { background: var(--panel); color: var(--ink); font-weight: 600; }
+.trk-search { width: 260px; max-width: 100%; }
+.trk-table-box { border: 1px solid var(--rule); border-radius: 10px; overflow: hidden; background: var(--panel); }
+.trk-scroll { overflow-x: auto; }
+.trk-table { border-collapse: separate; border-spacing: 0; min-width: 1100px; width: 100%; font-size: 13px; }
+.trk-table th, .trk-table td { padding: 12px 14px; text-align: left; border-bottom: 1px solid var(--line, var(--rule)); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.trk-table thead th { background: color-mix(in srgb, var(--rule) 25%, var(--panel)); font-weight: 500; white-space: normal; vertical-align: middle; }
+.trk-table td { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12.5px; }
+.trk-first { position: sticky; left: 0; z-index: 1; background: var(--panel); width: 280px; max-width: 280px; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
+.trk-table thead .trk-first { z-index: 2; background: color-mix(in srgb, var(--rule) 25%, var(--panel)); }
+.trk-table tbody tr:hover td, .trk-table tbody tr:hover th { background: color-mix(in srgb, var(--rule) 18%, var(--panel)); }
+.trk-table tfoot th, .trk-table tfoot td { background: color-mix(in srgb, var(--rule) 25%, var(--panel)); border-bottom: 0; font-weight: 500; color: var(--muted); }
+.trk-sort { cursor: pointer; user-select: none; }
+.trk-sort span { margin-left: 8px; opacity: .45; }
+.trk-sort.on span { opacity: 1; }
+.trk-empty { text-align: center !important; color: var(--muted); font-family: inherit !important; padding: 30px !important; }
+.trk-foot { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; border-top: 1px solid var(--rule); font-size: 13px; color: var(--muted);
+  background: color-mix(in srgb, var(--rule) 25%, var(--panel)); }
+.trk-foot select { width: auto; margin-left: 6px; }
+.trk-pad { padding: 0 16px; }
+.trk-setup .table-wrap { margin: 0 0 12px; }
+.trk-in { width: 170px; }

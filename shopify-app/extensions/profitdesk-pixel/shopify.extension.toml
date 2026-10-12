@@ -1,0 +1,25 @@
+type = "web_pixel_extension"
+name = "ProfitDesk tracking"
+runtime_context = "strict"
+
+# Shopify only runs the pixel for shoppers who allowed analytics + marketing in the store's
+# cookie banner (where the store has one), like any other tracking app.
+[customer_privacy]
+analytics = true
+marketing = true
+preferences = false
+sale_of_data = "enabled"
+
+[settings]
+type = "object"
+
+[settings.fields.accountID]
+name = "Store key"
+description = "Set by ProfitDesk: which store the events belong to"
+type = "single_line_text_field"
+validations = [{ name = "min", value = "8" }]
+
+[settings.fields.endpoint]
+name = "Endpoint"
+description = "Set by ProfitDesk: where events are sent"
+type = "single_line_text_field"

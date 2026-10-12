@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ProfitDesk · Tracking</title>
+<script>try{var t=localStorage.getItem("pdTheme")||(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");document.documentElement.dataset.theme=t;if((localStorage.getItem("pdSkin")||"new")==="new")document.documentElement.classList.add("skin-new");}catch(e){}</script>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;650;700&display=swap">
+<link rel="stylesheet" href="/static/styles.css">
+<link rel="stylesheet" href="/static/skin.css">
+</head>
+<body>
+<div class="cash-page">
+  <header class="cash-top">
+    <div class="brand" data-section-menu title="Switch section">
+      <span class="brand-mark">PD</span>
+      <span class="brand-name">ProfitDesk</span>
+    </div>
+    <div class="crumb">
+      <h1>Tracking</h1>
+      <p id="sub">Every add to cart, checkout and purchase, credited to the ad it came from.</p>
+    </div>
+    <div class="controls">
+      <button id="setupBtn" class="btn btn-ghost" data-manage-only>Setup</button>
+    </div>
+  </header>
+
+  <main class="content trk">
+    <div class="trk-note" id="note">
+      <b>Complementary reporting</b>
+      <span>This report credits each add to cart, checkout and purchase to the ad click (UTM tags) it came from, over the
+        last 7 days. Always compare with Ads Manager.</span>
+      <button class="trk-x" id="noteX" title="Hide">×</button></div>
+    <section class="panel trk-setup" id="setup" hidden></section>
+    <div class="trk-bar"><select id="store" class="control trk-store"></select></div>
+    <div class="trk-bar">
+      <select id="range" class="control"><option value="today">Today</option><option value="yesterday">Yesterday</option>
+        <option value="7">Last 7 days</option><option value="14">Last 14 days</option><option value="30">Last 30 days</option>
+        <option value="custom">Custom…</option></select>
+      <span id="dates" hidden><input type="date" id="from" class="control"> – <input type="date" id="to" class="control"></span>
+      <span class="trk-health" id="health"></span>
+      <button id="reload" class="btn btn-ghost btn-sm">Reload ↻</button>
+    </div>
+    <div class="trk-bar">
+      <span class="trk-seg" id="level"><button data-l="campaign" class="on">📣 Campaign</button><button data-l="adset">▦ Adset</button><button data-l="ad">🏷 Ad</button></span>
+      <select id="key" class="control"><option value="">Default UTM for this level</option><option value="utm_id">UTM ID</option><option value="utm_source">UTM Source</option>
+        <option value="utm_medium">UTM Medium</option><option value="utm_campaign">UTM Campaign</option><option value="utm_content">UTM Content</option><option value="utm_term">UTM Term</option></select>
+      <span class="trk-right"><span class="trk-cur" id="cur"></span></span>
+    </div>
+    <div class="trk-bar"><input id="q" class="control trk-search" type="search" placeholder="Search campaigns.."></div>
+    <section class="trk-table-box">
+      <div class="trk-scroll"><table class="trk-table" id="table"></table></div>
+      <div class="trk-foot"><label>Rows: <select id="rows" class="control"><option>5</option><option>10</option><option selected>25</option><option>50</option><option>100</option><option>250</option></select></label>
+        <span id="pager"></span></div>
+    </section>
+  </main>
+</div>
+<div id="toast" class="toast" hidden></div>
+<script src="/static/nav.js"></script>
+<script src="/static/chat.js"></script>
+<script src="/static/tracking.js"></script>
+</body>
+</html>

@@ -66,7 +66,7 @@ def has_users() -> bool:
 
 ROLES = ("owner", "staff", "write", "read")       # write / read: before per-desk levels
 DESKS = ("profit", "cash", "cog", "inbox", "reports", "expenses", "scm", "importer", "sizecharts", "disputes",
-         "recordings", "googleads")
+         "recordings", "googleads", "tracking")
 LEVELS = ("view", "work", "manage")                # each desk: see it / do the daily work / its sensitive actions
 _RANK = {None: 0, "view": 1, "work": 2, "manage": 3}
 

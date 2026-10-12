@@ -797,7 +797,7 @@ async function openGroupSettings() {
 
 const DESK_NAMES = { profit: "Profit dashboard", cash: "Cash flow", cog: "COG + Products", inbox: "Inbox", scm: "SCM",
   disputes: "Disputes", expenses: "Expenses", reports: "Reports", importer: "Product Importer", sizecharts: "Size Charts",
-  recordings: "Session Recordings", googleads: "Google Ads" };
+  recordings: "Session Recordings", googleads: "Google Ads", tracking: "Tracking" };
 const LVL_NAMES = { "": "No access", view: "View", work: "Work", manage: "Manage" };
 const LVL_HELP = "View = see only · Work = the daily tasks (reply, upload, approve prices, answer disputes) · " +
   "Manage = also the desk's sensitive actions (refund or accept a dispute, supplier opening balances, AI training)";

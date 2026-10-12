@@ -58,6 +58,7 @@ file and have it work.
 | `statement.py` | The statement pop-up: opening → movements → closing, sales check |
 | `adbills.py` | Ads payable: Meta balance, Google spend since its last card charge |
 | `cog.py` | **COG engine**: orders sheet → per-store product costs → cost of every order line |
+| `tracking.py` `static/tracking.*` `shopify-app/` | Apps → **Tracking** (like wetracked.io): Shopify web pixel extension (`shopify-app/extensions/profitdesk-pixel`, deployed with the Shopify CLI into each store's app) posts events to `/t/e`; last-click (7 days) UTM attribution; report of adds to cart / checkouts / purchases per campaign / ad set / ad. Watch-only per store until Meta CAPI sending is added |
 | `google_desk.py` `static/googleads.*` | Apps → **Google Ads**: Google product report (shopping_performance_view) grouped per Shopify product with variants, vs Shopify sales / COG / fees, 7/14/30 days, breakeven ROAS + verdicts |
 | `recordings.py` `static/recordings.*` `static/recorder.js` | Apps → **Session Recordings**: rrweb recorder (ScriptTag, off by default per store), chunks via app proxy `/apps/track/rec` → `<DB dir>/recordings/`, replay with rrweb-player |
 | `disputes.py` `static/disputes.*` | **Disputes desk**: PayPal cases + Airwallex chargebacks in one shape, order evidence pack (PDF/PNG, bundled Noto Sans in `assets/`), AI draft (Sonnet), actions |

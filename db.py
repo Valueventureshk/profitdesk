@@ -288,6 +288,32 @@ CREATE TABLE IF NOT EXISTS cash_snapshots (
 -- Expenses desk: the owner's category picks. key = a payee ("payee:pgs tech
 -- limited", "merchant:canva") or one transaction ("tx:<id>"). Suggestions are
 -- the AI's guesses for payees nobody has picked yet.
+CREATE TABLE IF NOT EXISTS px_visitors (
+    store_id    INTEGER NOT NULL,          -- tracking.py: one shopper (Shopify clientId) per store
+    client_id   TEXT    NOT NULL,
+    first_at    TEXT, last_at TEXT,
+    first_touch TEXT, last_touch TEXT,     -- JSON: UTMs + click ids of the first / latest ad click
+    touch_at    TEXT,
+    fbp TEXT, fbc TEXT, ip TEXT, ua TEXT,
+    PRIMARY KEY (store_id, client_id)
+);
+CREATE TABLE IF NOT EXISTS px_events (
+    id         TEXT PRIMARY KEY,           -- Shopify's event id (a retry never counts twice)
+    store_id   INTEGER NOT NULL,
+    client_id  TEXT NOT NULL,
+    name       TEXT NOT NULL,
+    at         TEXT NOT NULL,              -- UTC
+    url TEXT, ref TEXT,
+    value REAL, currency TEXT,
+    product_id TEXT, variant_id TEXT, quantity INTEGER,
+    token TEXT, order_id TEXT,             -- checkout token / Shopify order id (checkout events)
+    em_hash TEXT, ph_hash TEXT,            -- SHA-256 only, for Meta's Conversions API
+    fbp TEXT, fbc TEXT, ip TEXT, ua TEXT,
+    a_source TEXT, a_medium TEXT, a_campaign TEXT, a_content TEXT, a_term TEXT, a_id TEXT, a_click TEXT,
+    sent_meta  TEXT                        -- when it went to Meta (send mode)
+);
+CREATE INDEX IF NOT EXISTS px_events_store ON px_events (store_id, at);
+CREATE INDEX IF NOT EXISTS px_events_order ON px_events (store_id, order_id);
 CREATE TABLE IF NOT EXISTS outside_days (
     date        TEXT PRIMARY KEY,         -- Hong Kong day: PayPal / Airwallex refunds not in Shopify + chargebacks
     currency    TEXT NOT NULL,            -- the display currency they were converted to

@@ -1,0 +1,9 @@
+{
+  "name": "profitdesk-shopify-app",
+  "private": true,
+  "description": "ProfitDesk's Shopify app extensions (the tracking pixel). Built and deployed with the Shopify CLI.",
+  "scripts": {
+    "deploy": "shopify app deploy"
+  },
+  "workspaces": ["extensions/*"]
+}
