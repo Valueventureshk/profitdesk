@@ -1658,3 +1658,8 @@ html[data-theme="dark"] .trk-note { background: #3A2A18; color: #F3E6D6; }
 .trk-pad { padding: 0 16px; }
 .trk-setup .table-wrap { margin: 0 0 12px; }
 .trk-in { width: 170px; }
+.trk-row { cursor: pointer; }
+.trk-evbox { width: min(1400px, 100%); }
+.trk-ev { min-width: 1000px; }
+.trk-ev td { font-family: inherit !important; max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+.trk-path { color: var(--muted); }

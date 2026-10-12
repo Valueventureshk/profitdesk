@@ -94,7 +94,7 @@ function draw() {
   const name = { campaign: "Campaign", adset: "Adset", ad: "Ad" }[level];
   const t = data.total;
   $("table").innerHTML = `<thead><tr><th class="trk-first">${name}</th>${cols.map(([k, l]) => head(k, l)).join("")}</tr></thead>
-    <tbody>${shown.map((r) => `<tr><th class="trk-first" title="${esc(r.name)}">${esc(r.name)}</th>${cols.map(([k]) =>
+    <tbody>${shown.map((r) => `<tr class="trk-row" data-name="${esc(r.name)}"><th class="trk-first" title="${esc(r.name)} · click to see each event">${esc(r.name)}</th>${cols.map(([k]) =>
       `<td>${k.endsWith("_value") ? money(r[k]) : count(r[k])}</td>`).join("")}</tr>`).join("")
       || `<tr><td class="trk-empty" colspan="7">${data.health.last ? `No ${lvl} with events in this period.` : "No events from this store yet. Switch the pixel on in Setup."}</td></tr>`}</tbody>
     <tfoot><tr><th class="trk-first">Results from ${rows.length} ${lvl}</th>${cols.map(([k]) => `<td>${k.endsWith("_value") ? money(t[k]) : count(t[k])}</td>`).join("")}</tr></tfoot>`;
@@ -103,10 +103,52 @@ function draw() {
     ${pages > 1 ? `<button class="btn btn-sm btn-ghost" id="next"${page < pages - 1 ? "" : " disabled"}>›</button>` : ""}`;
   if ($("prev")) $("prev").onclick = () => { page--; draw(); };
   if ($("next")) $("next").onclick = () => { page++; draw(); };
+  for (const tr of $("table").querySelectorAll(".trk-row")) tr.onclick = () => openEvents(tr.dataset.name);
   for (const th of $("table").querySelectorAll(".trk-sort")) th.onclick = () => {
     sort = sort.k === th.dataset.k ? { k: sort.k, dir: -sort.dir } : { k: th.dataset.k, dir: -1 };
     draw();
   };
+}
+
+function when(iso) {
+  const st = stores.find((s) => String(s.id) === $("store").value);
+  try { return new Date(iso).toLocaleString(undefined, { timeZone: st?.timezone || undefined, day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }); }
+  catch { return iso; }
+}
+const KIND = { "Add to cart": "catalog", "Checkout started": "changed", "Purchase": "invoice" };
+
+async function openEvents(name) {
+  const [start, end] = range();
+  const field = $("key").value ? KEY[$("key").value] : FIELD[level];
+  $("evModal").hidden = false;
+  $("evTitle").textContent = name;
+  $("evSub").textContent = "Loading…";
+  $("evTable").innerHTML = "";
+  let d;
+  try { d = await api(`/api/tracking/events?store=${$("store").value}&start=${start}&end=${end}&field=${field}&value=${encodeURIComponent(name)}`); }
+  catch (e) { $("evSub").textContent = e.message; return; }
+  const n = (k) => d.events.filter((e) => e.label === k).length;
+  $("evSub").textContent = `${n("Add to cart")} adds to cart · ${n("Checkout started")} checkouts · ${n("Purchase")} purchases. Each one is credited to the ad click shown (last click within 7 days).`;
+  $("evTable").innerHTML = `<thead><tr><th>When</th><th>Event</th><th>Value</th><th>Campaign</th><th>Ad set</th><th>Ad</th><th>Click</th><th>Page</th><th></th></tr></thead>
+    <tbody>${d.events.map((e) => `<tr><td>${esc(when(e.at))}</td><td><span class="src ${KIND[e.label] || "new"}">${esc(e.label)}</span>${e.order_id ? `<span class="sub">order ${esc(e.order_id)}</span>` : ""}</td>
+      <td>${money(e.value)}</td><td title="${esc(e.a_campaign || "")}">${esc(e.a_campaign || "—")}</td><td title="${esc(e.a_term || "")}">${esc(e.a_term || "—")}</td>
+      <td title="${esc(e.a_content || "")}">${esc(e.a_content || "—")}</td><td>${esc({ fbclid: "Meta", gclid: "Google", ttclid: "TikTok", msclkid: "Bing" }[e.a_click] || e.a_source || "—")}</td>
+      <td class="trk-path" title="${esc(e.path)}">${esc(e.path)}</td><td><button class="btn btn-sm btn-ghost" data-cid="${esc(e.client_id)}">Journey</button></td></tr>`).join("")
+      || `<tr><td class="trk-empty" colspan="9">No single events in this period.</td></tr>`}</tbody>`;
+  for (const b of $("evTable").querySelectorAll("[data-cid]")) b.onclick = () => openJourney(b.dataset.cid, name);
+}
+
+async function openJourney(cid, back) {
+  $("evSub").textContent = "Loading this shopper's visits…";
+  let d;
+  try { d = await api(`/api/tracking/journey?store=${$("store").value}&client=${encodeURIComponent(cid)}`); }
+  catch (e) { $("evSub").textContent = e.message; return; }
+  $("evTitle").textContent = "One shopper's journey";
+  $("evSub").innerHTML = `${d.events.length} events, oldest first. <a href="#" id="evBack">← Back to ${esc(back)}</a>`;
+  $("evTable").innerHTML = `<thead><tr><th>When</th><th>Event</th><th>Value</th><th>Credited to</th><th>Page</th></tr></thead><tbody>
+    ${d.events.map((e) => `<tr><td>${esc(when(e.at))}</td><td><span class="src ${KIND[e.label] || "new"}">${esc(e.label)}</span></td><td>${money(e.value)}</td>
+      <td>${esc([e.a_campaign, e.a_term, e.a_content].filter(Boolean).join(" › ") || "—")}</td><td class="trk-path" title="${esc(e.path)}">${esc(e.path)}</td></tr>`).join("")}</tbody>`;
+  $("evBack").onclick = (ev) => { ev.preventDefault(); openEvents(back); };
 }
 
 function drawSetup() {
@@ -155,5 +197,8 @@ $("reload").onclick = load;
 $("q").oninput = () => { page = 0; draw(); };
 $("rows").onchange = () => { page = 0; draw(); };
 $("noteX").onclick = () => { $("note").hidden = true; try { localStorage.setItem("pdTrkNote", "off"); } catch { /* private */ } };
+$("evClose").onclick = () => { $("evModal").hidden = true; };
+$("evModal").onclick = (e) => { if (e.target === $("evModal")) $("evModal").hidden = true; };
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") $("evModal").hidden = true; });
 $("setupBtn").onclick = () => { $("setup").hidden = !$("setup").hidden; if (!$("setup").hidden) drawSetup(); };
 boot();

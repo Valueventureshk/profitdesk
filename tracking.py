@@ -147,3 +147,47 @@ def health(store_id: int) -> dict:
         day = con.execute("SELECT name, COUNT(*) FROM px_events WHERE store_id = ? AND at >= ? GROUP BY name",
                           (store_id, (now - timedelta(days=1)).isoformat(timespec="seconds"))).fetchall()
     return {"last": last, "hour": hour, "day": {r[0]: r[1] for r in day}}
+
+
+NAMES = {"product_added_to_cart": "Add to cart", "checkout_started": "Checkout started",
+         "checkout_completed": "Purchase", "product_viewed": "Product view", "page_viewed": "Page view",
+         "checkout_contact_info_submitted": "Contact info", "checkout_shipping_info_submitted": "Shipping info",
+         "payment_info_submitted": "Payment info"}
+
+
+def events(store_id: int, start_utc: str, end_utc: str, field: str, value: str, limit: int = 500) -> list:
+    """The single events behind one report row (adds to cart, checkouts, purchases), newest first,
+    with the full ad click each one is credited to."""
+    col = field if field in KEY_FIELD.values() else "a_campaign"
+    cond = f"COALESCE(NULLIF({col}, ''), 'N/A') = ?"
+    with db._conn() as con:
+        rows = [dict(r) for r in con.execute(
+            "SELECT id, client_id, name, at, url, value, currency, product_id, variant_id, quantity, order_id,"
+            " a_source, a_medium, a_campaign, a_term, a_content, a_id, a_click FROM px_events"
+            f" WHERE store_id = ? AND at >= ? AND at < ? AND {cond} AND name IN"
+            " ('product_added_to_cart', 'checkout_started', 'checkout_completed') ORDER BY at DESC LIMIT ?",
+            (store_id, start_utc, end_utc, value, limit))]
+    seen = set()
+    out = []
+    for r in rows:
+        if r["name"] == "checkout_completed":            # one line per order
+            k = r["order_id"] or r["id"]
+            if k in seen:
+                continue
+            seen.add(k)
+        r["label"] = NAMES.get(r["name"], r["name"])
+        r["path"] = re.sub(r"^https?://[^/]+", "", r["url"] or "").split("?")[0][:160]
+        out.append(r)
+    return out
+
+
+def journey(store_id: int, client_id: str) -> list:
+    """Everything one shopper did (newest last), for the per-visitor view."""
+    with db._conn() as con:
+        rows = [dict(r) for r in con.execute(
+            "SELECT name, at, url, value, order_id, a_campaign, a_term, a_content, a_click FROM px_events"
+            " WHERE store_id = ? AND client_id = ? ORDER BY at LIMIT 300", (store_id, client_id))]
+    for r in rows:
+        r["label"] = NAMES.get(r["name"], r["name"])
+        r["path"] = re.sub(r"^https?://[^/]+", "", r["url"] or "").split("?")[0][:160]
+    return rows

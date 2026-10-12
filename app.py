@@ -5794,6 +5794,33 @@ def api_tracking_settings(store_id: int, payload: dict):
     return {"ok": True}
 
 
+def _utc_range(st, start: str, end: str):
+    tz = _zone(st)
+    try:
+        a = datetime.combine(date.fromisoformat(start), clock.min, tz).astimezone(timezone.utc)
+        b = datetime.combine(date.fromisoformat(end) + timedelta(days=1), clock.min, tz).astimezone(timezone.utc)
+    except ValueError:
+        raise HTTPException(400, "Pick the dates.")
+    return a.isoformat(timespec="seconds"), b.isoformat(timespec="seconds")
+
+
+@app.get("/api/tracking/events")
+async def api_tracking_events(store: int, start: str, end: str, value: str, field: str = "a_campaign"):
+    """The single adds to cart, checkouts and purchases behind one report row."""
+    st = next((x for x in db.list_stores() if x["id"] == store), None)
+    if not st:
+        raise HTTPException(404, "Store not found.")
+    a, b = _utc_range(st, start, end)
+    return {"events": await asyncio.to_thread(tracking.events, store, a, b, field, value), "currency": st["currency"],
+            "timezone": st["timezone"]}
+
+
+@app.get("/api/tracking/journey")
+async def api_tracking_journey(store: int, client: str):
+    """Everything one shopper did on the store, with the ad clicks."""
+    return {"events": await asyncio.to_thread(tracking.journey, store, client)}
+
+
 @app.get("/api/tracking/report")
 async def api_tracking_report(store: int, start: str, end: str, field: str = "a_campaign"):
     """Rows like wetracked.io's report: adds to cart, checkouts and purchases (count + value) per
