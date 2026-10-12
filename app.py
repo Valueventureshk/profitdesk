@@ -45,6 +45,7 @@ import suppliers
 import disputes
 import recordings
 import google_desk
+import gads_manage
 import tracking
 import mail_client
 import gmail_send
@@ -6162,6 +6163,21 @@ async def api_googleads_status(payload: dict):
                 if p["pid"] in done:
                     p["status"] = status.title()
     return {"done": done, "errors": errors}
+
+
+@app.get("/api/ads/structure")
+async def api_ads_structure(store: int):
+    """One store's Google Ads campaigns, budgets, bidding, asset / ad groups and which products each runs."""
+    st = next((x for x in db.list_stores() if x["id"] == store and x.get("google_customer_id")), None)
+    if not st:
+        raise HTTPException(404, "Store has no Google Ads account.")
+    auth = db.get_google_auth()
+    if not auth:
+        raise HTTPException(400, "Google isn't connected.")
+    try:
+        return await gads_manage.structure(auth["refresh_token"], st["google_customer_id"], st["google_login_cid"])
+    except gads.GoogleAdsError as e:
+        raise HTTPException(400, str(e))
 
 
 @app.get("/api/googleads/check")
