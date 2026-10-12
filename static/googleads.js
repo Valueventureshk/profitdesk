@@ -5,7 +5,7 @@
    Every figure comes from the server (google_desk.py); the page only adds up rows a filter leaves. */
 
 const $ = (id) => document.getElementById(id);
-let data = null, cmp = null, view = PDUrl.get("view") === "compare" ? "compare" : "dash";
+let data = null, cmp = null, view = ["compare", "manage"].includes(PDUrl.get("view")) ? PDUrl.get("view") : "dash";
 let period = PDUrl.get("period") || "30", page = 0, cpage = 0, sort = { key: "cost", win: "sel", dir: -1 }, csort = { key: "cost", p: "p1", dir: -1 };
 let picked = new Set(), openP = null, vWin = "sel", tagFilter = new Set();
 const PERIOD = { today: "Today", yesterday: "Yesterday", 7: "Last 7 days", 14: "Last 14 days", 30: "Last 30 days", mtd: "This month",
@@ -127,7 +127,7 @@ async function load(fresh = false) {
   } catch (e) { toast(e.message, true); $("refresh").disabled = false; $("sync").textContent = e.message; return; }
   $("refresh").disabled = false;
   if (data.store) $("store").value = String(data.store);
-  PDUrl.set({ store: data.store || null, period: period === "30" ? null : period, view: view === "compare" ? "compare" : null,
+  PDUrl.set({ store: data.store || null, period: period === "30" ? null : period, view: view === "dash" ? null : view,
               from: period === "custom" ? data.start : null, to: period === "custom" ? data.end : null });
   if (data.error) { $("problems").innerHTML = `<div class="warn">${esc(data.error)}</div>`; $("table").innerHTML = ""; $("cards").innerHTML = ""; return; }
   $("problems").innerHTML = data.missing_product_ids
@@ -477,8 +477,10 @@ function setView(v) {
   for (const b of $("view").querySelectorAll("[data-v]")) b.classList.toggle("on", b.dataset.v === v);
   $("dashView").hidden = v !== "dash";
   $("cmpView").hidden = v !== "compare";
-  PDUrl.set({ view: v === "compare" ? "compare" : null });
+  $("mgView").hidden = v !== "manage";
+  PDUrl.set({ view: v === "dash" ? null : v });
   if (v === "compare") loadCompare();
+  else if (v === "manage") window.loadManage?.();
   else if (data && !data.error) drawAll();
 }
 for (const b of $("view").querySelectorAll("[data-v]")) b.onclick = () => setView(b.dataset.v);
@@ -501,6 +503,7 @@ $("store").onchange = async () => {
   PDUrl.set({ store: $("store").value });
   await load();
   if (view === "compare") loadCompare();
+  if (view === "manage") window.loadManage?.();
 };
 $("refresh").onclick = () => (view === "compare" ? loadCompare(true) : load(true));
 $("csv").onclick = () => data && exportCsv(sorted(filtered()));
@@ -557,5 +560,5 @@ document.addEventListener("keydown", (e) => {
 
 (async () => {
   await load();
-  if (view === "compare") setView("compare");
+  if (view !== "dash") setView(view);
 })();

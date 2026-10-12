@@ -21,7 +21,7 @@
       <p id="sub">Track your product performance and Google Ads metrics</p>
     </div>
     <div class="controls">
-      <span class="gx-tabs" id="view"><button data-v="dash" class="on">Dashboard</button><button data-v="compare">Compare periods</button></span>
+      <span class="gx-tabs" id="view"><button data-v="dash" class="on">Dashboard</button><button data-v="compare">Compare periods</button><button data-v="manage">Manage ✦</button></span>
       <select id="store" class="control" title="Each store on its own, in its Google Ads account's currency"></select>
       <button id="refresh" class="btn btn-ghost">Refresh</button>
     </div>
@@ -108,6 +108,30 @@
           <label class="gx-muted">Show: <select id="cper"><option>25</option><option>50</option><option>100</option></select> per page</label></div></div>
     </section>
 
+    <!-- ============ manage view: campaigns, rules, changes, ads AI ============ -->
+    <section id="mgView" hidden>
+      <div class="gx-mg">
+        <div class="gx-mgmain">
+          <div class="gx-card gx-mgset" id="mgSet"></div>
+          <div class="gx-card gx-tablecard"><div class="gx-thead"><div><h2>Campaigns</h2><p class="gx-muted" id="mgCampNote"></p></div>
+            <span class="gx-tright"><button class="gx-btn" id="mgReload">↻ Reload</button></span></div>
+            <div class="gx-wrap"><table class="gx-table" id="mgCamps"></table></div></div>
+          <div class="gx-card"><div class="gx-thead gx-np"><div><h2>Waiting for you</h2><p class="gx-muted">Plans from the chat and what the rules found. Nothing changes until you click.</p></div></div>
+            <div id="mgPending"></div></div>
+          <div class="gx-card"><div class="gx-thead gx-np"><div><h2>Rules</h2><p class="gx-muted">Set up by chatting with the ads AI. Checked every hour while managing is on.</p></div></div>
+            <div id="mgRules"></div></div>
+          <div class="gx-card"><div class="gx-thead gx-np"><div><h2>Change log</h2><p class="gx-muted">Every change in Google Ads made from here, with Undo.</p></div></div>
+            <div id="mgLog"></div></div>
+        </div>
+        <aside class="gx-card gx-chat">
+          <div class="gx-chathead"><b>✦ Ads AI</b><span class="gx-muted" id="mgChatStore"></span></div>
+          <div class="gx-msgs" id="mgMsgs"></div>
+          <div class="gx-chatin"><textarea id="mgIn" rows="3" placeholder="e.g. Create a campaign called Winners at $100 a day with every product that spent over $20 at ROAS 2.5+ in the last 30 days, and take them out of the current campaign"></textarea>
+            <button class="gx-go" id="mgSend">Send</button></div>
+        </aside>
+      </div>
+    </section>
+
     <!-- variant breakdown -->
     <div class="rec-modal" id="vModal" hidden><div class="rec-box gx-vbox">
       <div class="gx-vhead"><div><h2>Product Variant Breakdown</h2><p class="gx-muted" id="vTitle"></p></div><button class="gx-x" id="vX">×</button></div>
@@ -136,5 +160,6 @@
 <script src="/static/nav.js"></script>
 <script src="/static/chat.js"></script>
 <script src="/static/googleads.js"></script>
+<script src="/static/googleads-manage.js"></script>
 </body>
 </html>

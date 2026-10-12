@@ -46,6 +46,8 @@ import disputes
 import recordings
 import google_desk
 import gads_manage
+import ads_engine
+import ads_brain
 import tracking
 import mail_client
 import gmail_send
@@ -131,6 +133,7 @@ async def lifespan(app):
     tracker = asyncio.create_task(_scm_loop())
     asyncio.create_task(_outside_loop())
     asyncio.create_task(_gdesk_loop())
+    asyncio.create_task(_ads_loop())
     for i in db.list_invoices():                     # AI double-checks cut off by a restart
         if i.get("ai_check") == "pending":
             asyncio.create_task(_ai_check_invoice(i["id"]))
@@ -185,7 +188,7 @@ _DESK_PATHS = {
     "sizecharts": ("/sizecharts", "/api/sizecharts"),
     "disputes": ("/disputes", "/api/disputes"),
     "recordings": ("/recordings", "/api/recordings"),
-    "googleads": ("/googleads", "/api/googleads"),
+    "googleads": ("/googleads", "/api/googleads", "/api/ads"),
     "tracking": ("/tracking", "/api/tracking"),
 }
 _DESK_HOME = {"profit": "/", "cash": "/cash", "cog": "/cog", "inbox": "/inbox", "reports": "/reports",
@@ -5895,7 +5898,7 @@ async def api_tracking_report(store: int, start: str, end: str, field: str = "a_
 
 @app.get("/googleads", response_class=HTMLResponse)
 def googleads_page():
-    return _page("googleads.html", ("googleads.js", "nav.js", "styles.css", "skin.css", "chat.js"))
+    return _page("googleads.html", ("googleads.js", "googleads-manage.js", "nav.js", "styles.css", "skin.css", "chat.js"))
 
 
 _gdesk_cache: dict = {}
@@ -6224,6 +6227,635 @@ async def api_ads_selftest(payload: dict):
         except Exception as e:
             out["budget"] = str(e)[:800]
     return out
+
+
+# ---------------------------------------------------------------- Apps → Google Ads → Manage (ads AI + rules)
+
+ADS_DEFAULTS = {"enabled": False, "mode": "approve", "budget_cap": 300.0, "new_budget_cap": 150.0}
+_ads_cache: dict = {}     # store id -> (time, days_rows, item index)
+
+
+def _ads_settings(store_id: int) -> dict:
+    try:
+        got = json.loads(db.get_setting(f"ads_manage:{store_id}") or "{}")
+    except ValueError:
+        got = {}
+    return {**ADS_DEFAULTS, **got}
+
+
+def _ads_store(store_id) -> dict:
+    st = next((x for x in db.list_stores() if str(x["id"]) == str(store_id) and x.get("google_customer_id")), None)
+    if not st:
+        raise HTTPException(404, "That store has no Google Ads account.")
+    if st.get("google_source") == "sheet":
+        raise HTTPException(400, "This store's ad account isn't readable directly yet.")
+    return st
+
+
+def _ads_args(st):
+    auth = db.get_google_auth()
+    if not auth:
+        raise HTTPException(400, "Google isn't connected (Settings → Google Ads).")
+    return auth["refresh_token"], st["google_customer_id"], st["google_login_cid"]
+
+
+async def _ads_data(st, fresh=False):
+    """Google per product / campaign / day for the last 60 days (kept 20 minutes) and every item id seen per product."""
+    hit = _ads_cache.get(st["id"])
+    if hit and not fresh and time.time() - hit[0] < 1200:
+        return hit[1], hit[2]
+    today = _store_today(st)
+    rows = await gads_manage.product_days(*_ads_args(st), (today - timedelta(days=61)).isoformat(),
+                                          (today + timedelta(days=1)).isoformat())
+    index = {}
+    for r in rows:
+        if r["item"]:
+            index.setdefault(google_desk.parse_item(r["item"])[0], set()).add(r["item"])
+    _ads_cache[st["id"]] = (time.time(), rows, index)
+    return rows, index
+
+
+def _ads_lines(st, days=62):
+    start = (_store_today(st) - timedelta(days=days)).isoformat()
+    with db._conn() as con:
+        return [dict(r) for r in con.execute(
+            "SELECT day, product_id, variant_id, quantity, subtotal, cancelled FROM cog_lines WHERE store_id = ? AND day >= ?",
+            (st["id"], start))]
+
+
+async def _ads_items(st, pids: list) -> list:
+    """Every Google item id (one per variant) for these Shopify products: the ones Google has reported, plus each
+    Shopify variant under the feed's own prefix (shopify_us_…), so variants that never got spend are included too."""
+    _rows, index = await _ads_data(st)
+    prefixes = {re.match(r"^(shopify_[a-z]{2,3}_)", i, re.I).group(1) for v in index.values() for i in v
+                if re.match(r"^(shopify_[a-z]{2,3}_)", i, re.I)} or {"shopify_" + (st.get("country") or "us").lower() + "_"}
+    info = await _product_info(st, [str(p) for p in pids])
+    out = set()
+    for pid in pids:
+        pid = str(pid)
+        out |= index.get(pid, set())
+        for vid in (info.get(pid, {}).get("variants") or {}):
+            for pre in prefixes:
+                out.add(f"{pre}{pid}_{vid}")
+    seen = {}
+    for i in sorted(out):                                   # one spelling per item (Google matches any case)
+        seen.setdefault(i.lower(), i)
+    return sorted(seen.values())
+
+
+def _ads_find_campaign(structure: dict, ref) -> dict:
+    """A campaign by id or by name (case-insensitive), or None."""
+    if ref is None or ref == "":
+        return None
+    ref = str(ref).strip()
+    by_id = next((c for c in structure["campaigns"] if c["id"] == ref), None)
+    return by_id or next((c for c in structure["campaigns"] if (c["name"] or "").strip().lower() == ref.lower()), None)
+
+
+def _ads_groups(c: dict, purpose: str) -> list:
+    groups = [g for g in c["groups"] if g["status"] == "ENABLED"] or c["groups"]
+    if not groups:
+        raise gads.GoogleAdsError(f"“{c['name']}” has no asset group / ad group to put products in.")
+    return groups[:1] if purpose == "add" else groups
+
+
+async def _ads_execute(st, a: dict, created: dict, validate_only=False) -> dict:
+    """Carry out one action in Google Ads. Returns {before, result}. created: names of campaigns made earlier in the
+    same plan -> ids. Every change is tried with validateOnly first."""
+    args = _ads_args(st)
+    cfg = _ads_settings(st["id"])
+    p = a["params"]
+    s = await gads_manage.structure(*args)
+
+    def camp(ref):
+        if isinstance(ref, str) and ref.lower().startswith("new:"):
+            ref = created.get(ref[4:].strip().lower()) or ref[4:].strip()
+        c = _ads_find_campaign(s, ref)
+        if not c:
+            raise gads.GoogleAdsError(f"No campaign called / with id “{ref}” in this account.")
+        return c
+
+    async def run(ops):
+        await gads_manage.mutate(*args, ops, validate_only=True)
+        if not validate_only:
+            await gads_manage.mutate(*args, ops)
+    k = a["kind"]
+    if k == "set_budget":
+        c = camp(p["campaign"])
+        amount = float(p["amount"])
+        if amount > float(cfg["budget_cap"]):
+            raise gads.GoogleAdsError(f"{amount:.2f} a day is over this store's cap ({cfg['budget_cap']:.2f}). Raise the cap in Manage settings first.")
+        if c["budget_shared"]:
+            raise gads.GoogleAdsError(f"“{c['name']}” uses a shared budget; change it in Google Ads.")
+        await run([{"campaignBudgetOperation": {"update": {"resourceName": c["budget_resource"],
+                    "amountMicros": str(int(round(amount * 1_000_000)))}, "updateMask": "amount_micros"}}])
+        return {"before": {"campaign": c["id"], "budget": c["budget"]}, "result": f"{c['name']}: {c['budget']:.2f} → {amount:.2f} a day"}
+    if k == "set_status":
+        c = camp(p["campaign"])
+        status = p["status"].upper()
+        if status not in ("ENABLED", "PAUSED"):
+            raise gads.GoogleAdsError("Status must be ENABLED or PAUSED.")
+        await run([{"campaignOperation": {"update": {"resourceName": c["resource"], "status": status}, "updateMask": "status"}}])
+        return {"before": {"campaign": c["id"], "status": c["status"]}, "result": f"{c['name']}: {c['status']} → {status}"}
+    if k == "set_target_roas":
+        c = camp(p["campaign"])
+        t = float(p["target_roas"]) if p.get("target_roas") else None
+        await run([{"campaignOperation": {"update": {"resourceName": c["resource"], "maximizeConversionValue": {"targetRoas": t} if t else {}},
+                                          "updateMask": "maximize_conversion_value.target_roas"}}])
+        return {"before": {"campaign": c["id"], "target_roas": c["target_roas"]}, "result": f"{c['name']}: target ROAS {c['target_roas']} → {t}"}
+    if k == "create_campaign":
+        budget = float(p["budget"])
+        if budget > float(cfg["new_budget_cap"]):
+            raise gads.GoogleAdsError(f"A new campaign at {budget:.2f} a day is over this store's cap for new campaigns "
+                                      f"({cfg['new_budget_cap']:.2f}). Raise it in Manage settings first.")
+        if _ads_find_campaign(s, p["name"]):
+            raise gads.GoogleAdsError(f"There's already a campaign called “{p['name']}”.")
+        if not s["merchant_ids"]:
+            raise gads.GoogleAdsError("This account has no Merchant Center link on any campaign, so I can't make a shopping campaign.")
+        items = await _ads_items(st, p.get("products") or [])
+        if not items:
+            raise gads.GoogleAdsError("No products to put in the new campaign.")
+        status = (p.get("status") or "ENABLED").upper()
+        feed = next((c["feed_label"] for c in s["campaigns"] if c.get("feed_label")), None)
+        made = await gads_manage.create_pmax(*args, p["name"], budget, s["merchant_ids"][0], await _store_url(st), items,
+                                             p.get("target_roas"), status, feed, validate_only=True)
+        if not validate_only:
+            made = await gads_manage.create_pmax(*args, p["name"], budget, s["merchant_ids"][0], await _store_url(st), items,
+                                                 p.get("target_roas"), status, feed)
+            created[p["name"].strip().lower()] = made["campaign_id"]
+        return {"before": {"created": made.get("campaign_id")},
+                "result": f"Made “{p['name']}” (Performance Max, feed only) at {budget:.2f} a day with {len(p.get('products') or [])} products ({len(items)} variants)"}
+    if k in ("move_products", "add_products", "remove_products"):
+        pids = [str(x) for x in p.get("products") or []]
+        if not pids:
+            raise gads.GoogleAdsError("No products given.")
+        items = await _ads_items(st, pids)
+        ops, before, words = [], {}, []
+        temp = 1
+        src = camp(p["from_campaign"] if k == "move_products" else p["campaign"]) if (k != "add_products" and (p.get("from_campaign") or p.get("campaign"))) else None
+        dst = camp(p["to_campaign"] if k == "move_products" else p["campaign"]) if k in ("move_products", "add_products") and (p.get("to_campaign") or p.get("campaign")) else None
+        if k == "move_products" and src and dst and src["id"] == dst["id"]:
+            raise gads.GoogleAdsError("From and to are the same campaign.")
+        if src:
+            for g in _ads_groups(src, "remove"):
+                mode, its = gads_manage.new_tree(g["products"], remove=items)
+                before[g["resource"]] = g["products"]
+                ops += gads_manage.tree_ops(g, mode, its, temp)
+                temp += len(its) + 5
+            words.append(f"out of “{src['name']}”")
+        if dst:
+            for g in _ads_groups(dst, "add"):
+                mode, its = gads_manage.new_tree(g["products"], add=items)
+                before[g["resource"]] = g["products"]
+                ops += gads_manage.tree_ops(g, mode, its, temp)
+                temp += len(its) + 5
+            words.append(f"into “{dst['name']}”")
+        if not ops:
+            raise gads.GoogleAdsError("Nothing to change.")
+        await run(ops)
+        return {"before": {"groups": before}, "result": f"{len(pids)} product(s) ({len(items)} variants) " + " and ".join(words)}
+    raise gads.GoogleAdsError(f"Unknown action “{k}”.")
+
+
+async def _ads_undo(st, a: dict) -> str:
+    args = _ads_args(st)
+    b = json.loads(a["before"] or "{}")
+    s = await gads_manage.structure(*args)
+    if a["kind"] == "set_budget":
+        c = _ads_find_campaign(s, b["campaign"])
+        await gads_manage.set_budget(*args, c["budget_resource"], b["budget"])
+        return f"{c['name']} back to {b['budget']:.2f} a day"
+    if a["kind"] == "set_status":
+        c = _ads_find_campaign(s, b["campaign"])
+        await gads_manage.set_status(*args, c["resource"], b["status"])
+        return f"{c['name']} back to {b['status']}"
+    if a["kind"] == "set_target_roas":
+        c = _ads_find_campaign(s, b["campaign"])
+        await gads_manage.set_target_roas(*args, c["resource"], b["target_roas"])
+        return f"{c['name']} target ROAS back to {b['target_roas']}"
+    if a["kind"] == "create_campaign":
+        c = _ads_find_campaign(s, b.get("created"))
+        if c:
+            await gads_manage.set_status(*args, c["resource"], "PAUSED")
+        return "New campaign paused"
+    if a["kind"] in ("move_products", "add_products", "remove_products"):
+        groups = {g["resource"]: g for c in s["campaigns"] for g in c["groups"]}
+        ops, temp = [], 1
+        for res, prod in (b.get("groups") or {}).items():
+            g = groups.get(res)
+            if g:
+                ops += gads_manage.tree_ops(g, prod["mode"], prod["items"], temp)
+                temp += len(prod["items"]) + 5
+        if ops:
+            await gads_manage.mutate(*args, ops)
+        return "Product lists put back as they were"
+    raise gads.GoogleAdsError("Can't undo this one.")
+
+
+def _ads_log(store_id, batch, source, kind, params, summary, detail=None, status="proposed"):
+    with db._conn() as con:
+        cur = con.execute("INSERT INTO ads_actions (store_id, batch, source, kind, params, summary, detail, status, created_at)"
+                          " VALUES (?,?,?,?,?,?,?,?,?)", (store_id, batch, source, kind, json.dumps(params), summary,
+                                                          json.dumps(detail) if detail is not None else None, status,
+                                                          datetime.now(timezone.utc).isoformat(timespec="seconds")))
+        return cur.lastrowid
+
+
+def _ads_set(action_id, **kw):
+    cols = ", ".join(f"{k} = ?" for k in kw)
+    with db._conn() as con:
+        con.execute(f"UPDATE ads_actions SET {cols} WHERE id = ?", (*kw.values(), action_id))
+
+
+async def _ads_run_batch(st, batch: str, who: str):
+    """Carry out a plan / proposal step by step, in order; stops at the first step Google refuses."""
+    with db._conn() as con:
+        acts = [dict(r) for r in con.execute("SELECT * FROM ads_actions WHERE store_id = ? AND batch = ? AND status IN "
+                                             "('planned', 'proposed') ORDER BY id", (st["id"], batch))]
+    created, done = {}, []
+    for a in acts:
+        a["params"] = json.loads(a["params"])
+        try:
+            got = await _ads_execute(st, a, created)
+            _ads_set(a["id"], status="done", before=json.dumps(got["before"]), decided_by=who, error=None,
+                     done_at=datetime.now(timezone.utc).isoformat(timespec="seconds"), summary=got["result"])
+            done.append(got["result"])
+        except (gads.GoogleAdsError, HTTPException, ShopifyError) as e:
+            _ads_set(a["id"], status="failed", decided_by=who, error=str(getattr(e, "detail", None) or e)[:600],
+                     done_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
+            for rest in acts[acts.index(a) + 1:]:
+                _ads_set(rest["id"], status="failed", error="Not done: an earlier step failed.")
+            raise HTTPException(400, f"Step {acts.index(a) + 1} failed: {str(getattr(e, 'detail', None) or e)[:400]}"
+                                     + (f" (done before it: {'; '.join(done)})" if done else ""))
+    _ads_cache.pop(st["id"], None)
+    _gdesk_cache.clear()
+    return done
+
+
+async def _ads_rule_ctx(st, rules: list) -> dict:
+    args = _ads_args(st)
+    today = _store_today(st)
+    rows, _index = await _ads_data(st, fresh=True)
+    s = await gads_manage.structure(*args)
+    cdays = await gads_manage.campaign_days(*args, (today - timedelta(days=61)).isoformat(), (today + timedelta(days=1)).isoformat())
+    new = []
+    if any(r["kind"] == "new_products" for r in rules):
+        days = max(int(r["params"].get("days_new", 7)) for r in rules if r["kind"] == "new_products")
+        since = (today - timedelta(days=days)).isoformat()
+        got = await ShopifyClient(st["shop_domain"], st["access_token"]).gql(
+            "query($q: String!) { products(first: 100, query: $q, sortKey: CREATED_AT, reverse: true) { nodes { legacyResourceId title createdAt status } } }",
+            {"q": f"created_at:>={since} status:active"})
+        new = [{"id": str(n["legacyResourceId"]), "title": n["title"], "created": n["createdAt"]}
+               for n in (got.get("products") or {}).get("nodes") or []]
+    return {"today": today, "days_rows": rows, "lines": _ads_lines(st), "structure": s, "new_products": new,
+            "budget_cap": _ads_settings(st["id"])["budget_cap"],
+            "campaign_cost": lambda cid, a, b: sum(v for d, v in cdays.get(str(cid), {}).items() if a <= d <= b)}
+
+
+def _ads_resolve(rule: dict, structure: dict) -> dict:
+    """Campaign names in a rule -> ids (so a rule can name a campaign made in the same chat)."""
+    p = dict(rule["params"])
+    for k in ("campaign", "from_campaign", "to_campaign", "move_to"):
+        if p.get(k):
+            c = _ads_find_campaign(structure, p[k])
+            if c:
+                p[k] = c["id"]
+    return {**rule, "params": p}
+
+
+async def _ads_run_rules(st, only_rule: int = None, who="rules") -> list:
+    """Run the store's switched-on rules (or one rule now): Autopilot carries out what they want, otherwise it waits
+    for Approve. The same change isn't asked twice while one is waiting, and budget raises at most once a day."""
+    with db._conn() as con:
+        rules = [dict(r) for r in con.execute("SELECT * FROM ads_rules WHERE store_id = ?" + (" AND id = ?" if only_rule else " AND enabled = 1"),
+                                              (st["id"], only_rule) if only_rule else (st["id"],))]
+    if not rules:
+        return []
+    for r in rules:
+        r["params"] = json.loads(r["params"])
+    ctx = await _ads_rule_ctx(st, rules)
+    cfg = _ads_settings(st["id"])
+    out = []
+    for r in rules:
+        rr = _ads_resolve(r, ctx["structure"])
+        got = ads_engine.evaluate(rr, ctx)
+        notes = got["notes"]
+        for a in got["actions"]:
+            with db._conn() as con:
+                cool = (datetime.now(timezone.utc) - timedelta(hours=a.get("cooldown_hours", 6))).isoformat(timespec="seconds")
+                prior = [dict(x) for x in con.execute(
+                    "SELECT params, status, created_at FROM ads_actions WHERE store_id = ? AND source = ? AND kind = ? AND "
+                    "(status = 'proposed' OR (status = 'done' AND created_at >= ?))", (st["id"], f"rule:{r['id']}", a["kind"], cool))]
+            if a["kind"] == "set_budget" and prior:
+                notes.append("Budget already raised (or waiting) in the last 24 hours.")
+                continue
+            if "products" in a["params"]:
+                taken = {x for pr in prior for x in json.loads(pr["params"]).get("products", [])}
+                a["params"]["products"] = [x for x in a["params"]["products"] if x not in taken]
+                a["detail"] = [d for d in a.get("detail", []) if d["product"] not in taken]
+                if not a["params"]["products"]:
+                    continue
+            batch = f"rule{r['id']}-{secrets.token_hex(4)}"
+            aid = _ads_log(st["id"], batch, f"rule:{r['id']}", a["kind"], a["params"], a["summary"], a.get("detail"))
+            out.append(aid)
+            if cfg["mode"] == "auto" and cfg["enabled"]:
+                try:
+                    await _ads_run_batch(st, batch, "autopilot")
+                    notes.append(f"Done: {a['summary']}")
+                except HTTPException as e:
+                    notes.append(f"Failed: {e.detail}")
+            else:
+                notes.append(f"Waiting for Approve: {a['summary']}")
+        with db._conn() as con:
+            con.execute("UPDATE ads_rules SET last_run = ?, last_notes = ? WHERE id = ?",
+                        (datetime.now(timezone.utc).isoformat(timespec="seconds"), json.dumps(notes), r["id"]))
+    return out
+
+
+async def _ads_loop():
+    """Every hour: each managed store's rules."""
+    await asyncio.sleep(240)
+    while True:
+        for st in db.list_stores():
+            try:
+                if st.get("google_customer_id") and _ads_settings(st["id"])["enabled"]:
+                    await _ads_run_rules(st)
+            except Exception as e:
+                print(f"Ads rules failed for {st['name']}: {str(getattr(e, 'detail', None) or e)[:300]}", flush=True)
+        await asyncio.sleep(3600)
+
+
+def _ads_actions_of(store_id, limit=80):
+    with db._conn() as con:
+        rows = [dict(r) for r in con.execute("SELECT * FROM ads_actions WHERE store_id = ? ORDER BY id DESC LIMIT ?", (store_id, limit))]
+    for r in rows:
+        r["params"] = json.loads(r["params"] or "{}")
+        r["detail"] = json.loads(r["detail"]) if r.get("detail") else None
+        r.pop("before", None)
+    return rows
+
+
+def _ads_rules_of(store_id, names=None):
+    with db._conn() as con:
+        rows = [dict(r) for r in con.execute("SELECT * FROM ads_rules WHERE store_id = ? ORDER BY id", (store_id,))]
+    for r in rows:
+        r["params"] = json.loads(r["params"])
+        r["last_notes"] = json.loads(r["last_notes"]) if r.get("last_notes") else []
+        r["text"] = ads_engine.describe(r, names or {})
+    return rows
+
+
+async def _ads_overview(st) -> dict:
+    """Campaigns with budget, status, product list and the last 7 / 30 days' spend and ROAS."""
+    args = _ads_args(st)
+    s = await gads_manage.structure(*args)
+    rows, _ = await _ads_data(st)
+    lines = _ads_lines(st)
+    today = _store_today(st)
+    cdays = await gads_manage.campaign_days(*args, (today - timedelta(days=31)).isoformat(), (today + timedelta(days=1)).isoformat())
+    for c in s["campaigns"]:
+        for d in (7, 30):
+            a, b = ads_engine.window(today, d)
+            cs = ads_engine.campaign_stats(rows, lines, a, b, c["id"], sum(v for k, v in cdays.get(c["id"], {}).items() if a <= k <= b))
+            c[f"d{d}"] = {k: cs[k] for k in ("cost", "sales", "value", "roas", "products")}
+        for g in c["groups"]:
+            g.pop("tree", None)
+            g["products"] = {"mode": g["products"]["mode"], "count": len(g["products"]["items"])}
+    return s
+
+
+def _ads_who(request: Request) -> str:
+    u = getattr(request.state, "user", None) or {}
+    return (u.get("email") if isinstance(u, dict) else None) or "someone"
+
+
+@app.get("/api/ads/manage")
+async def api_ads_manage(store: int, fresh: int = 0):
+    st = _ads_store(store)
+    if fresh:
+        _ads_cache.pop(st["id"], None)
+    try:
+        s = await _ads_overview(st)
+    except gads.GoogleAdsError as e:
+        raise HTTPException(400, str(e))
+    names = {c["id"]: c["name"] for c in s["campaigns"]}
+    with db._conn() as con:
+        chat = [dict(r) for r in con.execute("SELECT role, content, who, created_at FROM ads_chat WHERE store_id = ? ORDER BY id DESC LIMIT 60", (st["id"],))]
+    for m in chat:
+        m["content"] = json.loads(m["content"])
+    return {"store": st["id"], "name": st["name"].strip(), "settings": _ads_settings(st["id"]), "structure": s,
+            "rules": _ads_rules_of(st["id"], names), "actions": _ads_actions_of(st["id"]), "chat": chat[::-1],
+            "has_ai": bool(db.get_setting("anthropic_api_key")), "today": _store_today(st).isoformat()}
+
+
+@app.put("/api/ads/settings/{store_id}")
+def api_ads_settings(store_id: int, payload: dict):
+    _ads_store(store_id)
+    cfg = _ads_settings(store_id)
+    if "enabled" in payload:
+        cfg["enabled"] = bool(payload["enabled"])
+    if payload.get("mode") in ("approve", "auto"):
+        cfg["mode"] = payload["mode"]
+    for k in ("budget_cap", "new_budget_cap"):
+        if payload.get(k) not in (None, ""):
+            v = float(payload[k])
+            if v <= 0:
+                raise HTTPException(400, "Caps must be above 0.")
+            cfg[k] = v
+    db.set_setting(f"ads_manage:{store_id}", json.dumps(cfg))
+    return cfg
+
+
+@app.post("/api/ads/batch/{store_id}/{batch}")
+async def api_ads_batch(store_id: int, batch: str, request: Request, payload: dict):
+    """Do it / Approve (go) or Cancel / Reject a plan or a rule's proposal."""
+    st = _ads_store(store_id)
+    if payload.get("go"):
+        done = await _ads_run_batch(st, batch, _ads_who(request))
+        return {"done": done}
+    with db._conn() as con:
+        con.execute("UPDATE ads_actions SET status = 'rejected', decided_by = ? WHERE store_id = ? AND batch = ? AND status IN ('planned', 'proposed')",
+                    (_ads_who(request), store_id, batch))
+    return {"ok": True}
+
+
+@app.post("/api/ads/undo/{action_id}")
+async def api_ads_undo(action_id: int, request: Request):
+    with db._conn() as con:
+        a = con.execute("SELECT * FROM ads_actions WHERE id = ?", (action_id,)).fetchone()
+    if not a or a["status"] != "done":
+        raise HTTPException(400, "Only a change that was carried out can be undone.")
+    st = _ads_store(a["store_id"])
+    try:
+        msg = await _ads_undo(st, dict(a))
+    except gads.GoogleAdsError as e:
+        raise HTTPException(400, str(e))
+    _ads_set(action_id, status="undone", error=f"Undone by {_ads_who(request)}: {msg}")
+    _gdesk_cache.clear()
+    return {"ok": True, "message": msg}
+
+
+@app.post("/api/ads/rules/{rule_id}")
+async def api_ads_rule(rule_id: int, payload: dict):
+    """{enabled: true|false} switches a rule; {run: true} runs it now; {delete: true} deletes it."""
+    with db._conn() as con:
+        r = con.execute("SELECT * FROM ads_rules WHERE id = ?", (rule_id,)).fetchone()
+        if not r:
+            raise HTTPException(404, "Rule not found.")
+        if payload.get("delete"):
+            con.execute("DELETE FROM ads_rules WHERE id = ?", (rule_id,))
+            return {"ok": True}
+        if "enabled" in payload:
+            con.execute("UPDATE ads_rules SET enabled = ? WHERE id = ?", (1 if payload["enabled"] else 0, rule_id))
+    if payload.get("run"):
+        st = _ads_store(r["store_id"])
+        await _ads_run_rules(st, only_rule=rule_id)
+    return {"ok": True}
+
+
+@app.post("/api/ads/manual/{store_id}")
+async def api_ads_manual(store_id: int, payload: dict, request: Request):
+    """A change made by hand on the Manage tab (budget, pause / enable): logged like the AI's, with Undo."""
+    st = _ads_store(store_id)
+    kind = payload.get("kind")
+    if kind not in ("set_budget", "set_status", "set_target_roas"):
+        raise HTTPException(400, "Unknown change.")
+    batch = f"manual-{secrets.token_hex(4)}"
+    _ads_log(st["id"], batch, "manual", kind, payload.get("params") or {}, "Change by hand", status="planned")
+    done = await _ads_run_batch(st, batch, _ads_who(request))
+    return {"done": done}
+
+
+@app.post("/api/ads/chat/{store_id}")
+async def api_ads_chat(store_id: int, payload: dict, request: Request):
+    """Talk to the ads AI about one store: it reads the figures, plans changes (Do it button) and sets up rules
+    (Turn on button). It never changes Google Ads by itself."""
+    st = _ads_store(store_id)
+    key = db.get_setting("anthropic_api_key")
+    if not key:
+        raise HTTPException(400, "Add the Anthropic API key in Settings → AI first.")
+    text = (payload.get("message") or "").strip()
+    if not text:
+        raise HTTPException(400, "Write a message first.")
+    who = _ads_who(request)
+    now = lambda: datetime.now(timezone.utc).isoformat(timespec="seconds")
+    with db._conn() as con:
+        con.execute("INSERT INTO ads_chat (store_id, role, content, who, created_at) VALUES (?, 'user', ?, ?, ?)",
+                    (st["id"], json.dumps({"text": text}), who, now()))
+        hist = [dict(r) for r in con.execute("SELECT role, content FROM ads_chat WHERE store_id = ? ORDER BY id DESC LIMIT 16", (st["id"],))][::-1]
+    history = [{"role": h["role"], "content": json.loads(h["content"]).get("text") or ""} for h in hist]
+    made = {"plans": [], "rules": []}
+
+    async def tool(name, args):
+        return await _ads_tool(st, name, args, who, made)
+    try:
+        got = await ads_brain.reply(key, history, tool, {
+            "store": st["name"].strip(), "currency": (await _ads_overview_currency(st)), "today": _store_today(st).isoformat(),
+            "settings": _ads_settings(st["id"])})
+    except ads_brain.BrainError as e:
+        raise HTTPException(400, str(e))
+    msg = {"text": got["text"], "plans": made["plans"], "rules": made["rules"]}
+    with db._conn() as con:
+        con.execute("INSERT INTO ads_chat (store_id, role, content, who, created_at) VALUES (?, 'assistant', ?, 'ads AI', ?)",
+                    (st["id"], json.dumps(msg), now()))
+    return msg
+
+
+async def _ads_overview_currency(st) -> str:
+    acc = _gads_acct.get(st["google_customer_id"])
+    return acc[0] if acc else (st.get("google_currency") or st["currency"])
+
+
+async def _ads_tool(st, name: str, a: dict, who: str, made: dict) -> dict:
+    """What the ads AI can look at and propose. Nothing here changes Google Ads."""
+    today = _store_today(st)
+    if name == "get_campaigns":
+        s = await _ads_overview(st)
+        return {"currency": s["currency"], "campaigns": [{
+            "id": c["id"], "name": c["name"], "status": c["status"], "type": c["type"], "budget_per_day": c["budget"],
+            "bidding": c["bidding"], "target_roas": c["target_roas"],
+            "product_lists": [f"{g['name']} ({g['status']}): {g['products']['mode']}"
+                              + (f" {g['products']['count']} variants" if g['products']['count'] else "") for g in c["groups"]],
+            "last_7_days": c["d7"], "last_30_days": c["d30"]} for c in s["campaigns"]],
+            "note": "product_lists: all = every product; only N = just those variants; except N = all but those; "
+                    "custom = picked by labels/categories (ProfitDesk can't edit those). ROAS = Shopify sales / spend."}
+    if name == "find_products":
+        rows, _ = await _ads_data(st)
+        s = await gads_manage.structure(*_ads_args(st))
+        lines = _ads_lines(st)
+        start, end = ads_engine.window(today, a.get("days") or 30)
+        c = _ads_find_campaign(s, a.get("campaign")) if a.get("campaign") else None
+        if a.get("campaign") and not c:
+            return {"error": f"No campaign “{a['campaign']}”."}
+        ps = ads_engine.product_stats(rows, lines, start, end, c["id"] if c else None)
+        names = {x["id"]: x["name"] for x in s["campaigns"]}
+        info = await _product_info(st, [p for p in ps if p.isdigit()])
+        basis = a.get("basis") or "shopify"
+        out = []
+        for pid, x in ps.items():
+            if pid == google_desk.UNLINKED or not (x["cost"] or x["qty"]):
+                continue
+            r = ads_engine.roas(x, basis)
+            if a.get("min_spend") is not None and x["cost"] < a["min_spend"]:
+                continue
+            if a.get("max_spend") is not None and x["cost"] > a["max_spend"]:
+                continue
+            if a.get("min_roas") is not None and (r is None or r < a["min_roas"]):
+                continue
+            if a.get("max_roas") is not None and (r is not None and r > a["max_roas"]):
+                continue
+            t = info.get(pid, {}).get("title") or pid
+            if a.get("title_contains") and a["title_contains"].lower() not in t.lower():
+                continue
+            out.append({"product_id": pid, "title": t, "status": info.get(pid, {}).get("status"), "spend": round(x["cost"], 2),
+                        "shopify_sales": round(x["sales"], 2), "shopify_qty": x["qty"], "roas": round(r, 2) if r is not None else None,
+                        "google_conv_value": round(x["value"], 2), "add_to_carts": round(x["atc"], 1),
+                        "impressions": x["impressions"], "clicks": x["clicks"],
+                        "spent_in_campaigns": [names.get(k, k) for k in x["campaigns"]]})
+        out.sort(key=lambda r: -r["spend"])
+        return {"period": f"{start} to {end} (store days)", "basis": basis, "count": len(out),
+                "products": out[: int(a.get("limit") or 200)],
+                "note": "All variants of a product are combined. Shopify sales are the product's sales on the store from every channel."}
+    if name == "propose_plan":
+        steps = a.get("steps") or []
+        if not steps:
+            return {"error": "No steps."}
+        batch = f"plan-{secrets.token_hex(5)}"
+        allowed = ("create_campaign", "move_products", "add_products", "remove_products", "set_budget", "set_status", "set_target_roas")
+        for sp in steps:
+            if sp.get("kind") not in allowed:
+                return {"error": f"Unknown step kind {sp.get('kind')}. Use one of {allowed}."}
+        for sp in steps:
+            params = {k: v for k, v in sp.items() if k not in ("kind", "summary") and v not in (None, "", [])}
+            _ads_log(st["id"], batch, "chat", sp["kind"], params, sp.get("summary") or sp["kind"],
+                     {"products": len(params.get("products") or [])}, status="planned")
+        made["plans"].append(batch)
+        return {"plan": batch, "steps": len(steps), "status": "Shown to the person with a Do it button. Nothing is changed until they click it."}
+    if name == "save_rule":
+        kind = a.get("kind")
+        if kind not in ads_engine.KINDS:
+            return {"error": f"kind must be one of {ads_engine.KINDS}"}
+        params = a.get("params") or {}
+        need = {"roas_floor": ["campaign", "days", "min_roas"], "graduate": ["from_campaign", "to_campaign", "max_spend"],
+                "new_products": ["campaign"], "scale_budget": ["campaign", "days", "min_roas", "step"]}[kind]
+        miss = [k for k in need if params.get(k) in (None, "")]
+        if miss:
+            return {"error": f"Missing {miss}"}
+        with db._conn() as con:
+            cur = con.execute("INSERT INTO ads_rules (store_id, name, kind, params, enabled, created_at, created_by) VALUES (?,?,?,?,0,?,?)",
+                              (st["id"], (a.get("name") or kind)[:80], kind, json.dumps(params),
+                               datetime.now(timezone.utc).isoformat(timespec="seconds"), who))
+            rid = cur.lastrowid
+        made["rules"].append(rid)
+        return {"rule": rid, "status": "Saved switched OFF. The person turns it on with the Turn on button."}
+    if name == "list_rules":
+        s = await gads_manage.structure(*_ads_args(st))
+        return {"rules": [{k: r[k] for k in ("id", "name", "kind", "params", "enabled", "last_run", "last_notes", "text")}
+                          for r in _ads_rules_of(st["id"], {c["id"]: c["name"] for c in s["campaigns"]})]}
+    if name == "recent_changes":
+        return {"changes": [{k: r[k] for k in ("id", "kind", "summary", "status", "source", "created_at", "error")}
+                            for r in _ads_actions_of(st["id"], 30)]}
+    return {"error": f"Unknown tool {name}"}
 
 
 @app.get("/api/googleads/check")

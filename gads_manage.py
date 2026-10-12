@@ -300,3 +300,37 @@ async def create_pmax(rt, customer_id, login_cid, name: str, budget: float, merc
     res = got.get("mutateOperationResponses") or []
     camp = next((r["campaignResult"]["resourceName"] for r in res if "campaignResult" in r), None)
     return {"campaign": camp, "campaign_id": camp.rsplit("/", 1)[1] if camp else None}
+
+
+async def campaign_days(refresh_token, customer_id, login_cid, start, end) -> dict:
+    """{campaign id: {date: cost}} (account days), every campaign type."""
+    rows = await _q(refresh_token, customer_id, login_cid,
+                    "SELECT campaign.id, segments.date, metrics.cost_micros, metrics.conversions_value FROM campaign "
+                    f"WHERE segments.date BETWEEN '{start}' AND '{end}'")
+    out = {}
+    for r in rows:
+        c = str((r.get("campaign") or {}).get("id"))
+        d = (r.get("segments") or {}).get("date")
+        out.setdefault(c, {})[d] = _micros((r.get("metrics") or {}).get("costMicros"))
+    return out
+
+
+def new_tree(products: dict, add=(), remove=()) -> tuple:
+    """A group's (mode, items) after adding / removing item ids, from products_of(). Raises on trees we don't edit."""
+    mode, items = products.get("mode"), set(products.get("items") or [])
+    add, remove = {i for i in add}, {i for i in remove}
+    if mode == "custom":
+        raise gads.GoogleAdsError("This campaign picks its products by labels or categories (set in Google Ads or by a feed app), "
+                                  "so ProfitDesk won't rewrite it. Use a campaign that lists products by ID.")
+    low = lambda s: {x.lower() for x in s}
+    if mode in ("all",):
+        return ("all", []) if not remove else ("except", sorted(remove))
+    if mode == "none":
+        return ("only", sorted(add - remove))
+    if mode == "only":
+        keep = {i for i in items | add if i.lower() not in low(remove)}
+        return "only", sorted(keep)
+    if mode == "except":
+        out = {i for i in items | remove if i.lower() not in low(add)}
+        return ("except", sorted(out)) if out else ("all", [])
+    raise gads.GoogleAdsError(f"Unknown product list ({mode}).")

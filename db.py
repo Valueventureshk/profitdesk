@@ -143,6 +143,46 @@ CREATE TABLE IF NOT EXISTS cog_lines (
 );
 CREATE INDEX IF NOT EXISTS cog_lines_day ON cog_lines (store_id, day);
 
+-- Apps → Google Ads → Manage: rules the ads AI set up, every change (planned / proposed / done / undone)
+-- with what it was before, and the chat with the ads AI, per store.
+CREATE TABLE IF NOT EXISTS ads_rules (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    store_id   INTEGER NOT NULL,
+    name       TEXT    NOT NULL,
+    kind       TEXT    NOT NULL,
+    params     TEXT    NOT NULL,          -- JSON
+    enabled    INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT    NOT NULL,
+    created_by TEXT,
+    last_run   TEXT,
+    last_notes TEXT
+);
+CREATE TABLE IF NOT EXISTS ads_actions (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    store_id   INTEGER NOT NULL,
+    batch      TEXT    NOT NULL,          -- one plan (several steps) or one rule run
+    source     TEXT    NOT NULL,          -- chat | rule:<id> | manual
+    kind       TEXT    NOT NULL,
+    params     TEXT    NOT NULL,          -- JSON
+    summary    TEXT,
+    detail     TEXT,                      -- JSON: the products and figures behind it
+    before     TEXT,                      -- JSON: what it was, for undo
+    status     TEXT    NOT NULL,          -- planned | proposed | done | failed | rejected | undone
+    created_at TEXT    NOT NULL,
+    decided_by TEXT,
+    done_at    TEXT,
+    error      TEXT
+);
+CREATE INDEX IF NOT EXISTS ads_actions_store ON ads_actions (store_id, created_at);
+CREATE TABLE IF NOT EXISTS ads_chat (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    store_id   INTEGER NOT NULL,
+    role       TEXT    NOT NULL,
+    content    TEXT    NOT NULL,          -- JSON {text, plans, rules}
+    who        TEXT,
+    created_at TEXT    NOT NULL
+);
+
 -- Apps → Google Ads: the team's own product tags (per store), e.g. "Winter bestseller".
 CREATE TABLE IF NOT EXISTS gads_tags (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
