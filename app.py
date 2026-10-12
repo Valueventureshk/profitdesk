@@ -5822,7 +5822,7 @@ async def api_tracking_journey(store: int, client: str):
 
 
 @app.get("/api/tracking/report")
-async def api_tracking_report(store: int, start: str, end: str, field: str = "a_campaign"):
+async def api_tracking_report(store: int, start: str, end: str, field: str = "a_campaign", since: str = ""):
     """Rows like wetracked.io's report: adds to cart, checkouts and purchases (count + value) per
     campaign / ad set / ad or any UTM. Days are the store's own."""
     st = next((x for x in db.list_stores() if x["id"] == store), None)
@@ -5834,7 +5834,13 @@ async def api_tracking_report(store: int, start: str, end: str, field: str = "a_
         b = datetime.combine(date.fromisoformat(end) + timedelta(days=1), clock.min, tz).astimezone(timezone.utc)
     except ValueError:
         raise HTTPException(400, "Pick the dates.")
-    out = await asyncio.to_thread(tracking.report, store, a.isoformat(timespec="seconds"), b.isoformat(timespec="seconds"), field)
+    a_s = a.isoformat(timespec="seconds")
+    if since:                                   # from an exact moment (side-by-side checks against another tool)
+        try:
+            a_s = max(a_s, datetime.fromisoformat(since.replace("Z", "+00:00")).astimezone(timezone.utc).isoformat(timespec="seconds"))
+        except ValueError:
+            raise HTTPException(400, "since must be a date-time.")
+    out = await asyncio.to_thread(tracking.report, store, a_s, b.isoformat(timespec="seconds"), field)
     note = None
     lvl = tracking.LEVEL_OF_FIELD.get(field)
     conn = next((c for c in db.list_meta_connections() if c["id"] == st.get("meta_connection_id")), None)

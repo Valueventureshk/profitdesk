@@ -1,6 +1,7 @@
 type = "web_pixel_extension"
 name = "ProfitDesk tracking"
 runtime_context = "strict"
+uid = "4a2e75be-b1bb-1b58-a67c-e2492826383e3bf0752a"
 
 # Shopify only runs the pixel for shoppers who allowed analytics + marketing in the store's
 # cookie banner (where the store has one), like any other tracking app.
