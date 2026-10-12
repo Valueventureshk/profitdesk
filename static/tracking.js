@@ -410,8 +410,10 @@ async function drawGoogle() {
   $("gClose").onclick = () => { $("gpanel").hidden = true; };
   $("gStore").onchange = () => { gStore = $("gStore").value; drawGoogle(); };
   let d;
+  const mine = gStore;
   try { d = await api(`/api/tracking/google/actions?store=${gStore}`); }
-  catch (e) { $("gBody").innerHTML = `<p class="hint trk-pad">${esc(e.message)}</p>`; return; }
+  catch (e) { if (mine === gStore) $("gBody").innerHTML = `<p class="hint trk-pad">${esc(e.message)}</p>`; return; }
+  if (mine !== gStore) return;                          // another store was picked meanwhile
   const acts = d.actions.filter((a) => a.status !== "HIDDEN" && (a.primary || ["PURCHASE", "ADD_TO_CART", "BEGIN_CHECKOUT"].includes(a.category)));
   const prim = acts.filter((a) => a.primary && a.category === "PURCHASE");
   const best = acts.filter((a) => a.category === "PURCHASE").sort((x, y) => y.conversions_30d - x.conversions_30d)[0];
