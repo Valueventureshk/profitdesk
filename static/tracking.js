@@ -23,10 +23,10 @@ const METRICS = [
   { id: "cpc", label: "Cost per link click", sub: "Spend ÷ link clicks", cols: [["cpc", "Cost per link click", "m"]] },
 ];
 const SPEND_IDS = ["spend", "cpa", "roas", "impressions", "link_clicks", "cpc"];
-const DEFAULT_COLS = [["atc", 1], ["ic", 1], ["purchase", 1], ["spend", 1], ["cpa", 1], ["roas", 1], ["impressions", 0], ["link_clicks", 0], ["cpc", 0]];
+const DEFAULT_COLS = [["spend", 1], ["atc", 1], ["ic", 1], ["purchase", 1], ["cpa", 1], ["roas", 1], ["impressions", 0], ["link_clicks", 0], ["cpc", 0]];
 let colState = (() => {
   try {
-    const v = JSON.parse(localStorage.getItem("pdTrkCols"));
+    const v = JSON.parse(localStorage.getItem("pdTrkCols2"));
     if (Array.isArray(v) && v.length) {
       const known = v.filter(([id]) => METRICS.some((m) => m.id === id));
       for (const d of DEFAULT_COLS) if (!known.some(([id]) => id === d[0])) known.push([d[0], 0]);
@@ -266,26 +266,31 @@ function dragCol(e, grip) {
   e.preventDefault();
   const list = $("colsList"), row = grip.closest(".trk-colrow");
   row.classList.add("drag");
-  grip.setPointerCapture(e.pointerId);
-  grip.onpointermove = (ev) => {
+  // listen on the window: moving the row in the list would drop a capture held by the handle
+  const move = (ev) => {
     const box = list.getBoundingClientRect();
     if (ev.clientY < box.top + 24) list.scrollTop -= 8;
     else if (ev.clientY > box.bottom - 24) list.scrollTop += 8;
     const after = [...list.children].filter((r) => r !== row).find((r) => { const b = r.getBoundingClientRect(); return ev.clientY < b.top + b.height / 2; });
     if (after !== row.nextElementSibling) list.insertBefore(row, after || null);
   };
-  grip.onpointerup = grip.onpointercancel = () => {
-    grip.onpointermove = grip.onpointerup = grip.onpointercancel = null;
+  const done = () => {
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", done);
+    window.removeEventListener("pointercancel", done);
     draft = [...list.children].map((r) => draft[+r.dataset.i]);
     drawCols();
   };
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", done);
+  window.addEventListener("pointercancel", done);
 }
 $("colsBtn").onclick = openCols;
 $("colsX").onclick = $("colsCancel").onclick = () => { $("colsModal").hidden = true; };
 $("colsReset").onclick = () => { draft = DEFAULT_COLS.map((x) => [...x]); drawCols(); };
 $("colsApply").onclick = () => {
   colState = draft;
-  try { localStorage.setItem("pdTrkCols", JSON.stringify(colState)); } catch { /* private */ }
+  try { localStorage.setItem("pdTrkCols2", JSON.stringify(colState)); } catch { /* private */ }
   $("colsModal").hidden = true;
   if (data) draw();
 };
