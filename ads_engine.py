@@ -84,7 +84,7 @@ def describe(rule: dict, names: dict) -> str:
     if k == "roas_floor":
         to = f" and move them to {n(p.get('move_to'))}" if p.get("move_to") else ""
         return (f"In {n(p['campaign'])}: any product with ROAS under {p['min_roas']} over {p['days']} days "
-                f"(at least {p.get('min_spend', 0)} spent) — take it out{to}.")
+                f"(only once it has spent at least {max(float(p.get('min_spend') or 0), 5.0):g}) — take it out{to}.")
     if k == "graduate":
         need = {"sale": "a sale", "atc": "an add to cart", "either": "a sale or an add to cart"}[p.get("need", "either")]
         return (f"In {n(p['from_campaign'])}: a product that gets {need} within {p.get('max_spend')} spend "
@@ -114,7 +114,7 @@ def evaluate(rule: dict, ctx: dict) -> dict:
         ps = product_stats(ctx["days_rows"], ctx["lines"], a, b, c["id"])
         bad = []
         for pid, s in ps.items():
-            if pid == google_desk.UNLINKED or s["cost"] < float(p.get("min_spend") or 0):
+            if pid == google_desk.UNLINKED or s["cost"] < max(float(p.get("min_spend") or 0), 5.0) or not s["clicks"]:
                 continue
             r = roas(s, p.get("basis", "shopify"))
             if r is not None and r < float(p["min_roas"]):

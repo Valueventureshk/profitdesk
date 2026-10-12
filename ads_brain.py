@@ -71,6 +71,9 @@ How to work:
 - If a step needs a campaign that will be created in the same plan, create it first in the steps and refer to it as "new:<name>".
 - Campaigns whose product list is "custom" (picked by labels / categories) can't be edited by ProfitDesk; say so and suggest an alternative.
 - Budgets must stay within the caps above; if the person wants more, tell them to raise the cap in Manage settings.
+- Never judge a product on tiny spend. For roas_floor always set min_spend (if the person didn't say, use roughly the store's
+  average order value, e.g. 20-40, and tell them); for graduate set max_spend to what they call "small" (ask if unclear, default 15).
+- Scaling a budget needs a cap: always set max_budget for scale_budget (ask, or use the store's cap) and say it.
 - Keep answers short: what you found (a small table if useful), then the plan / rule."""
 
 
