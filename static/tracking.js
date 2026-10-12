@@ -1,20 +1,51 @@
-/* ProfitDesk Apps → Tracking: the wetracked.io-style report (adds to cart, checkouts, purchases per
-   campaign / ad set / ad) and each store's pixel setup. Figures come from the server (tracking.py). */
+/* ProfitDesk Apps → Tracking: the wetracked.io report, same layout and behaviour (pinned header and
+   first column, sort on every column, row checkboxes, column builder, rows per page), plus Meta spend,
+   cost per purchase and ROAS. Every figure comes from the server (tracking.py). */
 
 const $ = (id) => document.getElementById(id);
-let stores = [], data = null, level = PDUrl.get("level") || "campaign", page = 0, sort = { k: "purchase_value", dir: -1 };
-const FIELD = { campaign: "a_campaign", adset: "a_term", ad: "a_content" };
+let stores = [], data = null, level = PDUrl.get("level") || "campaign", page = 0, sort = { k: null, dir: -1 };
+let picked = new Set();
 const KEY = { utm_id: "a_id", utm_source: "a_source", utm_medium: "a_medium", utm_campaign: "a_campaign", utm_content: "a_content", utm_term: "a_term" };
+const LEVEL_KEY = { campaign: "utm_campaign", adset: "utm_term", ad: "utm_content" };
+const PLURAL = { campaign: "campaigns", adset: "adsets", ad: "ads" };
+const RANGES = [["today", "Today"], ["yesterday", "Yesterday"], ["7", "Last 7 days"], ["14", "Last 14 days"], ["30", "Last 30 days"],
+                ["mtd", "This month"], ["lastmonth", "Last month"], ["custom", "Custom range"]];
+// every metric the column builder offers; count metrics show count + conversion value (two columns)
+const METRICS = [
+  { id: "atc", label: "Total adds to cart", sub: "Count + conversion value", cols: [["atc", "Total adds to cart", "n"], ["atc_value", "Total adds to cart conversion value", "m"]] },
+  { id: "ic", label: "Total checkouts initiated", sub: "Count + conversion value", cols: [["ic", "Total checkouts initiated", "n"], ["ic_value", "Total checkouts initiated conversion value", "m"]] },
+  { id: "purchase", label: "Total purchases", sub: "Count + conversion value", cols: [["purchase", "Total purchases", "n"], ["purchase_value", "Total purchases conversion value", "m"]] },
+  { id: "spend", label: "Meta spend", sub: "From Meta Ads", cols: [["spend", "Meta spend", "m"]] },
+  { id: "cpa", label: "Cost per purchase", sub: "Spend ÷ purchases", cols: [["cpa", "Cost per purchase", "m"]] },
+  { id: "roas", label: "ROAS", sub: "Purchase value ÷ spend", cols: [["roas", "ROAS", "r"]] },
+  { id: "impressions", label: "Impressions", sub: "From Meta Ads", cols: [["impressions", "Impressions", "n"]] },
+  { id: "link_clicks", label: "Link clicks", sub: "From Meta Ads", cols: [["link_clicks", "Link clicks", "n"]] },
+  { id: "cpc", label: "Cost per link click", sub: "Spend ÷ link clicks", cols: [["cpc", "Cost per link click", "m"]] },
+];
+const SPEND_IDS = ["spend", "cpa", "roas", "impressions", "link_clicks", "cpc"];
+const DEFAULT_COLS = [["atc", 1], ["ic", 1], ["purchase", 1], ["spend", 1], ["cpa", 1], ["roas", 1], ["impressions", 0], ["link_clicks", 0], ["cpc", 0]];
+let colState = (() => {
+  try {
+    const v = JSON.parse(localStorage.getItem("pdTrkCols"));
+    if (Array.isArray(v) && v.length) {
+      const known = v.filter(([id]) => METRICS.some((m) => m.id === id));
+      for (const d of DEFAULT_COLS) if (!known.some(([id]) => id === d[0])) known.push([d[0], 0]);
+      return known;
+    }
+  } catch { /* none saved */ }
+  return DEFAULT_COLS.map((x) => [...x]);
+})();
+const state = { store: PDUrl.get("store") || "", range: PDUrl.get("range") || "today", key: PDUrl.get("key") || "", cur: PDUrl.get("cur") || "" };
 
 function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
-function money(v) {
-  if (!v) return "—";
-  try { return new Intl.NumberFormat(undefined, { style: "currency", currency: data?.currency || "USD" }).format(v); }
+function money(v, cur) {
+  if (v === null || v === undefined || v === 0) return "<em>—</em>";
+  try { return esc(new Intl.NumberFormat(undefined, { style: "currency", currency: cur || data?.currency || "USD" }).format(v)); }
   catch { return Number(v).toFixed(2); }
 }
-const count = (v) => (v ? Number(v).toLocaleString() : "—");
+const fmt = (kind, v) => (kind === "m" ? money(v) : kind === "r" ? (v ? Number(v).toFixed(2) : "<em>—</em>") : (v ? Number(v).toLocaleString() : "<em>—</em>"));
 async function api(path, options) {
   const r = await fetch(path, options);
   let body = {};
@@ -32,129 +63,253 @@ function toast(msg, bad = false) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { el.hidden = true; }, bad ? 7000 : 3000);
 }
+const store = () => stores.find((s) => String(s.id) === String(state.store));
 
-// the store's own today (its clock), so "Today" matches Shopify
+// the store's own today (its clock), like Shopify and wetracked.io
 function storeToday() {
-  const st = stores.find((s) => String(s.id) === $("store").value);
-  try { return new Intl.DateTimeFormat("en-CA", { timeZone: st?.timezone || undefined }).format(new Date()); }
+  try { return new Intl.DateTimeFormat("en-CA", { timeZone: store()?.timezone || undefined }).format(new Date()); }
   catch { return new Date().toISOString().slice(0, 10); }
 }
 function range() {
-  const t = new Date(storeToday() + "T12:00:00"), iso = (d) => d.toISOString().slice(0, 10);
-  const back = (n) => { const d = new Date(t); d.setDate(d.getDate() - n); return iso(d); };
-  const r = $("range").value;
-  if (r === "today") return [iso(t), iso(t)];
-  if (r === "yesterday") return [back(1), back(1)];
-  if (r === "custom") return [$("from").value || iso(t), $("to").value || iso(t)];
-  return [back(Number(r) - 1), iso(t)];
+  const t = new Date(storeToday() + "T12:00:00Z"), iso = (d) => d.toISOString().slice(0, 10);
+  const back = (n) => { const d = new Date(t); d.setUTCDate(d.getUTCDate() - n); return iso(d); };
+  switch (state.range) {
+    case "today": return [iso(t), iso(t)];
+    case "yesterday": return [back(1), back(1)];
+    case "mtd": return [iso(t).slice(0, 8) + "01", iso(t)];
+    case "lastmonth": { const a = new Date(t); a.setUTCDate(0); const e = iso(a); a.setUTCDate(1); return [iso(a), e]; }
+    case "custom": return [$("from").value || iso(t), $("to").value || iso(t)];
+    default: return [back(Number(state.range) - 1), iso(t)];
+  }
 }
+
+function menu(box, items, current, onPick) {
+  const open = box.hidden;
+  for (const m of document.querySelectorAll(".trk-menu")) m.hidden = true;
+  if (!open) return;
+  box.innerHTML = items.map(([v, l]) => `<button data-v="${esc(v)}" class="${String(v) === String(current) ? "on" : ""}">${esc(l)}</button>`).join("");
+  box.hidden = false;
+  for (const b of box.querySelectorAll("button")) b.onclick = () => { box.hidden = true; onPick(b.dataset.v); };
+}
+document.addEventListener("click", (e) => {
+  for (const [m, b] of [["storeMenu", "storeBtn"], ["rangeMenu", "rangeBtn"]]) {
+    if (!$(m).hidden && !$(m).contains(e.target) && !$(b).contains(e.target)) $(m).hidden = true;
+  }
+});
 
 async function boot() {
   try { stores = (await api("/api/tracking/stores")).stores; } catch (e) { toast(e.message, true); return; }
-  $("store").innerHTML = stores.map((s) => `<option value="${s.id}">${esc(s.domain.replace(/\.myshopify\.com$/, ""))} · ${esc(s.name)}${s.installed ? "" : " (pixel off)"}</option>`).join("");
-  const want = PDUrl.get("store") || (stores.find((s) => s.installed) || stores[0] || {}).id;
-  if (want) $("store").value = String(want);
-  if (PDUrl.get("range")) $("range").value = PDUrl.get("range");
-  if (PDUrl.get("key")) $("key").value = PDUrl.get("key");
-  for (const b of document.querySelectorAll("#level [data-l]")) b.classList.toggle("on", b.dataset.l === level);
+  if (!store()) state.store = String((stores.find((s) => s.installed) || stores[0] || {}).id || "");
   try { if (localStorage.getItem("pdTrkNote") === "off") $("note").hidden = true; } catch { /* private */ }
+  if (!stores.length) { toast("No Shopify stores connected yet.", true); return; }
   load();
 }
 
+function syncControls() {
+  const st = store();
+  $("storeName").textContent = st ? st.name : "Store";
+  $("rangeName").textContent = (RANGES.find((r) => r[0] === state.range) || [, "Today"])[1];
+  $("dates").hidden = state.range !== "custom";
+  for (const r of document.querySelectorAll("#level input")) r.checked = r.value === level;
+  $("key").value = state.key || LEVEL_KEY[level];
+  $("keyName").textContent = $("key").selectedOptions[0]?.textContent || "";
+  $("q").placeholder = `Search ${PLURAL[level]}..`;
+  $("rowsName").textContent = $("rows").value;
+}
+
 async function load() {
+  syncControls();
   const [start, end] = range();
-  $("dates").hidden = $("range").value !== "custom";
-  const field = $("key").value ? KEY[$("key").value] : FIELD[level];
-  PDUrl.set({ store: $("store").value, range: $("range").value === "today" ? null : $("range").value,
-              level: level === "campaign" ? null : level, key: $("key").value || null });
+  const key = state.key || LEVEL_KEY[level];
+  PDUrl.set({ store: state.store, range: state.range === "today" ? null : state.range, level: level === "campaign" ? null : level,
+              key: state.key || null, cur: state.cur || null });
   $("reload").disabled = true;
-  try { data = await api(`/api/tracking/report?store=${$("store").value}&start=${start}&end=${end}&field=${field}`); }
-  catch (e) { toast(e.message, true); $("reload").disabled = false; return; }
+  try {
+    data = await api(`/api/tracking/report?store=${state.store}&start=${start}&end=${end}&field=${KEY[key]}&currency=${encodeURIComponent(state.cur)}`);
+  } catch (e) { toast(e.message, true); $("reload").disabled = false; return; }
   $("reload").disabled = false;
-  $("cur").textContent = data.currency;
-  $("spendNote").textContent = data.spend_note || (data.has_spend ? "Spend from Meta, matched to each row by the campaign / ad set / ad name in its UTM tags." : "");
-  const h = data.health;
+  const curs = data.currencies || [data.currency];
+  $("cur").innerHTML = curs.map((c) => `<option${c === data.currency ? " selected" : ""}>${esc(c)}</option>`).join("");
+  $("curName").textContent = data.currency;
+  $("spendNote").textContent = data.spend_note || "";
+  const h = data.health || {};
   $("health").innerHTML = h.last ? `<span class="trk-dot ${h.hour ? "on" : ""}"></span>${h.hour ? `${h.hour} events in the last hour` : "No events in the last hour"}`
     : `<span class="trk-dot"></span>No events from this store yet`;
+  picked = new Set();
   page = 0;
   draw();
 }
 
+function columns() {
+  const out = [];
+  for (const [id, on] of colState) {
+    const m = METRICS.find((x) => x.id === id);
+    if (!m || !on || (SPEND_IDS.includes(id) && !data.has_spend)) continue;
+    out.push(...m.cols);
+  }
+  return out;
+}
+
+const SORT_IC = `<svg viewBox="0 0 16 16" aria-hidden="true"><path class="up" d="M5 6.5 8 3.5l3 3"/><path class="dn" d="M5 9.5 8 12.5l3-3"/></svg>`;
+const W_FIRST = 300, W_COL = 196;
+
 function draw() {
-  const lvl = { campaign: "campaigns", adset: "ad sets", ad: "ads" }[level];
-  $("q").placeholder = `Search ${lvl}..`;
+  const cols = columns();
   const q = $("q").value.trim().toLowerCase();
-  const rows = data.rows.filter((r) => !q || r.name.toLowerCase().includes(q))
-    .sort((a, b) => ((a[sort.k] || 0) - (b[sort.k] || 0)) * sort.dir || a.name.localeCompare(b.name));
+  let rows = data.rows.filter((r) => !q || String(r.name).toLowerCase().includes(q));
+  if (sort.k) {
+    rows = rows.slice().sort((a, b) => (sort.k === "name" ? String(a.name).localeCompare(String(b.name)) * -sort.dir
+      : ((a[sort.k] ?? -Infinity) - (b[sort.k] ?? -Infinity)) * sort.dir));
+  }
   const per = Number($("rows").value), pages = Math.max(1, Math.ceil(rows.length / per));
   page = Math.min(page, pages - 1);
   const shown = rows.slice(page * per, page * per + per);
-  const cols = [...(data.has_spend ? [["spend", "Meta spend"]] : []),
-                ["atc", "Total adds to cart"], ["atc_value", "Total adds to cart conversion value"], ["ic", "Total checkouts initiated"],
-                ["ic_value", "Total checkouts initiated conversion value"], ["purchase", "Total purchases"], ["purchase_value", "Total purchases conversion value"],
-                ...(data.has_spend ? [["cpa", "Cost per purchase"], ["roas", "ROAS"]] : [])];
-  const cell = (k, v) => (k === "roas" ? (v ? v.toFixed(2) : "—") : (k.endsWith("_value") || k === "spend" || k === "cpa") ? money(v) : count(v));
-  const head = (k, label) => `<th class="trk-sort${sort.k === k ? " on" : ""}" data-k="${k}">${label}<span>${sort.k === k ? (sort.dir < 0 ? "↓" : "↑") : "↕"}</span></th>`;
-  const name = { campaign: "Campaign", adset: "Adset", ad: "Ad" }[level];
-  const t = data.total;
-  $("table").innerHTML = `<thead><tr><th class="trk-first">${name}</th>${cols.map(([k, l]) => head(k, l)).join("")}</tr></thead>
-    <tbody>${shown.map((r) => `<tr class="trk-row" data-name="${esc(r.name)}"><th class="trk-first" title="${esc(r.name)} · click to see each event">${esc(r.name)}</th>${cols.map(([k]) =>
-      `<td class="${k === "roas" && r.roas ? "trk-roas" : ""}">${cell(k, r[k])}</td>`).join("")}</tr>`).join("")
-      || `<tr><td class="trk-empty" colspan="${cols.length + 1}">${data.health.last ? `No ${lvl} with events in this period.` : "No events from this store yet. Switch the pixel on in Setup."}</td></tr>`}</tbody>
-    <tfoot><tr><th class="trk-first">Results from ${rows.length} ${lvl}</th>${cols.map(([k]) => `<td>${cell(k, t[k])}</td>`).join("")}</tr></tfoot>`;
-  $("pager").innerHTML = `${pages > 1 ? `<button class="btn btn-sm btn-ghost" id="prev"${page ? "" : " disabled"}>‹</button>` : ""}
-    Showing <b>${rows.length ? page * per + 1 : 0}-${Math.min(rows.length, page * per + per)}</b> of ${rows.length}
-    ${pages > 1 ? `<button class="btn btn-sm btn-ghost" id="next"${page < pages - 1 ? "" : " disabled"}>›</button>` : ""}`;
-  if ($("prev")) $("prev").onclick = () => { page--; draw(); };
-  if ($("next")) $("next").onclick = () => { page++; draw(); };
-  for (const tr of $("table").querySelectorAll(".trk-row")) tr.onclick = () => openEvents(tr.dataset.name);
-  for (const th of $("table").querySelectorAll(".trk-sort")) th.onclick = () => {
-    sort = sort.k === th.dataset.k ? { k: sort.k, dir: -sort.dir } : { k: th.dataset.k, dir: -1 };
+  const width = W_FIRST + cols.length * W_COL;
+  const colgroup = `<colgroup><col style="width:${W_FIRST}px">${cols.map(() => `<col style="width:${W_COL}px">`).join("")}</colgroup>`;
+  const label = { campaign: "Campaign", adset: "Adset", ad: "Ad" }[level];
+  const allOn = shown.length > 0 && shown.every((r) => picked.has(r.name));
+  const sortBtn = (k) => `<button class="trk-sortb" data-sort="${k}" data-dir="${sort.k === k ? (sort.dir < 0 ? "desc" : "asc") : ""}" title="Sort">${SORT_IC}</button>`;
+  for (const t of ["tHead", "tBody", "tFoot"]) $(t).style.width = width + "px";
+
+  $("tHead").innerHTML = `${colgroup}<thead><tr><th class="trk-pin"><span class="trk-cell"><label class="trk-cb"><input type="checkbox" id="cbAll"${allOn ? " checked" : ""}><i></i></label>${label}</span>${sortBtn("name")}</th>
+    ${cols.map(([k, l]) => `<th><span class="trk-cell" title="${esc(l)}">${esc(l)}</span>${sortBtn(k)}</th>`).join("")}</tr></thead>`;
+
+  $("tBody").innerHTML = `${colgroup}<tbody>${shown.map((r) => `<tr data-name="${esc(r.name)}"${picked.has(r.name) ? ' class="on"' : ""}>
+      <th class="trk-pin"><span class="trk-cell"><label class="trk-cb"><input type="checkbox" data-pick${picked.has(r.name) ? " checked" : ""}><i></i></label>
+      <span class="trk-name" title="${esc(r.name)} · click to see each event">${esc(r.name)}</span></span></th>
+      ${cols.map(([k, , kind]) => `<td><span class="trk-cell">${fmt(kind, r[k])}</span></td>`).join("")}</tr>`).join("")
+    || `<tr><td class="trk-empty" colspan="${cols.length + 1}">${data.health?.last ? "No results in this period." : "No events from this store yet. Switch the pixel on in Setup."}</td></tr>`}</tbody>`;
+
+  // totals row: the ticked rows when any are ticked, otherwise every row (server totals)
+  const sel = rows.filter((r) => picked.has(r.name));
+  const tot = sel.length ? sumRows(sel) : data.total;
+  $("tFoot").innerHTML = `${colgroup}<tbody><tr><th class="trk-pin"><span class="trk-cell">${sel.length ? `Results from ${sel.length} selected` : `Results from ${rows.length} ${PLURAL[level]}`}</span></th>
+    ${cols.map(([k, , kind]) => `<td><span class="trk-cell">${fmt(kind, tot[k])}</span></td>`).join("")}</tr></tbody>`;
+
+  $("barXIn").style.width = width + "px";
+  $("pager").innerHTML = `<button class="trk-btn trk-sm" id="prev"${page ? "" : " disabled"} title="Previous page">‹</button>
+    <span>Showing <b>${rows.length ? page * per + 1 : 0}-${Math.min(rows.length, page * per + per)}</b> of ${rows.length}</span>
+    <button class="trk-btn trk-sm" id="next"${page < pages - 1 ? "" : " disabled"} title="Next page">›</button>`;
+  $("prev").onclick = () => { page--; draw(); };
+  $("next").onclick = () => { page++; draw(); };
+  for (const b of document.querySelectorAll("#tHead [data-sort]")) b.onclick = () => {
+    const k = b.dataset.sort;
+    sort = sort.k !== k ? { k, dir: -1 } : sort.dir < 0 ? { k, dir: 1 } : { k: null, dir: -1 };
     draw();
   };
+  $("cbAll").onchange = () => { for (const r of shown) $("cbAll").checked ? picked.add(r.name) : picked.delete(r.name); draw(); };
+  for (const cb of document.querySelectorAll("#tBody [data-pick]")) {
+    cb.onchange = () => { const n = cb.closest("tr").dataset.name; cb.checked ? picked.add(n) : picked.delete(n); draw(); };
+  }
+  for (const s of document.querySelectorAll("#tBody .trk-name")) s.onclick = () => openEvents(s.closest("tr").dataset.name);
+  scrollSync();
 }
 
+// totals of the ticked rows: plain sums of the server's per-row figures, ratios from those sums
+function sumRows(rows) {
+  const t = {};
+  for (const k of ["atc", "atc_value", "ic", "ic_value", "purchase", "purchase_value", "spend", "impressions", "link_clicks"]) t[k] = rows.reduce((a, r) => a + (r[k] || 0), 0);
+  t.cpa = t.spend && t.purchase ? t.spend / t.purchase : null;
+  t.roas = t.spend ? t.purchase_value / t.spend : null;
+  t.cpc = t.spend && t.link_clicks ? t.spend / t.link_clicks : null;
+  return t;
+}
+
+// one sideways position for header, body, totals and the bottom scrollbar (like wetracked.io)
+let syncing = false;
+function scrollSync() {
+  const parts = [$("sxHead"), $("sxBody"), $("sxFoot"), $("barX")];
+  for (const p of parts) p.onscroll = () => {
+    if (syncing) return;
+    syncing = true;
+    for (const o of parts) if (o !== p && o.scrollLeft !== p.scrollLeft) o.scrollLeft = p.scrollLeft;
+    syncing = false;
+    edge();
+  };
+  edge();
+}
+function edge() {
+  const sx = $("sxBody"), x = sx.scrollLeft;
+  $("grid").classList.toggle("scrolled", x > 2);
+  $("grid").classList.toggle("more", sx.scrollWidth - sx.clientWidth - x > 2);
+  $("barX").hidden = sx.scrollWidth <= sx.clientWidth + 1;
+}
+window.addEventListener("resize", () => { if (data) edge(); });
+
+/* ------------------------------------------------ column builder */
+let draft = null;
+function openCols() {
+  draft = colState.map((x) => [...x]);
+  drawCols();
+  $("colsModal").hidden = false;
+}
+function drawCols() {
+  const total = METRICS.reduce((a, m) => a + m.cols.length, 0);
+  const on = draft.filter(([, v]) => v).reduce((a, [id]) => a + (METRICS.find((m) => m.id === id)?.cols.length || 0), 0);
+  $("colsCount").textContent = `${on} of ${total} columns`;
+  $("colsList").innerHTML = draft.map(([id, v], i) => {
+    const m = METRICS.find((x) => x.id === id);
+    const off = SPEND_IDS.includes(id) && data && !data.has_spend;
+    return `<div class="trk-colrow${v ? " on" : ""}">
+      <span class="trk-mv"><button data-up="${i}"${i ? "" : " disabled"} title="Move up">▲</button><button data-dn="${i}"${i < draft.length - 1 ? "" : " disabled"} title="Move down">▼</button></span>
+      <span class="trk-coln"><b>${esc(m.label)}</b><small>${esc(m.sub)}${off ? " · needs Meta spend for this store" : ""}</small></span>
+      <label class="trk-tog"><input type="checkbox" data-on="${i}"${v ? " checked" : ""}><i></i></label></div>`;
+  }).join("");
+  for (const b of $("colsList").querySelectorAll("[data-up]")) b.onclick = () => { const i = +b.dataset.up; [draft[i - 1], draft[i]] = [draft[i], draft[i - 1]]; drawCols(); };
+  for (const b of $("colsList").querySelectorAll("[data-dn]")) b.onclick = () => { const i = +b.dataset.dn; [draft[i + 1], draft[i]] = [draft[i], draft[i + 1]]; drawCols(); };
+  for (const c of $("colsList").querySelectorAll("[data-on]")) c.onchange = () => { draft[+c.dataset.on][1] = c.checked ? 1 : 0; drawCols(); };
+}
+$("colsBtn").onclick = openCols;
+$("colsX").onclick = $("colsCancel").onclick = () => { $("colsModal").hidden = true; };
+$("colsReset").onclick = () => { draft = DEFAULT_COLS.map((x) => [...x]); drawCols(); };
+$("colsApply").onclick = () => {
+  colState = draft;
+  try { localStorage.setItem("pdTrkCols", JSON.stringify(colState)); } catch { /* private */ }
+  $("colsModal").hidden = true;
+  if (data) draw();
+};
+
+/* ------------------------------------------------ single events + journey */
 function when(iso) {
-  const st = stores.find((s) => String(s.id) === $("store").value);
-  try { return new Date(iso).toLocaleString(undefined, { timeZone: st?.timezone || undefined, day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }); }
+  try { return new Date(iso).toLocaleString(undefined, { timeZone: store()?.timezone || undefined, day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }); }
   catch { return iso; }
 }
 const KIND = { "Add to cart": "catalog", "Checkout started": "changed", "Purchase": "invoice" };
-
 async function openEvents(name) {
   const [start, end] = range();
-  const field = $("key").value ? KEY[$("key").value] : FIELD[level];
+  const key = state.key || LEVEL_KEY[level];
   $("evModal").hidden = false;
   $("evTitle").textContent = name;
   $("evSub").textContent = "Loading…";
   $("evTable").innerHTML = "";
   let d;
-  try { d = await api(`/api/tracking/events?store=${$("store").value}&start=${start}&end=${end}&field=${field}&value=${encodeURIComponent(name)}`); }
+  try { d = await api(`/api/tracking/events?store=${state.store}&start=${start}&end=${end}&field=${KEY[key]}&value=${encodeURIComponent(name)}`); }
   catch (e) { $("evSub").textContent = e.message; return; }
   const n = (k) => d.events.filter((e) => e.label === k).length;
   $("evSub").textContent = `${n("Add to cart")} adds to cart · ${n("Checkout started")} checkouts · ${n("Purchase")} purchases. Each one is credited to the ad click shown (last click within 7 days).`;
+  const mny = (v) => (v ? money(v, data?.store_currency) : "—");
   $("evTable").innerHTML = `<thead><tr><th>When</th><th>Event</th><th>Value</th><th>Campaign</th><th>Ad set</th><th>Ad</th><th>Click</th><th>Page</th><th></th></tr></thead>
     <tbody>${d.events.map((e) => `<tr><td>${esc(when(e.at))}</td><td><span class="src ${KIND[e.label] || "new"}">${esc(e.label)}</span>${e.order_id ? `<span class="sub">order ${esc(e.order_id)}</span>` : ""}</td>
-      <td>${money(e.value)}</td><td title="${esc(e.a_campaign || "")}">${esc(e.a_campaign || "—")}</td><td title="${esc(e.a_term || "")}">${esc(e.a_term || "—")}</td>
+      <td>${mny(e.value)}</td><td title="${esc(e.a_campaign || "")}">${esc(e.a_campaign || "—")}</td><td title="${esc(e.a_term || "")}">${esc(e.a_term || "—")}</td>
       <td title="${esc(e.a_content || "")}">${esc(e.a_content || "—")}</td><td>${esc({ fbclid: "Meta", gclid: "Google", ttclid: "TikTok", msclkid: "Bing" }[e.a_click] || e.a_source || "—")}</td>
       <td class="trk-path" title="${esc(e.path)}">${esc(e.path)}</td><td><button class="btn btn-sm btn-ghost" data-cid="${esc(e.client_id)}">Journey</button></td></tr>`).join("")
       || `<tr><td class="trk-empty" colspan="9">No single events in this period.</td></tr>`}</tbody>`;
   for (const b of $("evTable").querySelectorAll("[data-cid]")) b.onclick = () => openJourney(b.dataset.cid, name);
 }
-
 async function openJourney(cid, back) {
   $("evSub").textContent = "Loading this shopper's visits…";
   let d;
-  try { d = await api(`/api/tracking/journey?store=${$("store").value}&client=${encodeURIComponent(cid)}`); }
+  try { d = await api(`/api/tracking/journey?store=${state.store}&client=${encodeURIComponent(cid)}`); }
   catch (e) { $("evSub").textContent = e.message; return; }
   $("evTitle").textContent = "One shopper's journey";
   $("evSub").innerHTML = `${d.events.length} events, oldest first. <a href="#" id="evBack">← Back to ${esc(back)}</a>`;
   $("evTable").innerHTML = `<thead><tr><th>When</th><th>Event</th><th>Value</th><th>Credited to</th><th>Page</th></tr></thead><tbody>
-    ${d.events.map((e) => `<tr><td>${esc(when(e.at))}</td><td><span class="src ${KIND[e.label] || "new"}">${esc(e.label)}</span></td><td>${money(e.value)}</td>
+    ${d.events.map((e) => `<tr><td>${esc(when(e.at))}</td><td><span class="src ${KIND[e.label] || "new"}">${esc(e.label)}</span></td><td>${e.value ? esc(String(e.value)) : "—"}</td>
       <td>${esc([e.a_campaign, e.a_term, e.a_content].filter(Boolean).join(" › ") || "—")}</td><td class="trk-path" title="${esc(e.path)}">${esc(e.path)}</td></tr>`).join("")}</tbody>`;
   $("evBack").onclick = (ev) => { ev.preventDefault(); openEvents(back); };
 }
 
+/* ------------------------------------------------ setup (pixel, Meta) */
 function drawSetup() {
   $("setup").innerHTML = `<div class="panel-head"><h2>Tracking setup</h2><button class="btn btn-sm btn-ghost" id="setupClose">Close</button></div>
     <p class="hint trk-pad">The ProfitDesk pixel is a Shopify web pixel inside each store's ProfitDesk app (like the wetracked.io Connect app).
@@ -170,16 +325,17 @@ function drawSetup() {
         <option value="send" disabled>Send to Meta (next)</option></select></td></tr>`; }).join("")}</tbody></table></div>`;
   $("setupClose").onclick = () => { $("setup").hidden = true; };
   for (const b of $("setup").querySelectorAll("[data-install]")) b.onclick = async () => {
-    const id = b.closest("tr").dataset.s;
     b.disabled = true;
-    try { await api(`/api/tracking/install/${id}`, { method: "POST" }); toast("Pixel switched on. Events start with the next visitors."); await refreshStores(); }
+    try { await api(`/api/tracking/install/${b.closest("tr").dataset.s}`, { method: "POST" }); toast("Pixel switched on. Events start with the next visitors."); await refreshStores(); }
     catch (e) { toast(e.message, true); b.disabled = false; }
   };
   for (const el of $("setup").querySelectorAll("[data-f]")) el.onchange = async () => {
-    const id = el.closest("tr").dataset.s;
-    try { await api(`/api/tracking/settings/${id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ [el.dataset.f]: el.value }) });
-          toast("Saved."); if (el.dataset.f === "meta_token") el.value = ""; await refreshStores(); }
-    catch (e) { toast(e.message, true); }
+    try {
+      await api(`/api/tracking/settings/${el.closest("tr").dataset.s}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ [el.dataset.f]: el.value }) });
+      toast("Saved.");
+      if (el.dataset.f === "meta_token") el.value = "";
+      await refreshStores();
+    } catch (e) { toast(e.message, true); }
   };
 }
 async function refreshStores() {
@@ -187,22 +343,23 @@ async function refreshStores() {
   if (!$("setup").hidden) drawSetup();
 }
 
-for (const b of document.querySelectorAll("#level [data-l]")) b.onclick = () => {
-  level = b.dataset.l;
-  for (const x of document.querySelectorAll("#level [data-l]")) x.classList.toggle("on", x === b);
-  $("key").value = "";
+/* ------------------------------------------------ wiring */
+$("storeBtn").onclick = () => menu($("storeMenu"), stores.map((s) => [s.id, `${s.name} · ${s.domain}${s.installed ? "" : " (pixel off)"}`]), state.store, (v) => { state.store = v; state.cur = ""; load(); });
+$("rangeBtn").onclick = () => menu($("rangeMenu"), RANGES, state.range, (v) => {
+  state.range = v;
+  if (v === "custom") { const [a, b] = range(); $("from").value ||= a; $("to").value ||= b; }
   load();
-};
-$("store").onchange = load;
-$("range").onchange = () => { if ($("range").value === "custom") { $("dates").hidden = false; return; } load(); };
+});
 $("from").onchange = $("to").onchange = load;
-$("key").onchange = load;
+for (const r of document.querySelectorAll("#level input")) r.onchange = () => { level = r.value; state.key = ""; sort = { k: null, dir: -1 }; load(); };
+$("key").onchange = () => { state.key = $("key").value === LEVEL_KEY[level] ? "" : $("key").value; load(); };
+$("cur").onchange = () => { state.cur = $("cur").value; load(); };
 $("reload").onclick = load;
-$("q").oninput = () => { page = 0; draw(); };
-$("rows").onchange = () => { page = 0; draw(); };
+$("q").oninput = () => { page = 0; if (data) draw(); };
+$("rows").onchange = () => { page = 0; $("rowsName").textContent = $("rows").value; if (data) draw(); };
 $("noteX").onclick = () => { $("note").hidden = true; try { localStorage.setItem("pdTrkNote", "off"); } catch { /* private */ } };
-$("evClose").onclick = () => { $("evModal").hidden = true; };
-$("evModal").onclick = (e) => { if (e.target === $("evModal")) $("evModal").hidden = true; };
-document.addEventListener("keydown", (e) => { if (e.key === "Escape") $("evModal").hidden = true; });
 $("setupBtn").onclick = () => { $("setup").hidden = !$("setup").hidden; if (!$("setup").hidden) drawSetup(); };
+$("evClose").onclick = () => { $("evModal").hidden = true; };
+for (const m of ["evModal", "colsModal"]) $(m).onclick = (e) => { if (e.target === $(m)) $(m).hidden = true; };
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") { $("evModal").hidden = true; $("colsModal").hidden = true; } });
 boot();

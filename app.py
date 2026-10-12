@@ -5822,7 +5822,8 @@ async def api_tracking_journey(store: int, client: str):
 
 
 @app.get("/api/tracking/report")
-async def api_tracking_report(store: int, start: str, end: str, field: str = "a_campaign", since: str = ""):
+async def api_tracking_report(store: int, start: str, end: str, field: str = "a_campaign", since: str = "",
+                              currency: str = ""):
     """Rows like wetracked.io's report: adds to cart, checkouts and purchases (count + value) per
     campaign / ad set / ad or any UTM. Days are the store's own."""
     st = next((x for x in db.list_stores() if x["id"] == store), None)
@@ -5854,7 +5855,16 @@ async def api_tracking_report(store: int, start: str, end: str, field: str = "a_
             note = f"Couldn't read Meta spend: {str(e)[:150]}"
     elif lvl:
         note = "This store has no Meta ad account linked, so spend isn't shown."
-    return {**out, "currency": st["currency"], "health": tracking.health(store), "spend_note": note}
+    cur = (currency or st["currency"]).upper()
+    if cur != st["currency"]:
+        table = await fx.table(cur)
+        if table:
+            out = tracking.in_currency(out, fx.factor(table, st["currency"], cur))
+        else:
+            cur = st["currency"]
+    return {**out, "currency": cur, "store_currency": st["currency"], "health": tracking.health(store),
+            "spend_note": note, "currencies": sorted(set(fx.CURRENCIES) if hasattr(fx, "CURRENCIES") else
+                                                     {"AUD", "USD", "EUR", "GBP", "CAD", "NZD", "HKD", "SGD", "LKR", st["currency"]})}
 
 
 # ---------------------------------------------------------------- Apps → Google Ads desk

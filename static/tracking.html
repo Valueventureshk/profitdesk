@@ -10,7 +10,7 @@
 <link rel="stylesheet" href="/static/skin.css">
 </head>
 <body>
-<div class="cash-page">
+<div class="cash-page trk-page">
   <header class="cash-top">
     <div class="brand" data-section-menu title="Switch section">
       <span class="brand-mark">PD</span>
@@ -27,35 +27,47 @@
 
   <main class="content trk">
     <div class="trk-note" id="note">
-      <b>Complementary reporting</b>
-      <span>This report credits each add to cart, checkout and purchase to the ad click (UTM tags) it came from, over the
-        last 7 days. Always compare with Ads Manager.</span>
+      <span class="trk-ic">!</span>
+      <div><h5>Complementary reporting</h5>
+        <p>Our reporting panel credits each add to cart, checkout and purchase to the ad click (UTM parameters) it came from. Please always check your ads manager for more accurate reporting.</p></div>
       <button class="trk-x" id="noteX" title="Hide">×</button></div>
     <section class="panel trk-setup" id="setup" hidden></section>
-    <div class="trk-bar"><select id="store" class="control trk-store"></select></div>
-    <div class="trk-bar">
-      <select id="range" class="control"><option value="today">Today</option><option value="yesterday">Yesterday</option>
-        <option value="7">Last 7 days</option><option value="14">Last 14 days</option><option value="30">Last 30 days</option>
-        <option value="custom">Custom…</option></select>
-      <span id="dates" hidden><input type="date" id="from" class="control"> – <input type="date" id="to" class="control"></span>
+    <div class="trk-store"><button class="trk-btn trk-store-btn" id="storeBtn"><span class="trk-shop">S</span><span id="storeName">Store</span><span class="trk-chev">⌄</span></button>
+      <div class="trk-menu" id="storeMenu" hidden></div></div>
+    <div class="trk-row2">
+      <div class="trk-dd"><button class="trk-btn" id="rangeBtn"><span class="trk-cal">▦</span><span id="rangeName">Today</span><span class="trk-chev">⌄</span></button>
+        <div class="trk-menu" id="rangeMenu" hidden></div>
+        <span id="dates" hidden><input type="date" id="from" class="trk-input"> – <input type="date" id="to" class="trk-input"></span></div>
       <span class="trk-health" id="health"></span>
-      <button id="reload" class="btn btn-ghost btn-sm">Reload ↻</button>
+      <button class="trk-btn" id="reload">Reload <span class="trk-rel">↻</span></button>
     </div>
-    <div class="trk-bar">
-      <span class="trk-seg" id="level"><button data-l="campaign" class="on">📣 Campaign</button><button data-l="adset">▦ Adset</button><button data-l="ad">🏷 Ad</button></span>
-      <select id="key" class="control"><option value="">Default UTM for this level</option><option value="utm_id">UTM ID</option><option value="utm_source">UTM Source</option>
-        <option value="utm_medium">UTM Medium</option><option value="utm_campaign">UTM Campaign</option><option value="utm_content">UTM Content</option><option value="utm_term">UTM Term</option></select>
-      <span class="trk-right"><span class="trk-cur" id="cur"></span></span>
+    <div class="trk-row2">
+      <div class="trk-left">
+        <span class="trk-seg" id="level"><label><input type="radio" name="lvl" value="campaign"><span>📣 Campaign</span></label><label><input type="radio" name="lvl" value="adset"><span>▦ Adset</span></label><label><input type="radio" name="lvl" value="ad"><span>🏷 Ad</span></label></span>
+        <label class="trk-sel"><select id="key"><option value="utm_id">UTM ID</option><option value="utm_source">UTM Source</option><option value="utm_medium">UTM Medium</option>
+          <option value="utm_campaign" selected>UTM Campaign</option><option value="utm_content">UTM Content</option><option value="utm_term">UTM Term</option></select><span id="keyName">UTM Campaign</span><span class="trk-chev">⌄</span></label>
+      </div>
+      <div class="trk-right">
+        <label class="trk-sel"><select id="cur" aria-label="Display currency"></select><span class="trk-cur-ic">$</span><span id="curName">AUD</span><span class="trk-chev">⌄</span></label>
+        <button class="trk-btn" id="colsBtn"><span class="trk-colic">▥</span>Columns</button>
+      </div>
     </div>
-    <div class="trk-bar"><input id="q" class="control trk-search" type="search" placeholder="Search campaigns.."><span class="hint" id="spendNote"></span></div>
-    <section class="trk-table-box">
-      <div class="trk-scroll"><table class="trk-table" id="table"></table></div>
-      <div class="trk-foot"><label>Rows: <select id="rows" class="control"><option>5</option><option>10</option><option selected>25</option><option>50</option><option>100</option><option>250</option></select></label>
+    <div class="trk-search"><span>⌕</span><input id="q" type="search" placeholder="Search campaigns.."></div>
+    <p class="hint trk-spendnote" id="spendNote"></p>
+    <section class="trk-grid" id="grid">
+      <div class="trk-head"><div class="trk-sx" id="sxHead"><table class="trk-t" id="tHead"></table></div></div>
+      <div class="trk-sx" id="sxBody"><table class="trk-t" id="tBody"></table></div>
+      <div class="trk-sx trk-footrow" id="sxFoot"><table class="trk-t" id="tFoot"></table></div>
+      <div class="trk-bar-x" id="barX"><div id="barXIn"></div></div>
+      <div class="trk-pager"><label>Rows: <span class="trk-sel trk-sel-sm"><select id="rows"><option>5</option><option>10</option><option selected>25</option><option>50</option><option>100</option><option>250</option></select><span id="rowsName">25</span><span class="trk-chev">⌄</span></span></label>
         <span id="pager"></span></div>
     </section>
+    <div class="rec-modal" id="colsModal" hidden><div class="rec-box trk-cols"><div class="rec-head"><b>Customize columns</b><span class="trk-cnt" id="colsCount"></span><button class="trk-x" id="colsX">×</button></div>
+      <h4>Metrics</h4><p class="hint">Each metric with a count shows its count and conversion value</p><div id="colsList"></div>
+      <div class="trk-cols-foot"><button class="trk-link" id="colsReset">Reset to default</button><span><button class="trk-btn" id="colsCancel">Cancel</button> <button class="trk-btn trk-primary" id="colsApply">Apply</button></span></div></div></div>
     <div class="rec-modal" id="evModal" hidden><div class="rec-box trk-evbox"><div class="rec-head"><b id="evTitle"></b>
       <button class="btn btn-sm btn-ghost" id="evClose">Close</button></div>
-      <p class="hint" id="evSub"></p><div class="trk-scroll"><table class="trk-table trk-ev" id="evTable"></table></div></div></div>
+      <p class="hint" id="evSub"></p><div class="trk-sx-plain"><table class="trk-table trk-ev" id="evTable"></table></div></div></div>
   </main>
 </div>
 <div id="toast" class="toast" hidden></div>

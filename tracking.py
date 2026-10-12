@@ -220,11 +220,27 @@ def with_spend(rep: dict, spends: list, factor: float) -> dict:
         r.update(spend=t["spend"], impressions=t["impressions"], link_clicks=t["clicks"])
     for r in rep["rows"]:
         sp = r.get("spend") or 0.0
+        r["cpc"] = sp / r["link_clicks"] if sp and r.get("link_clicks") else None
         r["cpa"] = sp / r["purchase"] if sp and r.get("purchase") else None
         r["roas"] = (r.get("purchase_value") or 0) / sp if sp else None
     tot = rep["total"]
     tot["spend"] = sum(r.get("spend") or 0 for r in rep["rows"])
+    tot["impressions"] = sum(r.get("impressions") or 0 for r in rep["rows"])
+    tot["link_clicks"] = sum(r.get("link_clicks") or 0 for r in rep["rows"])
+    tot["cpc"] = tot["spend"] / tot["link_clicks"] if tot["spend"] and tot["link_clicks"] else None
     tot["cpa"] = tot["spend"] / tot["purchase"] if tot["spend"] and tot["purchase"] else None
     tot["roas"] = tot["purchase_value"] / tot["spend"] if tot["spend"] else None
     rep["has_spend"] = True
+    return rep
+
+
+MONEY = ("atc_value", "ic_value", "purchase_value", "spend", "cpa", "cpc")
+
+
+def in_currency(rep: dict, factor: float) -> dict:
+    """Every money figure x factor (display currency); counts and ROAS stay as they are."""
+    for r in rep["rows"] + [rep["total"]]:
+        for k in MONEY:
+            if r.get(k) is not None:
+                r[k] = r[k] * factor
     return rep
