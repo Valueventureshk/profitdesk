@@ -6312,9 +6312,43 @@ def api_unlink_meta(store_id: int):
 
 # ---------------------------------------------------------------- dashboard
 
+_dash: dict = {}          # (scope, start, end, compare, currency) -> (time, response)
+_dash_busy: dict = {}     # same key -> the refresh running now (one at a time per view)
+DASH_FRESH = 45           # seconds: answer straight from the last figures, no refresh
+DASH_KEEP = 20 * 60       # up to this old: answer at once with them and refresh in the background
+
+
 @app.get("/api/dashboard")
 async def api_dashboard(scope: str = "all", start: str = None, end: str = None,
                         fresh: int = 0, compare: str = "period", currency: str = None):
+    """The dashboard answers at once with the last figures for this view and refreshes them in the
+    background ("refreshing": the page asks again a few seconds later). Refresh (fresh=1) waits."""
+    key = (scope, start, end, compare, (currency or "").upper())
+
+    async def run():
+        try:
+            out = await _dashboard_compute(scope, start, end, fresh, compare, currency)
+            _dash[key] = (time.time(), out)
+            return out
+        finally:
+            _dash_busy.pop(key, None)
+
+    hit = _dash.get(key)
+    age = time.time() - hit[0] if hit else None
+    if hit and not fresh and age < DASH_FRESH:
+        return {**hit[1], "cached_age": round(age)}
+    if hit and not fresh and age < DASH_KEEP:
+        if key not in _dash_busy:
+            _dash_busy[key] = asyncio.create_task(run())
+        return {**hit[1], "cached_age": round(age), "refreshing": True}
+    task = _dash_busy.get(key)
+    if task is None:
+        task = _dash_busy[key] = asyncio.create_task(run())
+    return await asyncio.shield(task)
+
+
+async def _dashboard_compute(scope: str = "all", start: str = None, end: str = None,
+                             fresh: int = 0, compare: str = "period", currency: str = None):
     """compare="same_time": when the range is just today, measure it against
     yesterday up to the same time of day, rather than all of yesterday."""
     stores = db.list_stores()

@@ -347,7 +347,9 @@ function navItem(scope, label, icon) {
 
 /* ------------------------------------------------ dashboard */
 
-async function load(fresh = false) {
+let quietTimer = null;
+async function load(fresh = false, quiet = false) {
+  clearTimeout(quietTimer);
   const custom = $("rangeSelect").value === "custom";
   PDUrl.set({ store: state.scope === "all" ? null : state.scope,
               range: $("rangeSelect").value === "today" ? null : $("rangeSelect").value,
@@ -358,14 +360,20 @@ async function load(fresh = false) {
   if (fresh) params.set("fresh", "1");
   if ($("rangeSelect").value === "today") params.set("compare", "same_time");
 
-  $("viewSub").textContent = "Loading…";
+  if (!quiet) $("viewSub").textContent = "Loading…";
+  let got;
   try {
-    state.data = await api("/api/dashboard?" + params);
+    got = await api("/api/dashboard?" + params);
   } catch (e) {
+    if (quiet) return;
     $("viewSub").textContent = "Could not load";
     toast(e.message, true);
     return;
   }
+  // The server answered with its last figures and is refreshing them: ask again shortly, quietly.
+  if (got.refreshing) quietTimer = setTimeout(() => load(false, true), 4000);
+  if (quiet && state.data && got.updated_at === state.data.updated_at) return;
+  state.data = got;
 
   const d = state.data;
   $("viewTitle").textContent = d.title;
