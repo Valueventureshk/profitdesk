@@ -5902,6 +5902,7 @@ GD_PRODUCTS = """query($ids: [ID!]!) { nodes(ids: $ids) { ... on Product { legac
   variants(first: 100) { nodes { legacyResourceId title price image { url(transform: {maxWidth: 120}) } } } } } }"""
 
 
+_gads_acct: dict = {}      # Google Ads customer id -> (currency, time zone)
 _pinfo: dict = {}          # store id -> {product id: (read at, info)}: titles, images, variants, status
 PINFO_KEEP = 6 * 3600
 
@@ -5980,9 +5981,12 @@ async def _gdesk(st, windows: dict, fresh: int = 0, country: str = "", min_spend
         finally:
             tm[name] = round(time.time() - t, 2)
     try:
-        (dash_rows, _notes), (_acct, gcur, atz) = await asyncio.gather(
-            timed("dashboard", _store_window(st, lo.isoformat(), hi.isoformat(), auth, meta_conn)),
-            timed("account", gads.account_daily(*args, today.isoformat(), today.isoformat())))
+        # the ad account's clock and currency (kept), then everything at once
+        acc = _gads_acct.get(st["google_customer_id"])
+        if not acc:
+            _a, cur0, tz0 = await timed("account", gads.account_daily(*args, today.isoformat(), today.isoformat()))
+            acc = _gads_acct[st["google_customer_id"]] = (cur0, tz0)
+        gcur, atz = acc
         try:
             atzi = ZoneInfo(atz)
         except (ZoneInfoNotFoundError, ValueError):
@@ -5991,13 +5995,16 @@ async def _gdesk(st, windows: dict, fresh: int = 0, country: str = "", min_spend
         g_day = lambda d, last=False: (datetime.combine(d + timedelta(days=1 if last else 0), clock.min, _zone(st))
                                        - timedelta(seconds=1 if last else 0)).astimezone(atzi).date().isoformat()
         g_windows = {k: (g_day(date.fromisoformat(a)), g_day(date.fromisoformat(b), True)) for k, (a, b) in windows.items()}
-        rows_task = gads.product_report(*args, g_day(lo), g_day(hi, True))
-        try:
-            (rows, gcur2), refunds = await asyncio.gather(timed("products", rows_task),
-                                                          timed("refunds", client.refund_lines(lo.isoformat(), hi.isoformat(), st["timezone"])))
-        except ShopifyError:
-            rows, gcur2 = await gads.product_report(*args, g_day(lo), g_day(hi, True))
-            refunds = []
+
+        async def refunds_or_none():
+            try:
+                return await client.refund_lines(lo.isoformat(), hi.isoformat(), st["timezone"])
+            except ShopifyError:
+                return []
+        (dash_rows, _notes), (rows, gcur2), refunds = await asyncio.gather(
+            timed("dashboard", _store_window(st, lo.isoformat(), hi.isoformat(), auth, meta_conn)),
+            timed("products", gads.product_report(*args, g_day(lo), g_day(hi, True))),
+            timed("refunds", refunds_or_none()))
         gcur = gcur or gcur2 or st.get("google_currency") or st["currency"]
     except gads.GoogleAdsError as e:
         raise HTTPException(400, str(e))
