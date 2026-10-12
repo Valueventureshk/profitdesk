@@ -158,3 +158,35 @@ async def media(media_id: str) -> tuple:
         if f.status_code >= 400:
             raise WAError(f"Couldn't download the file ({f.status_code}).")
     return f.content, info.get("mime_type") or "application/octet-stream"
+
+
+async def setup(app_id: str) -> list:
+    """Finish Meta's side by API once the token + app secret are saved: register the number for Cloud API (with a
+    two-step PIN ProfitDesk keeps), subscribe the app to the WhatsApp account, and point the app's webhook at
+    ProfitDesk. Returns what happened, step by step."""
+    import secrets
+    c = cfg()
+    out = []
+    pin = db.get_setting("wa_pin")
+    if not pin:
+        pin = f"{secrets.randbelow(10 ** 6):06d}"
+        db.set_setting("wa_pin", pin)
+    try:
+        await _post(f"{c['phone_id']}/register", {"messaging_product": "whatsapp", "pin": pin})
+        out.append("Phone number registered for the API")
+    except WAError as e:
+        out.append(f"Phone number: {e}" if "already" not in str(e).lower() else "Phone number already registered")
+    try:
+        await _post(f"{c['waba_id']}/subscribed_apps", {})
+        out.append("App subscribed to the WhatsApp account")
+    except WAError as e:
+        out.append(f"Subscribe app: {e}")
+    if app_id and c["app_secret"] and c["verify"]:
+        import os
+        base = os.getenv("PUBLIC_URL", "").rstrip("/") or "https://profitdesk-production.up.railway.app"
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.post(f"{GRAPH}/{_version()}/{app_id}/subscriptions", data={
+                "object": "whatsapp_business_account", "callback_url": f"{base}/api/whatsapp/webhook",
+                "verify_token": c["verify"], "fields": "messages", "access_token": f"{app_id}|{c['app_secret']}"})
+        out.append("Webhook set on the Meta app" if r.status_code < 300 else f"Webhook: {r.text[:200]}")
+    return out

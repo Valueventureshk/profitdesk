@@ -7811,12 +7811,14 @@ def api_wa_settings():
     users = [{"email": u["email"], "name": u.get("name") or u["email"], "role": u.get("role")} for u in db.list_users()]
     return {"connected": whatsapp.ready(), "has_token": bool(c["token"]), "has_secret": bool(c["app_secret"]),
             "phone_id": c["phone_id"], "waba_id": c["waba_id"], "verify": c["verify"], "people": c["people"],
+            "app_id": db.get_setting("wa_app_id") or "",
             "webhook": f"{BASE_URL}/api/whatsapp/webhook", "users": users}
 
 
 @app.put("/api/whatsapp/settings")
 async def api_wa_settings_save(payload: dict):
-    for k, s in (("token", "wa_token"), ("app_secret", "wa_app_secret"), ("phone_id", "wa_phone_id"), ("waba_id", "wa_waba_id")):
+    for k, s in (("token", "wa_token"), ("app_secret", "wa_app_secret"), ("phone_id", "wa_phone_id"), ("waba_id", "wa_waba_id"),
+                 ("app_id", "wa_app_id")):
         v = (payload.get(k) or "").strip()
         if v:
             db.set_setting(s, v)
@@ -7826,6 +7828,8 @@ async def api_wa_settings_save(payload: dict):
         db.set_setting("wa_people", json.dumps(people))
     out = {"ok": True}
     if whatsapp.ready() and whatsapp.cfg()["waba_id"]:
+        if payload.get("token") or payload.get("app_secret") or payload.get("setup"):
+            out["setup"] = await whatsapp.setup(db.get_setting("wa_app_id") or "")
         try:
             out["template"] = await whatsapp.ensure_template()
         except whatsapp.WAError as e:

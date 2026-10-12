@@ -1112,6 +1112,7 @@ async function renderWA() {
       <label class="field"><span>App secret (Meta app → Settings → Basic)${r.has_secret ? " · saved, paste to replace" : ""}</span><input id="waSecret" type="password" autocomplete="off"></label>
       <label class="field"><span>Phone number ID</span><input id="waPhone" value="${esc(r.phone_id || "")}"></label>
       <label class="field"><span>WhatsApp Business Account ID</span><input id="waWaba" value="${esc(r.waba_id || "")}"></label>
+      <label class="field"><span>Meta app ID</span><input id="waApp" value="${esc(r.app_id || "")}"></label>
     </details>
     <h4 class="wa-h">Who can use it</h4>
     <p class="hint">Each number chats as that person, with their ProfitDesk access. Messages from any other number are ignored.</p>
@@ -1126,8 +1127,8 @@ async function renderWA() {
     const people = [...$("waPeople").querySelectorAll(".wa-person")].map((d) => ({ phone: d.querySelector(".wa-phone").value, email: d.querySelector(".wa-email").value }));
     try {
       const out = await jsonPost("/api/whatsapp/settings", { token: $("waToken").value, app_secret: $("waSecret").value,
-        phone_id: $("waPhone").value, waba_id: $("waWaba").value, people }, "PUT");
-      toast(out.template_error ? `Saved. Template: ${out.template_error}` : `Saved.${out.template ? " Message template: " + out.template : ""}`, !!out.template_error);
+        phone_id: $("waPhone").value, waba_id: $("waWaba").value, app_id: $("waApp").value, people }, "PUT");
+      toast([out.setup ? out.setup.join(" · ") : "Saved.", out.template ? "Template: " + out.template : "", out.template_error ? "Template: " + out.template_error : ""].filter(Boolean).join(" · "), !!out.template_error);
       renderWA();
     } catch (e) { toast(e.message, true); }
   };
