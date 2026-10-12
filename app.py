@@ -80,6 +80,7 @@ SHOPIFY_REDIRECT = f"{BASE_URL}/auth/shopify/callback"
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 CACHE_TTL = 60  # seconds; the Refresh button bypasses it
+_timing: dict = {}   # last dashboard build: seconds per step (owner: /api/debug/timing)
 LIVE_DAYS = 2   # the last days always read live from Shopify; older ones from the saved copy
 
 
@@ -138,6 +139,12 @@ async def lifespan(app):
 
 
 app = FastAPI(title="ProfitDesk", docs_url=None, redoc_url=None, lifespan=lifespan)
+
+
+@app.get("/api/debug/timing")
+def api_debug_timing():
+    """Owner: seconds per step of the last dashboard build."""
+    return _timing
 
 
 @app.get("/api/debug/stalls")
@@ -6389,6 +6396,8 @@ async def _dashboard_compute(scope: str = "all", start: str = None, end: str = N
     # each store's own day (see _same_time_yesterday).
     same_time = compare == "same_time" and span == 1
 
+    _timing.clear()
+    t_all = time.time()
     if same_time:
         results = await asyncio.gather(*[
             _store_window(s, start, end, auth, meta_of(s)) for s in stores
@@ -6402,12 +6411,18 @@ async def _dashboard_compute(scope: str = "all", start: str = None, end: str = N
         ])
         earlier = [None] * len(stores)
 
+    _timing["_stores"] = round(time.time() - t_all, 2)
+    t = time.time()
     base = (currency or _display_currency()).upper()
     used = {c for s in stores
             for c in (s["currency"], s["meta_currency"], s["google_currency"]) if c}
     fx_table = await fx.table(base) if used - {base} else None
 
+    _timing["_fx"] = round(time.time() - t, 2)
+    t = time.time()
     over = await _paypal_over_limit(min(prev_start, start), end)
+    _timing["_paypal_limit"] = round(time.time() - t, 2)
+    t = time.time()
     warnings, current, previous, per_store = [], [], [], []
     for store, (rows, notes), cut in zip(stores, results, earlier):
         warnings.extend(notes)
@@ -6435,6 +6450,8 @@ async def _dashboard_compute(scope: str = "all", start: str = None, end: str = N
 
     # All stores: refunds made straight in PayPal / Airwallex (Shopify never saw them) and
     # chargebacks, as their own line. Group and store views can't tell which store they're from.
+    _timing["_per_store_maths"] = round(time.time() - t, 2)
+    t = time.time()
     if scope == "all":
         try:
             outside = await _outside_refunds(stores, min(prev_start, start), end, base, fx_table, same_time)
@@ -6451,11 +6468,17 @@ async def _dashboard_compute(scope: str = "all", start: str = None, end: str = N
                                   "cost_pct": None, "google_account_name": None, "meta_account_name": None,
                                   "outside": True, "totals": metrics.summarize(cur_rows)})
 
+    _timing["_outside_refunds"] = round(time.time() - t, 2)
+    t = time.time()
     series = metrics.with_ratios(metrics.blend(current))
     totals = metrics.summarize(series)
     prev_totals = metrics.summarize(metrics.blend(previous))
 
+    _timing["_totals"] = round(time.time() - t, 2)
+    t = time.time()
     short = await _short_history(stores, min(start, prev_start))
+    _timing["_short_history"] = round(time.time() - t, 2)
+    _timing["_TOTAL"] = round(time.time() - t_all, 2)
     if short:
         names = ", ".join(x["name"].strip() for x in short)
         warnings.append(
@@ -6658,8 +6681,15 @@ async def _store_window(store, start, end, auth, meta_auth):
                                               for d in _dates(live_from, end_for_api)}, store["timezone"])
         return {**{d: v for d, v in saved.items() if d < live_from}, **days}
 
+    async def timed(name, coro):
+        t = time.time()
+        try:
+            return await coro
+        finally:
+            _timing.setdefault(store["name"].strip(), {})[name] = round(time.time() - t, 2)
     got_sales, got_spend, got_meta, got_refunds = await asyncio.gather(
-        sales(), spend(), meta_spend(), refunds(), return_exceptions=True
+        timed("shopify sales", sales()), timed("google", spend()), timed("meta", meta_spend()),
+        timed("refunds", refunds()), return_exceptions=True
     )
     if isinstance(got_refunds, Exception):
         notes.append(f"{store['name']}: couldn't read refunds ({str(got_refunds)[:120]}).")
@@ -6677,10 +6707,16 @@ async def _store_window(store, start, end, auth, meta_auth):
     if store["google_customer_id"] is None and store["meta_account_id"] is None:
         notes.append(f"{store['name']}: no ad accounts linked yet, so ad spend shows as zero.")
 
+    t = time.time()
     ctx = await _fee_context(store, notes)
+    _timing.setdefault(store["name"].strip(), {})["fee context"] = round(time.time() - t, 2)
+    t = time.time()
     cogs = await _cog_for(store, start, end,
                           {d: got_sales.get(d, {}).get("sales", 0.0) for d in _dates(start, end)})
+    _timing[store["name"].strip()]["cog"] = round(time.time() - t, 2)
+    t = time.time()
     tracked = _tracked_fees(store, start, end)
+    _timing[store["name"].strip()]["fees"] = round(time.time() - t, 2)
     rows = []
     for d in _dates(start, end):
         s = got_sales.get(d, {"sales": 0.0, "orders": 0, "payments": {}})
