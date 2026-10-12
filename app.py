@@ -7846,6 +7846,15 @@ async def api_wa_diagnose():
     return {"meta": await whatsapp.diagnose(db.get_setting("wa_app_id") or ""), "last_messages": last}
 
 
+@app.get("/api/whatsapp/conversation")
+def api_wa_conversation(limit: int = 120):
+    """Owner: the WhatsApp conversations, oldest first (to check how the assistant did)."""
+    with db._conn() as con:
+        rows = [dict(r) for r in con.execute("SELECT phone, direction, text, created_at FROM wa_messages ORDER BY id DESC LIMIT ?",
+                                             (min(limit, 500),))]
+    return {"messages": rows[::-1]}
+
+
 @app.post("/api/whatsapp/setup")
 async def api_wa_setup():
     """Run Meta's setup steps again (register the number, subscribe the app, set the webhook, the template)."""
