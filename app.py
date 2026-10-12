@@ -5980,7 +5980,8 @@ async def api_googleads(store: str = "", fresh: int = 0, min_spend: float = None
     tax = 1 + (st.get("google_tax_pct") or 0) / 100.0          # as the dashboard counts Google (e.g. ZAVA GST)
     out = await asyncio.to_thread(google_desk.build, rows, f(gcur or st.get("google_currency") or st["currency"]) * tax, lines,
                                   f("USD"), info, fee_rate, today.isoformat(), min_spend, None, g_today.isoformat())
-    google_desk.with_dashboard(out, dash_rows, today.isoformat())
+    # same currency step as the dashboard (Google / Meta spend arrive in the ad accounts' currencies)
+    google_desk.with_dashboard(out, _in_currency(dash_rows, st, table, st["currency"]), today.isoformat())
     out.update(store=st["id"], currency=st["currency"], google_currency=gcur, fee_rate=fee_rate, min_spend=min_spend,
                today=today.isoformat(), google_today=g_today.isoformat(), account_timezone=atz, shop=st["shop_domain"],
                missing_product_ids=not any(l.get("product_id") for l in lines),
