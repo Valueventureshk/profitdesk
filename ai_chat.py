@@ -171,7 +171,13 @@ async def reply(api_key: str, history: list, run_tool, today: str, currency: str
         except anthropic.RateLimitError as e:
             raise ChatError("The AI is busy right now. Try again in a minute.") from e
         except anthropic.APIStatusError as e:
-            raise ChatError(f"Anthropic error {e.status_code}.") from e
+            detail = ""
+            try:
+                detail = (e.body or {}).get("error", {}).get("message", "") if isinstance(e.body, dict) else str(e)[:300]
+            except Exception:
+                detail = str(e)[:300]
+            print(f"Anthropic {e.status_code}: {detail}", flush=True)
+            raise ChatError(f"Anthropic error {e.status_code}: {detail[:300]}") from e
         except anthropic.APIConnectionError as e:
             raise ChatError("Couldn't reach Anthropic.") from e
         if resp.stop_reason == "refusal":
