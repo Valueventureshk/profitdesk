@@ -6201,7 +6201,7 @@ async def api_ads_selftest(payload: dict):
     s = await gads_manage.structure(*args)
     out = {}
     items = [r["item_id"] for r in (await gads.product_report(*args, (date.today() - timedelta(days=3)).isoformat(),
-                                                               date.today().isoformat()))[0]][:2]
+                                                               date.today().isoformat()))[0] if r["item_id"]][:2]
     out["items"] = items
     try:
         await gads_manage.create_pmax(*args, "ProfitDesk test (validate only)", 10, s["merchant_ids"][0], await _store_url(st),
