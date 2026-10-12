@@ -6762,6 +6762,19 @@ async def api_ads_rule(rule_id: int, payload: dict):
     return {"ok": True}
 
 
+@app.get("/api/ads/catalog/{store_id}")
+async def api_ads_catalog(store_id: int, products: str = ""):
+    """Owner check: Google's catalogue items for some Shopify products (comma separated ids), counted by feed label / label0."""
+    st = _ads_store(store_id)
+    want = {p for p in products.split(",") if p}
+    items = [i for i in await gads_manage.catalog(*_ads_args(st)) if not want or google_desk.parse_item(i["item"])[0] in want]
+    by = {}
+    for i in items:
+        k = f"{i['feed_label']}|{i['label0']}"
+        by[k] = by.get(k, 0) + 1
+    return {"items": len(items), "by_feed_and_label0": by}
+
+
 @app.post("/api/ads/dryrun/{store_id}")
 async def api_ads_dryrun(store_id: int, payload: dict):
     """Owner check: Google's test run of a list of steps (validateOnly), nothing changes."""

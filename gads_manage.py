@@ -505,3 +505,18 @@ def rebuild_ops(group: dict, nodes: list, temp_start: int = 1) -> list:
                     body["cpcBidMicros"] = str(int(n["bid"] * 1_000_000))
             ops.append({"adGroupCriterionOperation": {"create": body}})
     return ops
+
+
+async def catalog(refresh_token, customer_id, login_cid) -> list:
+    """Every product item Google has for this account (its catalogue as Google Ads sees it):
+    [{item, feed_label, label0..label4, status}]."""
+    rows = await _q(refresh_token, customer_id, login_cid,
+                    "SELECT shopping_product.item_id, shopping_product.feed_label, shopping_product.status, "
+                    "shopping_product.custom_attribute0, shopping_product.custom_attribute1, shopping_product.custom_attribute2, "
+                    "shopping_product.custom_attribute3, shopping_product.custom_attribute4 FROM shopping_product")
+    out = []
+    for r in rows:
+        sp = r.get("shoppingProduct") or {}
+        out.append({"item": sp.get("itemId") or "", "feed_label": sp.get("feedLabel") or "", "status": sp.get("status"),
+                    **{f"label{i}": (sp.get(f"customAttribute{i}") or "").lower() for i in range(5)}})
+    return out
