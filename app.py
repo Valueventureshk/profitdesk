@@ -6605,22 +6605,24 @@ def _ads_rules_of(store_id, names=None):
     return rows
 
 
-async def _ads_overview(st) -> dict:
-    """Campaigns with budget, status, product list and the last 7 / 30 days' spend and ROAS."""
+async def _ads_overview(st, start: str = None, end: str = None) -> dict:
+    """Campaigns with budget, status, product list and their results for start..end (default today): Google spend,
+    clicks, conversions, conversion value, add to carts, and the Shopify sales of the products they spent on."""
     args = _ads_args(st)
-    s = await gads_manage.structure(*args)
-    rows, _ = await _ads_data(st)
-    lines = _ads_lines(st)
     today = _store_today(st)
-    cdays = await gads_manage.campaign_days(*args, (today - timedelta(days=31)).isoformat(), (today + timedelta(days=1)).isoformat())
+    start, end = start or today.isoformat(), end or today.isoformat()
+    s, tot, rows = await asyncio.gather(gads_manage.structure(*args), gads_manage.campaign_totals(*args, start, end),
+                                        gads_manage.product_days(*args, start, end))
+    lines = _ads_lines(st, (today - date.fromisoformat(start)).days + 1)
     for c in s["campaigns"]:
-        for d in (7, 30):
-            a, b = ads_engine.window(today, d)
-            cs = ads_engine.campaign_stats(rows, lines, a, b, c["id"], sum(v for k, v in cdays.get(c["id"], {}).items() if a <= k <= b))
-            c[f"d{d}"] = {k: cs[k] for k in ("cost", "sales", "value", "roas", "products")}
+        t = tot.get(c["id"], {"cost": 0.0, "impressions": 0, "clicks": 0, "conversions": 0.0, "value": 0.0, "atc": 0.0})
+        cs = ads_engine.campaign_stats(rows, lines, start, end, c["id"], t["cost"])
+        c["p"] = {**t, "sales": cs["sales"], "roas": cs["roas"], "groas": t["value"] / t["cost"] if t["cost"] else None,
+                  "products": cs["products"]}
         for g in c["groups"]:
             g.pop("tree", None)
             g["products"] = {"mode": g["products"]["mode"], "count": len(g["products"]["items"])}
+    s["start"], s["end"] = start, end
     return s
 
 
@@ -6630,12 +6632,20 @@ def _ads_who(request: Request) -> str:
 
 
 @app.get("/api/ads/manage")
-async def api_ads_manage(store: int, fresh: int = 0):
+async def api_ads_manage(store: int, fresh: int = 0, start: str = "", end: str = ""):
     st = _ads_store(store)
     if fresh:
         _ads_cache.pop(st["id"], None)
+    today = _store_today(st)
     try:
-        s = await _ads_overview(st)
+        a = date.fromisoformat(start) if start else today
+        b = min(date.fromisoformat(end), today) if end else today
+    except ValueError:
+        raise HTTPException(400, "Pick the dates.")
+    if a > b or (b - a).days > 400:
+        raise HTTPException(400, "Pick a period of up to a year.")
+    try:
+        s = await _ads_overview(st, a.isoformat(), b.isoformat())
     except gads.GoogleAdsError as e:
         raise HTTPException(400, str(e))
     names = {c["id"]: c["name"] for c in s["campaigns"]}
@@ -6770,7 +6780,10 @@ async def _ads_tool(st, name: str, a: dict, who: str, made: dict) -> dict:
     """What the ads AI can look at and propose. Nothing here changes Google Ads."""
     today = _store_today(st)
     if name == "get_campaigns":
-        s = await _ads_overview(st)
+        s = await _ads_overview(st, *ads_engine.window(today, 7))
+        s30 = {c["id"]: c["p"] for c in (await _ads_overview(st, *ads_engine.window(today, 30)))["campaigns"]}
+        for c in s["campaigns"]:
+            c["d7"], c["d30"] = c["p"], s30.get(c["id"])
         return {"currency": s["currency"], "campaigns": [{
             "id": c["id"], "name": c["name"], "status": c["status"], "type": c["type"], "budget_per_day": c["budget"],
             "bidding": c["bidding"], "target_roas": c["target_roas"],

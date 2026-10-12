@@ -334,3 +334,31 @@ def new_tree(products: dict, add=(), remove=()) -> tuple:
         out = {i for i in items | remove if i.lower() not in low(add)}
         return ("except", sorted(out)) if out else ("all", [])
     raise gads.GoogleAdsError(f"Unknown product list ({mode}).")
+
+
+async def campaign_totals(refresh_token, customer_id, login_cid, start, end) -> dict:
+    """{campaign id: {cost, impressions, clicks, conversions, value, atc}} for start..end (account days).
+    atc = Google's add-to-cart conversions (0 when the account doesn't track them)."""
+    rows = await _q(refresh_token, customer_id, login_cid,
+                    "SELECT campaign.id, metrics.cost_micros, metrics.impressions, metrics.clicks, metrics.conversions, "
+                    f"metrics.conversions_value FROM campaign WHERE segments.date BETWEEN '{start}' AND '{end}'")
+    out = {}
+    for r in rows:
+        c, m = str((r.get("campaign") or {}).get("id")), r.get("metrics") or {}
+        t = out.setdefault(c, {"cost": 0.0, "impressions": 0, "clicks": 0, "conversions": 0.0, "value": 0.0, "atc": 0.0})
+        t["cost"] += _micros(m.get("costMicros"))
+        t["impressions"] += int(m.get("impressions") or 0)
+        t["clicks"] += int(m.get("clicks") or 0)
+        t["conversions"] += float(m.get("conversions") or 0)
+        t["value"] += float(m.get("conversionsValue") or 0)
+    try:
+        atc = await _q(refresh_token, customer_id, login_cid,
+                       "SELECT campaign.id, segments.conversion_action_category, metrics.all_conversions FROM campaign "
+                       f"WHERE segments.date BETWEEN '{start}' AND '{end}' AND segments.conversion_action_category = 'ADD_TO_CART'")
+        for r in atc:
+            c = str((r.get("campaign") or {}).get("id"))
+            if c in out:
+                out[c]["atc"] += float((r.get("metrics") or {}).get("allConversions") or 0)
+    except gads.GoogleAdsError:
+        pass
+    return out

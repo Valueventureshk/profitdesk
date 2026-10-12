@@ -2,7 +2,20 @@
    rules (Turn on), and the change log (Undo). Every change goes through the server, which checks it with
    Google first and keeps what it was before. Uses $, esc, api, post, toast from googleads.js. */
 
-let mg = null, mgBusy = false;
+let mg = null, mgBusy = false, mgPeriod = PDUrl.get("mperiod") || "today";
+const MG_PERIOD = { today: "Today", yesterday: "Yesterday", 7: "Last 7 days", 14: "Last 14 days", 30: "Last 30 days", mtd: "This month",
+                    lastmonth: "Last month", 90: "Last 90 days", custom: "Custom" };
+function mgRange() {
+  const t = storeToday();
+  switch (mgPeriod) {
+    case "today": return [t, t];
+    case "yesterday": return [addDays(t, -1), addDays(t, -1)];
+    case "mtd": return [t.slice(0, 8) + "01", t];
+    case "lastmonth": { const e = addDays(t.slice(0, 8) + "01", -1); return [e.slice(0, 8) + "01", e]; }
+    case "custom": return [$("mgFrom").value || addDays(t, -6), $("mgTo").value || t];
+    default: return [addDays(t, -(Number(mgPeriod) - 1)), t];
+  }
+}
 const mgMoney = (v, d = 2) => {
   if (v === null || v === undefined) return "—";
   try { return new Intl.NumberFormat(undefined, { style: "currency", currency: mg?.structure?.currency || "USD", minimumFractionDigits: d, maximumFractionDigits: d }).format(v); }
@@ -18,7 +31,9 @@ window.loadManage = async function (fresh = false) {
   const store = $("store").value;
   if (!store) return;
   $("mgCampNote").textContent = "Reading the Google Ads account…";
-  try { mg = await api(`/api/ads/manage?store=${store}${fresh ? "&fresh=1" : ""}`); }
+  const [a, b] = mgRange();
+  PDUrl.set({ mperiod: mgPeriod === "today" ? null : mgPeriod });
+  try { mg = await api(`/api/ads/manage?store=${store}&start=${a}&end=${b}${fresh ? "&fresh=1" : ""}`); }
   catch (e) { $("mgCampNote").textContent = e.message; toast(e.message, true); return; }
   drawManage();
 };
@@ -45,22 +60,27 @@ function drawManage() {
   $("mgSave").onclick = () => saveMg({ budget_cap: $("mgCap").value, new_budget_cap: $("mgNewCap").value });
 
   const camps = mg.structure.campaigns;
-  $("mgCampNote").textContent = `${camps.length} campaigns · ${mg.structure.currency} · ROAS = Shopify sales ÷ spend`;
+  const st = mg.structure;
+  $("mgCampNote").textContent = `${camps.length} campaigns · ${MG_PERIOD[mgPeriod]}: ${st.start === st.end ? st.start : `${st.start} to ${st.end}`} · ${st.currency} · ROAS = Shopify sales ÷ spend, G ROAS = Google's conversion value ÷ spend`;
+  const tracks = camps.some((c) => c.p.conversions || c.p.atc);
   const plist = (c) => c.groups.map((g) => {
     const p = g.products, w = { all: "all products", only: `${p.count} variants`, except: `all but ${p.count}`, custom: "by labels (read-only)", none: "no products" }[p.mode] || p.mode;
     return `<span class="gx-pl ${p.mode}" title="${esc(g.name)} (${esc(g.status)})">${esc(g.name)}: ${w}</span>`;
   }).join(" ");
-  $("mgCamps").innerHTML = `<thead><tr><th>Campaign</th><th>Status</th><th>Type</th><th>Budget / day</th><th>Target ROAS</th><th>Products</th>
-      <th>Spend 7D</th><th>ROAS 7D</th><th>Spend 30D</th><th>ROAS 30D</th><th></th></tr></thead><tbody>${camps.map((c) => `<tr data-c="${c.id}">
+  const r2 = (v) => (v === null || v === undefined ? "—" : v.toFixed(2));
+  $("mgCamps").innerHTML = `<thead><tr><th>Campaign</th><th>Status</th><th>Type</th><th>${G_ICON}Budget / day</th><th>Target ROAS</th><th>Products</th>
+      <th>${G_ICON}Spend</th><th>${S_ICON}Sales</th><th>ROAS</th><th>Clicks</th><th>Conv.</th><th>Conv. value</th><th>G ROAS</th><th>Add to carts</th><th></th></tr></thead><tbody>${camps.map((c) => `<tr data-c="${c.id}">
       <td class="gx-cname"><b>${esc(c.name)}</b><span class="gx-muted">ID ${c.id}</span></td>
       <td><span class="gx-status ${c.status === "ENABLED" ? "active" : "draft"}">${c.status === "ENABLED" ? "Enabled" : "Paused"}</span></td>
       <td class="gx-muted">${esc((c.type || "").replace("PERFORMANCE_MAX", "PMax").replace("_", " ").toLowerCase())}</td>
       <td>${mgMoney(c.budget)}</td><td>${c.target_roas ?? "—"}</td><td class="gx-pls">${plist(c) || "—"}</td>
-      <td>${mgMoney(c.d7.cost)}</td><td class="gx-hc ${roasCls(c.d7.roas)}">${c.d7.roas === null ? "—" : c.d7.roas.toFixed(2)}</td>
-      <td>${mgMoney(c.d30.cost)}</td><td class="gx-hc ${roasCls(c.d30.roas)}">${c.d30.roas === null ? "—" : c.d30.roas.toFixed(2)}</td>
+      <td>${mgMoney(c.p.cost)}</td><td>${mgMoney(c.p.sales)}</td><td class="gx-hc ${roasCls(c.p.roas)}">${r2(c.p.roas)}</td>
+      <td>${c.p.clicks.toLocaleString()}</td><td class="gx-purple">${c.p.conversions.toFixed(1)}</td><td>${mgMoney(c.p.value)}</td>
+      <td>${r2(c.p.groas)}</td><td>${c.p.atc ? c.p.atc.toFixed(0) : "—"}</td>
       <td class="gx-cact" data-manage-only><button class="gx-btn gx-sm" data-bud="${c.id}">Budget</button>
         <button class="gx-btn gx-sm" data-st="${c.id}">${c.status === "ENABLED" ? "Pause" : "Enable"}</button></td></tr>`).join("")
-    || `<tr><td colspan="11" class="gx-muted gx-empty">No campaigns.</td></tr>`}</tbody>`;
+    || `<tr><td colspan="15" class="gx-muted gx-empty">No campaigns.</td></tr>`}</tbody>`;
+  if (!tracks && camps.some((c) => c.p.cost > 5)) $("mgCampNote").textContent += " · Google reports no conversions or add to carts for this account in this period: its conversion tracking may not be working.";
   for (const b of $("mgCamps").querySelectorAll("[data-bud]")) b.onclick = () => {
     const c = camps.find((x) => x.id === b.dataset.bud);
     const v = prompt(`New daily budget for “${c.name}” (now ${mgMoney(c.budget)}):`, c.budget);
@@ -218,3 +238,12 @@ async function send() {
 $("mgSend").onclick = send;
 $("mgIn").onkeydown = (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) send(); };
 $("mgReload").onclick = () => loadManage(true);
+$("mgPeriod").value = mgPeriod;
+$("mgDates").hidden = mgPeriod !== "custom";
+$("mgPeriod").onchange = () => {
+  mgPeriod = $("mgPeriod").value;
+  $("mgDates").hidden = mgPeriod !== "custom";
+  if (mgPeriod === "custom" && !$("mgFrom").value) { const [a, b] = mgRange(); $("mgFrom").value = a; $("mgTo").value = b; }
+  loadManage();
+};
+$("mgFrom").onchange = $("mgTo").onchange = () => { if ($("mgFrom").value && $("mgTo").value) loadManage(); };
