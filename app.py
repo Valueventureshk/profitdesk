@@ -114,12 +114,6 @@ def _watchdog(loop_thread_id: int):
             _stalls[-1][1] = round(max(_stalls[-1][1], late), 2)
 
 
-@app.get("/api/debug/stalls")
-def api_debug_stalls():
-    """Owner: the last times the server was stuck on one job, how long, and where."""
-    return {"stalls": list(reversed(_stalls))}
-
-
 @asynccontextmanager
 async def lifespan(app):
     db.init()
@@ -143,6 +137,12 @@ async def lifespan(app):
 
 
 app = FastAPI(title="ProfitDesk", docs_url=None, redoc_url=None, lifespan=lifespan)
+
+
+@app.get("/api/debug/stalls")
+def api_debug_stalls():
+    """Owner: the last times the server was stuck on one job, how long, and where."""
+    return {"stalls": list(reversed(_stalls))}
 from starlette.middleware.gzip import GZipMiddleware  # noqa: E402
 app.add_middleware(GZipMiddleware, minimum_size=1024)   # pages, scripts and data ~5x smaller on the wire
 
