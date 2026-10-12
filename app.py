@@ -7170,6 +7170,18 @@ async def api_tracking_google_status(store: int):
             "last_run": s.get("last_run"), "last_error": s.get("last_error"), "pixel": bool(db.get_setting(f"px_key:{st['id']}"))}
 
 
+@app.post("/api/tracking/google/send/{store_id}")
+async def api_tracking_google_send(store_id: int):
+    """Send this store's waiting events to Google now (instead of waiting for the 10-minute round)."""
+    st = _ads_store(store_id)
+    await _gconv_run(st)
+    since = (datetime.now(timezone.utc) - timedelta(days=14)).isoformat(timespec="seconds")
+    with db._conn() as con:
+        err = con.execute("SELECT error FROM gconv_uploads WHERE store_id = ? AND status IN ('retry', 'failed') ORDER BY at DESC LIMIT 1",
+                          (st["id"],)).fetchone()
+    return {"counts": gads_conv.counts(st["id"], since), "last_error": err[0] if err else None}
+
+
 @app.put("/api/tracking/google/settings/{store_id}")
 async def api_tracking_google_settings(store_id: int, payload: dict):
     """{enabled, mode: watch | auto | primary}. Turning on starts sending from now; mode primary makes

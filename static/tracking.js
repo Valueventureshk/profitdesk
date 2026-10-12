@@ -473,6 +473,7 @@ async function drawOurs() {
   $("gOurs").innerHTML = `<div class="gours"><div class="gours-h"><b>ProfitDesk → Google Ads</b>
       ${d.pixel ? "" : `<span class="src bad">Pixel off in this store</span>`}
       <span data-manage-only><label class="trk-gsw"><input type="checkbox" id="gOn"${c.enabled ? " checked" : ""}> Send to Google</label>
+      <button class="btn btn-sm btn-ghost" id="gSend" title="Send waiting events to Google now">Send now</button>
       <select class="control" id="gMode">${Object.entries(GMODE).map(([k, v]) => `<option value="${k}"${c.mode === k ? " selected" : ""}>${v}</option>`).join("")}</select></span></div>
     <p class="hint">${c.enabled ? `Sending since ${new Date(c.started_at).toLocaleString()} · ${d.ours_primary ? "<b>ProfitDesk Purchase is primary</b>" : "ProfitDesk Purchase is secondary (recorded, not bid on)"}` : "Off: nothing is sent."}
       ${c.note ? ` · ${esc(c.note)}` : ""}${d.last_error ? ` · <span class="neg">${esc(d.last_error)}</span>` : ""}</p>
@@ -493,6 +494,12 @@ async function drawOurs() {
     drawGoogle();
   };
   $("gOn").onchange = () => save({ enabled: $("gOn").checked });
+  $("gSend").onclick = async () => {
+    $("gSend").disabled = true; $("gSend").textContent = "Sending…";
+    try { const r = await api(`/api/tracking/google/send/${gStore}`, { method: "POST" }); toast(r.last_error ? `Some still waiting: ${r.last_error.slice(0, 160)}` : "Sent.", !!r.last_error); }
+    catch (e) { toast(e.message, true); }
+    drawOurs();
+  };
   $("gMode").onchange = () => save({ mode: $("gMode").value });
 }
 
