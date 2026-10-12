@@ -253,14 +253,32 @@ function drawCols() {
   $("colsList").innerHTML = draft.map(([id, v], i) => {
     const m = METRICS.find((x) => x.id === id);
     const off = SPEND_IDS.includes(id) && data && !data.has_spend;
-    return `<div class="trk-colrow${v ? " on" : ""}">
-      <span class="trk-mv"><button data-up="${i}"${i ? "" : " disabled"} title="Move up">▲</button><button data-dn="${i}"${i < draft.length - 1 ? "" : " disabled"} title="Move down">▼</button></span>
+    return `<div class="trk-colrow${v ? " on" : ""}" data-i="${i}">
+      <span class="trk-grip" title="Drag to move">⋮⋮</span>
       <span class="trk-coln"><b>${esc(m.label)}</b><small>${esc(m.sub)}${off ? " · needs Meta spend for this store" : ""}</small></span>
       <label class="trk-tog"><input type="checkbox" data-on="${i}"${v ? " checked" : ""}><i></i></label></div>`;
   }).join("");
-  for (const b of $("colsList").querySelectorAll("[data-up]")) b.onclick = () => { const i = +b.dataset.up; [draft[i - 1], draft[i]] = [draft[i], draft[i - 1]]; drawCols(); };
-  for (const b of $("colsList").querySelectorAll("[data-dn]")) b.onclick = () => { const i = +b.dataset.dn; [draft[i + 1], draft[i]] = [draft[i], draft[i + 1]]; drawCols(); };
+  for (const g of $("colsList").querySelectorAll(".trk-grip")) g.onpointerdown = (e) => dragCol(e, g);
   for (const c of $("colsList").querySelectorAll("[data-on]")) c.onchange = () => { draft[+c.dataset.on][1] = c.checked ? 1 : 0; drawCols(); };
+}
+// drag a metric by its handle (mouse or finger); the list's new order becomes the draft
+function dragCol(e, grip) {
+  e.preventDefault();
+  const list = $("colsList"), row = grip.closest(".trk-colrow");
+  row.classList.add("drag");
+  grip.setPointerCapture(e.pointerId);
+  grip.onpointermove = (ev) => {
+    const box = list.getBoundingClientRect();
+    if (ev.clientY < box.top + 24) list.scrollTop -= 8;
+    else if (ev.clientY > box.bottom - 24) list.scrollTop += 8;
+    const after = [...list.children].filter((r) => r !== row).find((r) => { const b = r.getBoundingClientRect(); return ev.clientY < b.top + b.height / 2; });
+    if (after !== row.nextElementSibling) list.insertBefore(row, after || null);
+  };
+  grip.onpointerup = grip.onpointercancel = () => {
+    grip.onpointermove = grip.onpointerup = grip.onpointercancel = null;
+    draft = [...list.children].map((r) => draft[+r.dataset.i]);
+    drawCols();
+  };
 }
 $("colsBtn").onclick = openCols;
 $("colsX").onclick = $("colsCancel").onclick = () => { $("colsModal").hidden = true; };
