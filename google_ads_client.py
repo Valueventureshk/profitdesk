@@ -287,3 +287,24 @@ async def product_report(refresh_token, customer_id, login_cid, start, end):
                     "conversions": float(m.get("conversions", 0) or 0),
                     "value": float(m.get("conversionsValue", 0) or 0)})
     return out, currency
+
+
+async def hourly_tab(refresh_token, customer_id, login_cid, start):
+    """Spend by the hour since `start` (account days), shaped like a spend-Sheet tab, for Ads payable:
+    {"meta": {"currency", "timezone"}, "rows": [(date, hour, cost)]}."""
+    from datetime import date as _date
+    _, _, dev_token, version = _cfg()
+    access = await _access_token(refresh_token)
+    query = ("SELECT customer.currency_code, customer.time_zone, segments.date, segments.hour, metrics.cost_micros "
+             f"FROM customer WHERE segments.date BETWEEN '{start}' AND '{_date.today().isoformat()}'")
+    cid = str(customer_id).replace("-", "")
+    async with httpx.AsyncClient(timeout=60) as client:
+        rows = await _search(client, version, cid, query, _headers(access, dev_token, login_cid or customer_id))
+    meta, out = {"currency": "", "timezone": "UTC"}, []
+    for r in rows:
+        c = r.get("customer") or {}
+        meta = {"currency": c.get("currencyCode") or meta["currency"], "timezone": c.get("timeZone") or meta["timezone"]}
+        seg = r.get("segments", {})
+        if seg.get("date"):
+            out.append((seg["date"], int(seg.get("hour", 0)), int(r.get("metrics", {}).get("costMicros", 0) or 0) / 1_000_000))
+    return {"meta": meta, "rows": out}
