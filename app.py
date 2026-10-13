@@ -8627,6 +8627,34 @@ async def _script_tag(store, filename: str, on: bool) -> str:
     return ""
 
 
+@app.post("/api/storefront/repoint")
+async def api_storefront_repoint():
+    """Owner: after an address change, point every store's EcomVital storefront scripts (size charts, recorder) at
+    the current address. Each old ScriptTag is replaced by one with the same file on BASE_URL."""
+    out = {}
+    for st in [x for x in db.list_stores() if not demo.is_demo(x) and x.get("access_token")]:
+        client = ShopifyClient(st["shop_domain"], st["access_token"])
+        done = []
+        try:
+            tags = (await client.gql(SCRIPT_TAGS))["scriptTags"]["nodes"]
+            for t in tags:
+                src = t.get("src") or ""
+                name = next((f for f in ("sizechart-widget.js", "recorder.js") if f in src), None)
+                if not name or src.startswith(f"{BASE_URL}/"):
+                    continue
+                r = await client.gql(SCRIPT_CREATE, {"i": {"src": f"{BASE_URL}/static/{name}", "displayScope": "ONLINE_STORE",
+                                                           "cache": False}})
+                if r["scriptTagCreate"]["userErrors"]:
+                    done.append(f"{name}: " + "; ".join(e["message"] for e in r["scriptTagCreate"]["userErrors"]))
+                    continue
+                await client.gql(SCRIPT_DELETE, {"id": t["id"]})
+                done.append(f"{name}: moved")
+        except Exception as e:
+            done.append(f"error: {str(e)[:150]}")
+        out[st["name"].strip()] = done or ["nothing to move"]
+    return out
+
+
 @app.post("/proxy/track/rec")
 async def proxy_recording(request: Request, sid: str = "", seq: int = 0, z: int = 0):
     """One chunk of a shopper's session, from the store's app proxy (signed by Shopify)."""
