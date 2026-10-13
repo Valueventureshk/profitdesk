@@ -94,8 +94,9 @@ file and have it work.
   ecomvital.com forwards to www at GoDaddy). DNS at GoDaddy (hq + www CNAMEs to Railway). `SHOPIFY_REDIRECT_URL` keeps
   Shopify OAuth returning to the old address for store apps not yet listing hq (the 7 CLI apps list both). Google
   OAuth client lists both callbacks; consent screen branding "EcomVital" verified + published 13 Oct (logo
-  static/brand/, domain verified in Search Console under info@tendance-montreal.com). Still on the old address:
-  Airwallex checkout webhook, 17TRACK webhook, the 5 non-CLI store apps.
+  static/brand/, domain verified in Search Console under info@tendance-montreal.com). All 12 store apps (CLI tomls in shopify-app/, one per store,
+  incl. zava/perth/creston/sageleaf/amber pulled 13 Oct), the Airwallex checkout webhook, Apple Pay domain
+  (assets/applepay served at /.well-known/), 17TRACK webhook and WhatsApp webhook point at hq.ecomvital.com.
   After a deploy, open `/healthz`: `db_on_volume` must be `true`.
 - Database lives on the Railway volume (`/data/profitdesk.db`). Credentials for
   Shopify apps, Meta, Google, Airwallex and PayPal are stored in that database,
@@ -152,8 +153,7 @@ file and have it work.
   tracked/cancelled, export CSV, bulk flag) and Settings (17TRACK). Team notes and
   flags are per order (`scm_notes`, `scm_flags`), so they survive parcel changes.
   Store menus: owner tool POST /api/storefront/tracking {apply|revert, stores} points
-  Parcel Panel links at /apps/track. App proxy must be in each app version (Amber
-  Ashton's app is under another Shopify login, not done yet).
+  Parcel Panel links at /apps/track. App proxy must be in each app version (all 12 have it since 13 Oct 2026).
   Store permissions: shopify_client.SCOPES (27, see SHOPIFY-APP-RELEASE.md), check
   /api/shopify/permissions; opening the app from Shopify admin asks for missing ones.
 - Size Charts desk (desk `sizecharts`): charts in `size_charts` (blocks JSON), who sees them in
