@@ -150,11 +150,11 @@ def _why(r) -> str:
         return r.text[:300]
 
 
-# Google Ads API operations per Pacific day (Explorer access allows 2,880). Each search page counts 1 and EVERY
+# Google Ads API operations per Pacific day (Basic access since 13 Oct 2026: 15,000; Explorer was 2,880). Each search page counts 1 and EVERY
 # operation inside a mutate counts 1 (validateOnly included): a new campaign with 1,300 product variants costs ~1,350.
 # Background jobs check busy() and wait when the day's allowance runs low, so pages people open keep working.
-DAILY_LIMIT = 2880
-RESERVE = 600                    # kept for people opening pages
+DAILY_LIMIT = 15000
+RESERVE = 3000                   # kept for people opening pages and campaign changes
 _ops = {"day": None, "n": 0}
 
 

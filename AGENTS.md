@@ -170,8 +170,8 @@ file and have it work.
   PayPal multipart: part "input" (JSON) + file parts named per the spec (evidence-file, message_document...).
 - Google sign-in keys (OAuth client, setting `google_client_id/secret`, changeable in Settings → Google
   Ads → Change Google sign-in keys) come from Google Cloud project "My First Project"
-  (dark-smile-511222-t3) owned by info@tendance-montreal.com: it has Google Ads API **Explorer**
-  access (2,880 ops/day on real accounts; Basic needs brand verification + an owned domain).
+  (dark-smile-511222-t3) owned by info@tendance-montreal.com: it has Google Ads API **Basic** access since 13 Oct 2026
+  (15,000 ops/day, approved minutes after brand verification of EcomVital; Standard = unlimited, apply in Cloud → Google Ads API → Access levels, ~10–15 working days).
   APIs on: Google Ads, Sheets, Gmail. Consent screen "ProfitDesk", published (unverified warning).
   Google login connected in ProfitDesk = shop.valueventures@gmail.com (sees the ad accounts).
   Per store `google_source`: NULL = direct API (hourly, shifted to the store clock), "sheet" = the

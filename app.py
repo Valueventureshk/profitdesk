@@ -9429,7 +9429,7 @@ async def _outside_refunds(stores: list, start: str, end: str, base: str, fx_tab
 
 async def _gdesk_loop():
     """Every 30 minutes: read each Google store's default Google Ads desk view (last 30 days) ahead, so the
-    page opens at once. About 7 x 48 product reports a day, well inside Explorer access (2,880 a day)."""
+    page opens at once. About 7 x 48 product reports a day, well inside Basic access (15,000 a day)."""
     await asyncio.sleep(150)
     while True:
         for st in [x for x in db.list_stores() if x.get("google_customer_id") and not demo.is_demo(x)
