@@ -86,3 +86,4 @@ footer a { margin-right: 16px; }
 .wf-track .s { background: var(--revenue); border-radius: 4px 0 0 4px; }
 .wf-track .s.net { background: var(--profit); border-radius: 4px; }
 .wf-track .h { background: repeating-linear-gradient(135deg, var(--rule) 0 3px, transparent 3px 7px); border: 1px solid var(--rule); border-left: 0; border-radius: 0 4px 4px 0; }
+.logo-img { width: 30px; height: 30px; border-radius: 8px; }

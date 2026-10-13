@@ -83,7 +83,9 @@ PORT = int(os.getenv("PORT", "8787"))
 # built from it.
 BASE_URL = (os.getenv("PUBLIC_URL") or f"http://{HOST}:{PORT}").rstrip("/")
 GOOGLE_REDIRECT = f"{BASE_URL}/auth/google/callback"
-SHOPIFY_REDIRECT = f"{BASE_URL}/auth/shopify/callback"
+# Shopify only returns to addresses listed in each store's app; until every app lists the new address, this can stay
+# on the old one (Railway variable SHOPIFY_REDIRECT_URL).
+SHOPIFY_REDIRECT = os.getenv("SHOPIFY_REDIRECT_URL") or f"{BASE_URL}/auth/shopify/callback"
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 CACHE_TTL = 60  # seconds; the Refresh button bypasses it
