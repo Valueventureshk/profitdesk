@@ -178,7 +178,11 @@ _cache: dict[tuple, tuple[float, dict]] = {}
 # Reachable without logging in: the login page itself and what it needs.
 _OPEN = {"/login", "/api/login", "/api/logout", "/api/first-user", "/api/first-restore",
          "/api/scm/webhook", "/api/whatsapp/webhook",
-         "/healthz", "/about", "/privacy", "/terms"}
+         "/healthz", "/about", "/privacy", "/terms", "/api/interest"}
+
+# The public website (ecomvital.com): its own pages; anything else there goes to the app.
+SITE_HOSTS = {h.strip().lower() for h in os.getenv("SITE_HOSTS", "ecomvital.com,www.ecomvital.com").split(",") if h.strip()}
+_SITE_PAGES = {"/": "home", "/about": "home", "/privacy": "privacy", "/terms": "terms"}
 
 
 # Each desk's pages and data. Anything not listed (Settings, connections, people,
@@ -285,6 +289,12 @@ def _shopify_launch(request: Request):
 @app.middleware("http")
 async def _require_login(request: Request, call_next):
     path = request.url.path
+    host = (request.headers.get("host") or "").split(":")[0].lower()
+    if host in SITE_HOSTS:
+        if path in _SITE_PAGES:
+            return _legal(_SITE_PAGES[path])
+        if not (path.startswith("/static/") or path in ("/api/interest", "/healthz")):
+            return RedirectResponse(f"{BASE_URL}{path}", status_code=302)
     user = auth.user_for(request.cookies.get(auth.SESSION_COOKIE))
     request.state.user = user
     if path in _OPEN or path.startswith(("/static/", "/proxy/", "/apps/", "/w/", "/t/", "/pay/")) or path == "/proxy":
@@ -334,6 +344,47 @@ def privacy_page():
 @app.get("/terms", response_class=HTMLResponse)
 def terms_page():
     return _legal("terms")
+
+
+_interest_hits: dict = defaultdict(list)
+
+
+@app.post("/api/interest")
+async def api_interest(request: Request, payload: dict):
+    """ecomvital.com "Register your interest" (public). Bots fill the hidden field; a few tries per hour per address."""
+    if payload.get("website"):
+        return {"ok": True}
+    ip = _client_ip(request)
+    now = time.time()
+    _interest_hits[ip] = [t for t in _interest_hits[ip] if now - t < 3600] + [now]
+    if len(_interest_hits[ip]) > 5:
+        raise HTTPException(429, "Too many tries. Please try again later.")
+    clip = lambda k, n=200: str(payload.get(k) or "").strip()[:n]
+    if "@" not in clip("email") or not clip("name"):
+        raise HTTPException(400, "Please add your name and email.")
+    with db._conn() as con:
+        con.execute("CREATE TABLE IF NOT EXISTS site_interest (id INTEGER PRIMARY KEY, at TEXT NOT NULL, name TEXT, email TEXT,"
+                    " store TEXT, stores TEXT, spend TEXT, note TEXT, ip TEXT)")
+        con.execute("INSERT INTO site_interest (at, name, email, store, stores, spend, note, ip) VALUES (?,?,?,?,?,?,?,?)",
+                    (datetime.now(timezone.utc).isoformat(timespec="seconds"), clip("name"), clip("email"), clip("store"),
+                     clip("stores", 20), clip("spend", 30), clip("note", 2000), ip))
+    return {"ok": True}
+
+
+@app.get("/interest", response_class=HTMLResponse)
+def interest_page():
+    """Owner: who registered interest on ecomvital.com."""
+    with db._conn() as con:
+        con.execute("CREATE TABLE IF NOT EXISTS site_interest (id INTEGER PRIMARY KEY, at TEXT NOT NULL, name TEXT, email TEXT,"
+                    " store TEXT, stores TEXT, spend TEXT, note TEXT, ip TEXT)")
+        rows = [dict(r) for r in con.execute("SELECT * FROM site_interest ORDER BY id DESC")]
+    e = html.escape
+    body = "".join(f"<tr><td>{e(r['at'][:16].replace('T', ' '))}</td><td>{e(r['name'])}</td><td><a href='mailto:{e(r['email'])}'>{e(r['email'])}</a></td>"
+                   f"<td>{e(r['store'])}</td><td>{e(r['stores'])}</td><td>{e(r['spend'])}</td><td>{e(r['note'])}</td></tr>" for r in rows)
+    return HTMLResponse("<!doctype html><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+                        "<title>Beta interest</title><link rel='stylesheet' href='/static/legal/site.css'><div class='wrap legal'>"
+                        f"<h1>Beta interest</h1><p class='meta'>{len(rows)} sign-ups from ecomvital.com</p><table><tr><th>When (UTC)</th><th>Name</th>"
+                        f"<th>Email</th><th>Store</th><th>Stores</th><th>Ad spend</th><th>Note</th></tr>{body}</table></div>")
 
 
 @app.get("/healthz")

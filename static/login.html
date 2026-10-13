@@ -3,16 +3,17 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ProfitDesk · Log in</title>
+<title>EcomVital HQ · Log in</title>
 <script>try{var t=localStorage.getItem("pdTheme")||(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");document.documentElement.dataset.theme=t;}catch(e){}</script>
 <link rel="stylesheet" href="/static/styles.css">
+<style>.setup{grid-template-rows:1fr auto}.login-foot{text-align:center;font-size:12.5px;color:var(--muted);line-height:1.7;margin:18px 0 0}.login-foot a{color:inherit}</style>
 </head>
 <body>
 <div class="setup">
   <form class="setup-card" id="form" autocomplete="on">
-    <div class="setup-mark">PD</div>
-    <h1 id="title">Log in to ProfitDesk</h1>
-    <p class="setup-sub" id="sub">Use the email and password you were given.</p>
+    <div class="setup-mark">EV</div>
+    <h1 id="title">Log in to EcomVital HQ</h1>
+    <p class="setup-sub" id="sub">True profit, tracking and ads for our stores. Use the email and password you were given.</p>
 
     <label class="field" id="codeField" hidden>
       <span>Setup code</span>
@@ -46,6 +47,8 @@
       <button class="btn btn-ghost btn-block" id="restore" type="button" style="margin-top:8px">Restore backup</button>
     </details>
   </form>
+  <p class="login-foot">EcomVital is in private beta · <a href="https://ecomvital.com/">About</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a><br>
+    © 2026 Value Ventures Limited</p>
 </div>
 <script>
   // The server fills this in: true when no account exists yet.

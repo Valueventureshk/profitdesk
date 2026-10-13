@@ -1,9 +1,152 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ProfitDesk</title><link rel="stylesheet" href="/static/styles.css">
-<style>.legal{max-width:720px;margin:40px auto;padding:0 20px;line-height:1.6}</style></head>
-<body><main class="legal">
-<h1>ProfitDesk</h1>
-<p>A private profit dashboard for Value Ventures Limited: our own Shopify sales against our own Google and Meta ad spend, payment fees and costs, so we know what each store really makes.</p>
-<p>Internal use only. <a href="/login">Log in</a> · <a href="/privacy">Privacy policy</a> · <a href="/terms">Terms of service</a></p>
-</main></body></html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EcomVital · True profit for Shopify brands running paid ads</title>
+<meta name="description" content="EcomVital shows Shopify brands their real profit after product costs, ad spend, fees and refunds, with server-side tracking and Google Ads product management. Built by an operator for operators. Now in private beta.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap">
+<link rel="stylesheet" href="/static/legal/site.css">
+</head>
+<body>
+<div class="wrap">
+  <nav class="nav">
+    <a class="logo" href="/"><span class="logo-mark">EV</span>EcomVital</a>
+    <div class="nav-links">
+      <a class="hide-sm" href="#who">Who it's for</a>
+      <a class="hide-sm" href="#what">What it does</a>
+      <a class="hide-sm" href="#story">Our story</a>
+      <a href="#beta" class="btn">Join the beta</a>
+    </div>
+  </nav>
+
+  <header class="hero">
+    <div>
+      <span class="tag">Private beta</span>
+      <h1>Did you actually make money today?</h1>
+      <p class="lead">EcomVital takes every Shopify order, the real cost of each product, every ad dollar on Meta and Google,
+        payment fees and refunds, and shows the one number that matters: true net profit. Then it helps you act on it.</p>
+      <div class="cta"><a class="btn" href="#beta">Register your interest</a><a class="btn ghost" href="#what">See what it does</a></div>
+    </div>
+    <div class="ledger" aria-label="Example profit and loss waterfall">
+      <div class="ledger-h"><span>Today, all stores</span><span class="mono">AUD · example</span></div>
+      <div class="wf">
+        <div class="wf-row"><span>Sales</span><div class="wf-track"><span class="s" style="width:100%;border-radius:4px"></span></div><span class="num">12,480</span></div>
+        <div class="wf-row"><span>Refunds</span><div class="wf-track"><span class="s" style="width:96.6%"></span><span class="h" style="width:3.4%"></span></div><span class="num">−420</span></div>
+        <div class="wf-row"><span>Fees</span><div class="wf-track"><span class="s" style="width:91.5%"></span><span class="h" style="width:5.1%"></span></div><span class="num">−640</span></div>
+        <div class="wf-row"><span>Product cost</span><div class="wf-track"><span class="s" style="width:60.2%"></span><span class="h" style="width:31.3%"></span></div><span class="num">−3,910</span></div>
+        <div class="wf-row"><span>Ad spend</span><div class="wf-track"><span class="s" style="width:27.2%"></span><span class="h" style="width:33%"></span></div><span class="num">−4,120</span></div>
+        <div class="wf-row wf-total"><span>Net profit</span><div class="wf-track"><span class="s net" style="width:27.2%"></span></div><span class="num" style="color:var(--profit)">3,390</span></div>
+      </div>
+    </div>
+  </header>
+</div>
+
+<section class="section" id="who">
+  <div class="wrap">
+    <span class="tag">Who it's for</span>
+    <h2>Built for operators who run real ad budgets</h2>
+    <p class="sub">If you run one or several Shopify stores, buy traffic on Meta and Google, and ship through suppliers or a
+      fulfilment partner, your ads dashboard and your Shopify report never agree, and neither tells you what you kept.</p>
+    <div class="grid3">
+      <div class="card"><span class="k">Multi-store owners</span><h3>Every store, one ledger</h3><p>Each store in its own currency and time zone, rolled up into one view of the whole business.</p></div>
+      <div class="card"><span class="k">Media buyers</span><h3>ROAS you can trust</h3><p>Server-side tracking that sees the orders browser pixels miss, and a breakeven ROAS for every product.</p></div>
+      <div class="card"><span class="k">Finance &amp; ops</span><h3>Costs that match the invoice</h3><p>Product costs from your supplier sheet and invoices, checked line by line, including bundles and free replacements.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="what">
+  <div class="wrap">
+    <span class="tag">What it does</span>
+    <h2>From "how are we doing?" to a decision in one place</h2>
+    <div class="grid2">
+      <div class="card"><h3>True profit dashboard</h3><p>Sales, refunds, chargebacks, payment fees, product cost and ad spend for every store and day, as a profit-and-loss waterfall. Every figure has one definition.</p></div>
+      <div class="card"><h3>Server-side tracking</h3><p>A first-party Shopify pixel records adds to cart, checkouts and purchases per campaign, ad set and ad, and sends conversions to Google Ads and Meta.</p></div>
+      <div class="card"><h3>Google Ads product desk</h3><p>Google Shopping and Performance Max spend for every product next to its real sales and cost, with verdicts to scale, watch or cut.</p></div>
+      <div class="card"><h3>Ads assistant</h3><p>An AI assistant that proposes changes to your own campaigns (new campaigns, moving winners, budgets) and only acts when you approve, with undo.</p></div>
+      <div class="card"><h3>Cash flow &amp; supplier accounts</h3><p>What's in the bank, what's held by payment processors and when it arrives, and what you owe each supplier.</p></div>
+      <div class="card"><h3>Ask it anything</h3><p>Chat with your numbers in the app or on WhatsApp: "how did Beige Rue do yesterday?", "which products lost money this week?".</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="story">
+  <div class="wrap">
+    <span class="tag">Our story</span>
+    <h2>Built by a store owner, not a software company</h2>
+    <div class="story">
+      <div class="avatar">NM</div>
+      <div>
+        <blockquote>"I was paying for a profit app, a tracking app, a parcel tracker, a spy tool and three spreadsheets, and I still couldn't answer one question: did we make money yesterday?"</blockquote>
+        <p><strong>Nafras Mohamed</strong> runs a group of Shopify stores across Australia, North America and Europe through
+          Value Ventures Limited, spending on Meta and Google Ads every day and shipping through overseas suppliers.</p>
+        <p>After years of stitching together apps that each saw only part of the picture, he built his own: one system that
+          reads the stores, the ad accounts, the payment processors and the supplier invoices, and reconciles them to the cent.
+          It now runs his whole operation every day: profit, tracking, ads, cash and customer support.</p>
+        <p>EcomVital is that system, being prepared for other brands who are tired of guessing.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="beta">
+  <div class="wrap beta">
+    <div>
+      <span class="tag">Private beta</span>
+      <h2>Not public yet. Get on the list.</h2>
+      <p class="sub">EcomVital is in private beta, used today on our own stores. We'll open it to a small group of brands first.
+        Tell us about your business and we'll be in touch when a spot opens.</p>
+      <ul class="list">
+        <li>Shopify stores (one or many)</li>
+        <li>Meta and/or Google Ads</li>
+        <li>No credit card, no commitment</li>
+      </ul>
+    </div>
+    <form class="interest" id="interest">
+      <div class="row">
+        <label>Your name<input name="name" required autocomplete="name"></label>
+        <label>Email<input name="email" type="email" required autocomplete="email"></label>
+      </div>
+      <label>Store website<input name="store" placeholder="yourstore.com"></label>
+      <div class="row">
+        <label>How many stores?<select name="stores"><option>1</option><option>2–3</option><option>4–10</option><option>10+</option></select></label>
+        <label>Monthly ad spend<select name="spend"><option>Under $10k</option><option>$10k–50k</option><option>$50k–200k</option><option>$200k+</option></select></label>
+      </div>
+      <label>What would you most like it to solve? (optional)<textarea name="note" rows="3"></textarea></label>
+      <input class="hp" name="website" tabindex="-1" autocomplete="off" aria-hidden="true">
+      <button class="btn" type="submit">Register interest</button>
+      <div id="msg" aria-live="polite"></div>
+    </form>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div><strong style="color:var(--ink)">EcomVital</strong> is a product of Value Ventures Limited (Hong Kong, company no. 73922982).<br>
+      Unit B, 3/F, Kai Wan House, 146 Tung Choi Street, Mongkok, Kowloon, Hong Kong · <a href="mailto:hello@ecomvital.com">hello@ecomvital.com</a></div>
+    <div><a href="/privacy">Privacy policy</a><a href="/terms">Terms of service</a><a href="https://hq.ecomvital.com/login">Log in</a></div>
+  </div>
+</footer>
+<script>
+document.getElementById("interest").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const f = e.target, msg = document.getElementById("msg");
+  const data = Object.fromEntries(new FormData(f).entries());
+  f.querySelector("button").disabled = true;
+  try {
+    const r = await fetch("/api/interest", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || j.detail || "Something went wrong. Please try again.");
+    f.reset();
+    msg.className = "ok"; msg.textContent = "Thanks! You're on the list. We'll be in touch.";
+  } catch (err) {
+    msg.className = "err"; msg.textContent = err.message;
+  } finally {
+    f.querySelector("button").disabled = false;
+  }
+});
+</script>
+</body>
+</html>
