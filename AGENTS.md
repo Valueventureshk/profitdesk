@@ -87,8 +87,15 @@ file and have it work.
 
 ## Current setup (keep this section up to date)
 
-- Live at https://profitdesk-production.up.railway.app (Railway project
-  "sparkling-beauty", service "profitdesk"). Every push to `main` deploys.
+- Live at **https://hq.ecomvital.com** (main address since 13 Oct 2026, `PUBLIC_URL`); the old
+  https://profitdesk-production.up.railway.app still serves the same app. Railway project "sparkling-beauty",
+  service "profitdesk". Every push to `main` deploys. Public brand **EcomVital**: https://www.ecomvital.com (same app,
+  host-based: `SITE_HOSTS` serve static/legal home/privacy/terms + `/api/interest` beta sign-ups, list at `/interest`;
+  ecomvital.com forwards to www at GoDaddy). DNS at GoDaddy (hq + www CNAMEs to Railway). `SHOPIFY_REDIRECT_URL` keeps
+  Shopify OAuth returning to the old address for store apps not yet listing hq (the 7 CLI apps list both). Google
+  OAuth client lists both callbacks; consent screen branding "EcomVital" verified + published 13 Oct (logo
+  static/brand/, domain verified in Search Console under info@tendance-montreal.com). Still on the old address:
+  Airwallex checkout webhook, 17TRACK webhook, the 5 non-CLI store apps.
   After a deploy, open `/healthz`: `db_on_volume` must be `true`.
 - Database lives on the Railway volume (`/data/profitdesk.db`). Credentials for
   Shopify apps, Meta, Google, Airwallex and PayPal are stored in that database,
