@@ -247,6 +247,21 @@ COG rules (replaced the old per-store "Other costs %", which is no longer used):
   approval, supplier payments ledger from Airwallex payouts, write cost to Shopify
   "Cost per item" (needs read_products, read_inventory, write_inventory).
 
+## To do later (owner decided to postpone)
+
+- **Move Google Cloud project "My First Project" (dark-smile-511222-t3) out of the tendance-montreal.com organisation
+  into EcomVital's own (ecomvital.com Workspace, admin@ecomvital.com).** Found 13 Oct 2026: the project sits under
+  Tendance Montreal's Google Workspace org, whose "Domain-restricted sharing" policy
+  (iam.allowedPolicyMemberDomains) blocks adding admin@ecomvital.com (or any Gmail) as owner, so EcomVital's API
+  access (Basic, Standard application), OAuth keys and branding depend on the Tendance org / info@tendance-montreal.com.
+  The plan:
+  1. admin@ecomvital.com sets up its Cloud organisation.
+  2. Migrate the project (needs project-move permissions in both orgs). The access level, branding and keys move with it.
+  3. Add admin@ecomvital.com as Owner, plus Search Console owner.
+
+  Quick alternative: a project-level exception to the Tendance org policy. Claude may not change IAM or org policy
+  itself; the owner clicks.
+
 ## Invariants — do not break these
 
 `metrics.py` is the single source of truth for every number. If a metric appears
