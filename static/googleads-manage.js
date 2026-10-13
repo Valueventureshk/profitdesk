@@ -42,7 +42,7 @@ function drawManage() {
   const s = mg.settings;
   $("mgChatStore").textContent = `${mg.name} · ${mg.structure.currency}`;
   $("mgSet").innerHTML = `<div class="gx-mgrow">
-      <label class="gx-switch"><input type="checkbox" id="mgOn"${s.enabled ? " checked" : ""}><i></i><b>Manage ${esc(mg.name)} from ProfitDesk</b></label>
+      <label class="gx-switch"><input type="checkbox" id="mgOn"${s.enabled ? " checked" : ""}><i></i><b>Manage ${esc(mg.name)} from EcomVital</b></label>
       <span class="gx-seg" id="mgMode"><button data-m="approve" class="${s.mode === "approve" ? "on" : ""}">Ask me first</button><button data-m="auto" class="${s.mode === "auto" ? "on" : ""}">Autopilot</button></span>
       <label class="gx-f">Max budget per campaign / day <input id="mgCap" type="number" min="1" value="${s.budget_cap}"></label>
       <label class="gx-f">Max for a new campaign <input id="mgNewCap" type="number" min="1" value="${s.new_budget_cap}"></label>

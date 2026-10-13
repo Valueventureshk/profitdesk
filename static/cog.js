@@ -1,4 +1,4 @@
-/* ProfitDesk COG + Products Monitor.
+/* EcomVital COG + Products Monitor.
 
    This file draws things. Every cost comes from the server (cog.py), already
    converted into the chosen currency. */
@@ -468,7 +468,7 @@ async function loadSuppliers() {
       ${s.stores.length ? `<div class="table-wrap"><table class="table sup-stores"><thead><tr><th>Store</th><th>Fulfilled orders</th><th>COG</th><th>Not invoiced yet</th></tr></thead><tbody>
         ${s.stores.map((x) => `<tr><td class="name">${esc(x.store)}</td><td>${x.orders}</td><td>${usd(x.cost)}</td><td>${usd(x.not_invoiced)}</td></tr>`).join("")}</tbody></table></div>` : ""}
       ${invRows ? `<h3 class="sup-h">Invoices since ${day(s.opening_date)}</h3><div class="table-wrap"><table class="table"><thead><tr><th>Date</th><th>Invoice</th>
-        <th>Invoiced</th><th title="ProfitDesk's own costing of the same orders: single prices, bundles at singles less the usual discount">Expected</th><th>Difference</th><th>Check</th></tr></thead><tbody>${invRows}</tbody></table></div>` : ""}
+        <th>Invoiced</th><th title="EcomVital's own costing of the same orders: single prices, bundles at singles less the usual discount">Expected</th><th>Difference</th><th>Check</th></tr></thead><tbody>${invRows}</tbody></table></div>` : ""}
       ${pays ? `<h3 class="sup-h">Payments since ${day(s.opening_date)}</h3><div class="table-wrap"><table class="table"><thead><tr><th>Date</th><th>Paid to</th><th>Amount</th><th>USD</th><th></th></tr></thead><tbody>${pays}</tbody></table></div>` : ""}
     </section>`;
   }).join("") || `<p class="hint">No supplier orders yet.</p>`;

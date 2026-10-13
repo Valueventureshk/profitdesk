@@ -1,5 +1,5 @@
-/* ProfitDesk size chart for Shopify product pages. Added to a store as a script tag
-   (SCM-style switch in ProfitDesk → Size Charts → Settings). It asks the store's own
+/* EcomVital size chart for Shopify product pages. Added to a store as a script tag
+   (SCM-style switch in EcomVital → Size Charts → Settings). It asks the store's own
    app proxy (/apps/track/sizechart) for this product's chart and draws a button and
    a pop-up. Works on any theme; does nothing on pages without a chart. */
 (function () {

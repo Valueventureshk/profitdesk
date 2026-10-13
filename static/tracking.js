@@ -1,4 +1,4 @@
-/* ProfitDesk Apps → Tracking: the wetracked.io report, same layout and behaviour (pinned header and
+/* EcomVital Apps → Tracking: the wetracked.io report, same layout and behaviour (pinned header and
    first column, sort on every column, row checkboxes, column builder, rows per page), plus Meta spend,
    cost per purchase and ROAS. Every figure comes from the server (tracking.py). */
 
@@ -361,7 +361,7 @@ async function openJourney(cid, back) {
 /* ------------------------------------------------ setup (pixel, Meta) */
 function drawSetup() {
   $("setup").innerHTML = `<div class="panel-head"><h2>Tracking setup</h2><button class="btn btn-sm btn-ghost" id="setupClose">Close</button></div>
-    <p class="hint trk-pad">The ProfitDesk pixel is a Shopify web pixel inside each store's ProfitDesk app (like the wetracked.io Connect app).
+    <p class="hint trk-pad">The EcomVital pixel is a Shopify web pixel inside each store's EcomVital app (like the wetracked.io Connect app).
       Shopify only runs it for shoppers who allowed tracking in the store's cookie banner. <b>Watch only</b>: tracks and reports, sends nothing
       to Meta, so it can run next to wetracked.io without double counting.</p>
     <div class="table-wrap"><table class="table"><thead><tr><th>Store</th><th>Pixel</th><th>Last 24 h</th><th>Meta pixel ID</th><th>Conversions API token</th><th>Mode</th></tr></thead><tbody>
@@ -405,7 +405,7 @@ async function drawGoogle() {
       <span><select class="control" id="gStore">${gStores.map((s) => `<option value="${s.id}"${String(s.id) === gStore ? " selected" : ""}>${esc(s.name)}</option>`).join("")}</select>
       <button class="btn btn-sm btn-ghost" id="gClose">Close</button></span></div>
     <p class="hint trk-pad">What each Google Ads account records. <b>Primary</b> = Google bids on it and shows it as Conversions; <b>secondary</b> = recorded only.
-      A store needs exactly one working primary purchase action. Next step: ProfitDesk's own Purchase / Add to cart / Checkout sent from the pixel (needs the pixel on the store).</p>
+      A store needs exactly one working primary purchase action. Next step: EcomVital's own Purchase / Add to cart / Checkout sent from the pixel (needs the pixel on the store).</p>
     <div id="gPlan"></div><div id="gOurs"></div>
     <div id="gBody"><p class="hint trk-pad">Reading the account…</p></div>`;
   drawPlan();
@@ -470,7 +470,7 @@ async function drawOurs() {
   const c = d.settings, n = (k, st) => (d.counts[k] || {})[st] || 0;
   const cmp = d.compare || {};
   const rows = cmp.dates ? cmp.dates.map((dt, i) => `<tr><td>${dt.slice(5)}</td><td class="num"><b>${cmp.ours[i] || "—"}</b></td>${Object.values(cmp.others).map((v) => `<td class="num">${v[i] || "—"}</td>`).join("")}</tr>`).reverse().join("") : "";
-  $("gOurs").innerHTML = `<div class="gours"><div class="gours-h"><b>ProfitDesk → Google Ads</b>
+  $("gOurs").innerHTML = `<div class="gours"><div class="gours-h"><b>EcomVital → Google Ads</b>
       ${d.pixel ? "" : `<span class="src bad">Pixel off in this store</span>`}
       <span data-manage-only><label class="trk-gsw"><input type="checkbox" id="gOn"${c.enabled ? " checked" : ""}> Send to Google</label>
       <button class="btn btn-sm btn-ghost" id="gSend" title="Send waiting events to Google now">Send now</button>
@@ -484,7 +484,7 @@ async function drawOurs() {
       <span>${n("purchase", "no_click")} purchases had no Google click</span>
       ${(d.adjusted.done || 0) + (d.adjusted.final || 0) ? `<span>${(d.adjusted.done || 0) + (d.adjusted.final || 0)} refunds / cancellations corrected in Google</span>` : ""}
       ${n("purchase", "retry") + n("purchase", "failed") ? `<span class="neg">${n("purchase", "retry")} waiting to retry · ${n("purchase", "failed")} failed</span>` : ""}</div>
-    ${rows ? `<details${c.enabled ? " open" : ""}><summary class="hint">Purchases per day as Google counts them: ProfitDesk vs the others</summary>
+    ${rows ? `<details${c.enabled ? " open" : ""}><summary class="hint">Purchases per day as Google counts them: EcomVital vs the others</summary>
       <div class="table-wrap"><table class="table"><thead><tr><th>Day</th><th>ProfitDesk Purchase</th>${Object.keys(cmp.others).map((k) => `<th>${esc(k)}${cmp.primary.includes(k) ? " (primary)" : ""}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div></details>` : ""}
     ${d.errors.length ? `<details><summary class="hint">Last problems</summary>${d.errors.map((e) => `<div class="hint">${esc(e.kind)} ${esc(e.at)}: ${esc(e.error || "")}</div>`).join("")}</details>` : ""}</div>`;
   const save = async (body) => {

@@ -1,4 +1,4 @@
-/* ProfitDesk Product Importer: edit an imported product without opening Shopify.
+/* EcomVital Product Importer: edit an imported product without opening Shopify.
    Title, description (with AI rewrite), images, prices, size chart, tags, and Activate.
    Uses importer.js helpers ($, api, send, esc, toast, thumb, money). */
 

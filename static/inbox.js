@@ -1,4 +1,4 @@
-/* ProfitDesk Inbox: every store's support emails, sorted by the AI into tickets.
+/* EcomVital Inbox: every store's support emails, sorted by the AI into tickets.
    This file draws things; sorting and every status come from the server. */
 
 const $ = (id) => document.getElementById(id);

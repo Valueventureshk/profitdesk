@@ -1,4 +1,4 @@
-/* ProfitDesk Apps → Session Recordings: per-store switch, the list of shopper sessions, and the
+/* EcomVital Apps → Session Recordings: per-store switch, the list of shopper sessions, and the
    replay (rrweb-player). Every figure comes from the server (recordings.py). */
 
 const $ = (id) => document.getElementById(id);

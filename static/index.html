@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ProfitDesk</title>
+<title>EcomVital</title>
 <script>try{var t=localStorage.getItem("pdTheme")||(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");document.documentElement.dataset.theme=t;if((localStorage.getItem("pdSkin")||"new")==="new")document.documentElement.classList.add("skin-new");}catch(e){}</script>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;650;700&display=swap">
 <link rel="stylesheet" href="/static/styles.css">
@@ -17,7 +17,7 @@
     <div class="setup-mark">PD</div>
     <h1>Connect your first store</h1>
     <p class="setup-sub">
-      ProfitDesk installs into Shopify as an app and asks for view access to your
+      EcomVital installs into Shopify as an app and asks for view access to your
       orders. Nothing is changed in your store.
     </p>
 
@@ -49,8 +49,8 @@
 
   <aside class="sidebar">
     <div class="brand" data-section-menu title="Switch section">
-      <span class="brand-mark">PD</span>
-      <span class="brand-name">ProfitDesk</span>
+      <span class="brand-mark"><img src="/static/brand/ecomvital-120.png" alt=""></span>
+      <span class="brand-name">EcomVital</span>
     </div>
 
     <nav id="storeNav" class="nav"></nav>
@@ -149,7 +149,7 @@
 
       <section class="block">
         <h3>Add a Shopify store</h3>
-        <p class="hint">Each store connects through its own small ProfitDesk app in
+        <p class="hint">Each store connects through its own small EcomVital app in
           Shopify. Make one per store, then paste its details here.</p>
         <label class="field">
           <span>Store address</span>
@@ -175,7 +175,7 @@
           <ol class="hint steps">
             <li>Go to <strong>dev.shopify.com</strong>, pick the organization that owns
               the store, then <strong>Create app → Start from Dev Dashboard</strong>.
-              Name it ProfitDesk.</li>
+              Name it EcomVital.</li>
             <li>On <strong>Versions</strong>, set App URL to
               <code>http://127.0.0.1:8787</code>, scopes to <code>read_orders</code>,
               and Redirect URL to
@@ -188,7 +188,7 @@
               unticked, and click <strong>Generate link</strong>. Copy the
               <strong>Install link</strong>.</li>
             <li>Paste all four here and click <strong>Connect store</strong>. Shopify
-              asks you to approve; click <strong>Install</strong> and ProfitDesk
+              asks you to approve; click <strong>Install</strong> and EcomVital
               finishes the rest.</li>
           </ol>
           <p class="hint">Leave the install link empty only for an app that is
@@ -212,7 +212,7 @@
           logins. Keep it somewhere private, since it holds your access keys.</p>
         <a class="btn btn-ghost btn-block" href="/api/backup">Download backup</a>
         <details class="advanced"><summary>Restore from a backup</summary>
-          <p class="hint">Replaces everything in this ProfitDesk with the backup. You'll
+          <p class="hint">Replaces everything in this EcomVital with the backup. You'll
             log in again afterwards with the backup's accounts.</p>
           <input id="restoreFile" type="file" accept=".db">
           <button id="restoreGo" class="btn btn-danger btn-block" style="margin-top:8px">Restore backup</button>
@@ -235,7 +235,7 @@
 
       <section class="block" data-owner-only>
         <h3>WhatsApp</h3>
-        <p class="hint">Chat with ProfitDesk from WhatsApp: questions, store health, Google Ads changes (with a YES to confirm),
+        <p class="hint">Chat with EcomVital from WhatsApp: questions, store health, Google Ads changes (with a YES to confirm),
           scheduled reports, alerts, and invoices sent as files. Uses Meta's official WhatsApp Business Platform.</p>
         <div id="waBox"></div>
       </section>
@@ -243,7 +243,7 @@
       <section class="block">
         <h3>Support mailboxes</h3>
         <p class="hint">Each store's support inbox, read every 2 minutes into the Inbox desk.
-          ProfitDesk never marks emails as read, moves or deletes them.</p>
+          EcomVital never marks emails as read, moves or deletes them.</p>
         <div id="mailBox"></div>
       </section>
 

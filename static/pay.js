@@ -1,5 +1,5 @@
-/* The payment page: details -> ProfitDesk prices it and opens an Airwallex payment -> Airwallex's Drop-in takes the
-   card (and saves it for a subscription) -> ProfitDesk checks the payment and creates the Shopify order. */
+/* The payment page: details -> EcomVital prices it and opens an Airwallex payment -> Airwallex's Drop-in takes the
+   card (and saves it for a subscription) -> EcomVital checks the payment and creates the Shopify order. */
 (function () {
   const O = window.OFFER;
   const $ = (id) => document.getElementById(id);
@@ -132,7 +132,7 @@
     });
   }
 
-  // ---- step 3: ProfitDesk checks the payment and creates the order
+  // ---- step 3: EcomVital checks the payment and creates the order
   async function finish(consentId) {
     $("step-pay").hidden = true;
     $("step-done").hidden = false;

@@ -298,7 +298,7 @@ async def create_pmax(rt, customer_id, login_cid, name: str, budget: float, merc
     if feed_label:
         shopping["feedLabel"] = feed_label
     ops = [
-        {"campaignBudgetOperation": {"create": {"resourceName": budget_rn, "name": f"{name} · ProfitDesk",
+        {"campaignBudgetOperation": {"create": {"resourceName": budget_rn, "name": f"{name} · EcomVital",
                                                 "amountMicros": str(int(round(budget * 1_000_000))),
                                                 "deliveryMethod": "STANDARD", "explicitlyShared": False}}},
         {"campaignOperation": {"create": {
@@ -351,7 +351,7 @@ def new_tree(products: dict, add=(), remove=()) -> tuple:
     add, remove = {i for i in add}, {i for i in remove}
     if mode == "custom":
         raise gads.GoogleAdsError("This campaign picks its products by labels or categories (set in Google Ads or by a feed app), "
-                                  "so ProfitDesk won't rewrite it. Use a campaign that lists products by ID.")
+                                  "so EcomVital won't rewrite it. Use a campaign that lists products by ID.")
     low = lambda s: {x.lower() for x in s}
     if mode in ("all",):
         return ("all", []) if not remove else ("except", sorted(remove))
@@ -413,7 +413,7 @@ def _item_of(node) -> str:
 
 def _leaf_for(nodes, kids, attrs) -> object:
     """The tree end an item falls into, walking from the root by custom labels / item id; None if the tree splits by
-    something ProfitDesk doesn't know for the item (brand, category, type)."""
+    something EcomVital doesn't know for the item (brand, category, type)."""
     node = next((n for n in nodes if n["parent"] is None), None)
     while node is not None and node["type"] == "SUBDIVISION":
         ch = kids.get(node["key"], [])
@@ -541,7 +541,7 @@ def custom_include(group: dict, items: list) -> list:
             continue                                        # drop the exclusion: "everything else" includes it again
         out.append(dict(n))
     if not found:
-        raise gads.GoogleAdsError(f"“{group['name']}” picks products by labels / categories, so ProfitDesk can only put back "
+        raise gads.GoogleAdsError(f"“{group['name']}” picks products by labels / categories, so EcomVital can only put back "
                                   "products it took out. To add new ones, give them the campaign's label in your feed app.")
     return out
 

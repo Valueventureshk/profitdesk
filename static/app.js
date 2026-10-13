@@ -1,4 +1,4 @@
-/* ProfitDesk dashboard.
+/* EcomVital dashboard.
 
    This file draws things. It never calculates a metric — every figure comes
    from the server already worked out. */
@@ -671,7 +671,7 @@ async function connectWithApp() {
     const r = await jsonPost("/api/shopify/apps", body);
     if (win) win.location = r.open; else popup(r.open);
     for (const id of ["newClientId", "newClientSecret", "newInstallLink"]) $(id).value = "";
-    toast("Approve ProfitDesk in the Shopify window to finish connecting.");
+    toast("Approve EcomVital in the Shopify window to finish connecting.");
   } catch (e) {
     if (win) win.close();
     toast(e.message, true);
@@ -1001,11 +1001,11 @@ async function renderWidgets() {
     <details class="advanced"${r.widgets.length ? "" : " open"}><summary>How to put it on your iPhone</summary>
       <ol class="wg-steps">
         <li>On your iPhone, install <b>Scriptable</b> from the App Store (free).</li>
-        <li>Open ProfitDesk on the iPhone (Safari), go to Settings → iPhone widget and tap <b>Copy script</b>.</li>
-        <li>Open Scriptable, tap <b>+</b>, paste, and name it <b>ProfitDesk</b> at the top. Tap ▶ to preview.</li>
+        <li>Open EcomVital on the iPhone (Safari), go to Settings → iPhone widget and tap <b>Copy script</b>.</li>
+        <li>Open Scriptable, tap <b>+</b>, paste, and name it <b>EcomVital</b> at the top. Tap ▶ to preview.</li>
         <li>On the home screen, press and hold an empty spot → <b>Edit</b> → <b>Add widget</b> → Scriptable → pick a size → Add widget.</li>
-        <li>Tap the new widget → <b>Script</b>: ProfitDesk. Done. It updates about every 15 minutes; tapping it opens ProfitDesk.</li>
-        <li>Lock screen: customise the lock screen → add a Scriptable widget → choose ProfitDesk (shows the first 1–3 figures).</li>
+        <li>Tap the new widget → <b>Script</b>: EcomVital. Done. It updates about every 15 minutes; tapping it opens EcomVital.</li>
+        <li>Lock screen: customise the lock screen → add a Scriptable widget → choose EcomVital (shows the first 1–3 figures).</li>
       </ol>
       <p class="hint">Want a second widget (say one per store)? Create another here, copy its script into a new
         Scriptable script with its own name. Changing figures here updates the phone without re-copying.
@@ -1120,7 +1120,7 @@ async function renderWA() {
       <label class="field"><span>OpenAI API key${r.has_voice_key ? " · saved, paste to replace" : ""}</span><input id="waVoice" type="password" autocomplete="off"></label>
     </details>
     <h4 class="wa-h">Who can use it</h4>
-    <p class="hint">Each number chats as that person, with their ProfitDesk access. Messages from any other number are ignored.</p>
+    <p class="hint">Each number chats as that person, with their EcomVital access. Messages from any other number are ignored.</p>
     <div id="waPeople">${(r.people.length ? r.people : [{}]).map(row).join("")}</div>
     <button class="btn btn-sm btn-ghost" id="waAdd">+ Add a number</button>
     <div class="wa-btns"><button id="waSave" class="btn btn-primary">Save</button>
@@ -1172,10 +1172,10 @@ async function renderMailboxes() {
     ${r.accounts.length ? `<details class="advanced"${r.accounts.some((a) => a.can_send) ? "" : " open"}><summary>Replying from the Inbox: how to sign in</summary>
       <ol class="wg-steps">
         <li>Once only: switch on the <a href="${esc(r.gmail_api_link)}" target="_blank" rel="noopener"><b>Gmail API</b></a>
-          in your Google Cloud project (the one ProfitDesk's Google sign-in uses) → click <b>Enable</b>.</li>
+          in your Google Cloud project (the one EcomVital's Google sign-in uses) → click <b>Enable</b>.</li>
         <li>Click <b>Sign in to send</b> next to a mailbox. A Google tab opens.</li>
         <li>Choose that mailbox's Google account (the same address). If Google says the app isn't verified,
-          click <b>Advanced</b> → <b>Go to ProfitDesk</b>. It only asks to <b>send email</b> on that address.</li>
+          click <b>Advanced</b> → <b>Go to EcomVital</b>. It only asks to <b>send email</b> on that address.</li>
         <li>Click <b>Continue</b>. The tab says it's done; close it and this list shows ✓.</li>
       </ol>
       <p class="hint">Replies go out from the store's address, appear in that mailbox's Sent folder and stay in the
@@ -1188,7 +1188,7 @@ async function renderMailboxes() {
       <label class="field"><span>App password (16 letters from Google)</span>
         <input id="mbPass" type="password" autocomplete="off"></label>
       <p class="hint">Google Workspace / Gmail: sign in to the mailbox → myaccount.google.com/apppasswords →
-        name it "ProfitDesk" → Create, and paste the 16 letters here.</p>
+        name it "EcomVital" → Create, and paste the 16 letters here.</p>
       <button id="mbAdd" class="btn btn-primary btn-block">Connect mailbox</button>
     </details>`;
   $("mbAdd").onclick = async () => {
@@ -1225,7 +1225,7 @@ async function renderMailboxes() {
   if (!window.__mbFocus) { window.__mbFocus = true; window.addEventListener("focus", () => { if (!$("drawer").hidden) renderMailboxes(); }); }
   for (const b of $("mailBox").querySelectorAll("[data-remove-mail]")) {
     b.onclick = async () => {
-      if (!confirm("Disconnect this mailbox? Its emails are removed from ProfitDesk (the mailbox itself isn't touched).")) return;
+      if (!confirm("Disconnect this mailbox? Its emails are removed from EcomVital (the mailbox itself isn't touched).")) return;
       await api(`/api/mail-accounts/${b.dataset.removeMail}`, { method: "DELETE" });
       renderMailboxes();
     };
@@ -1426,7 +1426,7 @@ function renderGoogleBox() {
         value="${g.sheet_id ? `https://docs.google.com/spreadsheets/d/${esc(g.sheet_id)}` : ""}"></label>
     <button id="gSheetSave" class="btn btn-ghost btn-block">Save Sheet link</button>
     <p class="hint">Until Google approves direct access, a small script in each Google Ads
-      account copies its spend into this Sheet every hour. The script is in the ProfitDesk
+      account copies its spend into this Sheet every hour. The script is in the EcomVital
       folder as <code>google-ads-script.js</code>.</p>
     <details class="advanced" id="gKeysBox"><summary>Change Google sign-in keys</summary>
       <p class="hint">From Google Cloud → Google Auth Platform → Clients. Redirect URI: <code>${esc(g.redirect_uri || "")}</code>.
@@ -1489,7 +1489,7 @@ function renderMetaBox() {
        <details class="advanced">
          <summary>Add another Meta business</summary>
          <p class="hint">For a store whose ad account lives in a different business.
-           Make a ProfitDesk system user and token in <strong>that</strong> business,
+           Make a EcomVital system user and token in <strong>that</strong> business,
            the same way as the first, and paste it here.</p>
          ${tokenForm}
        </details>`
@@ -1651,7 +1651,7 @@ function renderStoreSettings() {
 
     row.querySelector(".remove").onclick = async () => {
       const store = state.setup.stores.find((s) => String(s.id) === id);
-      if (!confirm(`Remove ${store.name}? Its figures disappear from ProfitDesk. `
+      if (!confirm(`Remove ${store.name}? Its figures disappear from EcomVital. `
                  + `Nothing changes inside Shopify.`)) return;
       await api(`/api/stores/${id}`, { method: "DELETE" });
       toast("Store removed.");
@@ -1696,7 +1696,7 @@ $("openSettings").onclick = openSettings;
 $("restoreGo").onclick = async () => {
   const f = $("restoreFile").files[0];
   if (!f) { toast("Choose the backup file first.", true); return; }
-  if (!confirm("Replace everything in this ProfitDesk with that backup?")) return;
+  if (!confirm("Replace everything in this EcomVital with that backup?")) return;
   try {
     const r = await fetch("/api/restore", { method: "POST", body: f });
     const body = await r.json().catch(() => ({}));

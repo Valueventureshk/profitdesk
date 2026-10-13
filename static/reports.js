@@ -1,4 +1,4 @@
-/* ProfitDesk Reports desk: make and download CSV reports (built by the server). */
+/* EcomVital Reports desk: make and download CSV reports (built by the server). */
 
 const $ = (id) => document.getElementById(id);
 const HELP = {

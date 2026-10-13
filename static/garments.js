@@ -1,4 +1,4 @@
-// Garment line icons for the Size Charts desk (drawn for ProfitDesk, 48×48, stroke = currentColor).
+// Garment line icons for the Size Charts desk (drawn for EcomVital, 48×48, stroke = currentColor).
 (function () {
   const P = {
     dress: "M19 5v7M29 5v7M19 12h10c0 3 .8 5.6 2 8H17c1.2-2.4 2-5 2-8zM17 20 9.5 40.5c9.5 3.6 19.5 3.6 29 0L31 20M20 20l-3 21M28 20l3 21",

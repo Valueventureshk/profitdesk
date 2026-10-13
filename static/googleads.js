@@ -1,6 +1,6 @@
-/* ProfitDesk Apps → Google Ads, laid out like pythago.io: filters, summary cards, one row per Shopify
+/* EcomVital Apps → Google Ads, laid out like pythago.io: filters, summary cards, one row per Shopify
    product (its Google variants combined) with 7 / 14 / 30 day columns, bulk Draft / Archive in Shopify,
-   tags, a variant breakdown and a Period 1 vs Period 2 comparison. Plus ProfitDesk's own: any period,
+   tags, a variant breakdown and a Period 1 vs Period 2 comparison. Plus EcomVital's own: any period,
    verdicts, breakeven ROAS, refunds and fees, totals that match the dashboard, the ad account's currency.
    Every figure comes from the server (google_desk.py); the page only adds up rows a filter leaves. */
 
@@ -76,7 +76,7 @@ function range() {
 }
 const fmtDate = (s) => new Date(s + "T12:00:00Z").toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
 
-/* ------------------------------------------------ columns (pythago's, then ProfitDesk's) */
+/* ------------------------------------------------ columns (pythago's, then EcomVital's) */
 const COLS = [
   { id: "cost", label: "Cost", icon: "g", t: "Google spend in the picked period", v: (m) => m.cost, f: (v) => money(v) },
   { id: "conversions", label: "Conv.", t: "Google conversions (Google's attribution)", v: (m) => m.conversions, f: (v) => n(v, 1), cls: "gx-purple" },

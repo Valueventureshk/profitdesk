@@ -1,4 +1,4 @@
-/* ProfitDesk Expenses desk: actual payments out of Airwallex and PayPal, by
+/* EcomVital Expenses desk: actual payments out of Airwallex and PayPal, by
    category. Every figure comes from the server (expenses.py). */
 
 const $ = (id) => document.getElementById(id);

@@ -1,4 +1,4 @@
-/* ProfitDesk session recordings: added to a store's pages (ScriptTag) when Session Recordings is on.
+/* EcomVital session recordings: added to a store's pages (ScriptTag) when Session Recordings is on.
    Records what a visitor sees and does (rrweb: page structure + changes, not video), never what they
    type (every input is masked), and not at all when the shopper declined analytics in Shopify's
    cookie banner. Chunks go through the store's app proxy (/apps/track/rec), so only real stores can

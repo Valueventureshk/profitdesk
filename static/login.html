@@ -12,7 +12,7 @@
 <body>
 <div class="setup">
   <form class="setup-card" id="form" autocomplete="on">
-    <div class="setup-mark">EV</div>
+    <div class="setup-mark" style="background:none;padding:0;overflow:hidden"><img src="/static/brand/ecomvital-120.png" alt="EcomVital" style="width:100%;height:100%;display:block"></div>
     <h1 id="title">Log in to EcomVital HQ</h1>
     <p class="setup-sub" id="sub">True profit, tracking and ads for our stores. Use the email and password you were given.</p>
 
@@ -41,8 +41,8 @@
     <p class="notice" id="notice" hidden></p>
 
     <details class="advanced" id="restoreBox" hidden>
-      <summary>Moving ProfitDesk? Restore a backup instead</summary>
-      <p class="hint">Upload a backup downloaded from another ProfitDesk (Settings → Backup).
+      <summary>Moving EcomVital? Restore a backup instead</summary>
+      <p class="hint">Upload a backup downloaded from another EcomVital (Settings → Backup).
         Everything comes across, including its logins. Enter the setup code above first.</p>
       <input id="file" type="file" accept=".db">
       <button class="btn btn-ghost btn-block" id="restore" type="button" style="margin-top:8px">Restore backup</button>
@@ -59,7 +59,7 @@
 
   if (FIRST_RUN) {
     $("title").textContent = "Create the owner account";
-    $("sub").textContent = "ProfitDesk has no accounts yet. This first one is yours. " +
+    $("sub").textContent = "EcomVital has no accounts yet. This first one is yours. " +
       "You can add your partner afterwards in Settings → People.";
     $("nameField").hidden = false;
     $("confirmField").hidden = false;

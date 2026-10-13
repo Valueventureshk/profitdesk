@@ -1,7 +1,7 @@
-// ProfitDesk widget for iPhone (runs in the free Scriptable app).
+// EcomVital widget for iPhone (runs in the free Scriptable app).
 // Widget: __WIDGET_NAME__
-// Change what it shows in ProfitDesk → Settings → iPhone widget; no need to touch this script.
-// The link below is private and read-only. Turning the widget off in ProfitDesk kills it.
+// Change what it shows in EcomVital → Settings → iPhone widget; no need to touch this script.
+// The link below is private and read-only. Turning the widget off in EcomVital kills it.
 
 const URL_ = args.widgetParameter && args.widgetParameter.startsWith("http") ? args.widgetParameter : "__WIDGET_URL__";
 const APP = "__APP_URL__";
@@ -49,7 +49,7 @@ async function load() {
   const r = new Request(URL_);
   r.timeoutInterval = 40;
   const d = await r.loadJSON();
-  if (r.response && r.response.statusCode >= 400) throw new Error(d.error || "ProfitDesk didn't answer.");
+  if (r.response && r.response.statusCode >= 400) throw new Error(d.error || "EcomVital didn't answer.");
   return d;
 }
 
@@ -96,7 +96,7 @@ function build(d) {
 
   if (fam === "accessoryInline") {
     const it = items[0];
-    w.addText(it ? it.label + " " + fmt(it, d.currency, true) : "ProfitDesk");
+    w.addText(it ? it.label + " " + fmt(it, d.currency, true) : "EcomVital");
     return w;
   }
   if (fam === "accessoryRectangular" || fam === "accessoryCircular") {
@@ -148,7 +148,7 @@ function errorWidget(msg) {
   const w = new ListWidget();
   w.backgroundColor = C.bg;
   w.url = APP;
-  const t = w.addText("ProfitDesk");
+  const t = w.addText("EcomVital");
   t.font = Font.boldSystemFont(13);
   t.textColor = C.ink;
   w.addSpacer(6);

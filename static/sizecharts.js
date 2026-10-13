@@ -1,4 +1,4 @@
-/* ProfitDesk Size Charts desk: list, editor (blocks), applies-to rules, import,
+/* EcomVital Size Charts desk: list, editor (blocks), applies-to rules, import,
    AI from image, and per-store display settings. Rendering is done by the server
    (sizecharts.py) so the preview matches the store exactly. */
 

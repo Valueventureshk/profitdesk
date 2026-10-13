@@ -1,4 +1,4 @@
-/* The section menu behind the PD logo, shared by every ProfitDesk page.
+/* The section menu behind the PD logo, shared by every EcomVital page.
    Phones and desktop both open it by tapping/clicking the logo. */
 
 // What you're looking at lives in the address (e.g. /?store=6&range=7), so a refresh or a
@@ -138,7 +138,7 @@ window.PDUrl = {
     rail.className = "pd-rail";
     const dark = () => document.documentElement.dataset.theme === "dark";
     rail.innerHTML = `
-      <a class="pd-rail-brand" href="/"><span class="brand-mark">PD</span><span>ProfitDesk</span></a>
+      <a class="pd-rail-brand" href="/"><span class="brand-mark"><img src="/static/brand/ecomvital-120.png" alt=""></span><span>EcomVital</span></a>
       <nav class="pd-rail-nav">${allowed.map((s, i) => `${headed(allowed, (g) => `<div class="pd-rail-group">${g}</div>`)(s, i)}<a class="pd-rail-item${here === s.href ? " on" : ""}" href="${s.href}" title="${s.note}">
         ${svg(s.href)}<span>${s.label.replace(" + Products Monitor", "")}</span></a>`).join("")}</nav>
       <div class="pd-rail-foot">

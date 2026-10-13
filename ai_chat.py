@@ -1,4 +1,4 @@
-"""The chat button: ask ProfitDesk anything.
+"""The chat button: ask EcomVital anything.
 
 Claude Sonnet 5.5 doesn't hold any figures itself. It calls the app's own tools
 (the same logic the desks use) and explains the answer; documents are made by
@@ -79,10 +79,10 @@ _NUMQ = {"type": ["number", "null"]}
 TOOLS += [
     _tool("store_health", "Health check of one store or all: Shopify connection + permissions, product problems (active products "
           "without image / price / stock), tracking pixel (events, last event), Google conversion tracking (which purchase "
-          "action Google bids on, what it recorded, ProfitDesk uploads, how many Shopify orders Google sees), Meta link, "
+          "action Google bids on, what it recorded, EcomVital uploads, how many Shopify orders Google sees), Meta link, "
           "COG / invoices (how much of the last 14 days is costed from invoices vs estimates, last invoice uploaded), inbox "
           "waiting. Returns problems first.", {"store": {"type": "string", "description": "a store id, or all"}}, ["store"]),
-    _tool("tracking_live", "Live pixel events from the ProfitDesk tracking pixel, per hour, split by where the shopper came "
+    _tool("tracking_live", "Live pixel events from the EcomVital tracking pixel, per hour, split by where the shopper came "
           "from (meta, google, tiktok, other): adds to cart, checkouts, purchases. For 'how many adds to cart from Meta in "
           "the last hour'.", {"store": {"type": "string", "description": "a store id, or all"},
                               "hours": {"type": "integer", "description": "1-48"}}, ["store", "hours"]),
@@ -141,7 +141,7 @@ for _t in TOOLS:
         _t.pop("strict", None)
 assert sum(1 for _t in TOOLS if _t.get("strict")) <= 20, "too many strict tools"
 
-SYSTEM = """You are ProfitDesk's assistant for the owner and staff of a group of Shopify stores.
+SYSTEM = """You are EcomVital's assistant for the owner and staff of a group of Shopify stores.
 Answer questions about their business using the tools: profit, cash flow, COG, the support inbox and reports. Never make up a figure: if a tool can't give it, say so.
 Today is {today} (Hong Kong time). "Today", "yesterday", "last week" (the 7 days ending yesterday), "this month" and similar mean dates on that clock.
 Money is in {currency} unless a tool says otherwise; write amounts with their currency (e.g. A$1,234 for AUD, US$ for USD). Keep answers short and plain: lead with the answer, then the key numbers. Use a small table when comparing several stores or days.

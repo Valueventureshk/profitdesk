@@ -1,4 +1,4 @@
-"""ProfitDesk — ROAS and net profit across every Shopify store you run.
+"""EcomVital — ROAS and net profit across every Shopify store you run.
 
 Run:  python app.py     then open http://127.0.0.1:8787
 
@@ -74,11 +74,11 @@ from shopify_client import ShopifyClient, ShopifyError
 # On Railway (or any host that sets RAILWAY_ENVIRONMENT) listen on all
 # interfaces; on a Mac stay on this computer only.
 HOST = "0.0.0.0" if os.getenv("RAILWAY_ENVIRONMENT") else os.getenv("HOST", "127.0.0.1")
-# While ProfitDesk has no accounts yet, creating the owner or restoring a
+# While EcomVital has no accounts yet, creating the owner or restoring a
 # backup needs this code when it's set (always set it on a public server).
 SETUP_CODE = os.getenv("SETUP_CODE", "")
 PORT = int(os.getenv("PORT", "8787"))
-# Where people reach ProfitDesk. On a server set PUBLIC_URL (e.g.
+# Where people reach EcomVital. On a server set PUBLIC_URL (e.g.
 # https://app.example.com); every return address for Shopify and Google is
 # built from it.
 BASE_URL = (os.getenv("PUBLIC_URL") or f"http://{HOST}:{PORT}").rstrip("/")
@@ -94,7 +94,7 @@ LIVE_DAYS = 2   # the last days always read live from Shopify; older ones from t
 
 
 # ---- stall watchdog: when the server is stuck on one job (pages wait meanwhile), note where
-_stalls: list = []            # [(when, seconds, "file:line function" stack of ProfitDesk code)]
+_stalls: list = []            # [(when, seconds, "file:line function" stack of EcomVital code)]
 _beat = {"t": time.time()}
 
 
@@ -154,7 +154,7 @@ async def lifespan(app):
     snapper.cancel()
 
 
-app = FastAPI(title="ProfitDesk", docs_url=None, redoc_url=None, lifespan=lifespan)
+app = FastAPI(title="EcomVital", docs_url=None, redoc_url=None, lifespan=lifespan)
 
 
 @app.get("/api/debug/timing")
@@ -264,8 +264,8 @@ def _need_level(request: Request, desk: str, need: str = "manage"):
 
 def _shopify_launch(request: Request):
     """The app opened from inside a store's Shopify admin (signed by Shopify): if the
-    store hasn't granted everything ProfitDesk asks for, send it to Shopify's approval
-    screen. Works whichever Shopify login is used, and needs no ProfitDesk login."""
+    store hasn't granted everything EcomVital asks for, send it to Shopify's approval
+    screen. Works whichever Shopify login is used, and needs no EcomVital login."""
     q = dict(request.query_params)
     if request.url.path != "/" or "hmac" not in q or "shop" not in q:
         return None
@@ -283,7 +283,7 @@ def _shopify_launch(request: Request):
     _shopify_states[state] = domain
     url = shop.install_url(domain, SHOPIFY_REDIRECT, state, keys)
     # Inside the admin the app may be framed; break out to the top window.
-    return HTMLResponse(f'<!doctype html><meta charset="utf-8"><title>ProfitDesk</title>'
+    return HTMLResponse(f'<!doctype html><meta charset="utf-8"><title>EcomVital</title>'
                         f'<p style="font-family:sans-serif">Opening Shopify\'s permission screen…</p>'
                         f'<script>window.top.location.href = {json.dumps(url)};</script>'
                         f'<p><a href="{html.escape(url)}" target="_top">Continue</a></p>')
@@ -448,7 +448,7 @@ def api_login(payload: dict, request: Request):
 def api_first_user(payload: dict, request: Request):
     """Create the owner account. Only works while there are no accounts at all."""
     if auth.has_users():
-        raise HTTPException(400, "ProfitDesk already has an owner. Log in instead.")
+        raise HTTPException(400, "EcomVital already has an owner. Log in instead.")
     _check_setup_code(payload.get("setup_code"))
     try:
         auth.create_user(payload.get("email"), payload.get("name"), payload.get("password"), "owner")
@@ -465,10 +465,10 @@ _MAX_BACKUP = 50 * 1024 * 1024
 
 @app.post("/api/first-restore")
 async def api_first_restore(request: Request):
-    """Fill a brand-new ProfitDesk from a backup, before any account exists.
+    """Fill a brand-new EcomVital from a backup, before any account exists.
     Needs the setup code; afterwards you log in with the accounts in the backup."""
     if auth.has_users():
-        raise HTTPException(400, "ProfitDesk already has accounts. Log in, then restore "
+        raise HTTPException(400, "EcomVital already has accounts. Log in, then restore "
                                  "from Settings → Backup.")
     _check_setup_code(request.headers.get("x-setup-code"))
     return await _restore(request)
@@ -483,7 +483,7 @@ async def api_restore(request: Request):
 async def _restore(request: Request):
     data = await request.body()
     if not data or len(data) > _MAX_BACKUP:
-        raise HTTPException(400, "Choose a ProfitDesk backup file (.db) to upload.")
+        raise HTTPException(400, "Choose a EcomVital backup file (.db) to upload.")
     try:
         db.restore_bytes(data)
     except ValueError as e:
@@ -561,7 +561,7 @@ def api_update_user(user_id: int, payload: dict, request: Request):
             raise auth.AuthError("You can't take owner access away from yourself.")
         if user["role"] == "owner" and role != "owner" and \
                 sum(1 for u in db.list_users() if u["role"] == "owner") <= 1:
-            raise auth.AuthError("ProfitDesk needs at least one owner.")
+            raise auth.AuthError("EcomVital needs at least one owner.")
         db.set_user_access(user_id, role, desks, (payload.get("name") or "").strip() or None, access)
         if payload.get("password"):
             auth.reset_password(user_id, payload["password"])
@@ -1660,7 +1660,7 @@ def _tag_colors() -> dict:
 
 
 async def _sync_labels(acct: dict):
-    """Gmail → ProfitDesk: the mailbox's label list and each recent email's labels."""
+    """Gmail → EcomVital: the mailbox's label list and each recent email's labels."""
     wide = time.time() - _label_full.get(acct["id"], 0) > 1800
     names, found = await asyncio.to_thread(mail_labels.sync, acct["address"], acct["password"], 45 if wide else 4)
     if wide:
@@ -2117,7 +2117,7 @@ async def api_inbox_message_reply(message_id: int, request: Request):
     return {"ok": True}
 
 
-_recent_replies: dict = {}      # ticket id -> (time, who) of the last reply sent from ProfitDesk
+_recent_replies: dict = {}      # ticket id -> (time, who) of the last reply sent from EcomVital
 
 
 @app.post("/api/inbox/tickets/{ticket_id}/reply")
@@ -2137,7 +2137,7 @@ async def api_inbox_reply(ticket_id: int, request: Request):
         recent = _recent_replies.get(ticket_id)
         if recent and recent[1] != user and time.time() - recent[0] < 900 and recent[0] > float(payload.get("opened") or 0):
             mins = max(1, round((time.time() - recent[0]) / 60))
-            raise HTTPException(409, f"{recent[1] or 'Someone'} replied to this customer {mins} min ago from ProfitDesk.")
+            raise HTTPException(409, f"{recent[1] or 'Someone'} replied to this customer {mins} min ago from EcomVital.")
         if newer:
             who = "Your team" if newer["direction"] == "out" else "The customer"
             raise HTTPException(409, f"{who} sent a new email in this conversation since you opened it.")
@@ -2899,7 +2899,7 @@ async def api_ai_save(payload: dict):
 @app.get("/api/history")
 async def api_history(fresh: int = 0):
     """How far back each store's sales go: Shopify's window, whether the store has
-    approved full order history, and the days ProfitDesk has saved."""
+    approved full order history, and the days EcomVital has saved."""
     saved = db.shopify_history()
     stores = [x for x in db.list_stores() if not demo.is_demo(x)]
     if fresh:
@@ -2974,7 +2974,7 @@ def api_save_shopify_app(payload: dict):
     """Save a store's own app keys and say which page to open next.
 
     With an install link (custom distribution apps), that page is Shopify's
-    install screen; ProfitDesk picks the connection up when Shopify comes back.
+    install screen; EcomVital picks the connection up when Shopify comes back.
     Without one, it goes straight to the normal permission screen.
     """
     domain = shop.normalize_domain(payload.get("shop_domain", ""))
@@ -3121,8 +3121,8 @@ async def api_mail_test_send(account_id: int, payload: dict):
     store = next((x for x in db.list_stores() if x["id"] == acct["store_id"]), None)
     try:
         await gmail_send.send(acct["gmail_token"], acct["address"], (store or {}).get("name", "").strip(), to,
-                              "ProfitDesk test email",
-                              f"This is a test from ProfitDesk, sent from {acct['address']}.\n\n"
+                              "EcomVital test email",
+                              f"This is a test from EcomVital, sent from {acct['address']}.\n\n"
                               "If you can read this, replies from the Inbox will reach customers from this address.")
     except gmail_send.SendError as e:
         raise HTTPException(400, str(e))
@@ -3158,14 +3158,14 @@ async def google_callback(request: Request):
         except gads.GoogleAdsError as e:
             return _closer(str(e))
         if not acct:
-            return _closer("That mailbox was removed from ProfitDesk.")
+            return _closer("That mailbox was removed from EcomVital.")
         if (email or "").lower() != acct["address"].lower():
             return _closer(f"You signed in as {email}, but this mailbox is {acct['address']}. "
                            f"Sign in again and choose {acct['address']}.")
         with db._conn() as con:
             con.execute("UPDATE mail_accounts SET gmail_token = ?, gmail_email = ?, gmail_at = datetime('now') WHERE id = ?",
                         (token, email, aid))
-        return _closer(f"{email} can now send replies from ProfitDesk. You can close this tab.", ok=True)
+        return _closer(f"{email} can now send replies from EcomVital. You can close this tab.", ok=True)
     if state not in _google_states:
         return _closer("That sign-in link had expired. Start the connection again.")
     _google_states.discard(state)
@@ -3676,7 +3676,7 @@ async def _dispute_order(case: dict):
 
 
 def _dispute_context(store_id, order_name) -> dict:
-    """What ProfitDesk knows about the order: products, parcels + scans, emails with the customer."""
+    """What EcomVital knows about the order: products, parcels + scans, emails with the customer."""
     if not order_name:
         return {}
     stores = {x["id"]: x for x in db.list_stores()}
@@ -4751,7 +4751,7 @@ async def _storefront_revert(store: dict) -> dict:
 
 @app.post("/api/storefront/tracking")
 async def api_storefront_tracking(payload: dict):
-    """Owner: point each store's menus at the ProfitDesk tracking page (apply=false shows the plan)."""
+    """Owner: point each store's menus at the EcomVital tracking page (apply=false shows the plan)."""
     apply = bool(payload.get("apply"))
     only = {int(x) for x in payload.get("stores") or []}
     stores = [x for x in db.list_stores() if not demo.is_demo(x) and x.get("access_token")
@@ -5102,7 +5102,7 @@ def _widget_clean(payload: dict) -> dict:
     if not metrics:
         raise HTTPException(400, "Pick at least one figure to show.")
     period = payload.get("period") if payload.get("period") in WIDGET_PERIODS else "today"
-    return {"name": (payload.get("name") or "").strip()[:60] or "ProfitDesk", "scope": str(payload.get("scope") or "all"),
+    return {"name": (payload.get("name") or "").strip()[:60] or "EcomVital", "scope": str(payload.get("scope") or "all"),
             "period": period, "metrics": json.dumps(metrics)}
 
 
@@ -5168,7 +5168,7 @@ async def widget_data(token: str):
         if r:
             con.execute("UPDATE widgets SET last_used = datetime('now') WHERE id = ?", (r["id"],))
     if not r:
-        return JSONResponse({"error": "This widget was turned off in ProfitDesk."}, status_code=404)
+        return JSONResponse({"error": "This widget was turned off in EcomVital."}, status_code=404)
     hit = _widget_cache.get(token)
     if hit and time.time() - hit[0] < 120:
         return hit[1]
@@ -5212,7 +5212,7 @@ async def widget_data(token: str):
     return payload
 
 
-# ---------------------------------------------------------------- Importer: edit a product in ProfitDesk
+# ---------------------------------------------------------------- Importer: edit a product in EcomVital
 
 def _imp_store(store_id) -> dict:
     store = next((x for x in db.list_stores() if x["id"] == int(store_id or 0)), None)
@@ -5643,7 +5643,7 @@ async def _all_products(store) -> list:
 
 @app.post("/api/sizecharts/import")
 async def api_sizechart_import(payload: dict, request: Request):
-    """A Panda / Kiwi / ProfitDesk export. Charts named after a product are linked to that
+    """A Panda / Kiwi / EcomVital export. Charts named after a product are linked to that
     product in the chosen store (Panda's export drops the links)."""
     data = payload.get("data")
     store_id = int(payload.get("store_id") or 0)
@@ -5787,7 +5787,7 @@ def px_options():
 
 @app.post("/t/e")
 async def px_event(request: Request):
-    """One shopper event from the ProfitDesk pixel (open: shoppers' browsers send it)."""
+    """One shopper event from the EcomVital pixel (open: shoppers' browsers send it)."""
     cors = {"Access-Control-Allow-Origin": "*"}
     body = await request.body()
     if len(body) > 20000:
@@ -5836,7 +5836,7 @@ async def api_tracking_stores():
 
 @app.post("/api/tracking/install/{store_id}")
 async def api_tracking_install(store_id: int):
-    """Switch the ProfitDesk pixel on in a store (the app version must include the pixel extension)."""
+    """Switch the EcomVital pixel on in a store (the app version must include the pixel extension)."""
     store = next((x for x in db.list_stores() if x["id"] == store_id), None)
     if not store:
         raise HTTPException(404, "Store not found.")
@@ -5853,7 +5853,7 @@ async def api_tracking_install(store_id: int):
         else:
             r = (await client.gql(PX_CREATE, {"p": {"settings": settings}}))["webPixelCreate"]
     except Exception as e:
-        raise HTTPException(400, f"Shopify didn't accept it: {str(e)[:200]}. The store's ProfitDesk app needs the "
+        raise HTTPException(400, f"Shopify didn't accept it: {str(e)[:200]}. The store's EcomVital app needs the "
                                  "new version with the tracking pixel first.")
     if r.get("userErrors"):
         raise HTTPException(400, "Shopify said: " + "; ".join(e["message"] for e in r["userErrors"]))
@@ -6347,7 +6347,7 @@ async def api_ads_selftest(payload: dict):
                                                                date.today().isoformat()))[0] if r["item_id"]][:2]
     out["items"] = items
     try:
-        await gads_manage.create_pmax(*args, "ProfitDesk test (validate only)", 10, s["merchant_ids"][0], await _store_url(st),
+        await gads_manage.create_pmax(*args, "EcomVital test (validate only)", 10, s["merchant_ids"][0], await _store_url(st),
                                       items, None, "PAUSED", validate_only=True)
         out["create_pmax"] = "ok"
     except Exception as e:
@@ -7032,7 +7032,7 @@ async def _ads_tool(st, name: str, a: dict, who: str, made: dict) -> dict:
                               + (f" {g['products']['count']} variants" if g['products']['count'] else "") for g in c["groups"]],
             "last_7_days": c["d7"], "last_30_days": c["d30"]} for c in s["campaigns"]],
             "note": "product_lists: all = every product; only N = just those variants; except N = all but those; "
-                    "custom = picked by labels/categories (ProfitDesk can't edit those). ROAS = Shopify sales / spend."}
+                    "custom = picked by labels/categories (EcomVital can't edit those). ROAS = Shopify sales / spend."}
     if name == "find_products":
         rows, _ = await _ads_data(st)
         s = await gads_manage.structure(*_ads_args(st))
@@ -7178,7 +7178,7 @@ async def api_tracking_google_primary(payload: dict):
     return {"ok": True, "actions": await gads_conv.all_actions(*args)}
 
 
-# ---------------------------------------------------------------- Tracking → Google Ads (ProfitDesk conversions)
+# ---------------------------------------------------------------- Tracking → Google Ads (EcomVital conversions)
 
 GCONV_DEFAULT = {"enabled": False, "mode": "watch", "started_at": None, "switched_at": None, "ids": True, "note": None}
 GCONV_ORDERS = """query($ids: [ID!]!) { nodes(ids: $ids) { ... on Order { legacyResourceId name createdAt email phone
@@ -7203,7 +7203,7 @@ def _gconv_ours_primary(cfg: dict) -> bool:
 
 
 async def _gconv_actions(st, cfg, fresh=False) -> dict:
-    """ProfitDesk's three conversion actions in the store's account, made if missing; purchase primary or not
+    """EcomVital's three conversion actions in the store's account, made if missing; purchase primary or not
     as the mode says (adds to cart and checkouts always secondary)."""
     hit = _gconv_state.get(st["id"], {}).get("actions")
     want = _gconv_ours_primary(cfg)
@@ -7274,7 +7274,7 @@ async def _gconv_run(st):
 
 
 async def _gconv_adjust(st):
-    """Refunds and cancellations of purchases ProfitDesk sent (last 50 days): Google gets the order's new value
+    """Refunds and cancellations of purchases EcomVital sent (last 50 days): Google gets the order's new value
     (total now, less tax) or drops it when cancelled / fully refunded, so its ROAS is on real revenue."""
     cfg = _gconv_cfg(st["id"])
     if not cfg["enabled"]:
@@ -7445,7 +7445,7 @@ GCONV_BRIDGE = "Google Shopping App Purchase"
 
 async def _gconv_plan() -> list:
     """The changes still needed for the agreed setup (TrackBee cancelled):
-    a store with a working Google Shopping App Purchase -> it becomes the primary purchase action (bridge) and ProfitDesk
+    a store with a working Google Shopping App Purchase -> it becomes the primary purchase action (bridge) and EcomVital
     runs next to it on auto switch; a store without one -> ProfitDesk Purchase becomes primary straight away.
     ZAVA (its own Google tag works) is left alone."""
     steps = []
@@ -7580,7 +7580,7 @@ async def _store_health(st) -> dict:
         last = datetime.fromisoformat(h["last"])
         (probs if datetime.now(timezone.utc) - last > timedelta(hours=6) else ok).append(
             f"Tracking pixel: last event {last.strftime('%d %b %H:%M')} UTC, {h.get('hour', 0)} in the last hour")
-    # Google: conversion tracking + ProfitDesk uploads + share of Shopify orders Google sees
+    # Google: conversion tracking + EcomVital uploads + share of Shopify orders Google sees
     if st.get("google_customer_id") and st.get("google_source") != "sheet":
         try:
             acts = await gads_conv.all_actions(*_ads_args(st))
@@ -7601,15 +7601,15 @@ async def _store_health(st) -> dict:
             if cfg["enabled"]:
                 c = gads_conv.counts(sid, (datetime.now(timezone.utc) - timedelta(days=7)).isoformat(timespec="seconds"))
                 p = c.get("purchase", {})
-                ok.append(f"ProfitDesk → Google ({cfg['mode']}): last 7 days {p.get('sent', 0)} purchases sent, "
+                ok.append(f"EcomVital → Google ({cfg['mode']}): last 7 days {p.get('sent', 0)} purchases sent, "
                           f"{p.get('no_click', 0)} without a Google click, {p.get('failed', 0)} failed")
                 if p.get("failed"):
-                    probs.append(f"ProfitDesk → Google: {p['failed']} purchase uploads failed in 7 days")
+                    probs.append(f"EcomVital → Google: {p['failed']} purchase uploads failed in 7 days")
                 stuck = p.get("retry", 0)
                 if stuck:
                     with db._conn() as con:
                         why = con.execute("SELECT error FROM gconv_uploads WHERE store_id = ? AND status = 'retry' ORDER BY at DESC LIMIT 1", (sid,)).fetchone()
-                    probs.append(f"ProfitDesk → Google: {stuck} purchases waiting to be re-sent" + (f" ({why[0][:160]})" if why and why[0] else ""))
+                    probs.append(f"EcomVital → Google: {stuck} purchases waiting to be re-sent" + (f" ({why[0][:160]})" if why and why[0] else ""))
             with db._conn() as con:
                 orders = con.execute("SELECT COUNT(DISTINCT order_name) FROM cog_lines WHERE store_id = ? AND day >= ? AND cancelled = 0",
                                      (sid, (_store_today(st) - timedelta(days=29)).isoformat())).fetchone()[0]
@@ -7652,7 +7652,7 @@ async def _assist_tool(name: str, args: dict, user: dict):
         data = await asyncio.to_thread(_live_hours, [x["id"] for x in sts], int(args.get("hours") or 3))
         names = {x["id"]: x["name"].strip() for x in sts}
         return {"hours_utc": "clock hours in UTC", "stores": {names[k]: v for k, v in data.items()},
-                "note": "Only stores with the ProfitDesk pixel; only shoppers who allowed tracking."}
+                "note": "Only stores with the EcomVital pixel; only shoppers who allowed tracking."}
     if name in ("google_campaigns", "google_products", "propose_google_change"):
         _need(user, "googleads")
         st = _ads_store(args["store"])
@@ -7984,7 +7984,7 @@ async def _wa_file(phone, user, msg) -> tuple:
                          + (", already uploaded before (attached)" if got.get("attached") else "") + ".")
         except HTTPException as e:
             return fid, f"File #{fid} ({name}) saved, but it couldn't be read as an invoice: {e.detail}"
-    return fid, f"File #{fid} ({name}, {mime}) saved in ProfitDesk" + (f" with the note “{caption}”" if caption else "") + "."
+    return fid, f"File #{fid} ({name}, {mime}) saved in EcomVital" + (f" with the note “{caption}”" if caption else "") + "."
 
 
 async def _wa_handle(msg, contact_name=None):
@@ -8012,7 +8012,7 @@ async def _wa_handle(msg, contact_name=None):
                 await _wa_send(phone, f"🎙️ _{text[:600]}_")
                 _wa_log(phone, "in", f"(voice) {text}")
             except whatsapp.WAError as e:
-                await _wa_send(phone, "I can't listen to voice notes yet: add an OpenAI key in ProfitDesk Settings → WhatsApp (voice notes)."
+                await _wa_send(phone, "I can't listen to voice notes yet: add an OpenAI key in EcomVital Settings → WhatsApp (voice notes)."
                                if "NO_KEY" in str(e) else f"Couldn't understand the voice note ({e}). Please type it.")
                 return
             if not text:
@@ -8043,7 +8043,7 @@ async def _wa_handle(msg, contact_name=None):
             return
         key = db.get_setting("anthropic_api_key")
         if not key:
-            await _wa_send(phone, "The assistant needs the Anthropic API key (ProfitDesk Settings → AI).")
+            await _wa_send(phone, "The assistant needs the Anthropic API key (EcomVital Settings → AI).")
             return
         with db._conn() as con:
             past = [dict(r) for r in con.execute("SELECT direction, text FROM wa_messages WHERE phone = ? ORDER BY id DESC LIMIT 14", (phone,))][::-1]
@@ -8051,7 +8051,7 @@ async def _wa_handle(msg, contact_name=None):
         me = (f"[WhatsApp from {user.get('name') or user.get('email')} ({user.get('email')}, {'owner' if user.get('role') == 'owner' else 'staff'}); "
               "on WhatsApp they approve a proposed change by replying YES, there is no Confirm button] ")
         if gads.busy():
-            me += ("[System note: ProfitDesk's Google Ads API daily request allowance is used up until it resets (midnight US Pacific). "
+            me += ("[System note: EcomVital's Google Ads API daily request allowance is used up until it resets (midnight US Pacific). "
                    "Shopify sales, COG, Meta and saved Google spend for past days still show; fresh Google Ads figures and Google Ads "
                    "changes wait until the reset.] ")
         hist.append({"role": "user", "content": me + (f"[{note}] " if note else "") + (text or "(sent a file)")})
@@ -8133,7 +8133,7 @@ async def api_wa_settings_save(payload: dict):
 
 @app.get("/api/whatsapp/diagnose")
 async def api_wa_diagnose():
-    """Owner check: what Meta has set up, and the last messages ProfitDesk received / sent."""
+    """Owner check: what Meta has set up, and the last messages EcomVital received / sent."""
     with db._conn() as con:
         last = [dict(r) for r in con.execute("SELECT phone, direction, substr(text, 1, 80) AS text, created_at FROM wa_messages ORDER BY id DESC LIMIT 8")]
     return {"meta": await whatsapp.diagnose(db.get_setting("wa_app_id") or ""), "last_messages": last}
@@ -8161,7 +8161,7 @@ async def api_wa_setup():
 
 @app.post("/api/whatsapp/send")
 async def api_wa_send(payload: dict):
-    """Owner: send a message from ProfitDesk's WhatsApp to an allowed number (inside the 24-hour window)."""
+    """Owner: send a message from EcomVital's WhatsApp to an allowed number (inside the 24-hour window)."""
     phone = whatsapp.norm_phone(payload.get("phone"))
     if not whatsapp.person(phone):
         raise HTTPException(400, "That number isn't in 'Who can use it'.")
@@ -8176,14 +8176,14 @@ async def api_wa_send(payload: dict):
 
 @app.post("/api/whatsapp/test")
 async def api_wa_test(payload: dict):
-    """Send a test message to one allowed number (it must have messaged ProfitDesk's number in the last 24 h,
+    """Send a test message to one allowed number (it must have messaged EcomVital's number in the last 24 h,
     otherwise the template is sent)."""
     phone = whatsapp.norm_phone(payload.get("phone"))
     if not whatsapp.person(phone):
         raise HTTPException(400, "Add that number under 'Who can use it' first.")
     try:
         if _wa_window_open(phone):
-            await _wa_send(phone, "✅ ProfitDesk is connected. Ask me anything, e.g. “check all store health”.")
+            await _wa_send(phone, "✅ EcomVital is connected. Ask me anything, e.g. “check all store health”.")
             return {"sent": "text"}
         await whatsapp.send_template(phone, "WhatsApp connected")
         return {"sent": "template", "note": "Outside the 24-hour window, so the template was sent (needs Meta's approval first)."}
@@ -8332,7 +8332,7 @@ async def api_checkout_order(ref: str, payload: dict):
         raise HTTPException(404, "No such payment.")
     try:
         if payload.get("action") == "refund":
-            await co.refund(od["intent_id"], reason=payload.get("reason") or "Refund from ProfitDesk")
+            await co.refund(od["intent_id"], reason=payload.get("reason") or "Refund from EcomVital")
             co.update_order(od["id"], status="refunded")
         elif payload.get("action") == "reorder":
             await _co_complete(ref, od["intent_id"])
@@ -9320,8 +9320,8 @@ async def _dashboard_compute(scope: str = "all", start: str = None, end: str = N
     if short:
         names = ", ".join(x["name"].strip() for x in short)
         warnings.append(
-            f"Shopify only shares the last 60 days of orders with ProfitDesk for {names}, so "
-            f"sales before {short[0]['_from']} show as zero (ad spend still counts). ProfitDesk "
+            f"Shopify only shares the last 60 days of orders with EcomVital for {names}, so "
+            f"sales before {short[0]['_from']} show as zero (ad spend still counts). EcomVital "
             "now saves every day, so history grows from here; older days need Shopify's "
             "\"Read all orders\" approval for each store's app.")
 
@@ -9504,7 +9504,7 @@ async def _store_window(store, start, end, auth, meta_auth):
         return rows, notes
     end_for_api = min(end, store_today)
 
-    # Completed days come from ProfitDesk's saved copy (refreshed every 6 hours and on every read);
+    # Completed days come from EcomVital's saved copy (refreshed every 6 hours and on every read);
     # only the last LIVE_DAYS days, and any day not saved yet, are asked from Shopify. A 30-day
     # view used to download 60 days of orders for every store on every load.
     recent_from = max(start, (_store_today(store) - timedelta(days=LIVE_DAYS)).isoformat())
@@ -9516,7 +9516,7 @@ async def _store_window(store, start, end, auth, meta_auth):
 
     async def sales():
         # Shopify only shares the last 60 days; older days come from the totals
-        # ProfitDesk saved while they were still inside that window.
+        # EcomVital saved while they were still inside that window.
         cutoff = _shopify_cutoff(store)
         if start < cutoff and "read_all_orders" in await _granted(store):
             cutoff = start            # approved for full history: ask Shopify for all of it
@@ -10212,7 +10212,7 @@ def _dates(start: str, end: str):
 
 def _closer(message: str, ok: bool = False) -> str:
     tone = "#0F9D74" if ok else "#B3402A"
-    return f"""<!doctype html><meta charset="utf-8"><title>ProfitDesk</title>
+    return f"""<!doctype html><meta charset="utf-8"><title>EcomVital</title>
 <style>body{{font:15px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
 background:#F7F8FA;color:#14181F;display:grid;place-items:center;height:100vh;
 margin:0;text-align:center;padding:24px}}
@@ -10239,5 +10239,5 @@ app.mount("/static", _Static(directory=STATIC_DIR), name="static")
 
 if __name__ == "__main__":
     import uvicorn
-    print(f"\n  ProfitDesk running at {BASE_URL}\n")
+    print(f"\n  EcomVital running at {BASE_URL}\n")
     uvicorn.run(app, host=HOST, port=PORT, log_level="warning")

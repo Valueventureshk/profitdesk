@@ -1,4 +1,4 @@
-/* ProfitDesk Product Importer: load products from any Shopify store and copy
+/* EcomVital Product Importer: load products from any Shopify store and copy
    them into our stores with the owner's rules (importer.py does the work). */
 
 const $ = (id) => document.getElementById(id);

@@ -1,4 +1,4 @@
-# ProfitDesk — agent brief
+# ProfitDesk (shown to users as EcomVital) — agent brief
 
 Read this before changing anything.
 
@@ -16,6 +16,11 @@ knowledge. This means:
   ("show profit per channel" vs "show profit per product"), not technical ones.
 
 ## What this app is
+
+User-facing name is **EcomVital** since 13 Oct 2026 (logo static/brand/). Code, files and storage keys keep the ProfitDesk
+name. Keep the Google conversion action names "ProfitDesk Purchase / Add to cart / Begin checkout" (they exist in the
+ad accounts; gads_conv.ACTION_NAMES) and the WhatsApp template text as they are.
+
 
 A profit dashboard. Pulls Shopify orders and Google Ads spend,
 applies cost assumptions, shows true net profit and blended metrics. Answers

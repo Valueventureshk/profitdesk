@@ -1,4 +1,4 @@
-/* ProfitDesk cash flow page.
+/* EcomVital cash flow page.
 
    This file draws things. Every figure comes from the server (cashflow.py),
    already converted into the chosen currency. */
@@ -201,7 +201,7 @@ function renderConnections() {
   for (const b of $("connList").querySelectorAll("[data-remove]")) {
     b.onclick = async () => {
       const c = list.find((x) => String(x.id) === b.dataset.remove);
-      if (!confirm(`Remove ${c.label}? Its key is deleted from ProfitDesk.`)) return;
+      if (!confirm(`Remove ${c.label}? Its key is deleted from EcomVital.`)) return;
       await api(`/api/cash/${c.id}`, { method: "DELETE" });
       toast(`${c.label} removed.`);
       load();

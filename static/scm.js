@@ -1,4 +1,4 @@
-/* ProfitDesk SCM desk: every order from every store with its tracking, laid out
+/* EcomVital SCM desk: every order from every store with its tracking, laid out
    like Parcel Panel's Orders page. Orders and tracking numbers come from Shopify,
    where the parcel is from 17TRACK; notes and flags are the team's own. */
 

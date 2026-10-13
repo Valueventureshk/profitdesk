@@ -35,13 +35,13 @@
 
   const btn = document.createElement("button");
   btn.className = "pd-chat-btn";
-  btn.title = "Ask ProfitDesk";
+  btn.title = "Ask EcomVital";
   btn.innerHTML = "✦ Ask";
   const box = document.createElement("div");
   box.className = "pd-chat";
   box.hidden = true;
   box.innerHTML = `
-    <div class="pd-chat-head"><strong>Ask ProfitDesk</strong>
+    <div class="pd-chat-head"><strong>Ask EcomVital</strong>
       <span><button class="pd-chat-x" data-clear title="New conversation">↺</button>
       <button class="pd-chat-x" data-close title="Close">✕</button></span></div>
     <div class="pd-chat-log"></div>

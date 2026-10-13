@@ -1,4 +1,4 @@
-/* ProfitDesk Disputes desk: PayPal cases and Airwallex chargebacks, the order's evidence, AI drafts
+/* EcomVital Disputes desk: PayPal cases and Airwallex chargebacks, the order's evidence, AI drafts
    and the actions PayPal / Airwallex allow right now. Every figure and rule comes from the server. */
 
 const $ = (id) => document.getElementById(id);
@@ -123,7 +123,7 @@ function drawCase() {
       <div class="hint">${esc(o.customer)} ${esc(o.email)} · ${esc([o.city, o.country].filter(Boolean).join(", "))} · ordered ${esc(when(o.created))}</div>
       ${(o.items || []).map((i) => `<div>${i.qty} × ${esc(i.product)}</div>`).join("")}
       ${c.linked_by ? `<div class="hint">Linked by ${esc(c.linked_by)}</div>` : ""}</div>`
-    : `<div class="warn">ProfitDesk couldn't find the order for this payment. Type the order number to link it:
+    : `<div class="warn">EcomVital couldn't find the order for this payment. Type the order number to link it:
         <span class="dsp-link"><input class="control" id="linkOrder" placeholder="#BR2342"><button class="btn btn-sm btn-primary" id="linkGo" data-write-only>Link</button></span></div>`;
   const forms = c.actions.map((a) => actionForm(a, c, ctx)).join("");
   const locked = c.actions.filter((a) => !c.can?.[a]);
