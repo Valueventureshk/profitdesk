@@ -180,7 +180,8 @@ _cache: dict[tuple, tuple[float, dict]] = {}
 # Reachable without logging in: the login page itself and what it needs.
 _OPEN = {"/login", "/api/login", "/api/logout", "/api/first-user", "/api/first-restore",
          "/api/scm/webhook", "/api/whatsapp/webhook",
-         "/healthz", "/about", "/privacy", "/terms", "/api/interest"}
+         "/healthz", "/about", "/privacy", "/terms", "/api/interest",
+         "/.well-known/apple-developer-merchantid-domain-association"}
 
 # The public website (ecomvital.com): its own pages; anything else there goes to the app.
 SITE_HOSTS = {h.strip().lower() for h in os.getenv("SITE_HOSTS", "ecomvital.com,www.ecomvital.com").split(",") if h.strip()}
@@ -346,6 +347,14 @@ def privacy_page():
 @app.get("/terms", response_class=HTMLResponse)
 def terms_page():
     return _legal("terms")
+
+
+@app.get("/.well-known/apple-developer-merchantid-domain-association")
+def apple_pay_domain_file():
+    """Apple Pay domain verification for the checkout (Airwallex's file, Payments → Apple Pay → web domains)."""
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "applepay",
+                           "apple-developer-merchantid-domain-association"), "rb") as f:
+        return Response(f.read(), media_type="application/octet-stream")
 
 
 _interest_hits: dict = defaultdict(list)
