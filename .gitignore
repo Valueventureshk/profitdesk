@@ -22,3 +22,4 @@ shopify-email-templates/
 shopify-app/node_modules/
 shopify-app/.shopify/
 shopify-app/extensions/*/dist/
+private-docs/
