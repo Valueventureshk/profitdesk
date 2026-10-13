@@ -39,11 +39,20 @@ async def _q(refresh_token, customer_id, login_cid, query):
 
 async def mutate(refresh_token, customer_id, login_cid, operations: list, validate_only=False) -> dict:
     """googleAds:mutate with a list of {"<resource>Operation": {...}} entries, all or nothing."""
+    n = len(operations)
+    if n > gads.left_today():
+        raise gads.GoogleAdsError(
+            f"This change is {n:,} operations for Google (every product line counts, a test run too) and only "
+            f"{gads.left_today():,} of today's {gads.DAILY_LIMIT:,} are left. It resets at midnight US Pacific "
+            "(3pm Hong Kong); try then, or with fewer products.")
     version, cid, headers = await _ctx(refresh_token, customer_id, login_cid)
     url = f"https://googleads.googleapis.com/{version}/customers/{cid}/googleAds:mutate"
     body = {"mutateOperations": operations, "partialFailure": False, "validateOnly": bool(validate_only)}
+    gads._count(n)                       # Google counts every operation, test runs included
     async with httpx.AsyncClient(timeout=120) as client:
         r = await client.post(url, headers=headers, json=body)
+    if r.status_code == 429 or "RESOURCE_EXHAUSTED" in r.text[:2000]:
+        gads.note_exhausted(r.text)
     if r.status_code >= 400:
         raise gads.GoogleAdsError(f"Google Ads refused the change: {gads._why(r)}")
     return r.json()
@@ -299,6 +308,8 @@ async def create_pmax(rt, customer_id, login_cid, name: str, budget: float, merc
             "containsEuPoliticalAdvertising": "DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING"}}},
     ]
     items = sorted({i for i in items if i})
+    if validate_only:
+        items = items[:20]               # a test run checks the settings + a sample; the full list costs as much as doing it
     chunks = [items[k:k + 950] for k in range(0, len(items), 950)] or [[]]
     if len(chunks) > 100:
         raise gads.GoogleAdsError(f"{len(items)} variants need {len(chunks)} asset groups; Google allows 100 per campaign.")

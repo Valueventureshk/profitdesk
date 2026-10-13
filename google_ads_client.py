@@ -150,8 +150,9 @@ def _why(r) -> str:
         return r.text[:300]
 
 
-# Google Ads API requests per Pacific day (Explorer access allows 2,880). Background jobs check busy() and wait
-# when the day's requests run low, so pages people open keep working.
+# Google Ads API operations per Pacific day (Explorer access allows 2,880). Each search page counts 1 and EVERY
+# operation inside a mutate counts 1 (validateOnly included): a new campaign with 1,300 product variants costs ~1,350.
+# Background jobs check busy() and wait when the day's allowance runs low, so pages people open keep working.
 DAILY_LIMIT = 2880
 RESERVE = 600                    # kept for people opening pages
 _ops = {"day": None, "n": 0}
@@ -174,10 +175,26 @@ def ops_today() -> int:
     return _ops["n"]
 
 
-def _count():
+def _count(n: int = 1):
     ops_today()
-    _ops["n"] += 1
-    if _ops["n"] % 10 == 0:
+    before = _ops["n"]
+    _ops["n"] += n
+    if _ops["n"] // 10 != before // 10:
+        db.set_setting(f"gads_ops:{_ops['day']}", str(_ops["n"]))
+
+
+def left_today() -> int:
+    return max(0, DAILY_LIMIT - ops_today())
+
+
+def note_exhausted(text: str):
+    """Google said the day's allowance is used up: remember until when (and that the day is full)."""
+    import re as _re, time as _t
+    m = _re.search(r"Retry in (\d+) seconds", text or "")
+    _ops["blocked_until"] = _t.time() + (int(m.group(1)) if m else 3600)
+    ops_today()
+    if _ops["n"] < DAILY_LIMIT:
+        _ops["n"] = DAILY_LIMIT
         db.set_setting(f"gads_ops:{_ops['day']}", str(_ops["n"]))
 
 
@@ -202,9 +219,9 @@ async def _search(client, version, customer_id, query, headers):
                 f"> Access levels), or this Google login can't see that ad account. (Google: {_why(r)})"
             )
         if r.status_code == 429 or "RESOURCE_EXHAUSTED" in r.text[:2000]:
-            import re as _re, time as _t
+            import re as _re
             m = _re.search(r"Retry in (\d+) seconds", r.text)
-            _ops["blocked_until"] = _t.time() + (int(m.group(1)) if m else 3600)
+            note_exhausted(r.text)
             raise GoogleAdsError("Google Ads' daily request allowance is used up; it resets within "
                                  f"{(int(m.group(1)) // 3600 + 1) if m else 1} hours. Saved figures are shown meanwhile.")
         if r.status_code >= 400:

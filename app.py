@@ -6441,7 +6441,10 @@ async def _ads_execute(st, a: dict, created: dict, validate_only=False) -> dict:
         return c
 
     async def run(ops):
-        await gads_manage.mutate(*args, ops, validate_only=True)
+        # Google applies a change all-or-nothing, so a big one isn't tried in test mode first (that would cost the
+        # day's allowance twice); small ones are, which catches mistakes before anything is sent
+        if validate_only or len(ops) <= 50:
+            await gads_manage.mutate(*args, ops, validate_only=True)
         if not validate_only:
             await gads_manage.mutate(*args, ops)
     k = a["kind"]
@@ -6487,15 +6490,21 @@ async def _ads_execute(st, a: dict, created: dict, validate_only=False) -> dict:
         labels = [c["feed_label"] for c in s["campaigns"] if c.get("feed_label")]
         feed = p.get("feed_label") or (countries[0] if len(countries) == 1 and countries[0] in labels else (labels[0] if labels else None))
         kw = dict(target_roas=p.get("target_roas"), status=status, feed_label=feed, countries=countries)
+        cost = len(items) + 6 + len(countries) + 2 * ((len(items) + 949) // 950)
         made = await gads_manage.create_pmax(*args, p["name"], budget, s["merchant_ids"][0], await _store_url(st), items,
-                                             validate_only=True, **kw)
+                                             validate_only=True, **kw)      # settings + a sample of products
         if not validate_only:
+            if cost > gads.left_today():
+                raise gads.GoogleAdsError(
+                    f"Making this campaign is about {cost:,} operations for Google ({len(items):,} product variants) and only "
+                    f"{gads.left_today():,} of today's {gads.DAILY_LIMIT:,} are left. It resets at 3pm Hong Kong.")
             made = await gads_manage.create_pmax(*args, p["name"], budget, s["merchant_ids"][0], await _store_url(st), items, **kw)
             created[p["name"].strip().lower()] = made["campaign_id"]
         return {"before": {"created": made.get("campaign_id")},
                 "result": f"Made “{p['name']}” (Performance Max, feed only, bidding for conversion value"
                           + (f", target ROAS {p['target_roas']}" if p.get("target_roas") else "") + (f", shown in {', '.join(countries)}" if countries else "")
-                          + f") at {budget:.2f} a day with {len(p.get('products') or [])} products ({len(items)} variants), {status.lower()}, no end date"}
+                          + f") at {budget:.2f} a day with {len(p.get('products') or [])} products ({len(items)} variants), {status.lower()}, no end date"
+                          + f". Uses about {cost:,} of Google's {gads.DAILY_LIMIT:,} daily operations ({gads.left_today():,} left now)"}
     if k in ("move_products", "add_products", "remove_products"):
         pids = [str(x) for x in p.get("products") or []]
         if not pids:
