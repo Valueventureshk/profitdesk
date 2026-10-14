@@ -228,7 +228,18 @@ def paypal_moves(label: str, rows: list) -> list:
         elif code.startswith("T01"):
             line = "PayPal dispute fees" if code == "T0114" else "PayPal fees"
             out.append({**base, "section": FEES, "line": line, "amount": amount})
-        elif code in ("T1107", "T1105", "T1108"):
+        elif code in ("T1101", "T1104"):
+            # a withdrawal to the bank (or a bank deposit) that bounced back: own money returning, not a dispute
+            out.append({**base, "section": MOVED, "line": "PayPal withdrawal returned", "amount": amount,
+                        "info": amount, "returned": True})
+        elif code == "T1105":
+            # PayPal released a general account hold: available <-> held, the total doesn't change
+            out.append({**base, "section": MOVED, "line": "Reserve released to available", "amount": 0.0,
+                        "info": amount})
+        elif code == "T1108":
+            # PayPal reversed one of its fees: a (negative) cost, not a refund to a customer
+            out.append({**base, "section": FEES, "line": "PayPal fees", "amount": amount})
+        elif code == "T1107":
             out.append({**base, "section": OUT, "line": "Refunds to customers", "amount": amount})
         elif code.startswith(("T11", "T12")):
             out.append({**base, "section": OUT, "line": "Disputes and chargebacks", "amount": amount})

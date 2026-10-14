@@ -103,6 +103,9 @@ def classify(moves: list, factor) -> list:
             if m.get("withdrawal") and not m.get("partner"):
                 items.append(_item(m, -m["amount"], "pp-withdrawal", "Withdrawn from PayPal to a bank",
                                    None))
+            elif m.get("returned"):           # the bank sent a withdrawal back: cancels it out
+                items.append(_item(m, -m["amount"], "pp-withdrawal", "Withdrawn from PayPal to a bank",
+                                   None))
             elif m.get("own") and not m.get("matched") and m["amount"] < 0:
                 who = m.get("desc") or "an Airwallex account not connected here"
                 items.append(_item(m, -m["amount"], "awx-transfer:" + _norm(re.sub(r"\d{3,}", "#", who)),
