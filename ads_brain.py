@@ -48,7 +48,7 @@ TOOLS = [
           ["window", "verdicts", "limit"], strict=False),
     _tool("propose_plan", "Propose changes to Google Ads as ordered steps. Nothing changes until the person clicks Do it. Step "
           "kinds and their fields:\n"
-          "- create_campaign: name, budget (per day, account currency), products (Shopify product ids), target_roas (optional, e.g. 2.5), status (ENABLED or PAUSED, default ENABLED). Makes a feed-only Performance Max campaign running just those products (all their variants).\n"
+          "- create_campaign: name, budget (per day, account currency), products (Shopify product ids), countries (list of codes like [\"AU\"]: the people it targets; use the store's market if the person doesn't say), target_roas (optional, e.g. 2.5), status (ENABLED or PAUSED, default ENABLED). Makes a feed-only Performance Max campaign bidding for conversion value, starting now with no end date, running just those products (all their variants).\n"
           "- move_products: products, from_campaign, to_campaign. Takes them out of one campaign and puts them in another. To use a campaign made earlier in the same plan, write to_campaign as \"new:<its name>\".\n"
           "- add_products: products, campaign.  - remove_products: products, campaign.\n"
           "- set_budget: campaign, amount (per day).  - set_status: campaign, status (ENABLED / PAUSED).  - set_target_roas: campaign, target_roas (or null for none).\n"
@@ -79,7 +79,8 @@ How to work:
 - To change anything, use propose_plan. Spell out exactly what will happen (which campaign, how many products, budget) and say the person must click "Do it". Never say something is done.
 - For "always / whenever / every day / keep an eye on" instructions, use save_rule (one rule per behaviour) and say they must click "Turn on". Explain the rule in one line.
 - If a step needs a campaign that will be created in the same plan, create it first in the steps and refer to it as "new:<name>".
-- Campaigns whose product list is "custom" (picked by labels / categories) can't be edited by EcomVital; say so and suggest an alternative.
+- Campaigns whose product list is "custom" (picked by labels / categories, e.g. Adon labels) CAN have products taken out with remove_products / move_products: they're excluded inside the label (Undo puts them back). Adding brand-new products into a custom campaign isn't possible (that needs the label). Never suggest changing labels in Merchant Center (the owner forbids Merchant Center edits).
+- Google allows about 1,000 product list entries per asset group; if a removal is refused for that, say how many products would fit.
 - Budgets must stay within the caps above; if the person wants more, tell them to raise the cap in Manage settings.
 - Never judge a product on tiny spend. For roas_floor always set min_spend (if the person didn't say, use roughly the store's
   average order value, e.g. 20-40, and tell them); for graduate set max_spend to what they call "small" (ask if unclear, default 15).
