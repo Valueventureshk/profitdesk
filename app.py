@@ -8898,7 +8898,8 @@ async def api_recording_settings(store_id: int, payload: dict):
 @app.get("/api/sizecharts/settings")
 def api_sizechart_settings():
     return {"stores": [{"id": x["id"], "name": x["name"].strip(), "domain": x["shop_domain"],
-                        "lang": db.get_setting(f"track_lang:{x['id']}") or "en", "cfg": _sc_cfg(x["id"])}
+                        "lang": db.get_setting(f"track_lang:{x['id']}") or "en", "cfg": _sc_cfg(x["id"]),
+                        "embed_link": _sc_embed_link(x) if _sc_cfg(x["id"]).get("embed") else None}
                        for x in db.list_stores() if not demo.is_demo(x) and x.get("access_token")],
             "text": SC_TEXT}
 
@@ -8916,13 +8917,25 @@ async def api_sizechart_settings_save(store_id: int, payload: dict):
     err = ""
     if bool(cfg["enabled"]) != bool(was):
         err = await _sc_script(store, bool(cfg["enabled"]))
+        if err and "theme app extension" in err.lower():
+            # newer store apps may not add script tags: the size chart comes as the app embed instead
+            # (shopify-app/extensions/ecomvital-embed), switched on once in the theme editor
+            cfg["embed"], err = True, ""
         if err:
             cfg["enabled"] = was
     db.set_setting(f"sizechart_cfg:{store_id}", json.dumps(cfg))
     _sc_cache.clear()
     if err:
         raise HTTPException(400, f"Couldn't switch the size chart on the store: {err}")
-    return {"ok": True, "cfg": cfg}
+    return {"ok": True, "cfg": cfg, "embed_link": _sc_embed_link(store) if cfg.get("embed") and cfg["enabled"] else None}
+
+
+def _sc_embed_link(store) -> str:
+    """Theme editor with EcomVital's size chart app embed ready to switch on (the owner clicks Save)."""
+    app_ = db.get_shopify_app(store["shop_domain"]) or {}
+    cid = app_.get("client_id") or ""
+    return (f"https://{store['shop_domain']}/admin/themes/current/editor?context=apps"
+            + (f"&activateAppId={cid}/sizechart" if cid else ""))
 
 
 _sc_cache: dict = {}       # (store_id, handle) -> (time, product info)

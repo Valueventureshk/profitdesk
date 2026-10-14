@@ -1,0 +1,16 @@
+{% comment %}
+  EcomVital size chart (app embed). Turn it on in the theme editor → App embeds. It loads the same
+  widget as the old script tag; the chart, button style and who sees which chart are set in
+  EcomVital → Size Charts. Only product pages load it.
+{% endcomment %}
+{% if request.page_type == 'product' %}
+  <script src="https://hq.ecomvital.com/static/sizechart-widget.js" defer></script>
+{% endif %}
+
+{% schema %}
+{
+  "name": "EcomVital size chart",
+  "target": "body",
+  "settings": []
+}
+{% endschema %}

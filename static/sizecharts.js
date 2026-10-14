@@ -446,6 +446,7 @@ async function loadSettings() {
         <label class="imp-check"><input type="checkbox" data-k="bold"${c.bold ? " checked" : ""}><span>Bold</span></label>
         <label class="imp-check"><input type="checkbox" data-k="advisor"${c.advisor ? " checked" : ""}><span>✦ “${esc(t.advisor)}” AI advisor</span></label>
       </div>
+      ${s.embed_link ? `<p class="hint">This store shows the size chart through the theme's app embed: <a href="${esc(s.embed_link)}" target="_blank" rel="noopener">open the theme editor</a>, make sure “EcomVital size chart” is on under App embeds, then Save there.</p>` : ""}
       <div class="sc-setfoot"><span class="sc-sample" data-sample></span>
         <button class="btn btn-sm btn-primary" data-save>Save</button></div></div>`;
   }).join("");
@@ -462,8 +463,11 @@ async function loadSettings() {
       const body = {};
       for (const el of card.querySelectorAll("[data-k]")) body[el.dataset.k] = el.type === "checkbox" ? el.checked : el.type === "number" ? +el.value : el.value;
       try {
-        await send(`/api/sizecharts/settings/${card.dataset.store}`, body, "PUT");
-        toast(body.enabled ? "Saved. Size charts are on for this store." : "Saved.");
+        const r = await send(`/api/sizecharts/settings/${card.dataset.store}`, body, "PUT");
+        if (r && r.embed_link) {
+          window.open(r.embed_link, "_blank", "noopener");
+          toast("Saved. One last step: in the theme editor that just opened, check “EcomVital size chart” is on and click Save.");
+        } else toast(body.enabled ? "Saved. Size charts are on for this store." : "Saved.");
         loadSettings();
       } catch (e) { toast(e.message, true); }
     };
