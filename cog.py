@@ -34,6 +34,16 @@ def pack(name: str) -> int:
     return 2 if BOGO.search(name or "") else 1
 
 
+INVOICE_SEQ = 10 ** 9      # history entries from uploaded invoices are numbered from here (ahead of the sheet)
+
+
+def recency(h) -> tuple:
+    """Sort key for cost history entries (seq, cost, supplier, day, items): invoices ahead of sheet rows, and
+    among invoices the latest invoice DATE wins (an older invoice can be uploaded after a newer one)."""
+    inv = h[0] >= INVOICE_SEQ
+    return (inv, (h[3] or "") if inv else "", h[0])
+
+
 def order_key(raw) -> str:
     return re.sub(r"[\s#]", "", str(raw or "")).upper()
 
@@ -227,7 +237,7 @@ class Catalog:
         for hist in (self.exact.get((store, norm(product))), self.base.get((store, base_name(product)))):
             same = [h for h in hist or [] if len(h) > 4 and h[4] == tier]
             if same:
-                return max(same)
+                return max(same, key=recency)
         return None
 
     def single(self, store, product):
@@ -273,9 +283,9 @@ class Catalog:
     def latest(self, store, product):
         hist = self.exact.get((store, norm(product)))
         if hist:
-            return max(hist)
+            return max(hist, key=recency)
         hist = self.base.get((store, base_name(product)))
-        return max(hist) if hist else None
+        return max(hist, key=recency) if hist else None
 
     def cog_pct(self, store, usd_to_store: float):
         """Store's average COG as a share of sales (sales in store currency)."""
@@ -289,7 +299,7 @@ class Catalog:
         for (sid, name), hist in self.exact.items():
             if sid != store:
                 continue
-            hist = sorted(hist)
+            hist = sorted(hist, key=recency)
             costs = [h[1] for h in hist]
             out.append({"product": name, "cost": hist[-1][1], "supplier": hist[-1][2],
                         "last_day": hist[-1][3], "times": len(hist),

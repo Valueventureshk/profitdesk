@@ -96,14 +96,14 @@ def cost_history(catalog, store: int, names: list) -> dict:
     hist = []
     for n in set(names):
         hist += [h for h in catalog.exact.get((store, cog.norm(n)), []) if len(h) > 4]
-    hist.sort()
+    hist.sort(key=cog.recency)
     singles = [h for h in hist if h[4] == 1]
     last = singles[-1] if singles else (hist[-1] if hist else None)
     per_variant = {}
     for n in set(names):
         s = [h for h in catalog.exact.get((store, cog.norm(n)), []) if len(h) > 4 and h[4] == 1]
         if s:
-            per_variant[n] = max(s)[1]
+            per_variant[n] = max(s, key=cog.recency)[1]
     changes, prev = [], None
     for h in singles:                                  # one row each time the single price moved
         if prev is None or abs(h[1] - prev) > 0.005:
