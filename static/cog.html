@@ -94,11 +94,34 @@
         <input id="search" class="control" type="search" placeholder="Search products">
       </div>
       <section class="panel">
-        <div class="panel-head"><h2>Product costs</h2><span class="hint" id="productCount"></span></div>
-        <div class="table-wrap"><table class="table" id="products"></table></div>
+        <div class="panel-head"><h2>Products</h2>
+          <span class="pdk-filters">
+            <select id="pdkSort" class="control">
+              <option value="units">Most bought</option><option value="tickets">Most CS tickets</option>
+              <option value="complaints">Most complaints</option><option value="recent">Latest order</option>
+              <option value="listed">Newest listed</option><option value="cost">Highest cost</option>
+            </select>
+            <label class="imp-check"><input type="checkbox" id="pdkIssues"><span>Only with tickets or complaints</span></label>
+          </span>
+          <span class="hint" id="pdkCount"></span></div>
+        <p class="hint pdk-tip">Latest cost = the supplier's latest confirmed price for one item (invoices and the orders sheet).
+          CS tickets are matched by the order numbers in each ticket, else the customer's latest order (best effort).
+          Click a product for its cost history, tickets, notes and quality-check photos.</p>
+        <div class="table-wrap"><table class="table pdk-table" id="pdk"></table></div>
       </section>
+      <details class="panel pdk-old">
+        <summary class="panel-head"><h2>Cost by variant (one store)</h2><span class="hint" id="productCount"></span></summary>
+        <div class="table-wrap"><table class="table" id="products"></table></div>
+      </details>
     </section>
   </main>
+</div>
+<div id="pdkDrawer" class="drawer" hidden>
+  <div class="drawer-scrim" data-close></div>
+  <div class="drawer-panel pdk-panel">
+    <div class="drawer-head"><h2 id="pdkTitle">Product</h2><button class="btn btn-sm btn-ghost" data-close>Close</button></div>
+    <div class="drawer-body" id="pdkBody"></div>
+  </div>
 </div>
 <div id="toast" class="toast" hidden></div>
 <script src="/static/nav.js"></script>

@@ -131,6 +131,12 @@ async function loadProducts() {
   const sid = $("productStore").value;
   if (!sid) return;
   PDUrl.set({ pstore: sid, q: $("search").value.trim() });
+  loadPdk();
+  if (sid === "all") {
+    $("products").innerHTML = `<tbody><tr><td class="hint">Pick one store to see each variant's cost.</td></tr></tbody>`;
+    $("productCount").textContent = "";
+    return;
+  }
   if (!productsCache[sid]) {
     $("products").innerHTML = `<tbody><tr><td class="hint">Loading…</td></tr></tbody>`;
     try { productsCache[sid] = (await api(`/api/cog/products?store=${sid}`)).products; }
@@ -148,6 +154,155 @@ async function loadProducts() {
       <td>${p.changed ? `${money(p.low, "USD")} – ${money(p.high, "USD")}` : "—"}</td>
       <td>${p.times}×</td><td>${p.last_day ? niceDate(p.last_day) : "—"}</td></tr>`).join("")}</tbody>`;
 }
+
+/* ------------------------------------------------ products desk (one row per product) */
+
+let pdk = { store: null, rows: [], busy: false };
+const shortDate = (iso) => (iso ? new Date(iso.slice(0, 10) + "T12:00:00").toLocaleDateString(undefined, { day: "numeric", month: "short", year: "2-digit" }) : "—");
+
+async function loadPdk(force) {
+  const sid = $("productStore").value;
+  if (!sid) return;
+  if (force || pdk.store !== sid) {
+    pdk = { store: sid, rows: [], busy: true };
+    $("pdk").innerHTML = `<tbody><tr><td class="hint">Loading products… (the first time can take a minute: images and listed dates come from Shopify)</td></tr></tbody>`;
+    try { pdk.rows = (await api(`/api/cog/pdesk?store=${encodeURIComponent(sid)}`)).products; }
+    catch (e) { $("pdk").innerHTML = `<tbody><tr><td class="hint">${esc(e.message)}</td></tr></tbody>`; return; }
+    finally { pdk.busy = false; }
+  }
+  drawPdk();
+}
+
+function drawPdk() {
+  const q = $("search").value.trim().toLowerCase();
+  const sort = $("pdkSort").value, issues = $("pdkIssues").checked;
+  const all = $("productStore").value === "all";
+  let rows = pdk.rows.filter((r) => (!q || r.title.toLowerCase().includes(q) || (r.supplier || "").toLowerCase().includes(q)
+    || (r.material || "").toLowerCase().includes(q)) && (!issues || r.tickets || r.notes.complaints));
+  const key = { units: (r) => r.units, tickets: (r) => r.tickets, complaints: (r) => r.notes.complaints,
+    recent: (r) => r.last_order || "", listed: (r) => r.listed || "", cost: (r) => r.cost || 0 }[sort];
+  rows = rows.slice().sort((a, b) => (key(a) < key(b) ? 1 : key(a) > key(b) ? -1 : b.units - a.units));
+  $("pdkCount").textContent = `${rows.length} products`;
+  $("pdk").innerHTML = `<thead><tr><th></th><th>Product</th><th>Supplier</th><th>Latest cost</th><th>Bought</th>
+      <th>Size chart</th><th>Quality check</th><th>Material</th><th>CS tickets</th><th>Listed</th><th>Last order</th><th>Notes</th></tr></thead>
+    <tbody>${rows.slice(0, 500).map((r) => {
+      const i = pdk.rows.indexOf(r);
+      const last = r.notes.last;
+      return `<tr data-pdk="${i}">
+        <td class="pdk-img">${r.image ? `<img src="${esc(r.image)}" alt="" loading="lazy">` : `<span class="pdk-noimg"></span>`}</td>
+        <td class="name pdk-name"><a href="#" data-open="${i}">${esc(r.title)}</a>
+          <span class="sub">${all ? esc(r.store) + " · " : ""}${esc(r.status)}</span></td>
+        <td><span class="pdk-edit" data-edit="supplier" data-i="${i}" title="Click to change" data-write-only-edit>${esc(r.supplier) || `<span class="hint">add</span>`}</span></td>
+        <td class="num"><a href="#" data-open="${i}">${r.cost !== null ? money(r.cost, "USD") : "—"}</a>
+          ${r.cost_is_bundle ? `<span class="sub flag">from a bundle order</span>` : ""}
+          ${r.variant_low !== null ? `<span class="sub">by variant ${money(r.variant_low, "USD")}–${money(r.variant_high, "USD")}</span>` : ""}
+          ${r.price_changes ? `<span class="sub flag">changed ${r.price_changes}×</span>` : ""}
+          ${r.cost_day ? `<span class="sub">${shortDate(r.cost_day)}</span>` : ""}</td>
+        <td class="num"><b>${r.units}</b><span class="sub">${r.orders} orders</span></td>
+        <td>${r.size_chart ? `<span class="src ok" title="${esc(r.size_chart)}">Yes</span>` : `<span class="src cancelled">No</span>`}</td>
+        <td><a href="#" data-open="${i}" data-at="qc">${r.qc_photos ? `${r.qc_photos} photo${r.qc_photos > 1 ? "s" : ""}` : `<span class="hint">add photos</span>`}</a></td>
+        <td><span class="pdk-edit" data-edit="material" data-i="${i}" title="Click to change">${esc(r.material) || `<span class="hint">add</span>`}</span></td>
+        <td class="num">${r.tickets ? `<a href="#" data-open="${i}" data-at="tickets" class="${r.tickets >= 3 ? "pdk-hot" : ""}">${r.tickets}</a>` : `<span class="hint">0</span>`}</td>
+        <td>${shortDate(r.listed)}</td><td>${shortDate(r.last_order)}</td>
+        <td class="pdk-notes"><a href="#" data-open="${i}" data-at="notes">${r.notes.complaints ? `<span class="src bad">${r.notes.complaints} complaint${r.notes.complaints > 1 ? "s" : ""}</span> ` : ""}${
+          last ? esc(last.text.slice(0, 60)) + (last.text.length > 60 ? "…" : "") : `<span class="hint">add</span>`}</a></td></tr>`;
+    }).join("")}</tbody>`;
+  if (rows.length > 500) $("pdkCount").textContent += " (showing the first 500; search to narrow)";
+}
+
+$("pdk").addEventListener("click", async (e) => {
+  const open = e.target.closest("[data-open]");
+  if (open) { e.preventDefault(); openPdk(pdk.rows[+open.dataset.open], open.dataset.at); return; }
+  const ed = e.target.closest("[data-edit]");
+  if (!ed) return;
+  const r = pdk.rows[+ed.dataset.i], field = ed.dataset.edit;
+  const v = prompt(field === "supplier" ? `Supplier for ${r.title}` : `Material for ${r.title} (e.g. "PU leather upper, rubber sole")`, r[field] || "");
+  if (v === null) return;
+  try {
+    await api("/api/cog/pdesk/info", { method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ store: r.store_id, pid: r.pid, [field]: v }) });
+    r[field] = v.trim();
+    drawPdk();
+    toast("Saved.");
+  } catch (err) { toast(err.message, true); }
+});
+$("pdkSort").onchange = drawPdk;
+$("pdkIssues").onchange = drawPdk;
+
+async function openPdk(r, at) {
+  $("pdkTitle").textContent = r.title;
+  $("pdkBody").innerHTML = `<p class="hint">Loading…</p>`;
+  $("pdkDrawer").hidden = false;
+  let d;
+  try { d = await api(`/api/cog/pdesk/item?store=${r.store_id}&pid=${encodeURIComponent(r.pid)}`); }
+  catch (e) { $("pdkBody").innerHTML = `<p class="hint">${esc(e.message)}</p>`; return; }
+  const c = d.cost || {};
+  const shop = /^\d+$/.test(r.pid) ? `<a href="https://${esc(r.shop)}/admin/products/${esc(r.pid)}" target="_blank" rel="noopener">Open in Shopify</a>` : "";
+  $("pdkBody").innerHTML = `
+    <div class="block pdk-head">${r.image ? `<img src="${esc(r.image)}" alt="">` : ""}<div>
+      <div class="hint">${esc(r.store)} · ${esc(r.status)} · listed ${shortDate(r.listed)}</div>
+      <div><b>${r.units}</b> bought in ${r.orders} orders · first ${shortDate(r.first_order)} · last ${shortDate(r.last_order)}</div>
+      <div>Size chart: ${r.size_chart ? esc(r.size_chart) : "none"} ${shop ? " · " + shop : ""}</div></div></div>
+    <div class="block"><h3>Latest confirmed cost: ${c.cost !== null && c.cost !== undefined ? money(c.cost, "USD") : "—"}</h3>
+      <p class="hint">${c.cost_day ? `Since ${shortDate(c.cost_day)}` : ""}${c.cost_supplier ? ` · ${esc(c.cost_supplier)}` : ""}${c.cost_is_bundle ? " · only bundle orders so far" : ""}</p>
+      ${(c.changes || []).length > 1 ? `<table class="table pdk-mini"><thead><tr><th>From</th><th>Price for one</th><th>Supplier</th></tr></thead><tbody>${
+        c.changes.slice().reverse().map((h) => `<tr><td>${shortDate(h.day)}</td><td class="num">${money(h.price, "USD")}</td><td>${esc(h.supplier || "")}</td></tr>`).join("")}</tbody></table>`
+        : `<p class="hint">The price hasn't changed.</p>`}
+      ${(c.variants || []).length > 1 ? `<details><summary class="hint">Per variant (${c.variants.length})</summary><table class="table pdk-mini"><tbody>${
+        c.variants.map((v) => `<tr><td>${esc(v.variant)}</td><td class="num">${money(v.cost, "USD")}</td></tr>`).join("")}</tbody></table></details>` : ""}</div>
+    <div class="block" id="pdkNotes"><h3>Notes</h3>
+      <div class="pdk-add" data-write-only>
+        <select id="pdkKind" class="control"><option value="complaint">Complaint</option><option value="note">Note</option></select>
+        <textarea id="pdkText" class="control" rows="2" placeholder="e.g. Customer says the sole came off after 2 weeks (#AS13184)"></textarea>
+        <button class="btn btn-sm btn-primary" id="pdkAddNote">Add</button></div>
+      ${d.notes.length ? d.notes.map((n) => `<div class="pdk-note"><span class="src ${n.kind === "complaint" ? "bad" : "catalog"}">${n.kind === "complaint" ? "Complaint" : "Note"}</span>
+        ${esc(n.text)}<span class="sub">${esc((n.by || "").split("@")[0])} · ${shortDate(n.at)}
+        <a href="#" data-del-note="${n.id}" data-write-only>delete</a></span></div>`).join("") : `<p class="hint">No notes yet.</p>`}</div>
+    <div class="block" id="pdkQc"><h3>Quality check</h3>
+      <div class="pdk-add" data-write-only>
+        <input type="file" id="pdkFiles" accept="image/*,.heic" multiple class="control">
+        <input id="pdkCaption" class="control" placeholder="What you checked (optional), e.g. sample from supplier, stitching OK">
+        <button class="btn btn-sm btn-primary" id="pdkUpload">Upload</button></div>
+      <div class="pdk-photos">${d.photos.map((p) => `<figure><a href="/api/cog/pdesk/qc/${p.id}" target="_blank" rel="noopener"><img src="/api/cog/pdesk/qc/${p.id}?thumb=1" alt="" loading="lazy"></a>
+        <figcaption>${esc(p.caption || "")}<span class="sub">${esc((p.by || "").split("@")[0])} · ${shortDate(p.at)} <a href="#" data-del-qc="${p.id}" data-write-only>delete</a></span></figcaption></figure>`).join("")
+        || `<p class="hint">No photos yet.</p>`}</div></div>
+    <div class="block" id="pdkTickets"><h3>CS tickets (${d.tickets.length})</h3>
+      ${d.tickets.length ? d.tickets.map((t) => `<a class="pdk-ticket" href="/inbox?ticket=${t.id}" target="_blank" rel="noopener">
+        <b>${esc(t.subject || "(no subject)")}</b><span class="sub">${esc(t.customer_name || "")} · ${shortDate(t.created_at)} · ${esc(t.status)}${t.labels ? " · " + esc(t.labels) : ""} · matched by ${esc(t.how || "")}</span>
+        ${t.summary ? `<span class="pdk-sum">${esc(t.summary)}</span>` : ""}</a>`).join("") : `<p class="hint">No tickets matched to this product.</p>`}</div>`;
+  if (at) document.getElementById({ qc: "pdkQc", notes: "pdkNotes", tickets: "pdkTickets" }[at])?.scrollIntoView({ block: "start" });
+  const reopen = async (msg) => { toast(msg); await loadPdk(true); openPdk(pdk.rows.find((x) => x.store_id === r.store_id && x.pid === r.pid) || r, at); };
+  const add = $("pdkAddNote");
+  if (add) add.onclick = async () => {
+    try {
+      await api("/api/cog/pdesk/notes", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ store: r.store_id, pid: r.pid, kind: $("pdkKind").value, text: $("pdkText").value }) });
+      at = "notes"; reopen("Note added.");
+    } catch (e) { toast(e.message, true); }
+  };
+  const up = $("pdkUpload");
+  if (up) up.onclick = async () => {
+    const files = $("pdkFiles").files;
+    if (!files.length) return toast("Choose photos first.", true);
+    const fd = new FormData();
+    fd.append("store", r.store_id); fd.append("pid", r.pid); fd.append("caption", $("pdkCaption").value);
+    for (const f of files) fd.append("files", f);
+    up.disabled = true; up.textContent = "Uploading…";
+    try { await api("/api/cog/pdesk/qc", { method: "POST", body: fd }); at = "qc"; reopen("Photos added."); }
+    catch (e) { toast(e.message, true); up.disabled = false; up.textContent = "Upload"; }
+  };
+  $("pdkBody").onclick = async (e) => {
+    const n = e.target.closest("[data-del-note]"), q = e.target.closest("[data-del-qc]");
+    if (!n && !q) return;
+    e.preventDefault();
+    if (!confirm(n ? "Delete this note?" : "Delete this photo?")) return;
+    try {
+      await api(n ? `/api/cog/pdesk/notes/${n.dataset.delNote}` : `/api/cog/pdesk/qc/${q.dataset.delQc}`, { method: "DELETE" });
+      at = n ? "notes" : "qc"; reopen("Deleted.");
+    } catch (err) { toast(err.message, true); }
+  };
+}
+for (const el of document.querySelectorAll("#pdkDrawer [data-close]")) el.onclick = () => { $("pdkDrawer").hidden = true; };
 
 /* ------------------------------------------------ invoices */
 
@@ -594,7 +749,7 @@ $("range").onchange = () => {
 $("from").onchange = $("to").onchange = () => { if ($("range").value === "custom") loadDay(); };
 $("storeSelect").onchange = loadDay;
 $("productStore").onchange = loadProducts;
-$("search").oninput = loadProducts;
+$("search").oninput = () => { PDUrl.set({ q: $("search").value.trim() }); drawPdk(); if ($("productStore").value !== "all") loadProducts(); };
 $("currencySelect").onchange = loadDay;
 $("refresh").onclick = async () => {
   const btn = $("refresh");
@@ -617,7 +772,7 @@ $("refresh").onclick = async () => {
       .map((c) => `<option${c === setup.display_currency ? " selected" : ""}>${esc(c)}</option>`).join("");
     const opts = st.stores.map((x) => `<option value="${x.id}">${esc(x.name)}</option>`).join("");
     $("storeSelect").innerHTML = `<option value="all">All stores</option>` + opts;
-    $("productStore").innerHTML = opts;
+    $("productStore").innerHTML = `<option value="all">All stores</option>` + opts;
     if (!st.sheet) {
       $("problems").innerHTML = `<div class="warn">The orders sheet isn't connected yet.</div>`;
     }

@@ -70,6 +70,7 @@ file and have it work.
 | `suppliers.py` | **Supplier accounts**: opening + fulfilled orders' COG − Airwallex payments = owed; invoice expected vs invoiced (COG page → Suppliers) |
 | `invoices.py` `invoice_ai.py` | Supplier invoices: read (PDF/Excel), match to orders, price + bundle check; AI second reading |
 | `static/cog.html` `cog.js` | COG + Products Monitor page (Check COG, Products) |
+| `products_desk.py` | COG → **Products** table (`/api/cog/pdesk`): one row per Shopify product per store (variants together; lines without product_id join by title): image / listed date / status from Shopify (`PD_PRODUCTS`, 6 h cache), units + orders + last order from cog_lines (BOGO ×2), latest confirmed single cost + price history (`cost_history`, Catalog tier-1 entries), size chart yes/no (`_sc_match` with `_sc_rules`), CS tickets (support/legal) matched by ticket order numbers else the customer's latest order (shipments email), title words pick the product in multi-product orders. Team edits: `pd_info` (supplier, material), `pd_notes` (complaint / note), `pd_qc` photos in `<DB dir>/qc/` (JPEG + _t thumb). Work level can edit. |
 | `mail_client.py` | Store support mailboxes over IMAP (app password): Inbox + Sent, read-only |
 | `ai_brain.py` | Claude Haiku 5.5 sorts each email (customer/inquiry/legal/other, SCM/CS, thread) |
 | `tickets.py` | Turns sorted emails into tickets; our Gmail replies set "we replied last" |

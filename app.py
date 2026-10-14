@@ -24,7 +24,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 import airwallex_client as awx
@@ -61,6 +61,7 @@ import ai_coach
 import reports
 import ai_chat
 import ai_data
+import products_desk
 import db
 import demo
 import fx
@@ -223,7 +224,7 @@ _DESK_HOME = {"profit": "/", "cash": "/cash", "cog": "/cog", "inbox": "/inbox", 
 _EVERYONE = {"/api/me", "/api/me/password", "/api/logout", "/change-password",
              "/api/setup", "/api/chat", "/api/assistant/inbox", "/api/assistant/inbox/read"}
 # What "read & write" people may change (owners may change anything).
-_WRITE_OK = ("/api/googleads/tags", "/api/invoices", "/api/suppliers/payee", "/api/disputes", "/api/cog/sync", "/api/inbox", "/api/expenses", "/api/scm", "/api/importer", "/api/sizecharts")
+_WRITE_OK = ("/api/googleads/tags", "/api/cog/pdesk", "/api/invoices", "/api/suppliers/payee", "/api/disputes", "/api/cog/sync", "/api/inbox", "/api/expenses", "/api/scm", "/api/importer", "/api/sizecharts")
 # What anyone with the desk may do, read-only people included (it changes nothing).
 _ANY_OK = ("/api/reports",)
 
@@ -1442,6 +1443,265 @@ async def api_cog_products(store: int):
     items = _cog["catalog"].products(store)
     items.sort(key=lambda p: (not p["changed"], -(p["times"])))
     return {"products": items}
+
+
+# ---------------------------------------------------------------- COG → Products (products_desk.py)
+
+PD_PRODUCTS = """query($ids: [ID!]!) { nodes(ids: $ids) { ... on Product { legacyResourceId title handle status createdAt
+  productType vendor tags featuredImage { url(transform: {maxWidth: 160}) } collections(first: 10) { nodes { id } } } } }"""
+_pd_shop: dict = {}       # store id -> {product id: (read at, info)}
+QC_DIR = os.path.join(os.path.dirname(os.path.abspath(db.DB_PATH)), "qc")
+
+
+def _pd_db():
+    with db._conn() as con:
+        con.executescript(products_desk.SCHEMA)
+
+
+async def _pd_info(store, pids: list) -> dict:
+    """Title, image, listed date, status, and what size-chart rules look at, per product. Kept 6 hours."""
+    client = ShopifyClient(store["shop_domain"], store["access_token"])
+    have = _pd_shop.setdefault(store["id"], {})
+    now = time.time()
+    want = [p for p in pids if p.isdigit() and not (p in have and now - have[p][0] < PINFO_KEEP)]
+    gate = asyncio.Semaphore(3)
+
+    async def batch(ids):
+        async with gate:
+            try:
+                got = await client.gql(PD_PRODUCTS, {"ids": [f"gid://shopify/Product/{p}" for p in ids]})
+            except Exception:
+                return
+        for n in got.get("nodes") or []:
+            if n:
+                have[str(n["legacyResourceId"])] = (now, n)
+        for p in ids:                                   # deleted in Shopify: don't ask again for 6 hours
+            have.setdefault(p, (now, None))
+    await asyncio.gather(*(batch(want[i:i + 25]) for i in range(0, len(want), 25)))
+    return {p: have[p][1] for p in pids if p in have and have[p][1]}
+
+
+def _pd_lines(store_ids: list) -> list:
+    marks = ",".join("?" * len(store_ids))
+    with db._conn() as con:
+        return [dict(r) for r in con.execute(
+            f"SELECT store_id, order_name, product, product_id, quantity, cancelled, day, supplier FROM cog_lines"
+            f" WHERE store_id IN ({marks})", store_ids)]
+
+
+def _pd_groups(lines: list) -> dict:
+    """{(store id, product id): {names, units, orders, first, last, supplier}}; lines without a product id
+    join the product with the same title in that store, else a group of their own ('t:<title>')."""
+    by_title = {}
+    for l in lines:
+        if l["product_id"]:
+            by_title[(l["store_id"], cog.base_name(l["product"]))] = products_desk.pid_of(l["product_id"])
+    groups = {}
+    for l in lines:
+        pid = products_desk.pid_of(l["product_id"]) if l["product_id"] else \
+            by_title.get((l["store_id"], cog.base_name(l["product"]))) or "t:" + cog.base_name(l["product"])
+        g = groups.setdefault((l["store_id"], pid), {"names": set(), "units": 0, "orders": set(), "first": None,
+                                                     "last": None, "supplier": "", "title": l["product"]})
+        g["names"].add(l["product"])
+        if l["cancelled"]:
+            continue
+        g["units"] += max(int(l["quantity"] or 1), 1) * cog.pack(l["product"])
+        g["orders"].add(l["order_name"])
+        if not g["last"] or l["day"] > g["last"]:
+            g["last"], g["title"] = l["day"], l["product"]
+            g["supplier"] = l["supplier"] or g["supplier"]
+        if not g["first"] or l["day"] < g["first"]:
+            g["first"] = l["day"]
+    return groups
+
+
+def _pd_tickets(lines: list) -> dict:
+    """{(store id, product id): [(ticket id, how)]} for customer problem tickets."""
+    groups_pid = {}
+    for l in lines:
+        if l["product_id"]:
+            groups_pid[(l["store_id"], cog.base_name(l["product"]))] = products_desk.pid_of(l["product_id"])
+    order_products = {}
+    for l in lines:
+        pid = products_desk.pid_of(l["product_id"]) if l["product_id"] else \
+            groups_pid.get((l["store_id"], cog.base_name(l["product"]))) or "t:" + cog.base_name(l["product"])
+        order_products.setdefault(cog.order_key(l["order_name"]), []).append((l["store_id"], pid, l["product"]))
+    marks = ",".join("?" * len(products_desk.TICKET_KINDS))
+    with db._conn() as con:
+        tks = [dict(r) for r in con.execute(
+            f"SELECT id, orders, subject, summary, customer_email, created_at FROM tickets WHERE kind IN ({marks})",
+            products_desk.TICKET_KINDS)]
+        cust = {}
+        for email, name, at in con.execute("SELECT LOWER(email), order_name, order_at FROM shipments"
+                                           " WHERE email IS NOT NULL AND email != '' ORDER BY order_at"):
+            cust.setdefault(email, []).append((at, cog.order_key(name)))
+    return products_desk.match_tickets(tks, order_products, cust)
+
+
+@app.get("/api/cog/pdesk")
+async def api_pdesk(store: str = "all"):
+    """COG → Products: one row per product (variants together) with sales, latest confirmed cost, size chart,
+    CS tickets, QC photos, material and notes."""
+    _pd_db()
+    stores = [x for x in db.list_stores() if not demo.is_demo(x) and x.get("access_token")
+              and (store in ("", "all") or str(x["id"]) == str(store))]
+    if not stores:
+        raise HTTPException(404, "Store not found.")
+    lines = await asyncio.to_thread(_pd_lines, [x["id"] for x in stores])
+    groups = _pd_groups(lines)
+    tick = await asyncio.to_thread(_pd_tickets, lines)
+    catalog = await _catalog()
+    infos = await asyncio.gather(*(_pd_info(x, sorted({p for (sid, p) in groups if sid == x["id"] and p.isdigit()}))
+                                   for x in stores))
+    info = {x["id"]: i for x, i in zip(stores, infos)}
+    with db._conn() as con:
+        extra = {(r["store_id"], r["product_id"]): dict(r) for r in con.execute("SELECT * FROM pd_info")}
+        qc = {(r[0], r[1]): r[2] for r in con.execute("SELECT store_id, product_id, COUNT(*) FROM pd_qc GROUP BY 1, 2")}
+        notes = {}
+        for r in con.execute("SELECT store_id, product_id, kind, text, by, at FROM pd_notes ORDER BY id"):
+            n = notes.setdefault((r[0], r[1]), {"complaints": 0, "notes": 0, "last": None})
+            n["complaints" if r[2] == "complaint" else "notes"] += 1
+            n["last"] = {"kind": r[2], "text": r[3], "by": r[4], "at": r[5]}
+    rules = {x["id"]: _sc_rules(x["id"]) for x in stores}
+    names = {x["id"]: x["name"].strip() for x in stores}
+    shops = {x["id"]: x["shop_domain"] for x in stores}
+    out = []
+    for (sid, pid), g in groups.items():
+        p = info[sid].get(pid) if pid.isdigit() else None
+        cost = products_desk.cost_history(catalog, sid, list(g["names"])) if catalog else {}
+        ex = extra.get((sid, pid)) or {}
+        chart = _sc_match(sid, {**p, "id": f"gid://shopify/Product/{pid}"}, "", rules[sid]) if p else None
+        tk = tick.get((sid, pid)) or []
+        out.append({
+            "store_id": sid, "store": names[sid], "pid": pid, "shop": shops[sid],
+            "title": (p or {}).get("title") or cog.base_name(g["title"]) or g["title"],
+            "image": ((p or {}).get("featuredImage") or {}).get("url"), "handle": (p or {}).get("handle"),
+            "status": ((p or {}).get("status") or "").title() or ("Not in Shopify" if pid.isdigit() else "No product id"),
+            "listed": ((p or {}).get("createdAt") or "")[:10] or None,
+            "supplier": ex.get("supplier") or cost.get("cost_supplier") or g["supplier"] or "",
+            "supplier_set": bool(ex.get("supplier")), "material": ex.get("material") or "",
+            "cost": cost.get("cost"), "cost_day": cost.get("cost_day"), "cost_is_bundle": cost.get("cost_is_bundle"),
+            "variant_low": cost.get("variant_low"), "variant_high": cost.get("variant_high"),
+            "price_changes": max(0, len(cost.get("changes") or []) - 1),
+            "units": g["units"], "orders": len(g["orders"]), "first_order": g["first"], "last_order": g["last"],
+            "size_chart": chart["name"] if chart else None,
+            "tickets": len(tk), "tickets_by_order": sum(1 for _, h in tk if h == "order number"),
+            "qc_photos": qc.get((sid, pid), 0), "notes": notes.get((sid, pid)) or {"complaints": 0, "notes": 0, "last": None},
+        })
+    out.sort(key=lambda r: -r["units"])
+    return {"products": out, "stores": [{"id": x["id"], "name": names[x["id"]]} for x in stores]}
+
+
+@app.get("/api/cog/pdesk/item")
+async def api_pdesk_item(store: int, pid: str):
+    """One product: cost history and cost per variant, the matched tickets, notes and QC photos."""
+    _pd_db()
+    lines = [l for l in await asyncio.to_thread(_pd_lines, [store])]
+    groups = _pd_groups(lines)
+    g = groups.get((store, pid))
+    if not g:
+        raise HTTPException(404, "No orders for that product.")
+    catalog = await _catalog()
+    cost = products_desk.cost_history(catalog, store, list(g["names"])) if catalog else {}
+    tk = dict((await asyncio.to_thread(_pd_tickets, lines)).get((store, pid)) or [])
+    with db._conn() as con:
+        tickets_ = [dict(r) for r in con.execute(
+            f"SELECT id, kind, labels, subject, summary, status, created_at, customer_name, orders FROM tickets"
+            f" WHERE id IN ({','.join('?' * len(tk)) or 'NULL'}) ORDER BY created_at DESC", list(tk))]
+        notes = [dict(r) for r in con.execute("SELECT id, kind, text, by, at FROM pd_notes WHERE store_id = ? AND product_id = ?"
+                                              " ORDER BY id DESC", (store, pid))]
+        photos = [dict(r) for r in con.execute("SELECT id, caption, by, at FROM pd_qc WHERE store_id = ? AND product_id = ?"
+                                               " ORDER BY id DESC", (store, pid))]
+    for t in tickets_:
+        t["how"] = tk.get(t["id"])
+    return {"cost": cost, "tickets": tickets_, "notes": notes, "photos": photos}
+
+
+@app.put("/api/cog/pdesk/info")
+def api_pdesk_info(payload: dict, request: Request):
+    """Supplier (when it differs from the cost history's) and material, typed by the team."""
+    _pd_db()
+    who = (getattr(request.state, "user", None) or {}).get("email", "")
+    sid, pid = int(payload["store"]), str(payload["pid"])
+    with db._conn() as con:
+        cur = dict(con.execute("SELECT * FROM pd_info WHERE store_id = ? AND product_id = ?", (sid, pid)).fetchone() or {})
+        sup = str(payload.get("supplier", cur.get("supplier") or "")).strip()[:80]
+        mat = str(payload.get("material", cur.get("material") or "")).strip()[:300]
+        con.execute("INSERT OR REPLACE INTO pd_info (store_id, product_id, supplier, material, updated_by, updated_at)"
+                    " VALUES (?, ?, ?, ?, ?, datetime('now'))", (sid, pid, sup or None, mat or None, who))
+    return {"ok": True}
+
+
+@app.post("/api/cog/pdesk/notes")
+def api_pdesk_note(payload: dict, request: Request):
+    _pd_db()
+    text = str(payload.get("text") or "").strip()[:2000]
+    if not text:
+        raise HTTPException(400, "Write the note first.")
+    kind = "complaint" if payload.get("kind") == "complaint" else "note"
+    who = (getattr(request.state, "user", None) or {}).get("email", "")
+    with db._conn() as con:
+        con.execute("INSERT INTO pd_notes (store_id, product_id, kind, text, by) VALUES (?, ?, ?, ?, ?)",
+                    (int(payload["store"]), str(payload["pid"]), kind, text, who))
+    return {"ok": True}
+
+
+@app.delete("/api/cog/pdesk/notes/{note_id}")
+def api_pdesk_note_delete(note_id: int):
+    with db._conn() as con:
+        con.execute("DELETE FROM pd_notes WHERE id = ?", (note_id,))
+    return {"ok": True}
+
+
+@app.post("/api/cog/pdesk/qc")
+async def api_pdesk_qc_add(request: Request):
+    """Quality-check photos of the real product (JPEG copies, phone photos incl. HEIC)."""
+    _pd_db()
+    form = await request.form()
+    sid, pid = int(form.get("store")), str(form.get("pid"))
+    caption = str(form.get("caption") or "").strip()[:300]
+    who = (getattr(request.state, "user", None) or {}).get("email", "")
+    os.makedirs(QC_DIR, exist_ok=True)
+    added = 0
+    for f in [f for f in form.getlist("files") if hasattr(f, "read")][:20]:
+        data = await f.read()
+        if len(data) > 25 * 1024 * 1024:
+            raise HTTPException(400, f"{f.filename} is bigger than 25 MB.")
+        tmp = os.path.join(QC_DIR, f"up-{secrets.token_hex(6)}")
+        with open(tmp, "wb") as fh:
+            fh.write(data)
+        with db._conn() as con:
+            qid = con.execute("INSERT INTO pd_qc (store_id, product_id, caption, by) VALUES (?, ?, ?, ?)",
+                              (sid, pid, caption, who)).lastrowid
+        ok = await asyncio.to_thread(_att_image, tmp, os.path.join(QC_DIR, f"{qid}.jpg"), 2000)
+        ok = ok and await asyncio.to_thread(_att_image, tmp, os.path.join(QC_DIR, f"{qid}_t.jpg"), 360)
+        os.remove(tmp)
+        if not ok:
+            with db._conn() as con:
+                con.execute("DELETE FROM pd_qc WHERE id = ?", (qid,))
+            raise HTTPException(400, f"{f.filename} isn't a photo EcomVital can read.")
+        added += 1
+    return {"ok": True, "added": added}
+
+
+@app.get("/api/cog/pdesk/qc/{qc_id}")
+def api_pdesk_qc_file(qc_id: int, thumb: int = 0):
+    path = os.path.join(QC_DIR, f"{qc_id}{'_t' if thumb else ''}.jpg")
+    if not os.path.exists(path):
+        raise HTTPException(404, "Photo not found.")
+    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
+
+
+@app.delete("/api/cog/pdesk/qc/{qc_id}")
+def api_pdesk_qc_delete(qc_id: int):
+    with db._conn() as con:
+        con.execute("DELETE FROM pd_qc WHERE id = ?", (qc_id,))
+    for suffix in ("", "_t"):
+        try:
+            os.remove(os.path.join(QC_DIR, f"{qc_id}{suffix}.jpg"))
+        except OSError:
+            pass
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------- inbox (see mail_client.py)
@@ -9003,12 +9263,16 @@ async def _sc_product(store, handle: str):
     return info
 
 
-def _sc_match(store_id: int, p: dict, country: str):
-    """The chart for this product: product > collection > tag > type > vendor > all."""
+def _sc_rules(store_id: int) -> list:
     with db._conn() as con:
-        rules = [dict(r) for r in con.execute(
+        return [dict(r) for r in con.execute(
             "SELECT r.kind, r.value, c.id, c.name, c.blocks, c.countries FROM size_chart_rules r"
             " JOIN size_charts c ON c.id = r.chart_id WHERE r.store_id = ? AND c.status = 'active'", (store_id,))]
+
+
+def _sc_match(store_id: int, p: dict, country: str, rules: list = None):
+    """The chart for this product: product > collection > tag > type > vendor > all."""
+    rules = _sc_rules(store_id) if rules is None else rules
     tags = {t.lower() for t in p.get("tags") or []}
     cols = {c["id"] for c in ((p.get("collections") or {}).get("nodes") or [])}
     order = ["product", "collection", "tag", "type", "vendor", "all"]
