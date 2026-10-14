@@ -450,6 +450,8 @@ def custom_exclude(group: dict, items: list, attrs: dict = None) -> list:
     per_leaf, unknown = {}, []
     for it in items:
         a = attrs.get(it.lower())
+        if a is None and attrs:
+            continue    # not in Google's catalogue: Google can't show it, so there's nothing to exclude
         leaf = _leaf_for(nodes, kids, {**(a or {}), "item": it}) if a else None
         if leaf is None:
             unknown.append(it)
