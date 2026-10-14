@@ -2872,7 +2872,7 @@ async def api_chat(payload: dict, request: Request):
     today = max((_store_today(x) for x in db.list_stores() if not demo.is_demo(x)),
                 default=datetime.now(CASH_TZ).date()).isoformat()
     try:
-        return await ai_chat.reply(key, history, lambda n, a: _chat_tool(n, a, user), today, _display_currency())
+        return await ai_chat.reply(key, history, lambda n, a: _chat_tool(n, a, user), today, _display_currency(), notes=_ai_notes())
     except ai_chat.ChatError as e:
         raise HTTPException(400, str(e))
 
@@ -7639,10 +7639,93 @@ def _assist_user(user) -> str:
     return (user or {}).get("email") or "owner"
 
 
+def _ai_notes() -> list:
+    """The assistant's lasting notes (rules / corrections the owner told it to remember)."""
+    with db._conn() as con:
+        con.execute("CREATE TABLE IF NOT EXISTS assistant_notes (id INTEGER PRIMARY KEY, note TEXT NOT NULL, by TEXT,"
+                    " at TEXT NOT NULL)")
+        return [dict(r) for r in con.execute("SELECT id, note, by, at FROM assistant_notes ORDER BY id")]
+
+
 async def _assist_tool(name: str, args: dict, user: dict):
     """The assistant's newer tools; None when the name isn't one of them."""
     real = [x for x in db.list_stores() if not demo.is_demo(x) and x.get("access_token")]
     pick = lambda sid: [x for x in real if sid in (None, "", "all") or str(x["id"]) == str(sid)]
+    if name == "remember":
+        if (user or {}).get("role") != "owner":
+            return {"error": "Only the owner can give me lasting rules. I'll follow it for this chat."}
+        note = str(args.get("note") or "").strip()[:500]
+        if not note:
+            return {"error": "Empty note."}
+        _ai_notes()
+        with db._conn() as con:
+            cur = con.execute("INSERT INTO assistant_notes (note, by, at) VALUES (?,?,?)",
+                              (note, (user or {}).get("email"), datetime.now(timezone.utc).isoformat(timespec="seconds")))
+        return {"saved": cur.lastrowid, "note": note}
+    if name == "forget":
+        if (user or {}).get("role") != "owner":
+            return {"error": "Only the owner can delete notes."}
+        _ai_notes()
+        with db._conn() as con:
+            n = con.execute("DELETE FROM assistant_notes WHERE id = ?", (int(args.get("id") or 0),)).rowcount
+        return {"deleted": n}
+    if name == "product_sales":
+        _need(user, "profit")
+        sts = pick(args.get("store"))
+        names = {x["id"]: (x["name"].strip(), x["currency"]) for x in sts}
+        rows = await asyncio.to_thread(db.cog_lines, list(names), args["start"], args["end"])
+        agg = {}
+        for r in rows:
+            if r["cancelled"]:
+                continue
+            prod = r["product"] or "?"
+            key_name = prod if args.get("by_variant") else prod.rsplit(" - ", 1)[0]
+            k = (r["store_id"], r.get("product_id") if not args.get("by_variant") and r.get("product_id") else key_name)
+            a = agg.setdefault(k, {"store": names[r["store_id"]][0], "currency": names[r["store_id"]][1], "product": key_name,
+                                   "orders": set(), "units": 0, "sales": 0.0, "cost_usd": 0.0})
+            a["orders"].add(r["order_name"])
+            a["units"] += r["quantity"] or 1
+            a["sales"] += r["subtotal"] or 0.0
+            a["cost_usd"] += r["cost_usd"] or 0.0
+        out = sorted(agg.values(), key=lambda a: -a["sales"])
+        lim = int(args.get("limit") or 50)
+        return {"period": f"{args['start']} to {args['end']} (store days)", "products": len(out),
+                "orders": len({(r["store_id"], r["order_name"]) for r in rows if not r["cancelled"]}),
+                "rows": [_round({**a, "orders": len(a["orders"])}) for a in out[:lim]],
+                "note": "Sales are the order lines' value after discounts, in each store's currency; cost is COG in USD. "
+                        "Covers orders already costed (synced every 20 minutes)."}
+    if name == "get_disputes":
+        _need(user, "disputes")
+        want = (args.get("state") or "open").lower()
+        with db._conn() as con:
+            rows = [dict(r) for r in con.execute("SELECT * FROM disputes ORDER BY due")]
+        out = []
+        for r in rows:
+            if want == "open" and r["state"] == "closed":
+                continue
+            if want not in ("open", "all") and r["state"] != want:
+                continue
+            d = json.loads(r["data"] or "{}")
+            st = next((x["name"].strip() for x in real if x["id"] == r["store_id"]), None)
+            out.append({"provider": r["provider"], "state": r["state"], "due": r["due"], "store": st, "order": r["order_name"],
+                        "amount": d.get("amount"), "currency": d.get("currency"), "reason": d.get("reason"),
+                        "stage": d.get("stage"), "customer": d.get("customer"), "outcome": d.get("outcome")})
+        return {"count": len(out), "disputes": out[:80], "link": f"{BASE_URL}/disputes"}
+    if name == "find_parcels":
+        _need(user, "scm")
+        q = str(args.get("query") or "").strip()
+        if not q:
+            return {"error": "Give an order number or email."}
+        key = q.lstrip("#").upper()
+        with db._conn() as con:
+            rows = [dict(r) for r in con.execute(
+                "SELECT * FROM shipments WHERE UPPER(REPLACE(order_name, '#', '')) = ? OR LOWER(email) = LOWER(?) "
+                "ORDER BY order_at DESC LIMIT 20", (key, q))]
+        keep = ("order_name", "order_at", "customer", "city", "country", "fulfillment", "number", "company", "tracking_url",
+                "fulfilled_at", "status", "sub_status", "last_event", "last_event_at", "last_location", "transit_days")
+        names = {x["id"]: x["name"].strip() for x in real}
+        return {"parcels": [{"store": names.get(r["store_id"]), **{k: r.get(k) for k in keep}} for r in rows],
+                "note": "number '' = not fulfilled / no tracking yet."}
     if name == "store_health":
         sts = pick(args.get("store"))
         got = await asyncio.gather(*(_store_health(x) for x in sts), return_exceptions=True)
@@ -7776,7 +7859,7 @@ async def _assist_run_schedule(job: dict):
     hist = [{"role": "user", "content": f"(Scheduled message '{job['name']}': no one is waiting in the chat, so don't ask "
                                          f"questions, just do it and report.) {spec['instruction']}"}]
     try:
-        got = await ai_chat.reply(key, hist, lambda n, a: _chat_tool(n, a, user), today, _display_currency())
+        got = await ai_chat.reply(key, hist, lambda n, a: _chat_tool(n, a, user), today, _display_currency(), notes=_ai_notes())
         _assist_deliver(job["user_email"], f"📅 {job['name']}", got["text"], f"schedule:{job['id']}")
     except Exception as e:
         _assist_deliver(job["user_email"], f"📅 {job['name']} (failed)", f"Couldn't make it: {str(e)[:300]}", f"schedule:{job['id']}")
@@ -8057,7 +8140,7 @@ async def _wa_handle(msg, contact_name=None):
         hist.append({"role": "user", "content": me + (f"[{note}] " if note else "") + (text or "(sent a file)")})
         today = max((_store_today(x) for x in db.list_stores() if not demo.is_demo(x)), default=datetime.now(CASH_TZ).date()).isoformat()
         try:
-            got = await ai_chat.reply(key, hist, lambda n, a: _chat_tool(n, a, user), today, _display_currency())
+            got = await ai_chat.reply(key, hist, lambda n, a: _chat_tool(n, a, user), today, _display_currency(), notes=_ai_notes())
         except ai_chat.ChatError as e:
             await _wa_send(phone, f"⚠ {e}")
             return
@@ -8575,6 +8658,23 @@ def pay_manage(token: str, payload: dict):
     else:
         raise HTTPException(400, "That can't be done right now.")
     return _pay_sub_view(co.sub(token=token))
+
+
+@app.post("/api/whatsapp/profile")
+async def api_whatsapp_profile(payload: dict):
+    """Owner: set the WhatsApp number's profile (EcomVital logo, about line, description, website, email)."""
+    img = None
+    if payload.get("logo", True):
+        with open(os.path.join(STATIC_DIR, "brand", "ecomvital-640.jpg"), "rb") as f:
+            img = f.read()
+    try:
+        return await whatsapp.set_profile(db.get_setting("wa_app_id") or "", img, "image/jpeg",
+                                          about=payload.get("about") or "EcomVital assistant",
+                                          description=payload.get("description") or "EcomVital: profit, ads and store operations assistant for our team.",
+                                          websites=payload.get("websites") or ["https://www.ecomvital.com"],
+                                          email=payload.get("email") or "hello@ecomvital.com")
+    except whatsapp.WAError as e:
+        raise HTTPException(400, str(e))
 
 
 @app.post("/pay/webhook")

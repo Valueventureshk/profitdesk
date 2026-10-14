@@ -132,10 +132,28 @@ TOOLS += [
           ["name", "kind", "store", "threshold"]),
     _tool("list_schedules_alerts", "This person's scheduled messages and alerts.", {}, []),
     _tool("delete_schedule_alert", "Delete one of this person's schedules or alerts by id.", {"id": {"type": "integer"}}, ["id"]),
+    _tool("remember", "Save a lasting note you must follow in every future chat (WhatsApp and the app): a rule, definition, "
+          "preference or correction the owner gives ('remember …', 'always …', 'from now on …', or 'no, it's like this'). "
+          "One clear sentence in your own words.", {"note": {"type": "string"}}, ["note"]),
+    _tool("forget", "Delete a saved note by its id (from the notes in your instructions).", {"id": {"type": "integer"}}, ["id"]),
+    _tool("product_sales", "Which products sold in a store (or all stores) over a period, from the real Shopify order lines: "
+          "orders, units, sales and product cost per product (variants combined; set by_variant for each variant). "
+          "Use for 'which products sold', 'best sellers', 'how many orders of X'.",
+          {"store": {"type": "string", "description": "a store id, or all"}, **_RANGE,
+           "by_variant": {"type": ["boolean", "null"]}, "limit": {"type": ["integer", "null"]}},
+          ["store", "start", "end", "by_variant", "limit"]),
+    _tool("get_disputes", "The Disputes desk: PayPal cases and Airwallex chargebacks with state (respond = we must answer, "
+          "waiting, review, closed), deadline, amount, reason, customer, store and order.",
+          {"state": {"type": ["string", "null"], "description": "open (default), respond, waiting, review, closed or all"}},
+          ["state"]),
+    _tool("find_parcels", "Where an order's parcels are (the SCM desk / 17TRACK): status, carrier, tracking number and link, "
+          "last event and when. Search by order number (e.g. #AS13184) or the customer's email.",
+          {"query": {"type": "string"}}, ["query"]),
 ]
 # Anthropic allows at most 20 strict tools: the simple ones (few or no inputs) don't need it.
 _LOOSE = {"propose_google_change", "list_stores", "get_cash", "get_inbox", "list_schedules_alerts", "delete_schedule_alert",
-          "store_health", "tracking_live", "google_campaigns", "google_product_issues", "find_shopify_products"}
+          "store_health", "tracking_live", "google_campaigns", "google_product_issues", "find_shopify_products",
+          "remember", "forget", "product_sales", "get_disputes", "find_parcels"}
 for _t in TOOLS:
     if _t["name"] in _LOOSE:
         _t.pop("strict", None)
@@ -150,6 +168,8 @@ When someone asks for a document, file, export, spreadsheet or report, use creat
 If a tool says the person has no access, tell them which desk they'd need.
 For "check everything / store health / are things working" use store_health. For live events ("adds to cart in the last hour") use tracking_live.
 Scheduled reports and alerts: create them with create_schedule / create_alert and confirm the time, days and threshold in one line.
+When the owner gives a rule, preference, definition or correction meant to last, save it with remember and say "Noted." Follow the saved notes below; if a note conflicts with what you're asked now, follow the request and ask whether to update the note.
+For product-level sales use product_sales; for disputes use get_disputes; for "where is order …" use find_parcels.
 You can propose changes with the propose_ tools (owners only). They never change anything themselves: the person sees the action with a Confirm button. Before proposing, check the list (e.g. get_price_changes) and say what will change. Never claim something was done until they confirm."""
 
 
@@ -157,7 +177,7 @@ class ChatError(RuntimeError):
     pass
 
 
-async def reply(api_key: str, history: list, run_tool, today: str, currency: str) -> dict:
+async def reply(api_key: str, history: list, run_tool, today: str, currency: str, notes: list = None) -> dict:
     """history: [{"role": "user"|"assistant", "content": text}]. run_tool(name, input) -> dict.
     Returns {"text", "links": [...]}"""
     client = anthropic.AsyncAnthropic(api_key=api_key, max_retries=3, timeout=180)
@@ -168,7 +188,9 @@ async def reply(api_key: str, history: list, run_tool, today: str, currency: str
         try:
             resp = await client.beta.messages.create(
                 model=MODEL, max_tokens=8000, betas=BETAS, fallbacks="default",
-                system=SYSTEM.format(today=today, currency=currency),
+                system=SYSTEM.format(today=today, currency=currency) + (
+                    "\n\nSaved notes from the owner (follow these):\n" + "\n".join(f"[{n['id']}] {n['note']}" for n in notes)
+                    if notes else ""),
                 tools=TOOLS, output_config={"effort": "low"}, messages=messages)
         except anthropic.AuthenticationError as e:
             raise ChatError("Anthropic didn't accept the API key. Check it in Settings → AI.") from e

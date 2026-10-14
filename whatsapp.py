@@ -225,3 +225,30 @@ async def transcribe(data: bytes, mime: str) -> str:
     if r.status_code >= 400:
         raise WAError(f"Transcription failed ({r.status_code}): {r.text[:200]}")
     return (r.json().get("text") or "").strip()
+
+
+async def set_profile(app_id: str, image: bytes = None, mime: str = "image/jpeg", about: str = None,
+                      description: str = None, websites: list = None, email: str = None) -> dict:
+    """The number's WhatsApp business profile: picture (Meta's resumable upload -> handle), about, description,
+    websites, email."""
+    c = cfg()
+    body = {"messaging_product": "whatsapp"}
+    async with httpx.AsyncClient(timeout=60) as client:
+        if image:
+            if not app_id:
+                raise WAError("The Meta app id isn't saved (Settings → WhatsApp).")
+            r = await client.post(f"{GRAPH}/{_version()}/{app_id}/uploads",
+                                  params={"file_length": len(image), "file_type": mime, "access_token": c["token"]})
+            if r.status_code >= 400:
+                raise WAError(f"Upload start: {r.text[:200]}")
+            sess = r.json().get("id")
+            r = await client.post(f"{GRAPH}/{_version()}/{sess}", content=image,
+                                  headers={"Authorization": f"OAuth {c['token']}", "file_offset": "0"})
+            if r.status_code >= 400:
+                raise WAError(f"Upload: {r.text[:200]}")
+            body["profile_picture_handle"] = r.json().get("h")
+    for k, v in (("about", about), ("description", description), ("websites", websites), ("email", email)):
+        if v:
+            body[k] = v
+    await _post(f"{c['phone_id']}/whatsapp_business_profile", body)
+    return {"ok": True, "set": [k for k in body if k != "messaging_product"]}
