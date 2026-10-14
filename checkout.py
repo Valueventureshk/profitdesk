@@ -181,10 +181,14 @@ async def charge_saved(sub: dict, amount: float, ref: str) -> dict:
     """A renewal: a new intent for the subscriber, confirmed by us with their saved card (merchant-triggered)."""
     intent = await create_intent(amount, sub["currency"], ref, sub["customer_id"],
                                  metadata={"sub": str(sub["id"]), "kind": "renewal"})
-    body = {"request_id": str(uuid.uuid4()), "customer_id": sub["customer_id"], "triggered_by": "merchant",
-            "payment_method": {"id": sub["method_id"], "type": sub["method_type"] or "card"}}
     if sub.get("consent_id"):
-        body["payment_consent_id"] = sub["consent_id"]
+        # the saved agreement (consent) already says merchant-triggered and which card: Airwallex refuses
+        # triggered_by / payment_method next to it
+        body = {"request_id": str(uuid.uuid4()), "customer_id": sub["customer_id"],
+                "payment_consent_id": sub["consent_id"]}
+    else:
+        body = {"request_id": str(uuid.uuid4()), "customer_id": sub["customer_id"], "triggered_by": "merchant",
+                "payment_method": {"id": sub["method_id"], "type": sub["method_type"] or "card"}}
     if (sub["method_type"] or "card") == "card":
         body["payment_method_options"] = {"card": {"auto_capture": True}}
     return await _call("POST", f"/api/v1/pa/payment_intents/{intent['id']}/confirm", body, "payments")
