@@ -1485,7 +1485,7 @@ def _pd_lines(store_ids: list) -> list:
     marks = ",".join("?" * len(store_ids))
     with db._conn() as con:
         return [dict(r) for r in con.execute(
-            f"SELECT store_id, order_name, product, product_id, quantity, cancelled, day, supplier FROM cog_lines"
+            f"SELECT store_id, order_name, product, product_id, quantity, cancelled, day, supplier, cost_usd, source FROM cog_lines"
             f" WHERE store_id IN ({marks})", store_ids)]
 
 
@@ -1507,6 +1507,11 @@ def _pd_groups(lines: list) -> dict:
             continue
         g["units"] += max(int(l["quantity"] or 1), 1) * cog.pack(l["product"])
         g["orders"].add(l["order_name"])
+        if cog.pack(l["product"]) > 1 and l["cost_usd"] and l["source"] in ("invoice", "catalog"):
+            # BOGO: what one sale (two pairs) cost on the latest costed order, invoices first
+            k = (l["source"] == "invoice", l["day"])
+            if not g.get("sale_cost") or k > g["sale_cost"][0]:
+                g["sale_cost"] = (k, l["cost_usd"] / max(int(l["quantity"] or 1), 1))
         if not g["last"] or l["day"] > g["last"]:
             g["last"], g["title"] = l["day"], l["product"]
             g["supplier"] = l["supplier"] or g["supplier"]
@@ -1580,7 +1585,11 @@ async def api_pdesk(store: str = "all"):
             "listed": ((p or {}).get("createdAt") or "")[:10] or None,
             "supplier": ex.get("supplier") or cost.get("cost_supplier") or g["supplier"] or "",
             "supplier_set": bool(ex.get("supplier")), "material": ex.get("material") or "",
-            "cost": cost.get("cost"), "cost_day": cost.get("cost_day"), "cost_is_bundle": cost.get("cost_is_bundle"),
+            **({"cost": round(g["sale_cost"][1], 2), "cost_day": g["sale_cost"][0][1], "cost_is_bundle": False,
+                "cost_note": "per BOGO sale (2 pairs)" + ("" if g["sale_cost"][0][0] else ", from history")}
+               if g.get("sale_cost") else
+               {"cost": cost.get("cost"), "cost_day": cost.get("cost_day"), "cost_is_bundle": cost.get("cost_is_bundle"),
+                "cost_note": ""}),
             "variant_low": cost.get("variant_low"), "variant_high": cost.get("variant_high"),
             "price_changes": max(0, len(cost.get("changes") or []) - 1),
             "units": g["units"], "orders": len(g["orders"]), "first_order": g["first"], "last_order": g["last"],

@@ -586,7 +586,9 @@ a.section-item:hover { background: var(--line-soft); }
 .pdk-filters { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-left: auto; margin-right: 12px; }
 .pdk-filters .control { width: auto; }
 .pdk-tip { margin: 0 0 10px; }
-.pdk-table td { vertical-align: top; }
+.pdk-table th, .pdk-table td { text-align: left; vertical-align: top; padding: 10px 10px; }
+.pdk-table th.num, .pdk-table td.num { text-align: right; }
+.pdk-table td.pdk-name, .pdk-table td.pdk-notes { white-space: normal; }
 .pdk-table td.num { text-align: right; font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .pdk-table .sub { display: block; }
 .pdk-img img, .pdk-noimg { width: 44px; height: 44px; border-radius: 6px; object-fit: cover; display: block; background: var(--line-soft); }
