@@ -36,6 +36,16 @@ TOOLS = [
            "title_contains": {"type": ["string", "null"]},
            "limit": {"type": ["integer", "null"]}},
           ["days", "campaign", "min_spend", "max_spend", "min_roas", "max_roas", "basis", "title_contains", "limit"]),
+    _tool("product_verdicts", "The verdicts shown on the Google Ads desk's Products page (Scale / Keep / Watch / Cut / Learning), "
+          "per product with all variants combined, judged on profit after COG, fees and refunds against the product's own "
+          "breakeven ROAS: scale = ROAS ≥ 1.3 × breakeven, keep ≥ 1×, watch ≥ 0.8×, cut below (or no sales), learning = spend "
+          "under the store's minimum. Use it whenever the person mentions verdicts, scale/keep/watch/cut products or 'winners' "
+          "as the desk shows them.",
+          {"window": {"type": "string", "enum": ["7", "14", "30"], "description": "last N store days incl. today; the page default is 30"},
+           "verdicts": {"type": ["array", "null"], "items": {"type": "string", "enum": ["scale", "keep", "watch", "cut", "learning"]},
+                        "description": "only these verdicts, or null for all"},
+           "limit": {"type": ["integer", "null"]}},
+          ["window", "verdicts", "limit"], strict=False),
     _tool("propose_plan", "Propose changes to Google Ads as ordered steps. Nothing changes until the person clicks Do it. Step "
           "kinds and their fields:\n"
           "- create_campaign: name, budget (per day, account currency), products (Shopify product ids), target_roas (optional, e.g. 2.5), status (ENABLED or PAUSED, default ENABLED). Makes a feed-only Performance Max campaign running just those products (all their variants).\n"
@@ -64,7 +74,7 @@ Today is {today} on the store's clock. Money is in {currency} (the Google Ads ac
 Store settings: managing {enabled}, mode {mode} ("approve" = rules wait for Approve; "auto" = rules act by themselves), daily budget cap per campaign {budget_cap}, cap for a new campaign's budget {new_budget_cap}.
 
 How to work:
-- Look before you act: get_campaigns for the structure, find_products for the products and figures. Never make up a figure or a product id.
+- Look before you act: get_campaigns for the structure, find_products for the products and figures, product_verdicts for the Products page's Scale / Keep / Watch / Cut / Learning verdicts. Never make up a figure or a product id.
 - ROAS means Shopify sales ÷ Google spend unless the person says Google's own conversions. "Including all variants" is how find_products already counts.
 - To change anything, use propose_plan. Spell out exactly what will happen (which campaign, how many products, budget) and say the person must click "Do it". Never say something is done.
 - For "always / whenever / every day / keep an eye on" instructions, use save_rule (one rule per behaviour) and say they must click "Turn on". Explain the rule in one line.

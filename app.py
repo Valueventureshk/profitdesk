@@ -7041,6 +7041,30 @@ async def _ads_tool(st, name: str, a: dict, who: str, made: dict) -> dict:
             "last_7_days": c["d7"], "last_30_days": c["d30"]} for c in s["campaigns"]],
             "note": "product_lists: all = every product; only N = just those variants; except N = all but those; "
                     "custom = picked by labels/categories (EcomVital can't edit those). ROAS = Shopify sales / spend."}
+    if name == "product_verdicts":
+        w = str(a.get("window") or "30")
+        if w not in ("7", "14", "30"):
+            w = "30"
+        got = await _gdesk(st, google_desk.windows_for(today, today - timedelta(days=29), today))
+        want = set(a.get("verdicts") or [])
+        out, counts = [], {}
+        for p in got.get("products") or []:
+            if p.get("unlinked"):
+                continue
+            m = p["w"].get(w) or {}
+            v = m.get("verdict") or ""
+            counts[v] = counts.get(v, 0) + 1
+            if want and v not in want:
+                continue
+            out.append({"product_id": p["pid"], "title": p["title"], "status": p.get("status"), "verdict": v,
+                        "variants": len(p.get("variants") or []), "spend": round(m.get("cost") or 0, 2),
+                        "sales": round(m.get("sales") or 0, 2), "roas": round(m["roas"], 2) if m.get("roas") else None,
+                        "breakeven_roas": round(m["be_roas"], 2) if m.get("be_roas") else None,
+                        "profit": round(m.get("profit") or 0, 2)})
+        return {"window": f"last {w} store days (today included)", "currency": got.get("currency"),
+                "verdict_counts": counts, "count": len(out), "products": out[: int(a.get("limit") or 300)],
+                "note": "Same figures and verdicts as the Google Ads desk's Products page. product_id is the Shopify product id "
+                        "to use in propose_plan; a plan with a product includes all its variants."}
     if name == "find_products":
         rows, _ = await _ads_data(st)
         s = await gads_manage.structure(*_ads_args(st))
