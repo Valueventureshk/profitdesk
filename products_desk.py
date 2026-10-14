@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS pd_info (
     product_id TEXT    NOT NULL,
     supplier   TEXT,
     material   TEXT,
+    size_chart TEXT,                              -- yes | no, picked by the team
     updated_by TEXT,
     updated_at TEXT,
     PRIMARY KEY (store_id, product_id)
@@ -44,6 +45,8 @@ CREATE TABLE IF NOT EXISTS pd_qc (
 );
 CREATE INDEX IF NOT EXISTS pd_qc_product ON pd_qc (store_id, product_id);
 """
+# columns added after the first version (pd_info existed without them)
+COLUMNS = {"pd_info": [("size_chart", "TEXT")]}
 
 TICKET_KINDS = ("support", "legal")          # customer problems (not pre-sale questions or spam)
 

@@ -183,7 +183,7 @@ function drawPdk() {
     recent: (r) => r.last_order || "", listed: (r) => r.listed || "", cost: (r) => r.cost || 0 }[sort];
   rows = rows.slice().sort((a, b) => (key(a) < key(b) ? 1 : key(a) > key(b) ? -1 : b.units - a.units));
   $("pdkCount").textContent = `${rows.length} products`;
-  $("pdk").innerHTML = `<thead><tr><th></th><th>Product</th><th>Supplier</th><th class="num">Latest cost</th><th class="num">Bought</th>
+  $("pdk").innerHTML = `<thead><tr><th></th><th>Product</th><th>Supplier</th><th class="num">Selling price</th><th class="num">Latest cost</th><th class="num">Bought</th>
       <th>Size chart</th><th>Quality check</th><th>Material</th><th class="num">CS tickets</th><th>Listed</th><th>Last order</th><th>Notes</th></tr></thead>
     <tbody>${rows.slice(0, 500).map((r) => {
       const i = pdk.rows.indexOf(r);
@@ -193,13 +193,16 @@ function drawPdk() {
         <td class="name pdk-name"><a href="#" data-open="${i}">${esc(r.title)}</a>
           <span class="sub">${all ? esc(r.store) + " · " : ""}${esc(r.status)}</span></td>
         <td><span class="pdk-edit" data-edit="supplier" data-i="${i}" title="Click to change" data-write-only-edit>${esc(r.supplier) || `<span class="hint">add</span>`}</span></td>
+        <td class="num">${r.price_low !== null ? money(r.price_low, r.price_currency) : "—"}${
+          r.price_high !== null && r.price_high !== r.price_low ? `<span class="sub">to ${money(r.price_high, r.price_currency)}</span>` : ""}</td>
         <td class="num"><a href="#" data-open="${i}">${r.cost !== null ? money(r.cost, "USD") : "—"}</a>
           ${r.cost_note ? `<span class="sub">${esc(r.cost_note)}</span>` : r.cost_is_bundle ? `<span class="sub flag">from a bundle order</span>` : ""}
           ${r.variant_low !== null ? `<span class="sub">by variant ${money(r.variant_low, "USD")}–${money(r.variant_high, "USD")}</span>` : ""}
           ${r.price_changes ? `<span class="sub flag">changed ${r.price_changes}×</span>` : ""}
           ${r.cost_day ? `<span class="sub">${shortDate(r.cost_day)}</span>` : ""}</td>
         <td class="num"><b>${r.units}</b><span class="sub">${r.orders} orders</span></td>
-        <td>${r.size_chart ? `<span class="src ok" title="${esc(r.size_chart)}">Yes</span>` : `<span class="src cancelled">No</span>`}</td>
+        <td><button class="pdk-chart ${r.size_chart || "unset"}" data-chart="${i}" title="Click to switch Yes / No${r.size_chart_auto ? ` · EcomVital's size chart: ${esc(r.size_chart_auto)}` : ""}">${
+          r.size_chart === "yes" ? "Yes" : r.size_chart === "no" ? "No" : "pick"}</button>${r.size_chart_auto ? `<span class="sub">chart set up</span>` : ""}</td>
         <td><a href="#" data-open="${i}" data-at="qc">${r.qc_photos ? `${r.qc_photos} photo${r.qc_photos > 1 ? "s" : ""}` : `<span class="hint">add photos</span>`}</a></td>
         <td><span class="pdk-edit" data-edit="material" data-i="${i}" title="Click to change">${esc(r.material) || `<span class="hint">add</span>`}</span></td>
         <td class="num">${r.tickets ? `<a href="#" data-open="${i}" data-at="tickets" class="${r.tickets >= 3 ? "pdk-hot" : ""}">${r.tickets}</a>` : `<span class="hint">0</span>`}</td>
@@ -213,6 +216,18 @@ function drawPdk() {
 $("pdk").addEventListener("click", async (e) => {
   const open = e.target.closest("[data-open]");
   if (open) { e.preventDefault(); openPdk(pdk.rows[+open.dataset.open], open.dataset.at); return; }
+  const ch = e.target.closest("[data-chart]");
+  if (ch) {
+    const r = pdk.rows[+ch.dataset.chart];
+    const next = r.size_chart === "yes" ? "no" : "yes";
+    try {
+      await api("/api/cog/pdesk/info", { method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ store: r.store_id, pid: r.pid, size_chart: next }) });
+      r.size_chart = next;
+      drawPdk();
+    } catch (err) { toast(err.message, true); }
+    return;
+  }
   const ed = e.target.closest("[data-edit]");
   if (!ed) return;
   const r = pdk.rows[+ed.dataset.i], field = ed.dataset.edit;
@@ -242,7 +257,8 @@ async function openPdk(r, at) {
     <div class="block pdk-head">${r.image ? `<img src="${esc(r.image)}" alt="">` : ""}<div>
       <div class="hint">${esc(r.store)} · ${esc(r.status)} · listed ${shortDate(r.listed)}</div>
       <div><b>${r.units}</b> bought in ${r.orders} orders · first ${shortDate(r.first_order)} · last ${shortDate(r.last_order)}</div>
-      <div>Size chart: ${r.size_chart ? esc(r.size_chart) : "none"} ${shop ? " · " + shop : ""}</div></div></div>
+      <div>Selling price: ${r.price_low !== null ? money(r.price_low, r.price_currency) + (r.price_high !== r.price_low ? " – " + money(r.price_high, r.price_currency) : "") : "—"}
+        · size chart: ${r.size_chart === "yes" ? "yes" : r.size_chart === "no" ? "no" : "not picked"}${r.size_chart_auto ? ` (set up: ${esc(r.size_chart_auto)})` : ""} ${shop ? " · " + shop : ""}</div></div></div>
     <div class="block"><h3>Latest confirmed cost: ${r.cost_note ? `${money(r.cost, "USD")} ${esc(r.cost_note)}` : c.cost !== null && c.cost !== undefined ? money(c.cost, "USD") : "—"}</h3>
       ${r.cost_note ? `<p class="hint">Price history below is per pair, as the supplier billed it.</p>` : ""}
       <p class="hint">${c.cost_day ? `Since ${shortDate(c.cost_day)}` : ""}${c.cost_supplier ? ` · ${esc(c.cost_supplier)}` : ""}${c.cost_is_bundle ? " · only bundle orders so far" : ""}</p>

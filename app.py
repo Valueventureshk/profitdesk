@@ -1448,7 +1448,8 @@ async def api_cog_products(store: int):
 # ---------------------------------------------------------------- COG → Products (products_desk.py)
 
 PD_PRODUCTS = """query($ids: [ID!]!) { nodes(ids: $ids) { ... on Product { legacyResourceId title handle status createdAt
-  productType vendor tags featuredImage { url(transform: {maxWidth: 160}) } collections(first: 10) { nodes { id } } } } }"""
+  productType vendor tags featuredImage { url(transform: {maxWidth: 160}) } collections(first: 10) { nodes { id } }
+  priceRangeV2 { minVariantPrice { amount currencyCode } maxVariantPrice { amount } } } } }"""
 _pd_shop: dict = {}       # store id -> {product id: (read at, info)}
 QC_DIR = os.path.join(os.path.dirname(os.path.abspath(db.DB_PATH)), "qc")
 
@@ -1456,6 +1457,11 @@ QC_DIR = os.path.join(os.path.dirname(os.path.abspath(db.DB_PATH)), "qc")
 def _pd_db():
     with db._conn() as con:
         con.executescript(products_desk.SCHEMA)
+        for table, cols in products_desk.COLUMNS.items():
+            have = {r[1] for r in con.execute(f"PRAGMA table_info({table})")}
+            for name, kind in cols:
+                if name not in have:
+                    con.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
 
 
 async def _pd_info(store, pids: list) -> dict:
@@ -1479,6 +1485,13 @@ async def _pd_info(store, pids: list) -> dict:
             have.setdefault(p, (now, None))
     await asyncio.gather(*(batch(want[i:i + 25]) for i in range(0, len(want), 25)))
     return {p: have[p][1] for p in pids if p in have and have[p][1]}
+
+
+def _pd_money(m) -> float:
+    try:
+        return float((m or {}).get("amount"))
+    except (TypeError, ValueError):
+        return None
 
 
 def _pd_lines(store_ids: list) -> list:
@@ -1570,6 +1583,7 @@ async def api_pdesk(store: str = "all"):
     rules = {x["id"]: _sc_rules(x["id"]) for x in stores}
     names = {x["id"]: x["name"].strip() for x in stores}
     shops = {x["id"]: x["shop_domain"] for x in stores}
+    stores_cur = {x["id"]: x["currency"] for x in stores}
     out = []
     for (sid, pid), g in groups.items():
         p = info[sid].get(pid) if pid.isdigit() else None
@@ -1593,7 +1607,11 @@ async def api_pdesk(store: str = "all"):
             "variant_low": cost.get("variant_low"), "variant_high": cost.get("variant_high"),
             "price_changes": max(0, len(cost.get("changes") or []) - 1),
             "units": g["units"], "orders": len(g["orders"]), "first_order": g["first"], "last_order": g["last"],
-            "size_chart": chart["name"] if chart else None,
+            "size_chart": ex.get("size_chart") or "", "size_chart_auto": chart["name"] if chart else None,
+            "price_low": _pd_money(((p or {}).get("priceRangeV2") or {}).get("minVariantPrice")),
+            "price_high": _pd_money(((p or {}).get("priceRangeV2") or {}).get("maxVariantPrice")),
+            "price_currency": ((((p or {}).get("priceRangeV2") or {}).get("minVariantPrice") or {}).get("currencyCode")
+                               or stores_cur[sid]),
             "tickets": len(tk), "tickets_by_order": sum(1 for _, h in tk if h == "order number"),
             "qc_photos": qc.get((sid, pid), 0), "notes": notes.get((sid, pid)) or {"complaints": 0, "notes": 0, "last": None},
         })
@@ -1636,8 +1654,10 @@ def api_pdesk_info(payload: dict, request: Request):
         cur = dict(con.execute("SELECT * FROM pd_info WHERE store_id = ? AND product_id = ?", (sid, pid)).fetchone() or {})
         sup = str(payload.get("supplier", cur.get("supplier") or "")).strip()[:80]
         mat = str(payload.get("material", cur.get("material") or "")).strip()[:300]
-        con.execute("INSERT OR REPLACE INTO pd_info (store_id, product_id, supplier, material, updated_by, updated_at)"
-                    " VALUES (?, ?, ?, ?, ?, datetime('now'))", (sid, pid, sup or None, mat or None, who))
+        chart = str(payload.get("size_chart", cur.get("size_chart") or "")).lower()
+        chart = chart if chart in ("yes", "no") else None
+        con.execute("INSERT OR REPLACE INTO pd_info (store_id, product_id, supplier, material, size_chart, updated_by, updated_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?, datetime('now'))", (sid, pid, sup or None, mat or None, chart, who))
     return {"ok": True}
 
 
