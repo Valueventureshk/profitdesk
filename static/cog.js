@@ -270,7 +270,9 @@ async function loadPriceChanges() {
       return `<tr class="${g.state === "checking" ? "pc-checking" : ""}">
         <td class="name">${esc(g.product)}<span class="sub">${esc(g.store)}</span></td>
         <td>${g.old !== null && g.old !== undefined ? money(g.old, "USD") : "—"}</td>
-        <td><b>${money(g.new, "USD")}</b> <span class="pc-dir ${down ? "down" : "up"}">${down ? "▼" : "▲"} ${pct(g)}</span></td>
+        <td><b>${money(g.new, "USD")}</b> <span class="pc-dir ${down ? "down" : "up"}">${down ? "▼" : "▲"} ${pct(g)}</span>${
+          g.likely === "quantity" ? `<span class="sub est" title="Suppliers usually move a price by up to about ${money(d.gap, "USD")} per item">${money(g.gap_each, "USD")} gap: probably a bundle or 2+ items, open the order first</span>`
+          : g.likely === "price" ? `<span class="sub">Small change: likely a real supplier price change</span>` : ""}</td>
         <td class="hint" title="${esc(g.orders.join(", "))}">${g.orders.length} · ${esc(g.orders.slice(0, 3).join(", "))}${g.orders.length > 3 ? "…" : ""}</td>
         <td class="pc-btns" data-write-only>${btns}</td></tr>`;
     }).join("")}</tbody></table></div>`;

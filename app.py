@@ -1235,7 +1235,7 @@ async def api_invoice_recheck():
             per[k] = per.get(k, 0) + 1
     if not _cog.get("tags"):
         _cog["tags"] = cog.store_tags(db.store_order_names())
-    catalog = cog.Catalog(await _cog_rows(), _cog["tags"])
+    catalog = cog.Catalog(await _cog_rows(), _cog["tags"], _order_items())
     changed = {"lines": 0, "now_ok": 0, "still_changed": 0}
     touched = defaultdict(set)
     by_inv = defaultdict(list)                      # one invoice at a time, oldest first
@@ -1312,7 +1312,17 @@ def api_invoice_changes():
     out = sorted(groups.values(), key=lambda g: (g["state"] == "checking", (g["new"] or 0) < (g["old"] or 0), g["store"]))
     for g in out:
         g["direction"] = "down" if g["old"] is not None and g["new"] < g["old"] else "up"
-    return {"changes": out}
+        # Owner's rule of thumb: suppliers move a price by about $1.50–2.50 per item; a bigger gap is usually a
+        # bundle or a 2+ item order read as one item (on either side), so it's worth opening the order first.
+        g["gap_each"] = round(abs(g["new"] - g["old"]), 2) if g["old"] is not None else None
+        if g.get("bundle") or g["old"] is None:
+            g["likely"] = ""
+        else:
+            g["likely"] = "price" if abs(g["new"] - g["old"]) <= PRICE_GAP else "quantity"
+    return {"changes": out, "gap": PRICE_GAP}
+
+
+PRICE_GAP = 2.5   # USD per item: above this, a "price change" is more likely a bundle / quantity mix-up
 
 
 @app.post("/api/invoices/changes")
@@ -9923,7 +9933,7 @@ async def _cog_sync(days_back: int = None, store_ids: list = None) -> dict:
         tags = {**saved, **cog.store_tags(known)}
         _cog["tags"] = tags
         def build_catalog():
-            c = cog.Catalog(rows, tags)
+            c = cog.Catalog(rows, tags, _order_items())
             c.add_invoices(db.invoice_lines())
             return c
         catalog = await asyncio.to_thread(build_catalog)     # heavy: off the line pages wait on
@@ -10053,12 +10063,20 @@ async def _cog_loop():
         await asyncio.sleep(20 * 60)
 
 
+def _order_items() -> dict:
+    """{(store id, order key): items in the Shopify order} from the costed order lines (cancelled orders left out)."""
+    with db._conn() as con:
+        return {(r[0], cog.order_key(r[1])): r[2] for r in con.execute(
+            "SELECT store_id, order_name, SUM(MAX(COALESCE(quantity, 1), 1)) FROM cog_lines WHERE cancelled = 0"
+            " GROUP BY store_id, order_name")}
+
+
 async def _catalog() -> "cog.Catalog":
     """The current product cost history (sheet + approved invoices), rebuilt if needed."""
     if not _cog.get("tags"):
         _cog["tags"] = cog.store_tags(db.store_order_names())
     if not _cog.get("catalog"):
-        catalog = cog.Catalog(await _cog_rows(), _cog["tags"])
+        catalog = cog.Catalog(await _cog_rows(), _cog["tags"], _order_items())
         catalog.add_invoices(db.invoice_lines())
         _cog["catalog"] = catalog
     return _cog["catalog"]
@@ -10075,7 +10093,7 @@ async def _recost(store_id: int, order_names: set):
     rate = await _usd_to(store["currency"])
 
     def work():
-        catalog = cog.Catalog(sheet_rows, tags)
+        catalog = cog.Catalog(sheet_rows, tags, _order_items())
         catalog.add_invoices(db.invoice_lines())
         with db._conn() as con:
             marks = ",".join("?" * len(order_names))

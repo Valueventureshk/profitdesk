@@ -156,7 +156,9 @@ def store_tags(order_names: dict) -> dict:
 class Catalog:
     """Per store: every product's cost history from the sheet."""
 
-    def __init__(self, rows: list, tags: dict):
+    def __init__(self, rows: list, tags: dict, order_items: dict = None):
+        """order_items: {(store id, order key): items in the Shopify order}. A sheet row can cover two items
+        ("x2", or one row for a pair), so the order's real item count decides whether a price is a single."""
         self.by_order = defaultdict(list)            # (store, order) -> rows
         self.exact = defaultdict(list)               # (store, product) -> [(seq, cog, supplier, day)]
         self.base = defaultdict(list)                # (store, base product) -> [...]
@@ -176,8 +178,9 @@ class Catalog:
         # or two different products), so every price is kept with the order's item count (one sheet
         # row per item). Only prices from 1-item orders are "single" prices.
         self._rates = {}
+        order_items = order_items or {}
         for (sid, order), rs in self.by_order.items():
-            n = len(rs)
+            n = max(len(rs), int(order_items.get((sid, order_key(order))) or 0))
             for r in rs:
                 if r["cog"] and r["cog"] > 0:
                     entry = (r["seq"], r["cog"], r["supplier"], r["day"], n)
