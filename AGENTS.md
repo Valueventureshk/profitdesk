@@ -192,6 +192,7 @@ file and have it work.
   completed Shopify days and refunds come from `shopify_days` / `refund_days` (saved every 6 h and on
   read), only the last `LIVE_DAYS` live; outside-Shopify refunds + chargebacks come from `outside_days`
   (`_outside_loop`: last 30 days every 15 min, 190 days every 6 h). Step timings: `/api/debug/timing`.
+- Assistant notes: owner-only `remember`/`forget` tools save lasting rules in `assistant_notes` (`_ai_notes()`, appended to the system prompt in every chat incl. WhatsApp). Tools also: `product_sales` (cog_lines by product), `get_disputes` (disputes table), `find_parcels` (shipments). WhatsApp profile (logo static/brand/ecomvital-640.jpg, about, website, email) via POST /api/whatsapp/profile (resumable upload handle).
 - Assistant (Ask chat, WhatsApp later): `_assist_tool` adds store_health, tracking_live, google_campaigns / google_products / propose_google_change (confirm runs `_ads_run_batch`), schedules + alerts (`assistant_jobs`, `_assist_loop`: schedules every minute, alerts every 5) delivered to `assistant_inbox` (badge on the Ask button).
 - Ads payable (Google): stores read directly use `gads.hourly_tab` (hourly spend, account clock) instead of
   the Sheet; the Sheet is the fallback.
