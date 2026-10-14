@@ -253,6 +253,8 @@ COG rules (replaced the old per-store "Other costs %", which is no longer used):
 
 ## To do later (owner decided to postpone)
 
+- **BOGO billing (asked 14 Oct 2026, owner checking with the team):** does Graypop bill one Orthora BOGO sale (2 pairs) as 2 rows (one per pair, e.g. #16261CH 2 × US$13) or 1 row for both (8 Oct invoice: one row US$16.30)? The answer decides whether a one-row BOGO invoice is half-invoiced (cog.pack, products desk 'per BOGO sale'). Until then the Products desk shows the latest costed BOGO sale as it is.
+
 - **Move Google Cloud project "My First Project" (dark-smile-511222-t3) out of the tendance-montreal.com organisation
   into EcomVital's own (ecomvital.com Workspace, admin@ecomvital.com).** Found 13 Oct 2026: the project sits under
   Tendance Montreal's Google Workspace org, whose "Domain-restricted sharing" policy
