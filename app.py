@@ -60,6 +60,7 @@ import anthropic
 import ai_coach
 import reports
 import ai_chat
+import ai_data
 import db
 import demo
 import fx
@@ -7711,6 +7712,13 @@ async def _assist_tool(name: str, args: dict, user: dict):
                         "amount": d.get("amount"), "currency": d.get("currency"), "reason": d.get("reason"),
                         "stage": d.get("stage"), "customer": d.get("customer"), "outcome": d.get("outcome")})
         return {"count": len(out), "disputes": out[:80], "link": f"{BASE_URL}/disputes"}
+    if name in ("data_schema", "data_query"):
+        if (user or {}).get("role") != "owner":
+            return {"error": "Only the owner can look at the raw tables. Use the desk tools instead."}
+        if name == "data_schema":
+            return {"tables": await asyncio.to_thread(ai_data.schema),
+                    "stores": [{"id": x["id"], "name": x["name"].strip(), "currency": x["currency"]} for x in real]}
+        return await asyncio.to_thread(ai_data.query, args.get("sql") or "")
     if name == "find_parcels":
         _need(user, "scm")
         q = str(args.get("query") or "").strip()
@@ -8129,7 +8137,7 @@ async def _wa_handle(msg, contact_name=None):
             await _wa_send(phone, "The assistant needs the Anthropic API key (EcomVital Settings → AI).")
             return
         with db._conn() as con:
-            past = [dict(r) for r in con.execute("SELECT direction, text FROM wa_messages WHERE phone = ? ORDER BY id DESC LIMIT 14", (phone,))][::-1]
+            past = [dict(r) for r in con.execute("SELECT direction, text FROM wa_messages WHERE phone = ? ORDER BY id DESC LIMIT 20", (phone,))][::-1]
         hist = [{"role": "user" if m["direction"] == "in" else "assistant", "content": m["text"] or ""} for m in past[:-1] if m["text"]]
         me = (f"[WhatsApp from {user.get('name') or user.get('email')} ({user.get('email')}, {'owner' if user.get('role') == 'owner' else 'staff'}); "
               "on WhatsApp they approve a proposed change by replying YES, there is no Confirm button] ")

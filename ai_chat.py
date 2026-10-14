@@ -149,17 +149,44 @@ TOOLS += [
     _tool("find_parcels", "Where an order's parcels are (the SCM desk / 17TRACK): status, carrier, tracking number and link, "
           "last event and when. Search by order number (e.g. #AS13184) or the customer's email.",
           {"query": {"type": "string"}}, ["query"]),
+    _tool("data_schema", "Owner only: the business tables you can read with data_query (orders and product costs, parcels, "
+          "disputes, tickets, pixel events, Google uploads, invoices, payments, saved daily totals…), with their columns and "
+          "what they mean. Call this before writing a data_query.", {}, []),
+    _tool("data_query", "Owner only: run ONE read-only SQLite SELECT over the tables from data_schema, for questions no other "
+          "tool answers (averages, counts, breakdowns, e.g. average days from fulfilled to delivered per store, orders per "
+          "country, products by refunds). Aggregate in SQL (GROUP BY, AVG, COUNT, julianday() for day differences); at most "
+          "200 rows come back. Join stores for names. Dates are text: ISO UTC timestamps or YYYY-MM-DD store days.",
+          {"sql": {"type": "string"}, "purpose": {"type": "string", "description": "what this answers, in a few words"}},
+          ["sql", "purpose"]),
 ]
 # Anthropic allows at most 20 strict tools: the simple ones (few or no inputs) don't need it.
 _LOOSE = {"propose_google_change", "list_stores", "get_cash", "get_inbox", "list_schedules_alerts", "delete_schedule_alert",
           "store_health", "tracking_live", "google_campaigns", "google_product_issues", "find_shopify_products",
-          "remember", "forget", "product_sales", "get_disputes", "find_parcels"}
+          "remember", "forget", "product_sales", "get_disputes", "find_parcels", "data_schema", "data_query"}
 for _t in TOOLS:
     if _t["name"] in _LOOSE:
         _t.pop("strict", None)
 assert sum(1 for _t in TOOLS if _t.get("strict")) <= 20, "too many strict tools"
 
 SYSTEM = """You are EcomVital's assistant for the owner and staff of a group of Shopify stores.
+
+About EcomVital (the app you live in, formerly ProfitDesk, at hq.ecomvital.com; same assistant in the app's Ask button and on WhatsApp):
+The owner, Nafras, runs about 12 dropshipping Shopify stores (Australia, Canada, Europe…) through Value Ventures Limited, Hong Kong. He built EcomVital with Claude Code: when you lack a tool or data, say exactly what's missing and suggest he ask Claude Code to add it. Never send him to an "admin" or "support"; he is the admin.
+Desks (pages) and what they hold:
+- Dashboard: profit per store and day (sales, refunds, chargebacks, fees, COG, Google + Meta spend, net profit).
+- Cash flow: Airwallex + PayPal balances, money on hold, arriving soon; statement; end-of-day snapshots.
+- COG: product cost of every order line from the supplier orders sheet and invoices; price changes; suppliers (owed, invoices).
+- Expenses: payments out of Airwallex/PayPal by category.
+- Inbox: the stores' support mailboxes turned into tickets (SCM = shipping, CS = customer service), AI drafts.
+- SCM: every order's parcels with 17TRACK tracking (status, carrier, fulfilled/delivered dates, transit days), notes, flags; customer tracking page.
+- Disputes: PayPal cases and Airwallex chargebacks, deadlines, evidence, AI replies.
+- Apps → Tracking: our own pixel in each store (visits, adds to cart, checkouts, purchases per ad); sends purchases to Google Ads (Data Manager).
+- Apps → Google Ads: product report vs Shopify sales/COG, verdicts, and a Manage tab (AI plans + rules, every change confirmed, undo).
+- Apps → Checkout: our own Airwallex payment page with subscriptions (Amber Ashton refill first).
+- Also: Reports (CSV exports), Size Charts, Product Importer, Session Recordings, Settings (connections, people, WhatsApp, backups).
+WhatsApp: you answer only in this one-to-one chat (no group chats). Voice notes need the OpenAI key in Settings → WhatsApp. Changes you propose are confirmed by replying YES.
+
+How to work: understand what the person really wants, then get the real figures. Prefer the ready-made tools; when none fits, the owner can use data_schema + data_query to compute it from the raw tables (e.g. average delivery time = AVG(julianday(delivered_at) - julianday(fulfilled_at)) on shipments with status delivered). Use several tools if needed. Don't substitute a weaker proxy (like ticket counts) when the real data exists, and don't stop at "I can't" without trying data_query.
 Answer questions about their business using the tools: profit, cash flow, COG, the support inbox and reports. Never make up a figure: if a tool can't give it, say so.
 Today is {today} (Hong Kong time). "Today", "yesterday", "last week" (the 7 days ending yesterday), "this month" and similar mean dates on that clock.
 Money is in {currency} unless a tool says otherwise; write amounts with their currency (e.g. A$1,234 for AUD, US$ for USD). Keep answers short and plain: lead with the answer, then the key numbers. Use a small table when comparing several stores or days.
@@ -181,17 +208,26 @@ async def reply(api_key: str, history: list, run_tool, today: str, currency: str
     """history: [{"role": "user"|"assistant", "content": text}]. run_tool(name, input) -> dict.
     Returns {"text", "links": [...]}"""
     client = anthropic.AsyncAnthropic(api_key=api_key, max_retries=3, timeout=180)
-    messages = [{"role": m["role"], "content": m["content"]} for m in history[-12:]
+    messages = [{"role": m["role"], "content": m["content"]} for m in history[-20:]
                 if m.get("content") and m.get("role") in ("user", "assistant")]
+    tidy = []   # the API wants user/assistant turns alternating, starting with the user
+    for m in messages:
+        if not tidy and m["role"] != "user":
+            continue
+        if tidy and tidy[-1]["role"] == m["role"]:
+            tidy[-1]["content"] += "\n\n" + m["content"]
+        else:
+            tidy.append(dict(m))
+    messages = tidy
     links, actions = [], []
-    for _ in range(8):
+    for _ in range(12):
         try:
             resp = await client.beta.messages.create(
                 model=MODEL, max_tokens=8000, betas=BETAS, fallbacks="default",
                 system=SYSTEM.format(today=today, currency=currency) + (
                     "\n\nSaved notes from the owner (follow these):\n" + "\n".join(f"[{n['id']}] {n['note']}" for n in notes)
                     if notes else ""),
-                tools=TOOLS, output_config={"effort": "low"}, messages=messages)
+                tools=TOOLS, output_config={"effort": "medium"}, messages=messages)
         except anthropic.AuthenticationError as e:
             raise ChatError("Anthropic didn't accept the API key. Check it in Settings → AI.") from e
         except anthropic.RateLimitError as e:
