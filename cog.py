@@ -26,6 +26,14 @@ SKIP_TABS = re.compile(r"copy of|issue|reference|coverage|^sheet\d*$", re.I)
 ORDER_RE = re.compile(r"^([A-Z&]*?)(\d+)([A-Z&]*)$")
 
 
+BOGO = re.compile(r"\bbogo\b|buy\s*(?:1|one)\s*get\s*(?:1|one)", re.I)
+
+
+def pack(name: str) -> int:
+    """Items the supplier sends per unit sold: 2 for a "BOGO" / "Buy 1 Get 1" product or variant, else 1."""
+    return 2 if BOGO.search(name or "") else 1
+
+
 def order_key(raw) -> str:
     return re.sub(r"[\s#]", "", str(raw or "")).upper()
 
@@ -302,11 +310,12 @@ def cost_order(order: dict, store, catalog: Catalog, usd_to_store: float) -> lis
     free = list(rows)
     inv_free = list(catalog.inv_by_order.get((store, key), []))
     pct = catalog.cog_pct(store, usd_to_store)
-    items = 0 if order["cancelled"] else sum(max(x["quantity"], 1) for x in order["lines"])
+    label = lambda x: f"{x['title']} - {x['variant']}" if x["variant"] else x["title"]
+    items = 0 if order["cancelled"] else sum(max(x["quantity"], 1) * pack(label(x)) for x in order["lines"])
     out = []
     for li in order["lines"]:
-        name = f"{li['title']} - {li['variant']}" if li["variant"] else li["title"]
-        qty = max(li["quantity"], 1)
+        name = label(li)
+        qty = max(li["quantity"], 1) * pack(name)          # BOGO: one line, two pairs from the supplier
         line = {**li, "product": name, "cost": None, "source": None, "supplier": "", "note": ""}
         one = catalog.single(store, name)
         if items >= 2 and one:

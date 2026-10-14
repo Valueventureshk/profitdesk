@@ -192,7 +192,7 @@ def check(inv: dict, store_of, order_lines: dict, catalog, invoiced: dict) -> di
             continue
         # best product in the order, allowing for each item of a quantity >1
         def free(c):
-            return used.get((c["order_name"], c["line_no"]), 0) < c["quantity"]
+            return used.get((c["order_name"], c["line_no"]), 0) < c["quantity"] * cog.pack(c["product"])   # BOGO = 2 rows
         ranked = sorted((c for c in candidates if free(c)),
                         key=lambda c: -cog.title_match(l["title"], c["product"]))
         best = ranked[0] if ranked else None

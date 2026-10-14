@@ -1217,17 +1217,52 @@ def api_invoice(invoice_id: int):
     return {"invoice": inv, "lines": db.invoice_lines(invoice_id)}
 
 
+def _rematch_invoice_lines() -> int:
+    """Invoice rows once left as "Product not found in this order" get another try when the order has room for
+    them now (e.g. a BOGO line counts as two items, so its second invoice row belongs to it)."""
+    done = 0
+    with db._conn() as con:
+        stuck = [dict(r) for r in con.execute(
+            "SELECT invoice_id, line_no, order_key, title, store_id FROM invoice_lines"
+            " WHERE status = 'unmatched' AND note = 'Product not found in this order' AND store_id IS NOT NULL")]
+        for l in stuck:
+            cands = [dict(r) for r in con.execute(
+                "SELECT order_name, product, SUM(quantity) AS q FROM cog_lines WHERE store_id = ? AND cancelled = 0"
+                " AND REPLACE(UPPER(order_name), '#', '') = ? GROUP BY order_name, product",
+                (l["store_id"], cog.order_key(l["order_key"])))]
+            best = None
+            for c in sorted(cands, key=lambda c: -cog.title_match(l["title"], c["product"])):
+                if cog.title_match(l["title"], c["product"]) < 0.6:
+                    break
+                taken = con.execute(
+                    "SELECT COUNT(*) FROM invoice_lines WHERE store_id = ? AND order_name = ? AND product = ?"
+                    " AND status NOT IN ('unmatched', 'duplicate', 'superseded')",
+                    (l["store_id"], c["order_name"], c["product"])).fetchone()[0]
+                if taken < (c["q"] or 1) * cog.pack(c["product"]):
+                    best = c
+                    break
+            if best:
+                con.execute("UPDATE invoice_lines SET order_name = ?, product = ?, status = 'ok', note = ''"
+                            " WHERE invoice_id = ? AND line_no = ?",
+                            (best["order_name"], best["product"], l["invoice_id"], l["line_no"]))
+                done += 1
+    return done
+
+
 @app.post("/api/invoices/recheck")
 async def api_invoice_recheck():
     """Re-check every uploaded invoice line in date order with prices per item (a line can be for
     several items), rebuild the product cost history, and re-cost the orders. Decisions already
     made (use new price / checking / keep old) stay."""
+    _rematch_invoice_lines()
     lines = db.invoice_lines()
     with db._conn() as con:
-        qty = {(r[0], r[1], r[2]): r[3] for r in con.execute(
+        qty = {(r[0], r[1], r[2]): r[3] * cog.pack(r[2]) for r in con.execute(     # BOGO lines are 2 items each
             "SELECT store_id, order_name, product, SUM(quantity) FROM cog_lines GROUP BY store_id, order_name, product")}
-        items = {(r[0], r[1]): r[2] for r in con.execute(           # items in the whole order
-            "SELECT store_id, order_name, SUM(quantity) FROM cog_lines WHERE cancelled = 0 GROUP BY store_id, order_name")}
+        items = defaultdict(int)                                                     # items in the whole order
+        for sid, name, product, q in con.execute(
+                "SELECT store_id, order_name, product, quantity FROM cog_lines WHERE cancelled = 0"):
+            items[(sid, name)] += (q or 0) * cog.pack(product)
     per = {}
     for l in lines:
         if l["status"] not in ("unmatched", "duplicate", "superseded") and l.get("product"):
@@ -10065,10 +10100,12 @@ async def _cog_loop():
 
 def _order_items() -> dict:
     """{(store id, order key): items in the Shopify order} from the costed order lines (cancelled orders left out)."""
+    out = defaultdict(int)
     with db._conn() as con:
-        return {(r[0], cog.order_key(r[1])): r[2] for r in con.execute(
-            "SELECT store_id, order_name, SUM(MAX(COALESCE(quantity, 1), 1)) FROM cog_lines WHERE cancelled = 0"
-            " GROUP BY store_id, order_name")}
+        for sid, name, product, q in con.execute(
+                "SELECT store_id, order_name, product, quantity FROM cog_lines WHERE cancelled = 0"):
+            out[(sid, cog.order_key(name))] += max(int(q or 1), 1) * cog.pack(product)
+    return dict(out)
 
 
 async def _catalog() -> "cog.Catalog":
