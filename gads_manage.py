@@ -48,7 +48,7 @@ async def mutate(refresh_token, customer_id, login_cid, operations: list, valida
     version, cid, headers = await _ctx(refresh_token, customer_id, login_cid)
     url = f"https://googleads.googleapis.com/{version}/customers/{cid}/googleAds:mutate"
     body = {"mutateOperations": operations, "partialFailure": False, "validateOnly": bool(validate_only)}
-    gads._count(n)                       # Google counts every operation, test runs included
+    gads._count(n, "change:test run" if validate_only else "change:live")   # Google counts every operation, test runs included
     async with httpx.AsyncClient(timeout=120) as client:
         r = await client.post(url, headers=headers, json=body)
     if r.status_code == 429 or "RESOURCE_EXHAUSTED" in r.text[:2000]:

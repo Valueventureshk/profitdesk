@@ -164,6 +164,13 @@ def api_debug_timing():
     return _timing
 
 
+@app.get("/api/debug/google-usage")
+def api_debug_google_usage(days: int = 7):
+    """Owner: Google Ads API operations per Pacific day (resets 3pm Hong Kong), split by report / change type."""
+    return {"days": gads.usage(min(max(days, 1), 30)), "left_today": gads.left_today(),
+            "note": "Breakdown recorded from 14 Oct 2026; earlier days have the total only."}
+
+
 @app.get("/api/debug/stalls")
 def api_debug_stalls():
     """Owner: the last times the server was stuck on one job, how long, and where."""

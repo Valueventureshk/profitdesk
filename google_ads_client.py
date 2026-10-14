@@ -16,6 +16,8 @@ import os
 import db
 from urllib.parse import urlencode
 
+import json
+
 import httpx
 
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
@@ -172,15 +174,44 @@ def ops_today() -> int:
             _ops["n"] = int(db.get_setting(f"gads_ops:{d}") or 0)
         except ValueError:
             _ops["n"] = 0
+        try:
+            _ops["by"] = json.loads(db.get_setting(f"gads_ops_by:{d}") or "{}")
+        except ValueError:
+            _ops["by"] = {}
     return _ops["n"]
 
 
-def _count(n: int = 1):
+def _count(n: int = 1, what: str = "other"):
+    """Count n operations toward today's allowance; `what` (report or change type) for the usage breakdown."""
     ops_today()
     before = _ops["n"]
     _ops["n"] += n
+    by = _ops.setdefault("by", {})
+    by[what] = by.get(what, 0) + n
     if _ops["n"] // 10 != before // 10:
         db.set_setting(f"gads_ops:{_ops['day']}", str(_ops["n"]))
+        db.set_setting(f"gads_ops_by:{_ops['day']}", json.dumps(by))
+
+
+def usage(days: int = 7) -> list:
+    """Operations per Pacific day (newest first), with the breakdown where it was recorded (from 14 Oct 2026)."""
+    from datetime import date, timedelta
+    ops_today()
+    end = date.fromisoformat(_pacific_day())
+    out = []
+    for i in range(days):
+        d = (end - timedelta(days=i)).isoformat()
+        if d == _ops["day"]:
+            n, by = _ops["n"], dict(_ops.get("by") or {})
+        else:
+            n = int(db.get_setting(f"gads_ops:{d}") or 0)
+            try:
+                by = json.loads(db.get_setting(f"gads_ops_by:{d}") or "{}")
+            except ValueError:
+                by = {}
+        out.append({"pacific_day": d, "operations": n, "limit": DAILY_LIMIT,
+                    "by": dict(sorted(by.items(), key=lambda kv: -kv[1]))})
+    return out
 
 
 def left_today() -> int:
@@ -206,8 +237,11 @@ def busy() -> bool:
 async def _search(client, version, customer_id, query, headers):
     url = f"https://googleads.googleapis.com/{version}/customers/{customer_id}/googleAds:search"
     rows, page = [], None
+    import re as _re0
+    m0 = _re0.search(r"(?is)\bFROM\s+([a-z_]+)", query or "")
+    what = "report:" + (m0.group(1) if m0 else "?")
     while True:
-        _count()
+        _count(1, what)
         body = {"query": query}                     # Google fixes the page size (10,000 rows)
         if page:
             body["pageToken"] = page
