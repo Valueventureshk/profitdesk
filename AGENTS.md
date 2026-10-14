@@ -233,6 +233,7 @@ COG rules (replaced the old per-store "Other costs %", which is no longer used):
   Not yet invoiced 2+ item orders cost single prices less the store's usual discount for that many
   items (`Catalog.bundle_rate`, median of the last 60 such orders). `cog_lines.single_usd` lets Check
   COG show "Singles … · bundle discount …" per order.
+- Item counts come from the Shopify order (`_order_items`, passed to `cog.Catalog`), not the number of sheet rows (a row can cover two). `cog.pack`: a "BOGO" / "Buy 1 Get 1" product or variant is 2 items (costing, bundle tier, invoice matching). Price changes: gap ≤ $2.50/item (`PRICE_GAP`) = likely real supplier change, bigger = likely bundle/quantity (`likely` on /api/invoices/changes). Recheck (`/api/invoices/recheck`) also re-matches "Product not found" rows.
 - AI double-check (`invoice_ai.py`, Sonnet 5.5): every uploaded invoice file is read again by the AI
   in the background and compared per order to the cent plus the total. Agree → `ai_check` agreed;
   differ → `review` and its lines are left out of all costs until a person picks a reading on the
