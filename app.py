@@ -9472,6 +9472,25 @@ async def _gdesk_loop():
         await asyncio.sleep(3 * 3600)
 
 
+@app.get("/api/debug/paypal-disputes")
+async def api_debug_paypal_disputes(days: int = 3):
+    """Owner check: the raw PayPal dispute / chargeback / reversal rows (event codes T11xx, T12xx) of the last few days."""
+    out = []
+    for c in [x for x in db.list_cash_connections() if x["provider"] == "paypal"]:
+        rows = await paypal.transactions(c["client_id"], c["secret"], days=max(1, min(days, 31)),
+                                         fields="transaction_info", full=True)
+        for d in rows:
+            t = d.get("transaction_info") or {}
+            code = t.get("transaction_event_code") or ""
+            if code.startswith(("T11", "T12")):
+                amt = t.get("transaction_amount") or {}
+                out.append({"account": c["label"], "code": code, "status": t.get("transaction_status"),
+                            "at": t.get("transaction_initiation_date"), "amount": amt.get("value"),
+                            "currency": amt.get("currency_code"), "ref": t.get("paypal_reference_id"),
+                            "ref_type": t.get("paypal_reference_id_type"), "id": t.get("transaction_id")})
+    return {"rows": sorted(out, key=lambda r: r["at"] or "")}
+
+
 async def _outside_loop():
     """Every 15 minutes: work out the recent days (all 190 every 6 hours) of refunds / chargebacks made outside Shopify and
     save them, so the dashboard reads them instead of downloading PayPal and Airwallex history."""
