@@ -119,7 +119,18 @@
   </div>
 </div>
 
-<div class="tk-recording" id="recBar" hidden><span class="tk-dot"></span><span id="recTime">Recording 0:00</span><button class="btn btn-sm" id="recStop">Stop</button></div>
+<div class="tk-recording" id="recBar" hidden><span class="tk-dot"></span><span id="recTime">Recording 0:00</span><button class="btn btn-sm" id="recPause">Pause</button><button class="btn btn-sm" id="recStop">Stop</button></div>
+
+<!-- check a recording before it's added -->
+<div class="drawer tk-prev" id="recPrev" hidden>
+  <div class="drawer-scrim"></div>
+  <div class="tk-prev-box">
+    <h3>Check your recording</h3>
+    <div class="tk-prev-media"></div>
+    <p class="hint tk-prev-info"></p>
+    <div class="row-actions"><button class="btn btn-primary" id="prevUse">Use this recording</button><button class="btn" id="prevAgain">Record again</button><button class="btn btn-ghost btn-danger" id="prevDrop">Discard</button></div>
+  </div>
+</div>
 <div id="toast" class="toast" hidden></div>
 <script src="/static/nav.js"></script>
 <script src="/static/chat.js"></script>

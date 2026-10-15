@@ -176,3 +176,17 @@
 [data-theme="dark"] .tk-strat:has(input:checked) { background: rgba(16, 185, 129, .08); }
 .tk-strat.off { opacity: .45; }
 @media (max-width: 900px) { .tk-ltask { flex-direction: column; } }
+
+.tk-dot.p { animation: none; background: #F59E0B; }
+.tk-recording .btn { padding: 4px 10px; }
+.tk-recording #recTime { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.tk-recq { flex-direction: column; align-items: stretch; }
+.tk-recq-head { display: flex; gap: 8px; align-items: center; }
+.tk-recq audio { width: 100%; }
+.tk-recq video { width: 100%; max-height: 240px; border-radius: 8px; background: #000; }
+.tk-prev { z-index: 70; display: grid; place-items: center; }
+.tk-prev-box { position: relative; background: var(--panel); border-radius: var(--radius); padding: 18px; width: min(720px, calc(100% - 32px));
+  box-shadow: 0 12px 40px rgba(15, 23, 42, .25); }
+.tk-prev-box h3 { font-size: 15px; margin-bottom: 10px; }
+.tk-prev-media audio { width: 100%; }
+.tk-prev-media video { width: 100%; max-height: 60vh; border-radius: 8px; background: #000; }

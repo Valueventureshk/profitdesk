@@ -319,6 +319,7 @@ function renderTask() {
       ${t.status !== "cancelled" ? `<div class="tk-comment"><textarea id="cText" class="control" rows="2" placeholder="Write a comment or question"></textarea>
         <button class="btn btn-sm" data-comment>Post</button></div>` : ""}
     </section>`;
+  $("dBody").querySelectorAll(".tk-rec audio, .tk-rec video").forEach(fixLength);
 }
 
 function readResult() {
@@ -378,20 +379,46 @@ async function upload(drop, files) {
 /* ------------------------------------------------ voice notes + screen recordings */
 
 let recorder = null;
+let recUI = null;          // the floating controls: a picture-in-picture window (stays on top of every tab), else the page bar
+const clockOf = (ms) => { const s = Math.floor(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
+
+// Chrome / Edge: a small always-on-top window, so Stop stays in reach while you record other tabs or apps.
+// Opened first, while the click still counts as a click (the browser's screen picker takes longer than that).
+async function openRecWindow() {
+  if (!window.documentPictureInPicture) return null;
+  try {
+    const w = await documentPictureInPicture.requestWindow({ width: 300, height: 92 });
+    w.document.title = "EcomVital recording";
+    w.document.body.innerHTML = `<style>
+      body{margin:0;font:600 14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#14181F;color:#fff;
+        display:flex;align-items:center;gap:10px;padding:0 14px;height:100vh;box-sizing:border-box}
+      i{width:10px;height:10px;border-radius:50%;background:#EF4444;animation:b 1s infinite;flex:none}
+      i.p{animation:none;background:#F59E0B}
+      @keyframes b{50%{opacity:.3}}
+      span{flex:1}
+      button{font:inherit;font-size:13px;border:0;border-radius:8px;padding:7px 12px;cursor:pointer}
+      #s{background:#fff;color:#14181F} #p{background:#334155;color:#fff}</style>
+      <i id="d"></i><span id="t">Starting…</span><button id="p">Pause</button><button id="s">Stop</button>`;
+    return w;
+  } catch { return null; }
+}
+
 async function record(kind) {
   if (recorder) { toast("A recording is already running: press Stop first.", true); return null; }
   if (!navigator.mediaDevices || !window.MediaRecorder) { toast("This browser can't record. Use Chrome, or upload a recording.", true); return null; }
+  const pip = await openRecWindow();
   let stream, extra = [];
   try {
     if (kind === "voice") stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     else {
-      const screen = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+      const screen = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 30 }, audio: true });
       let mic = null;
       try { mic = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch { /* screen only */ }
       extra = [screen, mic].filter(Boolean);
       stream = new MediaStream([...screen.getVideoTracks(), ...(mic ? mic.getAudioTracks() : screen.getAudioTracks())]);
     }
   } catch {
+    if (pip) pip.close();
     toast(`Recording didn't start: allow the ${kind === "voice" ? "microphone" : "screen and microphone"} when the browser asks.`, true);
     return null;
   }
@@ -400,29 +427,86 @@ async function record(kind) {
   const mr = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
   const chunks = [];
   mr.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
-  const started = Date.now();
+  const title = document.title;
+  let took = 0, since = Date.now();                     // recorded time, without the paused stretches
+  const ui = pip ? { t: pip.document.getElementById("t"), p: pip.document.getElementById("p"), s: pip.document.getElementById("s"), d: pip.document.getElementById("d") }
+    : { t: $("recTime"), p: $("recPause"), s: $("recStop"), d: $("recBar").querySelector(".tk-dot") };
+  const what = kind === "voice" ? "Voice" : "Screen";
   const tick = setInterval(() => {
-    const s = Math.round((Date.now() - started) / 1000);
-    $("recTime").textContent = `Recording ${kind === "voice" ? "voice" : "screen"} ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
-  }, 500);
+    const ms = took + (mr.state === "recording" ? Date.now() - since : 0);
+    ui.t.textContent = `${mr.state === "paused" ? "Paused" : what} ${clockOf(ms)}`;
+    document.title = `${mr.state === "paused" ? "❚❚" : "●"} ${clockOf(ms)} · ${title}`;   // shows on the tab too
+  }, 250);
+  const stop = () => { if (mr.state !== "inactive") mr.stop(); };
+  ui.s.onclick = stop;
+  ui.p.onclick = () => {
+    if (mr.state === "recording") { mr.pause(); took += Date.now() - since; ui.p.textContent = "Resume"; ui.d.classList.add("p"); }
+    else if (mr.state === "paused") { mr.resume(); since = Date.now(); ui.p.textContent = "Pause"; ui.d.classList.remove("p"); }
+  };
   recorder = mr;
-  $("recBar").hidden = false;
+  recUI = { pip, stop };
+  if (pip) pip.addEventListener("pagehide", stop);      // closing the little window = Stop
+  else $("recBar").hidden = false;
   return new Promise((resolve) => {
     mr.onstop = () => {
       clearInterval(tick);
       for (const s of [stream, ...extra]) for (const tr of s.getTracks()) tr.stop();
       recorder = null;
+      if (pip) { pip.removeEventListener("pagehide", stop); pip.close(); }
+      recUI = null;
       $("recBar").hidden = true;
+      document.title = title;
+      window.focus();
       const type = (mr.mimeType || mime || (kind === "voice" ? "audio/webm" : "video/webm")).split(";")[0];
       const ext = type.includes("mp4") ? (kind === "voice" ? "m4a" : "mp4") : "webm";
       const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "");
       resolve(chunks.length ? new File(chunks, `${kind === "voice" ? "voice-note" : "screen-recording"}-${stamp}.${ext}`, { type }) : null);
     };
-    for (const tr of stream.getVideoTracks()) tr.onended = () => { if (mr.state !== "inactive") mr.stop(); };  // "Stop sharing"
+    for (const tr of stream.getVideoTracks()) tr.onended = stop;   // the browser's own "Stop sharing"
     mr.start(1000);
+    since = Date.now();
   });
 }
-$("recStop").onclick = () => { if (recorder && recorder.state !== "inactive") recorder.stop(); };
+
+// Recordings made in the browser don't say how long they are, so players can't seek; this makes them work out the length.
+function fixLength(el) {
+  el.addEventListener("loadedmetadata", () => {
+    if (el.duration !== Infinity) return;
+    el.currentTime = 1e7;
+    el.addEventListener("timeupdate", function back() { el.removeEventListener("timeupdate", back); el.currentTime = 0; });
+  }, { once: true });
+}
+
+// Watch / listen before it's added: keep it, record again, or throw it away.
+function previewRecording(file, kind) {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const audio = file.type.startsWith("audio");
+    const box = $("recPrev");
+    box.querySelector(".tk-prev-media").innerHTML = audio ? `<audio src="${url}" controls autoplay></audio>` : `<video src="${url}" controls autoplay></video>`;
+    fixLength(box.querySelector("audio, video"));
+    box.querySelector(".tk-prev-info").textContent = `${audio ? "Voice note" : "Screen recording"} · ${(file.size / 1048576).toFixed(1)} MB. Check it plays back right before adding it.`;
+    box.hidden = false;
+    const done = (answer) => {
+      const m = box.querySelector("audio, video");
+      if (m) m.pause();
+      box.hidden = true;
+      box.querySelector(".tk-prev-media").innerHTML = "";
+      URL.revokeObjectURL(url);
+      resolve(answer);
+    };
+    $("prevUse").onclick = () => done("use");
+    $("prevAgain").onclick = () => done("again");
+    $("prevDrop").onclick = () => { if (confirm("Throw this recording away?")) done("drop"); };
+    box.querySelector(".drawer-scrim").onclick = null;
+  }).then(async (answer) => {
+    if (answer === "use") return file;
+    if (answer === "again") { const f = await record(kind); return f ? previewRecording(f, kind) : null; }
+    return null;
+  });
+}
+
+$("recStop").onclick = () => { if (recUI) recUI.stop(); };
 
 async function addRecordings(files) {
   files = files.filter(Boolean);
@@ -441,8 +525,13 @@ async function addRecordings(files) {
 }
 
 function renderRecs() {
-  $("eRecs").innerHTML = state.recs.map((f, i) => `<div class="tk-recq">${f.type.startsWith("audio") ? "🎙" : "🖥"} ${esc(f.name)}
-    <span class="tk-opt">${(f.size / 1048576).toFixed(1)} MB · sent when you save</span><button type="button" data-unrec="${i}">Remove</button></div>`).join("");
+  for (const u of state.recUrls || []) URL.revokeObjectURL(u);
+  state.recUrls = state.recs.map((f) => URL.createObjectURL(f));
+  $("eRecs").innerHTML = state.recs.map((f, i) => `<div class="tk-recq">
+    <div class="tk-recq-head">${f.type.startsWith("audio") ? "🎙" : "🖥"} ${esc(f.name)}
+      <span class="tk-opt">${(f.size / 1048576).toFixed(1)} MB · sent when you save</span><button type="button" data-unrec="${i}">Remove</button></div>
+    ${f.type.startsWith("audio") ? `<audio src="${state.recUrls[i]}" controls preload="metadata"></audio>` : `<video src="${state.recUrls[i]}" controls preload="metadata"></video>`}</div>`).join("");
+  $("eRecs").querySelectorAll("audio, video").forEach(fixLength);
 }
 
 /* ------------------------------------------------ launch on Meta: one or several approved tasks, with a strategy */
@@ -659,7 +748,7 @@ document.addEventListener("click", (e) => {
     else closeTask();
     return;
   }
-  if (el.dataset.rec) { record(el.dataset.rec).then((f) => addRecordings([f])); return; }
+  if (el.dataset.rec) { const k = el.dataset.rec; record(k).then((f) => (f ? previewRecording(f, k) : null)).then((f) => addRecordings([f])); return; }
   if (el.dataset.unrec) { state.recs.splice(+el.dataset.unrec, 1); renderRecs(); return; }
   if (el.dataset.move) {
     if (el.dataset.confirm && !confirm(el.dataset.confirm)) return;
