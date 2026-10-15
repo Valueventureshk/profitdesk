@@ -167,6 +167,7 @@ function renderTask() {
   $("dTitle").textContent = t.title;
 
   const briefRows = [
+    ["Competitor ads", lines(b.competitor_ads).map(linkify).join("<br>")],
     ["Collection", b.collection && esc(b.collection)], ["Products", lines(b.products).map(linkify).join("<br>")],
     ["Build", (b.pages || []).map((p) => `<span class="tk-tag">${esc(p)}</span>`).join(" ")],
     ["Ad angle", b.angle && esc(b.angle).replace(/\n/g, "<br>")], ["Headline ideas", lines(b.headlines).map(esc).join("<br>")],
@@ -384,6 +385,7 @@ function openEditor(t = null) {
   $("eDue").value = t ? (t.due || "") : "";
   $("ePrio").value = t ? t.priority : "normal";
   $("eNotes").value = t ? (t.special_notes || "") : "";
+  $("eCompetitor").value = b.competitor_ads || "";
   $("eCollection").value = b.collection || "";
   $("eProducts").value = b.products || "";
   $("eAngle").value = b.angle || "";
@@ -414,7 +416,7 @@ function waHint() {
 async function saveEditor() {
   const listing = state.kind === "listing";
   const brief = listing ? {
-    collection: $("eCollection").value, products: $("eProducts").value, angle: $("eAngle").value,
+    competitor_ads: $("eCompetitor").value, collection: $("eCollection").value, products: $("eProducts").value, angle: $("eAngle").value,
     headlines: $("eHeadlines").value, budget: $("eBudget").value, countries: $("eCountries").value,
     pages: [...$("ePages").querySelectorAll("input:checked")].map((x) => x.value), description: $("eDesc2").value,
   } : { description: $("eDesc").value };

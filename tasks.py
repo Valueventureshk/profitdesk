@@ -17,7 +17,7 @@ HISTORY = ("launched", "done", "cancelled")
 KINDS = ("listing", "custom")
 
 # what the admin fills in (brief) and what staff hand back (result), per kind
-BRIEF_FIELDS = ("collection", "products", "pages", "angle", "headlines", "budget", "countries", "description")
+BRIEF_FIELDS = ("competitor_ads", "collection", "products", "pages", "angle", "headlines", "budget", "countries", "description")
 RESULT_FIELDS = ("collection_url", "product_urls", "landing_url", "advertorial_url", "primary_text", "headline",
                  "ad_description", "cta", "other_links", "notes")
 CTAS = ("SHOP_NOW", "LEARN_MORE", "ORDER_NOW", "BUY_NOW", "GET_OFFER", "SIGN_UP")
