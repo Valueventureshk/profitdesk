@@ -1580,7 +1580,7 @@ async def api_pdesk(store: str = "all"):
             n = notes.setdefault((r[0], r[1]), {"complaints": 0, "notes": 0, "last": None})
             n["complaints" if r[2] == "complaint" else "notes"] += 1
             n["last"] = {"kind": r[2], "text": r[3], "by": r[4], "at": r[5]}
-    rules = {x["id"]: _sc_rules(x["id"]) for x in stores}
+    rules = {x["id"]: _sc_store_rules(x["id"]) for x in stores}
     names = {x["id"]: x["name"].strip() for x in stores}
     shops = {x["id"]: x["shop_domain"] for x in stores}
     stores_cur = {x["id"]: x["currency"] for x in stores}
@@ -9345,7 +9345,7 @@ async def _sc_product(store, handle: str):
     return info
 
 
-def _sc_rules(store_id: int) -> list:
+def _sc_store_rules(store_id: int) -> list:
     with db._conn() as con:
         return [dict(r) for r in con.execute(
             "SELECT r.kind, r.value, c.id, c.name, c.blocks, c.countries FROM size_chart_rules r"
@@ -9354,7 +9354,7 @@ def _sc_rules(store_id: int) -> list:
 
 def _sc_match(store_id: int, p: dict, country: str, rules: list = None):
     """The chart for this product: product > collection > tag > type > vendor > all."""
-    rules = _sc_rules(store_id) if rules is None else rules
+    rules = _sc_store_rules(store_id) if rules is None else rules
     tags = {t.lower() for t in p.get("tags") or []}
     cols = {c["id"] for c in ((p.get("collections") or {}).get("nodes") or [])}
     order = ["product", "collection", "tag", "type", "vendor", "all"]
