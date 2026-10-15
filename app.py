@@ -10894,8 +10894,25 @@ def _task_out(t: dict, people: dict, stores: dict, files=None, full=False) -> di
     return out
 
 
+def _task_everyone() -> list:
+    """Everyone in People, for "Give it to". Someone without the Tasks desk gets Work on it when given a task."""
+    have = {p["id"]: p for p in _task_people()}
+    return [have.get(u["id"]) or {"id": u["id"], "name": (u.get("name") or "").strip() or u["email"].split("@")[0],
+                                  "email": u["email"], "level": None, "owner": False} for u in db.list_users()]
+
+
+def _task_give_access(user_id: int):
+    """Given a task without the Tasks desk: add Work on Tasks to what they already have, so they can open it."""
+    u = db.get_user(user_id)
+    if not u or auth.level(u, "tasks"):
+        return
+    access = {**auth.access_of(u), "tasks": "work"}
+    role, desks, acc = auth.clean_access("staff", access=access)
+    db.set_user_access(user_id, role, desks, None, acc)
+
+
 def _task_lookups():
-    people = {p["id"]: p for p in _task_people()}
+    people = {p["id"]: p for p in _task_everyone()}
     stores = {s["id"]: s["name"].strip() for s in db.list_stores() if not demo.is_demo(s)}
     return people, stores
 
@@ -10969,7 +10986,7 @@ def api_tasks_day(request: Request, day: str = "", person: int = 0):
             "SELECT f.id, f.task_id, f.name, f.mime, f.by FROM task_files f WHERE f.at >= ? AND f.at < ?", (a, b))]
     report = {}
     for p in people.values():
-        if person and p["id"] != person:
+        if (person and p["id"] != person) or not (p["level"] or p["id"] == person):
             continue
         report[p["email"]] = {"person": p, "events": [], "files": [], "open": [], "done": 0, "submitted": 0}
     for l in logs:
@@ -11025,10 +11042,12 @@ def _task_fields(payload: dict) -> dict:
     due = str(payload.get("due") or "").strip() or None
     if due and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", due):
         raise HTTPException(400, "Pick a due date.")
-    people = {p["id"] for p in _task_people()}
+    people = {p["id"] for p in _task_everyone()}
     assignee = int(payload.get("assignee_id") or 0) or None
     if assignee and assignee not in people:
-        raise HTTPException(400, "That person doesn't have the Tasks desk. Give them access in Settings → People.")
+        raise HTTPException(400, "That person is no longer in People.")
+    if assignee:
+        _task_give_access(assignee)
     return {"kind": kind, "title": title, "store_id": int(payload.get("store_id") or 0) or None,
             "assignee_id": assignee, "priority": "high" if payload.get("priority") == "high" else "normal",
             "due": due, "special_notes": str(payload.get("special_notes") or "").strip()[:8000],
