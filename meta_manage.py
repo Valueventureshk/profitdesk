@@ -105,9 +105,9 @@ async def objects(token: str, account_id: str, level: str, currency: str, also_i
         rows = await meta._get_all(client, f"{act}/{level}s", token, {"fields": _FIELDS[level], "filtering": running, "limit": 100})
         have = {r["id"] for r in rows}
         rest = [i for i in dict.fromkeys(str(x) for x in also_ids if x) if i not in have]
-        for k in range(0, len(rest), 50):                 # Meta reads up to 50 ids in one call
-            got = await meta._get(client, "", token, {"ids": ",".join(rest[k:k + 50]), "fields": _FIELDS[level]})
-            rows += [v for v in got.values() if isinstance(v, dict) and v.get("id")]
+        for k in range(0, len(rest), 50):                 # the rest by id, 50 at a time (Meta dropped ?ids= in v26)
+            pick = json.dumps([{"field": "id", "operator": "IN", "value": rest[k:k + 50]}])
+            rows += await meta._get_all(client, f"{act}/{level}s", token, {"fields": _FIELDS[level], "filtering": pick, "limit": 100})
     return [_shape(level, r, currency) for r in rows]
 
 
