@@ -212,6 +212,7 @@ function renderTask() {
     acts.push(`<button class="btn" data-move="approved" data-confirm="Reopen this task (back to Waiting to launch)?">Reopen</button>`);
   }
   const adminActs = manage ? `<div class="tk-admin-acts">
+      ${!closed && t.assignee_id ? `<button class="btn btn-sm" data-followup${t.wa.ready && t.wa.number ? "" : ` disabled title="${t.wa.ready ? "No WhatsApp number for this person: add it in Settings → WhatsApp" : "WhatsApp isn't connected (Settings → WhatsApp)"}"`}>Follow up on WhatsApp</button>` : ""}
       ${!closed ? '<button class="btn btn-sm btn-ghost" data-edit>Edit brief</button>' : ""}
       ${!closed ? '<button class="btn btn-sm btn-ghost" data-move="cancelled" data-confirm="Cancel this task? It moves to History.">Cancel task</button>' : ""}
       <button class="btn btn-sm btn-ghost btn-danger" data-delete>Delete</button></div>` : "";
@@ -394,8 +395,20 @@ function openEditor(t = null) {
   const picked = t ? (b.pages || []) : PAGES;
   $("ePages").innerHTML = PAGES.map((p) => `<label><input type="checkbox" value="${esc(p)}"${picked.includes(p) ? " checked" : ""}> ${esc(p)}</label>`).join("");
   setKind(t ? t.kind : "listing");
+  waHint();
   $("editor").hidden = false;
   $("eName").focus();
+}
+
+function waHint() {
+  const d = state.data || {};
+  const p = (d.people || []).find((x) => String(x.id) === $("eWho").value);
+  const el = $("eWa");
+  el.hidden = !p || !d.wa_ready;
+  if (!p) return;
+  el.textContent = p.wa ? `${p.name} gets this on WhatsApp, with Doing / Done buttons.`
+    : `${p.name} has no WhatsApp number yet, so they won't get a message (owner: Settings → WhatsApp).`;
+  el.classList.toggle("tk-wa-off", !p.wa);
 }
 
 async function saveEditor() {
@@ -411,13 +424,13 @@ async function saveEditor() {
   btn.disabled = true;
   try {
     if (state.editing) {
-      await api(`/api/tasks/${state.editing}`, { method: "PUT", json: body });
-      toast("Saved");
+      const r = await api(`/api/tasks/${state.editing}`, { method: "PUT", json: body });
+      toast(r.whatsapp ? `Saved · ${r.whatsapp}` : "Saved", /failed|no WhatsApp/.test(r.whatsapp || ""));
       $("editor").hidden = true;
       await openTask(state.editing);
     } else {
       const r = await api("/api/tasks", { json: body });
-      toast("Task made");
+      toast(r.whatsapp ? `Task made · ${r.whatsapp}` : "Task made", /failed|no WhatsApp/.test(r.whatsapp || ""));
       $("editor").hidden = true;
       await openTask(r.id);
     }
@@ -428,7 +441,7 @@ async function saveEditor() {
 
 /* ------------------------------------------------ end of day */
 
-const ACTION_NAMES = { created: "Created", status: "", comment: "Comment", file: "", edit: "", launch: "" };
+const ACTION_NAMES = { created: "Created", status: "", comment: "Comment", file: "", edit: "", launch: "", whatsapp: "", followup: "" };
 
 async function loadDay() {
   if (!state.data) await load();
@@ -470,7 +483,7 @@ function showPage(p) {
 }
 
 document.addEventListener("click", (e) => {
-  const el = e.target.closest("[data-open],[data-close],[data-move],[data-save],[data-submit],[data-changes],[data-launch],[data-edit],[data-delete],[data-comment],[data-rmfile]");
+  const el = e.target.closest("[data-open],[data-close],[data-move],[data-save],[data-submit],[data-changes],[data-launch],[data-edit],[data-delete],[data-comment],[data-rmfile],[data-followup]");
   if (!el) return;
   if (el.dataset.open) { e.preventDefault(); openTask(+el.dataset.open); return; }
   if (el.hasAttribute("data-close")) {
@@ -487,6 +500,12 @@ document.addEventListener("click", (e) => {
     if (why && why.trim()) move("changes", why.trim());
   } else if (el.hasAttribute("data-launch")) openLaunch();
   else if (el.hasAttribute("data-edit")) openEditor(state.task);
+  else if (el.hasAttribute("data-followup")) {
+    if (!confirm(`WhatsApp ${state.task.assignee} asking for an update on this task? Their reply shows here and comes to you.`)) return;
+    el.disabled = true;
+    api(`/api/tasks/${state.task.id}/followup`, { json: {} }).then((r) => { toast(r.text); openTask(state.task.id); })
+      .catch((x) => { toast(x.message, true); el.disabled = false; });
+  }
   else if (el.hasAttribute("data-delete")) {
     if (!confirm("Delete this task and all its files for good? (Cancel keeps it in History instead.)")) return;
     api(`/api/tasks/${state.task.id}`, { method: "DELETE" }).then(() => { toast("Deleted"); closeTask(); load(); }).catch((x) => toast(x.message, true));
@@ -522,6 +541,7 @@ document.addEventListener("keydown", (e) => {
 $("pages").onclick = (e) => { const b = e.target.closest("button[data-page]"); if (b) showPage(b.dataset.page); };
 $("newTask").onclick = () => openEditor();
 $("eSave").onclick = saveEditor;
+$("eWho").onchange = waHint;
 $("eKind").onclick = (e) => { const b = e.target.closest("button[data-kind]"); if (b) setKind(b.dataset.kind); };
 $("fPerson").onchange = $("fStore").onchange = () => load();
 let qTimer;

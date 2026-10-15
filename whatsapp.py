@@ -121,6 +121,84 @@ async def send_template(to: str, title: str, lang: str = "en") -> list:
     return [m.get("id") for m in got.get("messages") or []]
 
 
+async def send_buttons(to: str, body: str, buttons: list) -> list:
+    """Text with up to 3 reply buttons [(id, title)] (only inside the 24-hour window). A tap comes back as an
+    'interactive' message carrying the button's id."""
+    c = cfg()
+    got = await _post(f"{c['phone_id']}/messages", {
+        "messaging_product": "whatsapp", "to": norm_phone(to), "type": "interactive",
+        "interactive": {"type": "button", "body": {"text": wa_text(body)[:1024]},
+                        "action": {"buttons": [{"type": "reply", "reply": {"id": i[:256], "title": t[:20]}} for i, t in buttons[:3]]}}})
+    return [m.get("id") for m in got.get("messages") or []]
+
+
+def _param(v) -> str:
+    """Meta refuses template values with new lines, tabs, 4+ spaces in a row, or nothing at all."""
+    v = re.sub(r"\s+", " ", str(v or "")).strip()
+    return v or "-"
+
+
+async def send_named(to: str, name: str, body: list, payloads: list = (), url_suffix: str = None, lang: str = "en") -> list:
+    """One of the task templates below: body values in order, a payload per quick-reply button (in button order),
+    and the end of the URL button's link."""
+    comps = [{"type": "body", "parameters": [{"type": "text", "text": _param(v)[:900]} for v in body]}]
+    for i, p in enumerate(payloads):
+        comps.append({"type": "button", "sub_type": "quick_reply", "index": str(i), "parameters": [{"type": "payload", "payload": p}]})
+    if url_suffix is not None:
+        comps.append({"type": "button", "sub_type": "url", "index": str(len(payloads)), "parameters": [{"type": "text", "text": url_suffix}]})
+    c = cfg()
+    got = await _post(f"{c['phone_id']}/messages", {"messaging_product": "whatsapp", "to": norm_phone(to), "type": "template",
+                                                    "template": {"name": name, "language": {"code": lang}, "components": comps}})
+    return [m.get("id") for m in got.get("messages") or []]
+
+
+# Tasks desk templates (needed to reach staff who haven't written in the last 24 hours). Utility category.
+def task_templates(base_url: str) -> dict:
+    link = f"{base_url.rstrip('/')}/tasks?task={{{{1}}}}"
+    buttons = [{"type": "QUICK_REPLY", "text": "Doing"}, {"type": "QUICK_REPLY", "text": "Done"},
+               {"type": "URL", "text": "Open task", "url": link, "example": [link.replace("{{1}}", "12")]}]
+    return {
+        "ecomvital_task_new": {
+            "name": "ecomvital_task_new", "language": "en", "category": "UTILITY",
+            "components": [{"type": "BODY", "text": (
+                "Hi {{1}}, you have a new task: {{2}}\n\nStore: {{3}}\nDue: {{4}}\nSpecial notes: {{5}}\n\n"
+                "Reply Doing when you start and Done when it is finished."),
+                "example": {"body_text": [["Anna", "List Autumn knitwear", "Tendance", "18 Oct", "Use the new photos"]]}},
+                {"type": "BUTTONS", "buttons": buttons}]},
+        "ecomvital_task_followup": {
+            "name": "ecomvital_task_followup", "language": "en", "category": "UTILITY",
+            "components": [{"type": "BODY", "text": (
+                "Hi {{1}}, {{2}} is asking for an update on your task: {{3}} (due {{4}}).\n\n"
+                "Please reply to this message with a short update, or tap Doing or Done."),
+                "example": {"body_text": [["Anna", "Sam", "List Autumn knitwear", "18 Oct"]]}},
+                {"type": "BUTTONS", "buttons": buttons}]},
+    }
+
+
+async def template_status(names) -> dict:
+    """{name: APPROVED / PENDING / REJECTED / missing} for our templates."""
+    c = cfg()
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.get(f"{GRAPH}/{_version()}/{c['waba_id']}/message_templates", params={"fields": "name,status", "limit": 200},
+                             headers={"Authorization": f"Bearer {c['token']}"})
+    have = {t.get("name"): t.get("status") for t in ((r.json().get("data") or []) if r.status_code < 400 else [])}
+    return {n: have.get(n, "missing") for n in names}
+
+
+async def ensure_task_templates(base_url: str) -> dict:
+    """Ask Meta to approve the task templates that aren't there yet."""
+    want = task_templates(base_url)
+    out = await template_status(want)
+    for n, st in out.items():
+        if st == "missing":
+            try:
+                got = await _post(f"{cfg()['waba_id']}/message_templates", want[n])
+                out[n] = got.get("status", "PENDING")
+            except WAError as e:
+                out[n] = f"error: {e}"
+    return out
+
+
 async def ensure_template() -> str:
     """Ask Meta to approve ProfitDesk's one template (for reports / alerts sent outside the 24-hour window)."""
     c = cfg()

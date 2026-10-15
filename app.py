@@ -8503,7 +8503,9 @@ async def _wa_handle(msg, contact_name=None):
     who = whatsapp.person(phone)
     if not who:
         return                                # not someone the owner allowed: ignored
-    if not _wa_log(phone, "in", (msg.get("text") or {}).get("body") or msg.get("type"), msg.get("id")):
+    seen = ((msg.get("text") or {}).get("body") or (msg.get("button") or {}).get("text")
+            or ((msg.get("interactive") or {}).get("button_reply") or {}).get("title") or msg.get("type"))
+    if not _wa_log(phone, "in", seen, msg.get("id")):
         return                                # Meta retried a message we already answered
     user = _assist_user_row(who["email"])
     lock = _wa_busy.setdefault(phone, asyncio.Lock())
@@ -8514,6 +8516,8 @@ async def _wa_handle(msg, contact_name=None):
         text = ((msg.get("text") or {}).get("body") or "").strip()
         if t == "button":
             text = ((msg.get("button") or {}).get("text") or "").strip()
+        elif t == "interactive":
+            text = (((msg.get("interactive") or {}).get("button_reply") or {}).get("title") or "").strip()
         note = ""
         if t == "audio":                                  # voice note -> text
             try:
@@ -8539,6 +8543,19 @@ async def _wa_handle(msg, contact_name=None):
             if not text:
                 await _wa_send(phone, note)
                 return
+        # Tasks: "doing" / "done", button taps, replies to a task message or a Follow up
+        try:
+            answer = _task_wa_reply(phone, user, msg, text)
+        except Exception as e:                            # never leave them without an answer
+            print(f"WhatsApp task reply failed: {e!r}", flush=True)
+            answer = "Sorry, I couldn't update the task. Please open it in EcomVital: " + f"{BASE_URL}/tasks"
+        if answer:
+            await _wa_send(phone, answer)
+            return
+        if who.get("tasks_only"):
+            await _wa_send(phone, "This number is for your EcomVital tasks: reply *Doing* or *Done* (e.g. “done #12”), "
+                                  f"or reply to a task message with an update. Your tasks: {BASE_URL}/tasks")
+            return
         # YES / NO to the last proposed change
         word = text.lower().strip(" .!")
         if _wa_pending.get(phone) and word in ("yes", "y", "confirm", "ok", "do it", "go", "no", "n", "cancel", "stop"):
@@ -8628,7 +8645,8 @@ async def api_wa_settings_save(payload: dict):
         if v:
             db.set_setting(s, v)
     if "people" in payload:
-        people = [{"phone": whatsapp.norm_phone(p.get("phone")), "email": p.get("email")} for p in payload["people"] or []
+        people = [{"phone": whatsapp.norm_phone(p.get("phone")), "email": p.get("email"),
+                   **({"tasks_only": True} if p.get("tasks_only") else {})} for p in payload["people"] or []
                   if whatsapp.norm_phone(p.get("phone")) and p.get("email")]
         db.set_setting("wa_people", json.dumps(people))
     out = {"ok": True}
@@ -10854,7 +10872,8 @@ def _task_people() -> list:
         lvl = auth.level(u, "tasks")
         if lvl:
             out.append({"id": u["id"], "name": (u.get("name") or "").strip() or u["email"].split("@")[0],
-                        "email": u["email"], "level": lvl, "owner": u.get("role", "owner") == "owner"})
+                        "email": u["email"], "level": lvl, "owner": u.get("role", "owner") == "owner",
+                        "wa": bool(whatsapp.phone_of(u["email"]))})
     return out
 
 
@@ -10898,7 +10917,8 @@ def _task_everyone() -> list:
     """Everyone in People, for "Give it to". Someone without the Tasks desk gets Work on it when given a task."""
     have = {p["id"]: p for p in _task_people()}
     return [have.get(u["id"]) or {"id": u["id"], "name": (u.get("name") or "").strip() or u["email"].split("@")[0],
-                                  "email": u["email"], "level": None, "owner": False} for u in db.list_users()]
+                                  "email": u["email"], "level": None, "owner": False,
+                                  "wa": bool(whatsapp.phone_of(u["email"]))} for u in db.list_users()]
 
 
 def _task_give_access(user_id: int):
@@ -10915,6 +10935,238 @@ def _task_lookups():
     people = {p["id"]: p for p in _task_everyone()}
     stores = {s["id"]: s["name"].strip() for s in db.list_stores() if not demo.is_demo(s)}
     return people, stores
+
+
+# ---- Tasks on WhatsApp: new task / follow up go to the staff member's WhatsApp; "doing" / "done" replies move
+# the task, any other reply to a task message (or the first one after a Follow up) is logged and passed on.
+
+_TASK_TPL = {"task": "ecomvital_task_new", "followup": "ecomvital_task_followup"}
+
+
+def _task_first_name(u: dict) -> str:
+    return ((u.get("name") or "").strip() or (u.get("email") or "").split("@")[0]).split(" ")[0]
+
+
+def _task_due_words(due) -> str:
+    try:
+        d = date.fromisoformat(due)
+        return f"{d.day} {d:%b}"
+    except (TypeError, ValueError):
+        return "no due date"
+
+
+def _task_link(task_id) -> str:
+    return f"{BASE_URL}/tasks?task={task_id}"
+
+
+async def _task_wa_send(task_id: int, kind: str, by: dict) -> str:
+    """WhatsApp the task's assignee: a new task ("task") or an admin asking for an update ("followup").
+    Returns what happened in words ('' when WhatsApp isn't connected or nobody has the task). Logged in task_log."""
+    _tasks_db()
+    if not whatsapp.ready():
+        return ""
+    with db._conn() as con:
+        t = dict(con.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone())
+    staff = next((u for u in db.list_users() if u["id"] == t["assignee_id"]), None)
+    if not staff:
+        return ""
+    phone = whatsapp.phone_of(staff["email"])
+    who = _task_first_name(staff)
+    if not phone:
+        return f"{who} has no WhatsApp number (Settings → WhatsApp)"
+    store = next((x["name"].strip() for x in db.list_stores() if x["id"] == t["store_id"]), "") or "-"
+    due = _task_due_words(t["due"])
+    admin = _task_first_name(by) if by.get("email") else "An admin"
+    notes = (t["special_notes"] or "").strip()
+    if kind == "task":
+        text = (f"*New task for you:* {t['title']}\nStore: {store}\nDue: {due}"
+                + (f"\n\n*Special notes:* {notes[:500]}" if notes else "")
+                + f"\n\n{_task_link(task_id)}\n\nTap *Doing* when you start and *Done* when it's finished.")
+        params = [who, t["title"], store, due, notes[:500] or "none"]
+    else:
+        text = (f"*{admin} is asking for an update* on your task: {t['title']} (due {due}).\n{_task_link(task_id)}\n\n"
+                "Reply to this message with a short update, or tap *Doing* / *Done*.")
+        params = [who, admin, t["title"], due]
+    pay = [f"task:{task_id}:doing", f"task:{task_id}:done"]
+    try:
+        if _wa_window_open(phone):
+            ids = await whatsapp.send_buttons(phone, text, [(pay[0], "Doing"), (pay[1], "Done")])
+            how = "message"
+        else:
+            try:
+                ids = await whatsapp.send_named(phone, _TASK_TPL[kind], params, pay, str(task_id))
+                how = "template"
+            except whatsapp.WAError as e:
+                # the task template isn't approved yet: the general heads-up, the full text follows when they reply
+                print(f"Task template {_TASK_TPL[kind]}: {e}", flush=True)
+                with db._conn() as con:
+                    con.execute("INSERT INTO assistant_inbox (user_email, title, body, source, created_at, sent_wa) VALUES (?,?,?,?,?,?)",
+                                (staff["email"], f"Task: {t['title']}"[:200], text, "tasks",
+                                 datetime.now(timezone.utc).isoformat(timespec="seconds"), "waiting"))
+                ids = await whatsapp.send_template(phone, ("New task: " if kind == "task" else "Update asked: ") + t["title"])
+                how = "heads-up"
+    except whatsapp.WAError as e:
+        msg = f"WhatsApp to {who} failed: {e}"
+        with db._conn() as con:
+            _task_log(con, task_id, by, "whatsapp", msg)
+        return msg
+    _wa_log(phone, "out", text)
+    what = {"task": f"Sent the task to {who} on WhatsApp", "followup": f"Asked {who} for an update on WhatsApp"}[kind]
+    if how == "heads-up":
+        what += " (a short heads-up: the full message follows when they reply)"
+    with db._conn() as con:
+        for i in ids:
+            if i:
+                con.execute("INSERT OR IGNORE INTO task_wa (wa_id, task_id, phone, kind, asked_by) VALUES (?, ?, ?, ?, ?)",
+                            (i, task_id, phone, kind, by.get("email", "")))
+        _task_log(con, task_id, by, "followup" if kind == "followup" else "whatsapp", what)
+    return what
+
+
+def _task_pick(con, user: dict, verb: str, phone: str):
+    """The task a bare "doing" / "done" means: their only open one, else the one we last messaged them about,
+    else the latest. Returns (task, how many open)."""
+    rows = [dict(r) for r in con.execute(
+        f"SELECT * FROM tasks WHERE assignee_id = ? AND status NOT IN ({','.join('?' * len(tasks.HISTORY))})"
+        " ORDER BY updated_at DESC, id DESC", (user.get("id"), *tasks.HISTORY))]
+    if not rows:
+        return None, 0
+    want = ("todo", "changes") if verb == "doing" else ("doing", "changes", "todo")
+    fit = [r for r in rows if r["status"] in want] or rows
+    if len(fit) > 1:
+        last = {r[0]: i for i, r in enumerate(con.execute(
+            "SELECT task_id FROM task_wa WHERE phone = ? ORDER BY at DESC, rowid DESC", (phone,)))}
+        fit.sort(key=lambda r: last.get(r["id"], 10 ** 6))
+    return fit[0], len(rows)
+
+
+def _task_wa_move(user: dict, phone: str, task_id, verb: str) -> str:
+    """A "doing" / "done" reply: move the task like the buttons on the desk would. Returns the answer to send."""
+    _tasks_db()
+    with db._conn() as con:
+        note = ""
+        if task_id:
+            row = con.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+            t = dict(row) if row else None
+            if not t or (t["assignee_id"] != user.get("id") and not _task_manager(user)):
+                return f"I can't find task #{task_id} among your tasks."
+        else:
+            t, n_open = _task_pick(con, user, verb, phone)
+            if not t:
+                return "You have no open tasks right now. 👍"
+            if n_open > 1:
+                note = f"\n\n(You have {n_open} open tasks; I took this one. For another, reply e.g. “{verb} #12”.)"
+        name, link = f"#{t['id']} {t['title']}", _task_link(t["id"])
+        if t["status"] in tasks.HISTORY:
+            return f"Task {name} is already {tasks.STATUS_NAMES[t['status']].lower()}."
+        if t["status"] in ("submitted", "approved"):
+            return f"Task {name} is already with the admins ({tasks.STATUS_NAMES[t['status']]}). To change it, open it: {link}"
+        if verb == "doing":
+            if t["status"] == "doing":
+                return f"Task {name} is already in progress. 👍 Reply *Done* when it's finished." + note
+            con.execute("UPDATE tasks SET status = 'doing', closed_at = NULL WHERE id = ?", (t["id"],))
+            _task_log(con, t["id"], user, "status", "Started (WhatsApp)")
+            return f"✅ Task {name} is now *In progress*. Reply *Done* when it's finished.\n{link}" + note
+        result = tasks.loads(t["result"])
+        if t["kind"] == "listing" and not (result.get("landing_url") or result.get("collection_url") or result.get("advertorial_url")):
+            if t["status"] == "todo":
+                con.execute("UPDATE tasks SET status = 'doing' WHERE id = ?", (t["id"],))
+                _task_log(con, t["id"], user, "status", "Started (WhatsApp)")
+            _task_log(con, t["id"], user, "whatsapp", "Replied Done, but the hand-back links are missing (asked for them)")
+            return (f"Almost there! Task {name} still needs your links before it can go for review: the collection or landing "
+                    f"page link (plus product links, ad copy and creatives). Add them here, then press Submit or reply *Done* again:\n{link}" + note)
+        con.execute("UPDATE tasks SET status = 'submitted', submitted_at = datetime('now'), closed_at = NULL WHERE id = ?", (t["id"],))
+        _task_log(con, t["id"], user, "status", "Submitted for review (WhatsApp)")
+        creatives = con.execute("SELECT COUNT(*) FROM task_files WHERE task_id = ? AND side = 'staff' AND kind = 'creative'",
+                                (t["id"],)).fetchone()[0]
+    if t.get("created_by"):
+        _assist_deliver(t["created_by"], f"Task ready for review: {t['title']}"[:200],
+                        f"{_task_first_name(user)} marked task #{t['id']} done on WhatsApp. Check it: {link}", "tasks")
+    tip = "" if t["kind"] != "listing" or creatives else "\n(No ad creatives uploaded yet: add them if the ads need them.)"
+    return f"✅ Task {name} is *Submitted for review*. Thanks! The admin has been told.{tip}" + note
+
+
+def _task_wa_update(user: dict, ref: dict, text: str) -> str:
+    """Free text in reply to a task message / Follow up: logged on the task and passed to the admin who asked."""
+    _tasks_db()
+    with db._conn() as con:
+        row = con.execute("SELECT * FROM tasks WHERE id = ?", (ref["task_id"],)).fetchone()
+        if not row:
+            return "That task doesn't exist any more."
+        t = dict(row)
+        _task_log(con, t["id"], user, "comment", f"(WhatsApp) {text}")
+        con.execute("UPDATE task_wa SET answered_at = datetime('now') WHERE task_id = ? AND phone = ? AND answered_at IS NULL",
+                    (t["id"], ref["phone"]))
+    to = ref.get("asked_by") or t.get("created_by")
+    admin = _assist_user_row(to) if to else None
+    if to:
+        _assist_deliver(to, f"Update on task: {t['title']}"[:200],
+                        f"{_task_first_name(user)} replied on WhatsApp about task #{t['id']}:\n“{text[:1500]}”\n{_task_link(t['id'])}", "tasks")
+    return (f"Thanks, I've passed that to {_task_first_name(admin)} and noted it on task #{t['id']}." if admin
+            else f"Thanks, noted on task #{t['id']}.")
+
+
+def _task_wa_reply(phone: str, user: dict, msg: dict, text: str):
+    """A staff WhatsApp message about a task, or None when it isn't one (then the assistant answers it)."""
+    _tasks_db()
+    t = msg.get("type")
+    payload = ""
+    if t == "button":
+        payload = (msg.get("button") or {}).get("payload") or ""
+    elif t == "interactive":
+        payload = ((msg.get("interactive") or {}).get("button_reply") or {}).get("id") or ""
+    m = re.fullmatch(r"task:(\d+):(doing|done)", payload)
+    if m:
+        return _task_wa_move(user, phone, int(m.group(1)), m.group(2))
+    ctx = (msg.get("context") or {}).get("id")
+    with db._conn() as con:
+        ref = con.execute("SELECT * FROM task_wa WHERE wa_id = ?", (ctx,)).fetchone() if ctx else None
+        if not ref and not ctx:     # the first message after a Follow up counts as the answer, even without a swipe-reply
+            ref = con.execute("SELECT * FROM task_wa WHERE phone = ? AND kind = 'followup' AND answered_at IS NULL"
+                              " AND at >= datetime('now', '-1 day') ORDER BY at DESC LIMIT 1", (phone,)).fetchone()
+    ref = dict(ref) if ref else None
+    verb, num = tasks.wa_verb(text)
+    if verb:
+        return _task_wa_move(user, phone, num or (ref["task_id"] if ref else None), verb)
+    if ref and text:
+        return _task_wa_update(user, ref, text)
+    return None
+
+
+@app.post("/api/tasks/{task_id}/followup")
+async def api_task_followup(request: Request, task_id: int):
+    """Admin: WhatsApp the staff member asking for an update. Their reply is logged here and sent to whoever asked."""
+    _tasks_db()
+    _need_level(request, "tasks", "manage")
+    user = _task_user(request)
+    with db._conn() as con:
+        t = _task_row(con, task_id, user)
+    if t["status"] in tasks.HISTORY:
+        raise HTTPException(400, "This task is finished.")
+    if not t["assignee_id"]:
+        raise HTTPException(400, "Give the task to someone first.")
+    if not whatsapp.ready():
+        raise HTTPException(400, "WhatsApp isn't connected (Settings → WhatsApp).")
+    got = await _task_wa_send(task_id, "followup", user)
+    if not got.startswith("Asked"):
+        raise HTTPException(400, got or "Couldn't send it.")
+    return {"ok": True, "text": got}
+
+
+@app.get("/api/whatsapp/task-templates")
+async def api_task_templates():
+    """Owner: are the task message templates approved by Meta?"""
+    if not whatsapp.ready() or not whatsapp.cfg()["waba_id"]:
+        raise HTTPException(400, "WhatsApp isn't connected.")
+    return {"templates": await whatsapp.template_status(list(_TASK_TPL.values()))}
+
+
+@app.post("/api/whatsapp/task-templates")
+async def api_task_templates_submit():
+    """Owner: send the task message templates to Meta for approval (only the ones not there yet)."""
+    if not whatsapp.ready() or not whatsapp.cfg()["waba_id"]:
+        raise HTTPException(400, "WhatsApp isn't connected.")
+    return {"templates": await whatsapp.ensure_task_templates(BASE_URL)}
 
 
 @app.get("/tasks", response_class=HTMLResponse)
@@ -10959,7 +11211,7 @@ def api_tasks(request: Request, view: str = "board", assignee: int = 0, store: i
     return {"tasks": out, "manage": manage, "me": {"id": user.get("id"), "email": user.get("email")},
             "people": list(people.values()) if manage else [],
             "stores": [{"id": k, "name": v} for k, v in sorted(stores.items(), key=lambda kv: kv[1].lower())],
-            "statuses": tasks.STATUS_NAMES, "ctas": tasks.CTAS,
+            "statuses": tasks.STATUS_NAMES, "ctas": tasks.CTAS, "wa_ready": whatsapp.ready(),
             "today": datetime.now(CASH_TZ).date().isoformat()}
 
 
@@ -11028,6 +11280,8 @@ def api_task(request: Request, task_id: int):
     out["log"] = log
     out["manage"] = _task_manager(user)
     out["mine"] = t["assignee_id"] == user.get("id")
+    p = people.get(t["assignee_id"])
+    out["wa"] = {"ready": whatsapp.ready(), "number": bool(p and p.get("wa"))}
     return out
 
 
@@ -11055,7 +11309,7 @@ def _task_fields(payload: dict) -> dict:
 
 
 @app.post("/api/tasks")
-def api_task_create(request: Request, payload: dict):
+async def api_task_create(request: Request, payload: dict):
     _tasks_db()
     _need_level(request, "tasks", "manage")
     user = _task_user(request)
@@ -11066,11 +11320,12 @@ def api_task_create(request: Request, payload: dict):
                           (f["kind"], f["title"], f["store_id"], f["assignee_id"], f["priority"], f["due"],
                            f["special_notes"], f["brief"], user.get("email", ""))).lastrowid
         _task_log(con, tid, user, "created", "Created the task")
-    return {"ok": True, "id": tid}
+    wa = await _task_wa_send(tid, "task", user) if f["assignee_id"] and payload.get("whatsapp", True) else ""
+    return {"ok": True, "id": tid, "whatsapp": wa}
 
 
 @app.put("/api/tasks/{task_id}")
-def api_task_edit(request: Request, task_id: int, payload: dict):
+async def api_task_edit(request: Request, task_id: int, payload: dict):
     _tasks_db()
     _need_level(request, "tasks", "manage")
     user = _task_user(request)
@@ -11086,7 +11341,9 @@ def api_task_edit(request: Request, task_id: int, payload: dict):
             p = {x["id"]: x["name"] for x in _task_people()}.get(f["assignee_id"], "nobody")
             what += f", given to {p}"
         _task_log(con, task_id, user, "edit", what)
-    return {"ok": True}
+    given = f["assignee_id"] and old["assignee_id"] != f["assignee_id"] and old["status"] not in tasks.HISTORY
+    wa = await _task_wa_send(task_id, "task", user) if given and payload.get("whatsapp", True) else ""
+    return {"ok": True, "whatsapp": wa}
 
 
 @app.delete("/api/tasks/{task_id}")

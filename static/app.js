@@ -1101,7 +1101,9 @@ async function renderWA() {
   try { r = await api("/api/whatsapp/settings"); } catch { $("waBox").innerHTML = ""; return; }
   const userOpts = (sel) => r.users.map((u) => `<option value="${esc(u.email)}"${u.email === sel ? " selected" : ""}>${esc(u.name)}</option>`).join("");
   const row = (p = {}) => `<div class="wa-person"><input class="control wa-phone" type="tel" placeholder="WhatsApp number with country code, e.g. 94771234567" value="${esc(p.phone || "")}">
-      <span class="hint">is</span><select class="control wa-email">${userOpts(p.email)}</select><button class="btn btn-sm btn-ghost wa-del" title="Remove">✕</button></div>`;
+      <span class="hint">is</span><select class="control wa-email">${userOpts(p.email)}</select>
+      <select class="control wa-use" title="What this number can do"><option value="">Assistant + tasks</option><option value="tasks"${p.tasks_only ? " selected" : ""}>Tasks only</option></select>
+      <button class="btn btn-sm btn-ghost wa-del" title="Remove">✕</button></div>`;
   $("waBox").innerHTML = `
     <div class="group-row"><div class="group-name"><strong>${r.connected ? "Connected" : "Not connected yet"}</strong>
       <span>${r.connected ? `Phone number ID ${esc(r.phone_id)} · ${r.people.length} people can use it` : "Fill in the four boxes below."}</span></div></div>
@@ -1120,22 +1122,42 @@ async function renderWA() {
       <label class="field"><span>OpenAI API key${r.has_voice_key ? " · saved, paste to replace" : ""}</span><input id="waVoice" type="password" autocomplete="off"></label>
     </details>
     <h4 class="wa-h">Who can use it</h4>
-    <p class="hint">Each number chats as that person, with their EcomVital access. Messages from any other number are ignored.</p>
+    <p class="hint">Each number chats as that person, with their EcomVital access. Messages from any other number are ignored.
+      Staff given a task get it here (with Doing / Done buttons); “Tasks only” numbers can't use the assistant.</p>
     <div id="waPeople">${(r.people.length ? r.people : [{}]).map(row).join("")}</div>
     <button class="btn btn-sm btn-ghost" id="waAdd">+ Add a number</button>
     <div class="wa-btns"><button id="waSave" class="btn btn-primary">Save</button>
-      ${r.connected ? `<button id="waTest" class="btn btn-ghost">Send a test message</button>` : ""}</div>`;
+      ${r.connected ? `<button id="waTest" class="btn btn-ghost">Send a test message</button>` : ""}</div>
+    ${r.connected ? `<details class="advanced" id="waTpl"><summary>Task message templates</summary>
+      <p class="hint">Meta must approve these before a new task or a Follow up can reach someone who hasn't written in the last 24 hours
+        (until then they get the short general heads-up and the full message when they reply).</p>
+      <div id="waTplOut" class="hint">Checking…</div>
+      <button class="btn btn-sm" id="waTplGo">Send to Meta for approval</button></details>` : ""}`;
   const wire = () => { for (const b of $("waPeople").querySelectorAll(".wa-del")) b.onclick = () => { b.closest(".wa-person").remove(); }; };
   wire();
   $("waAdd").onclick = () => { $("waPeople").insertAdjacentHTML("beforeend", row()); wire(); };
   $("waSave").onclick = async () => {
-    const people = [...$("waPeople").querySelectorAll(".wa-person")].map((d) => ({ phone: d.querySelector(".wa-phone").value, email: d.querySelector(".wa-email").value }));
+    const people = [...$("waPeople").querySelectorAll(".wa-person")].map((d) => ({ phone: d.querySelector(".wa-phone").value,
+      email: d.querySelector(".wa-email").value, tasks_only: d.querySelector(".wa-use").value === "tasks" }));
     try {
       const out = await jsonPost("/api/whatsapp/settings", { token: $("waToken").value, app_secret: $("waSecret").value,
         phone_id: $("waPhone").value, waba_id: $("waWaba").value, app_id: $("waApp").value, openai_key: $("waVoice").value, people }, "PUT");
       toast([out.setup ? out.setup.join(" · ") : "Saved.", out.template ? "Template: " + out.template : "", out.template_error ? "Template: " + out.template_error : ""].filter(Boolean).join(" · "), !!out.template_error);
       renderWA();
     } catch (e) { toast(e.message, true); }
+  };
+  const tplShow = (t) => {
+    const words = { APPROVED: "✓ approved", PENDING: "waiting for Meta", REJECTED: "rejected by Meta", missing: "not sent yet" };
+    $("waTplOut").innerHTML = Object.entries(t).map(([n, st]) => `<div><code>${esc(n)}</code> · ${esc(words[st] || st)}</div>`).join("");
+    $("waTplGo").hidden = !Object.values(t).some((st) => st === "missing" || String(st).startsWith("error"));
+  };
+  if ($("waTpl")) $("waTpl").ontoggle = async () => {
+    if (!$("waTpl").open) return;
+    try { tplShow((await api("/api/whatsapp/task-templates")).templates); } catch (e) { $("waTplOut").textContent = e.message; }
+  };
+  if ($("waTplGo")) $("waTplGo").onclick = async () => {
+    try { tplShow((await jsonPost("/api/whatsapp/task-templates", {})).templates); toast("Sent to Meta. Approval usually takes minutes to a day."); }
+    catch (e) { toast(e.message, true); }
   };
   if ($("waTest")) $("waTest").onclick = async () => {
     const p = $("waPeople").querySelector(".wa-phone")?.value;

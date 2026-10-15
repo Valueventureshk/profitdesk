@@ -119,3 +119,9 @@
   .tk-bar #newTask { margin-left: 0; }
   .tk-search { min-width: 100%; }
 }
+
+/* WhatsApp hint under "Give it to" */
+.tk-wa { margin: -4px 0 10px; }
+.tk-wa::before { content: "📱 "; }
+.tk-wa.tk-wa-off { color: var(--muted, #8A8578); }
+.tk-log-row.whatsapp span, .tk-log-row.followup span { color: var(--spend, #3A4E7A); }

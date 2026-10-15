@@ -68,7 +68,36 @@ CREATE TABLE IF NOT EXISTS task_log (
 );
 CREATE INDEX IF NOT EXISTS task_log_task ON task_log (task_id);
 CREATE INDEX IF NOT EXISTS task_log_at ON task_log (at);
+CREATE TABLE IF NOT EXISTS task_wa (                      -- WhatsApp messages sent about a task (to read replies)
+    wa_id       TEXT    PRIMARY KEY,                      -- Meta's message id (a reply carries it as its context)
+    task_id     INTEGER NOT NULL,
+    phone       TEXT    NOT NULL,
+    kind        TEXT    NOT NULL,                         -- task (new / given) | followup
+    asked_by    TEXT,                                     -- email: who gave the task / pressed Follow up
+    at          TEXT    NOT NULL DEFAULT (datetime('now')),
+    answered_at TEXT
+);
+CREATE INDEX IF NOT EXISTS task_wa_phone ON task_wa (phone, at);
 """
+
+# WhatsApp replies: "doing" / "done" (optionally with the task number, e.g. "done #12")
+_DOING = ("doing", "doing it", "start", "started", "starting", "on it", "in progress", "working on it")
+_DONE = ("done", "finished", "complete", "completed", "submitted", "all done", "ready")
+
+
+def wa_verb(text: str):
+    """('doing' | 'done' | None, task number or None) from a short WhatsApp reply."""
+    t = re.sub(r"[^\w#\s]", " ", (text or "").lower()).strip()
+    m = re.fullmatch(r"(.+?)\s*(?:task\s*)?#?\s*(\d+)?", t)
+    if not m:
+        return None, None
+    word = re.sub(r"\s+", " ", m.group(1)).strip()
+    num = int(m.group(2)) if m.group(2) else None
+    if word in _DOING:
+        return "doing", num
+    if word in _DONE:
+        return "done", num
+    return None, None
 
 STATUS_NAMES = {"todo": "To do", "doing": "In progress", "submitted": "Submitted for review",
                 "changes": "Changes asked", "approved": "Waiting to launch", "launched": "Launched",
