@@ -11718,7 +11718,7 @@ def api_agent_channel(cid: str, payload: dict):
 
 
 @app.post("/api/agent/channel/{cid}/read")
-def api_agent_read(cid: str, request: Request):
+async def api_agent_read(cid: str, request: Request):
     """Read a channel's last 90 days (and file its invoices if it's a supplier-invoice channel), in the background."""
     _slack_token()
     ch = _agent_channel(cid)
@@ -11729,7 +11729,7 @@ def api_agent_read(cid: str, request: Request):
 
 
 @app.post("/api/agent/read-all")
-def api_agent_read_all(request: Request):
+async def api_agent_read_all(request: Request):
     """Every channel the agent is in: 90 days of messages, and every supplier invoice filed."""
     _slack_token()
     _agent_db()
