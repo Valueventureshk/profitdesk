@@ -11211,7 +11211,7 @@ def api_tasks(request: Request, view: str = "board", assignee: int = 0, store: i
         x = _task_out(t, people, stores)
         x["files_staff"], x["files_all"] = counts.get(t["id"], (0, 0))
         out.append(x)
-    return {"todo": tasks.TODO, "tasks": out, "manage": manage, "me": {"id": user.get("id"), "email": user.get("email")},
+    return {"todo": tasks.TODO, "launch_ready": tasks.LAUNCH_READY, "tasks": out, "manage": manage, "me": {"id": user.get("id"), "email": user.get("email")},
             "people": list(people.values()) if manage else [],
             "stores": [{"id": k, "name": v} for k, v in sorted(stores.items(), key=lambda kv: kv[1].lower())],
             "statuses": tasks.STATUS_NAMES, "ctas": tasks.CTAS, "wa_ready": whatsapp.ready(),
@@ -11320,6 +11320,8 @@ def _launch_ids(raw) -> list:
 async def api_tasks_launch_options(request: Request, ids: str = ""):
     """The Launch form for one or several approved tasks: strategies, the ad account's Pages and pixels,
     and what each task brings (landing page, creatives, copy) or what stops it."""
+    if not tasks.LAUNCH_READY:
+        raise HTTPException(400, "Launching from Tasks is coming soon: the launch strategies are being set up.")
     _tasks_db()
     _need_level(request, "tasks", "manage")
     ids = _launch_ids(ids)
@@ -11360,6 +11362,8 @@ async def api_tasks_launch_options(request: Request, ids: str = ""):
 async def api_tasks_launch(request: Request, payload: dict):
     """Put the picked approved tasks into one Meta campaign with a strategy, everything PAUSED. Each Meta id is
     saved as it's made, so pressing again after a problem (or while Meta processes videos) carries on, never doubles."""
+    if not tasks.LAUNCH_READY:
+        raise HTTPException(400, "Launching from Tasks is coming soon: the launch strategies are being set up.")
     _tasks_db()
     _need_level(request, "tasks", "manage")
     user = _task_user(request)
@@ -11518,6 +11522,7 @@ def api_task(request: Request, task_id: int):
     out = _task_out(t, people, stores, files, full=True)
     out["log"] = log
     out["todo"] = tasks.TODO
+    out["launch_ready"] = tasks.LAUNCH_READY
     out["manage"] = _task_manager(user)
     out["mine"] = t["assignee_id"] == user.get("id")
     p = people.get(t["assignee_id"])

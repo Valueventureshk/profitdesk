@@ -36,6 +36,10 @@ TODO = {
 TODO_NEEDS = {"advertorial": ("advertorial_url",), "collection": ("collection_url",), "product_pages": ("product_urls",),
               "branded_page": ("branded_url",), "ad_copy": ("primary_text", "headline")}
 
+# Launching from the Tasks desk stays greyed out until the owner hands over their tested strategies
+# (15 Oct 2026); the X/Y/Z below are placeholders. Switch to True once STRATEGIES holds the real ones.
+LAUNCH_READY = False
+
 # Ways to put several approved listing tasks into one Meta campaign (all created PAUSED).
 # Starter set: the owner will replace / add their own tested strategies.
 STRATEGIES = {

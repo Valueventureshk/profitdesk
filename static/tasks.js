@@ -97,7 +97,7 @@ function card(t) {
   const short = (k) => (k === "ad_copy" ? "Ad copy" : todoLabel(k).replace(/^Create (\w)/, (m, c) => c.toUpperCase()));
   const items = t.brief.todo ? t.brief.todo.map(short) : (t.brief.pages || []);
   const pages = items.slice(0, 6).map((p) => `<span class="tk-tag">${esc(p)}</span>`).join("");
-  const pick = state.data.manage && t.status === "approved" && t.kind === "listing";
+  const pick = state.data.manage && state.data.launch_ready && t.status === "approved" && t.kind === "listing";
   return `<div class="tk-card${t.priority === "high" ? " high" : ""}${state.sel.has(t.id) ? " picked" : ""}" data-open="${t.id}" role="button" tabindex="0">
     ${pick ? `<label class="tk-sel" title="Pick to launch together"><input type="checkbox" data-sel="${t.id}"${state.sel.has(t.id) ? " checked" : ""}> Launch</label>` : ""}
     <div class="tk-card-top"><span class="tk-kindtag ${t.kind}">${t.kind === "listing" ? "Listing + ads" : "Custom"}</span>
@@ -264,7 +264,8 @@ function renderTask() {
     if (canWork && ["todo", "doing", "changes"].includes(t.status)) acts.push(`<button class="btn" data-save>Save</button><button class="btn btn-primary" data-submit>Submit for review</button>`);
     if (t.mine && !manage && t.status === "submitted") acts.push(`<button class="btn" data-move="doing">Take back to edit</button>`);
     if (manage && t.status === "submitted") acts.push(`<button class="btn btn-primary" data-move="approved">Approve</button><button class="btn" data-changes>Send back for changes</button>`);
-    if (manage && t.status === "approved" && t.kind === "listing") acts.push(`<button class="btn btn-primary" data-launch>Launch ads on Meta…</button><button class="btn" data-move="launched" data-confirm="Mark as launched without creating the ads here?">Mark launched (set up by hand)</button>`);
+    if (manage && t.status === "approved" && t.kind === "listing") acts.push(`${t.launch_ready ? "<button class=\"btn btn-primary\" data-launch>Launch ads on Meta…</button>"
+      : "<button class=\"btn\" disabled title=\"The launch strategies are being set up\">Launch ads on Meta · coming soon</button>"}<button class="btn" data-move="launched" data-confirm="Mark as launched without creating the ads here?">Mark launched (set up by hand)</button>`);
     if (manage && t.status === "approved" && t.kind === "custom") acts.push(`<button class="btn btn-primary" data-move="done">Mark done</button>`);
     if (manage && t.status === "approved") acts.push(`<button class="btn" data-changes>Send back for changes</button>`);
     if (canWork && t.status === "approved" && manage) acts.push(`<button class="btn" data-save>Save edits</button>`);
