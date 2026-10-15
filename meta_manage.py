@@ -68,38 +68,47 @@ def _money(minor, currency: str):
     return float(minor) / (1 if zero else 100)
 
 
-async def structure(token: str, account_id: str, currency: str) -> dict:
-    """{campaigns: [...], adsets: [...], ads: [...]} with status, budgets (account currency) and parents.
-    Deleted / archived things are left out."""
+_FIELDS = {
+    "campaign": "id,name,status,effective_status,objective,daily_budget,lifetime_budget,created_time",
+    "adset": "id,name,campaign_id,campaign{name},status,effective_status,daily_budget,lifetime_budget,optimization_goal,created_time",
+    "ad": "id,name,adset_id,adset{name},campaign_id,campaign{name},status,effective_status,created_time,creative{thumbnail_url}",
+}
+
+
+def _shape(level: str, o: dict, currency: str) -> dict:
+    out = {"id": o["id"], "name": o.get("name") or o["id"], "status": o.get("status"), "effective": o.get("effective_status"),
+           "created": o.get("created_time")}
+    if level != "ad":
+        out["daily_budget"] = _money(o.get("daily_budget"), currency)
+        out["lifetime_budget"] = _money(o.get("lifetime_budget"), currency)
+    if level == "campaign":
+        out["objective"] = o.get("objective")
+    else:
+        out["campaign_id"] = o.get("campaign_id")
+        out["campaign"] = (o.get("campaign") or {}).get("name", "")
+    if level == "adset":
+        out["goal"] = o.get("optimization_goal")
+    if level == "ad":
+        out["adset_id"] = o.get("adset_id")
+        out["adset"] = (o.get("adset") or {}).get("name", "")
+        out["thumb"] = (o.get("creative") or {}).get("thumbnail_url")
+    return out
+
+
+async def objects(token: str, account_id: str, level: str, currency: str, also_ids=()) -> list:
+    """One level's campaigns / ad sets / ads: everything running now, plus the given ids (what spent in the
+    window, even if it's paused now). Big accounts have thousands of old ads, so never the whole list."""
+    level = level if level in LEVELS else "campaign"
     act = f"act_{str(account_id).removeprefix('act_')}"
-    keep = json.dumps([{"field": "effective_status", "operator": "NOT_IN", "value": ["DELETED", "ARCHIVED"]}])
-    async with httpx.AsyncClient(timeout=60) as client:
-        camps = await meta._get_all(client, f"{act}/campaigns", token, {
-            "fields": "id,name,status,effective_status,objective,daily_budget,lifetime_budget,bid_strategy,created_time",
-            "filtering": keep, "limit": 200})
-        sets = await meta._get_all(client, f"{act}/adsets", token, {
-            "fields": "id,name,campaign_id,status,effective_status,daily_budget,lifetime_budget,optimization_goal,created_time",
-            "filtering": keep, "limit": 300})
-        ads = await meta._get_all(client, f"{act}/ads", token, {
-            "fields": "id,name,adset_id,campaign_id,status,effective_status,created_time,creative{thumbnail_url}",
-            "filtering": keep, "limit": 500})
-    c_name = {c["id"]: c["name"] for c in camps}
-    s_name = {s["id"]: s["name"] for s in sets}
-    return {
-        "campaigns": [{"id": c["id"], "name": c["name"], "status": c.get("status"), "effective": c.get("effective_status"),
-                       "objective": c.get("objective"), "daily_budget": _money(c.get("daily_budget"), currency),
-                       "lifetime_budget": _money(c.get("lifetime_budget"), currency), "created": c.get("created_time")}
-                      for c in camps],
-        "adsets": [{"id": s["id"], "name": s["name"], "campaign_id": s.get("campaign_id"), "campaign": c_name.get(s.get("campaign_id"), ""),
-                    "status": s.get("status"), "effective": s.get("effective_status"),
-                    "daily_budget": _money(s.get("daily_budget"), currency),
-                    "lifetime_budget": _money(s.get("lifetime_budget"), currency),
-                    "goal": s.get("optimization_goal"), "created": s.get("created_time")} for s in sets],
-        "ads": [{"id": a["id"], "name": a["name"], "adset_id": a.get("adset_id"), "adset": s_name.get(a.get("adset_id"), ""),
-                 "campaign_id": a.get("campaign_id"), "campaign": c_name.get(a.get("campaign_id"), ""),
-                 "status": a.get("status"), "effective": a.get("effective_status"), "created": a.get("created_time"),
-                 "thumb": ((a.get("creative") or {}).get("thumbnail_url"))} for a in ads],
-    }
+    running = json.dumps([{"field": "effective_status", "operator": "IN", "value": ["ACTIVE", "IN_PROCESS", "WITH_ISSUES", "PENDING_REVIEW"]}])
+    async with httpx.AsyncClient(timeout=90) as client:
+        rows = await meta._get_all(client, f"{act}/{level}s", token, {"fields": _FIELDS[level], "filtering": running, "limit": 100})
+        have = {r["id"] for r in rows}
+        rest = [i for i in dict.fromkeys(str(x) for x in also_ids if x) if i not in have]
+        for k in range(0, len(rest), 50):                 # Meta reads up to 50 ids in one call
+            got = await meta._get(client, "", token, {"ids": ",".join(rest[k:k + 50]), "fields": _FIELDS[level]})
+            rows += [v for v in got.values() if isinstance(v, dict) and v.get("id")]
+    return [_shape(level, r, currency) for r in rows]
 
 
 def _count(items, names) -> float:
@@ -116,7 +125,7 @@ async def insights(token: str, account_id: str, level: str, since: str, until: s
     act = f"act_{str(account_id).removeprefix('act_')}"
     async with httpx.AsyncClient(timeout=90) as client:
         rows = await meta._get_all(client, f"{act}/insights", token, {
-            "level": level, "limit": 500, "time_range": json.dumps({"since": since, "until": until}),
+            "level": level, "limit": 200, "time_range": json.dumps({"since": since, "until": until}),
             "fields": f"{level}_id,spend,impressions,inline_link_clicks,actions,action_values"})
     out = {}
     for r in rows:

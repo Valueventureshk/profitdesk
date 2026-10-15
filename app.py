@@ -10934,9 +10934,10 @@ async def _mads_rows(st, conn, level: str, days: int, fresh=False) -> dict:
     cur = st.get("meta_currency") or st["currency"]
     token, act = conn["access_token"], st["meta_account_id"]
     try:
-        s = await _mads_cached((st["id"], "structure"), fresh, lambda: meta_manage.structure(token, act, cur))
         got = await _mads_cached((st["id"], "insights", level, since, until), fresh,
                                  lambda: meta_manage.insights(token, act, level, since, until))
+        objs = await _mads_cached((st["id"], "objects", level, since, until), fresh,
+                                  lambda: meta_manage.objects(token, act, level, cur, [i for i, m in got.items() if m["spend"]]))
     except meta.MetaAdsError as e:
         raise HTTPException(400, str(e))
     # EcomVital's pixel, matched by the names the UTMs carry (as on the Tracking desk), in the account currency
@@ -10949,7 +10950,6 @@ async def _mads_rows(st, conn, level: str, days: int, fresh=False) -> dict:
     except Exception:
         f = 1.0
     px_by = {(r["name"] or "").strip().lower(): r for r in px.get("rows") or []}
-    objs = {"campaign": s["campaigns"], "adset": s["adsets"], "ad": s["ads"]}[level]
     rows = []
     for o in objs:
         m = got.get(o["id"], {})
