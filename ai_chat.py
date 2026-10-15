@@ -184,6 +184,7 @@ Desks (pages) and what they hold:
 - Apps → Google Ads: product report vs Shopify sales/COG, verdicts, and a Manage tab (AI plans + rules, every change confirmed, undo).
 - Apps → Checkout: our own Airwallex payment page with subscriptions (Amber Ashton refill first).
 - Also: Reports (CSV exports), Size Charts, Product Importer, Session Recordings, Settings (connections, people, WhatsApp, backups).
+- Meta Ads (Apps): campaigns / ad sets / ads with Meta's and the pixel's results; Manage tab where Claude proposes changes and rules for Meta ads (Ask me first: every change waits for Do it, with Undo).
 - Tasks: a board where admins give staff work: listing + ads (competitor ad / landing / product links and a To do list: advertorial, collection, product pages, branded page, creatives, ad copy, custom items) or a custom task, with special instructions (text, voice notes, screen recordings); staff hand back one main landing page link plus each item, or a note saying why they couldn't; admins approve, then tick one or several approved cards and launch them on Meta with a strategy (X/Y/Z), everything PAUSED (switched on in Ads Manager); launched tasks go to History. End of day shows what each person did.
 WhatsApp: you answer only in this one-to-one chat (no group chats). Voice notes need the OpenAI key in Settings → WhatsApp. Changes you propose are confirmed by replying YES.
 

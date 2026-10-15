@@ -285,7 +285,7 @@ def _explain_write(r: httpx.Response) -> MetaAdsError:
     except ValueError:
         err = {}
     if err.get("code") in _NO_PERMISSION or err.get("code") == 100 and "permission" in str(err).lower():
-        return MetaAdsError("Meta refused to create ads. The System User token needs the ads_management "
+        return MetaAdsError("Meta refused to create or change ads. The System User token needs the ads_management "
                             "permission and the ad account (and Facebook Page) assigned to it.")
     detail = err.get("error_user_msg") or err.get("error_user_title") or err.get("message") or r.text[:300]
     return MetaAdsError(f"Meta said: {detail}")

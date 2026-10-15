@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EcomVital · Meta Ads</title>
+<script>try{var t=localStorage.getItem("pdTheme")||(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");document.documentElement.dataset.theme=t;if((localStorage.getItem("pdSkin")||"new")==="new")document.documentElement.classList.add("skin-new");}catch(e){}</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;550;600;650;700&display=swap">
+<link rel="stylesheet" href="/static/styles.css">
+<link rel="stylesheet" href="/static/skin.css">
+<link rel="stylesheet" href="/static/metaads.css">
+</head>
+<body class="ma-body">
+<div class="cash-page ma-page">
+  <header class="cash-top">
+    <div class="brand" data-section-menu title="Switch section">
+      <span class="brand-mark"><img src="/static/brand/ecomvital-120.png" alt=""></span>
+      <span class="brand-name">EcomVital</span>
+    </div>
+    <div class="crumb">
+      <h1>Meta Ads</h1>
+      <p id="sub">Campaigns, ad sets and ads with Meta's results and your own pixel's</p>
+    </div>
+    <nav class="scm-pages" id="pages">
+      <button data-page="overview" class="on">Overview</button>
+      <button data-page="manage">Manage <span class="tab-badge" id="waitBadge" hidden></span></button>
+    </nav>
+  </header>
+
+  <main class="content">
+    <div class="ma-bar">
+      <select id="store" class="control"></select>
+      <span class="hint" id="acct"></span>
+    </div>
+
+    <section id="overviewPage">
+      <div class="ma-bar">
+        <div class="scm-pages ma-levels" id="levels">
+          <button data-level="campaign" class="on">Campaigns</button><button data-level="adset">Ad sets</button><button data-level="ad">Ads</button>
+        </div>
+        <select id="days" class="control">
+          <option value="1">Today</option><option value="3">Last 3 days</option><option value="7" selected>Last 7 days</option>
+          <option value="14">Last 14 days</option><option value="30">Last 30 days</option>
+        </select>
+        <label class="ma-check"><input type="checkbox" id="activeOnly" checked> Running only</label>
+        <div class="scm-searchbox ma-search"><span>⌕</span><input id="q" type="search" placeholder="Search names"></div>
+        <button class="btn btn-sm" id="refresh">Refresh</button>
+      </div>
+      <div class="ma-tiles" id="tiles"></div>
+      <section class="panel">
+        <div class="table-wrap"><table class="table ma-table" id="table"></table></div>
+      </section>
+      <p class="hint">Meta's purchases are Meta's own count (it credits views and clicks up to 7 days). “Pixel” is EcomVital's
+        own pixel (last click), matched by the names in the ads' UTMs, the same as the Tracking desk. Days are the ad account's.</p>
+    </section>
+
+    <section id="managePage" hidden>
+      <section class="panel ma-card">
+        <div class="panel-head"><h2>Claude managing this store</h2><span class="hint" id="mngState"></span></div>
+        <div class="ma-settings">
+          <label class="ma-switch"><input type="checkbox" id="enabled" data-manage-only> <span>Managing on: rules are checked every hour</span></label>
+          <div class="ma-mode"><span class="ma-pill on">Ask me first</span><span class="ma-pill off" title="Coming later">Autopilot · later</span>
+            <span class="hint">Every change waits for your “Do it”.</span></div>
+          <label class="ma-inline">Daily budget cap <input id="cap" class="control" inputmode="decimal" data-manage-only> <span id="capCur"></span></label>
+        </div>
+      </section>
+
+      <section class="panel ma-card">
+        <div class="panel-head"><h2>Waiting for you</h2><span class="hint" id="waitCount"></span></div>
+        <div id="proposals" class="ma-props"></div>
+      </section>
+
+      <div class="ma-grid">
+        <section class="panel ma-card">
+          <div class="panel-head"><h2>Ask Claude</h2><span class="hint">Reads your results, proposes changes and rules</span></div>
+          <div class="ma-chat" id="chat"></div>
+          <form class="ma-ask" id="askForm" data-manage-only>
+            <textarea id="ask" class="control" rows="2" placeholder="e.g. Which ad sets should I pause? / Raise the winners' budgets 20%"></textarea>
+            <button class="btn btn-primary" id="askBtn">Ask</button>
+          </form>
+        </section>
+
+        <section class="panel ma-card">
+          <div class="panel-head"><h2>Rules</h2><span class="hint">Checked every hour while managing is on</span></div>
+          <div id="rules"></div>
+          <details class="ma-add" data-manage-only>
+            <summary>+ Add a rule</summary>
+            <div id="ruleForm"></div>
+          </details>
+        </section>
+      </div>
+
+      <section class="panel ma-card">
+        <div class="panel-head"><h2>Changes</h2><span class="hint">Everything done, rejected or undone</span></div>
+        <div class="table-wrap"><table class="table ma-log" id="log"></table></div>
+      </section>
+    </section>
+  </main>
+</div>
+<div id="toast" class="toast" hidden></div>
+<script src="/static/nav.js"></script>
+<script src="/static/chat.js"></script>
+<script src="/static/metaads.js"></script>
+</body>
+</html>

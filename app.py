@@ -62,6 +62,9 @@ import reports
 import ai_chat
 import ai_data
 import products_desk
+import meta_manage
+import meta_rules
+import meta_brain
 import tasks
 import db
 import demo
@@ -143,6 +146,7 @@ async def lifespan(app):
     asyncio.create_task(_outside_loop())
     asyncio.create_task(_gdesk_loop())
     asyncio.create_task(_ads_loop())
+    asyncio.create_task(_mads_loop())
     asyncio.create_task(_gconv_loop())
     asyncio.create_task(_assist_loop())
     asyncio.create_task(_co_loop())
@@ -216,12 +220,13 @@ _DESK_PATHS = {
     "tracking": ("/tracking", "/api/tracking"),
     "checkout": ("/checkout", "/api/checkout"),
     "tasks": ("/tasks", "/api/tasks"),
+    "metaads": ("/metaads", "/api/metaads"),
 }
 _DESK_HOME = {"profit": "/", "cash": "/cash", "cog": "/cog", "inbox": "/inbox", "reports": "/reports",
              "expenses": "/expenses", "scm": "/scm", "importer": "/importer",
              "sizecharts": "/sizecharts", "disputes": "/disputes",
              "recordings": "/recordings", "googleads": "/googleads",
-             "tracking": "/tracking", "checkout": "/checkout", "tasks": "/tasks"}
+             "tracking": "/tracking", "checkout": "/checkout", "tasks": "/tasks", "metaads": "/metaads"}
 # Shared by every desk's pages: the user's own details and the dropdown lists.
 _EVERYONE = {"/api/me", "/api/me/password", "/api/logout", "/change-password",
              "/api/setup", "/api/chat", "/api/assistant/inbox", "/api/assistant/inbox/read"}
@@ -10870,6 +10875,467 @@ strong{{color:{tone}}}</style>
 <div><p><strong>{message}</strong></p></div>
 <script>if(window.opener){{window.opener.postMessage('profitdesk:connected','*');
 setTimeout(()=>window.close(),1500);}}</script>"""
+
+
+# ---------------------------------------------------------------- Apps → Meta Ads desk (overview + Manage)
+
+MADS_DEFAULTS = {"enabled": False, "mode": "approve", "budget_cap": 300.0}
+_mads_ready = {"ok": False}
+_mads_cache: dict = {}        # (store, kind, ...) -> (time, data)
+MADS_KEEP = 600               # Meta figures are re-read at most every 10 minutes (Refresh forces it)
+_PX_FIELD = {"campaign": "a_campaign", "adset": "a_term", "ad": "a_content"}
+
+
+def _mads_db():
+    if _mads_ready["ok"]:
+        return
+    with db._conn() as con:
+        con.executescript(meta_manage.SCHEMA)
+    _mads_ready["ok"] = True
+
+
+def _mads_settings(store_id: int) -> dict:
+    try:
+        got = json.loads(db.get_setting(f"meta_manage:{store_id}") or "{}")
+    except ValueError:
+        got = {}
+    return {**MADS_DEFAULTS, **got, "mode": "approve"}         # Autopilot isn't offered yet
+
+
+def _mads_store(store_id):
+    st = next((x for x in db.list_stores() if str(x["id"]) == str(store_id)), None)
+    if not st:
+        raise HTTPException(404, "Store not found.")
+    conn = next((c for c in db.list_meta_connections() if c["id"] == st.get("meta_connection_id")), None)
+    if not st.get("meta_account_id") or not conn:
+        raise HTTPException(400, f"{st['name'].strip()} has no Meta ad account connected (Settings → Your stores).")
+    return st, conn
+
+
+def _mads_window(st, days: int):
+    days = max(1, min(int(days or 7), 30))
+    today = _store_today(st)
+    return (today - timedelta(days=days - 1)).isoformat(), today.isoformat(), days
+
+
+async def _mads_cached(key, fresh, make):
+    hit = _mads_cache.get(key)
+    if hit and not fresh and time.time() - hit[0] < MADS_KEEP:
+        return hit[1]
+    data = await make()
+    _mads_cache[key] = (time.time(), data)
+    return data
+
+
+async def _mads_rows(st, conn, level: str, days: int, fresh=False) -> dict:
+    """One level's objects with Meta's figures and EcomVital's pixel figures over the last N days, account currency."""
+    level = level if level in meta_manage.LEVELS else "campaign"
+    since, until, days = _mads_window(st, days)
+    cur = st.get("meta_currency") or st["currency"]
+    token, act = conn["access_token"], st["meta_account_id"]
+    try:
+        s = await _mads_cached((st["id"], "structure"), fresh, lambda: meta_manage.structure(token, act, cur))
+        got = await _mads_cached((st["id"], "insights", level, since, until), fresh,
+                                 lambda: meta_manage.insights(token, act, level, since, until))
+    except meta.MetaAdsError as e:
+        raise HTTPException(400, str(e))
+    # EcomVital's pixel, matched by the names the UTMs carry (as on the Tracking desk), in the account currency
+    tz = _zone(st)
+    a = datetime.combine(date.fromisoformat(since), clock.min, tz).astimezone(timezone.utc).isoformat(timespec="seconds")
+    b = datetime.combine(date.fromisoformat(until) + timedelta(days=1), clock.min, tz).astimezone(timezone.utc).isoformat(timespec="seconds")
+    px = await asyncio.to_thread(tracking.report, st["id"], a, b, _PX_FIELD[level])
+    try:
+        f = fx.factor(await fx.table(cur), st["currency"], cur)
+    except Exception:
+        f = 1.0
+    px_by = {(r["name"] or "").strip().lower(): r for r in px.get("rows") or []}
+    objs = {"campaign": s["campaigns"], "adset": s["adsets"], "ad": s["ads"]}[level]
+    rows = []
+    for o in objs:
+        m = got.get(o["id"], {})
+        p = px_by.get((o["name"] or "").strip().lower(), {})
+        spend = m.get("spend", 0.0)
+        r = {**o, "level": level, **{k: m.get(k, 0) for k in ("spend", "impressions", "clicks", "purchases", "value", "atc")},
+             "px_purchases": p.get("purchase") or 0, "px_value": (p.get("purchase_value") or 0) * f}
+        r["ctr"] = r["clicks"] / r["impressions"] if r["impressions"] else None
+        r["cpc"] = spend / r["clicks"] if spend and r["clicks"] else None
+        r["roas"] = r["value"] / spend if spend else None
+        r["px_roas"] = r["px_value"] / spend if spend else None
+        r["cpa"] = spend / r["purchases"] if spend and r["purchases"] else None
+        rows.append(r)
+    rows.sort(key=lambda r: (r["effective"] != "ACTIVE", -r["spend"], r["name"].lower()))
+    tot = {k: sum(r[k] for r in rows) for k in ("spend", "impressions", "clicks", "purchases", "value", "atc", "px_purchases", "px_value")}
+    tot["roas"] = tot["value"] / tot["spend"] if tot["spend"] else None
+    tot["px_roas"] = tot["px_value"] / tot["spend"] if tot["spend"] else None
+    return {"rows": rows, "total": tot, "since": since, "until": until, "days": days, "currency": cur,
+            "pixel": tracking.health(st["id"]) if hasattr(tracking, "health") else None}
+
+
+@app.get("/metaads", response_class=HTMLResponse)
+def metaads_page():
+    return _page("metaads.html", ("metaads.js", "metaads.css", "nav.js", "styles.css", "skin.css", "chat.js"))
+
+
+@app.get("/api/metaads/stores")
+def api_mads_stores():
+    _mads_db()
+    with db._conn() as con:
+        waiting = dict(con.execute("SELECT store_id, COUNT(DISTINCT batch) FROM mads_actions WHERE status = 'proposed' GROUP BY 1").fetchall())
+    return {"stores": [{"id": x["id"], "name": x["name"].strip(), "account": x.get("meta_account_name") or x["meta_account_id"],
+                        "currency": x.get("meta_currency") or x["currency"], "managing": _mads_settings(x["id"])["enabled"],
+                        "waiting": waiting.get(x["id"], 0)}
+                       for x in db.list_stores() if x.get("meta_account_id") and not demo.is_demo(x)]}
+
+
+@app.get("/api/metaads/overview")
+async def api_mads_overview(store: int, level: str = "campaign", days: int = 7, fresh: int = 0):
+    _mads_db()
+    st, conn = _mads_store(store)
+    return await _mads_rows(st, conn, level, days, bool(fresh))
+
+
+def _mads_log(con, store_id, batch, source, step: dict, status="proposed"):
+    con.execute("INSERT INTO mads_actions (store_id, batch, source, change, level, obj_id, name, to_value, reason, status, created_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (store_id, batch, source, step["change"], step["level"], str(step["id"]), step.get("name") or "",
+                 str(step["to"]), (step.get("reason") or "")[:500], status, datetime.now(timezone.utc).isoformat(timespec="seconds")))
+
+
+def _mads_batch(prefix: str) -> str:
+    return f"{prefix}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{secrets.token_hex(2)}"
+
+
+async def _mads_step(st, conn, a: dict) -> dict:
+    """Check one change with Meta (validate-only), then make it. Returns {before, result}."""
+    token, cur = conn["access_token"], st.get("meta_currency") or st["currency"]
+    before = await meta_manage.read(token, a["obj_id"])
+    name = before.get("name") or a["name"]
+    if a["change"] == "status":
+        to = "ACTIVE" if str(a["to_value"]).upper() in ("ACTIVE", "ON", "ENABLED") else "PAUSED"
+        await meta_manage.set_status(token, a["obj_id"], to, validate=True)
+        await meta_manage.set_status(token, a["obj_id"], to)
+        return {"before": {"status": before.get("status")}, "result": f"{'Switched on' if to == 'ACTIVE' else 'Paused'} {name}"}
+    amount = float(a["to_value"])
+    if not before.get("daily_budget"):
+        raise meta.MetaAdsError(f"{name} has no daily budget of its own (its budget is on the "
+                                f"{'campaign' if a['level'] == 'adset' else 'ad sets'}, or it's a lifetime budget).")
+    cap = _mads_settings(st["id"])["budget_cap"]
+    if cap and amount > cap:
+        raise meta.MetaAdsError(f"{amount:.2f} is above the store's daily budget cap ({cap:g}). Raise the cap in Manage settings.")
+    await meta_manage.set_budget(token, a["obj_id"], amount, cur, validate=True)
+    await meta_manage.set_budget(token, a["obj_id"], amount, cur)
+    was = meta_manage._money(before.get("daily_budget"), cur)
+    return {"before": {"daily_budget": was}, "result": f"Daily budget of {name}: {was:.2f} → {amount:.2f} {cur}"}
+
+
+async def _mads_run_batch(st, conn, batch: str, who: str) -> list:
+    """Carry out a proposal / plan step by step; stops at the first step Meta refuses."""
+    with db._conn() as con:
+        acts = [dict(r) for r in con.execute("SELECT * FROM mads_actions WHERE store_id = ? AND batch = ? AND status = 'proposed'"
+                                             " ORDER BY id", (st["id"], batch))]
+    if not acts:
+        raise HTTPException(400, "Nothing waiting in that proposal (already done or rejected).")
+    done = []
+    now = lambda: datetime.now(timezone.utc).isoformat(timespec="seconds")
+    for i, a in enumerate(acts):
+        try:
+            got = await _mads_step(st, conn, a)
+        except (meta.MetaAdsError, ValueError) as e:
+            with db._conn() as con:
+                con.execute("UPDATE mads_actions SET status = 'failed', error = ?, decided_by = ?, done_at = ? WHERE id = ?",
+                            (str(e)[:600], who, now(), a["id"]))
+                for rest in acts[i + 1:]:
+                    con.execute("UPDATE mads_actions SET status = 'failed', error = 'Not done: an earlier step failed.' WHERE id = ?", (rest["id"],))
+            raise HTTPException(400, f"Step {i + 1} failed: {str(e)[:400]}" + (f" (done before it: {'; '.join(done)})" if done else ""))
+        with db._conn() as con:
+            con.execute("UPDATE mads_actions SET status = 'done', before = ?, summary = ?, decided_by = ?, done_at = ?, error = NULL"
+                        " WHERE id = ?", (json.dumps(got["before"]), got["result"], who, now(), a["id"]))
+        done.append(got["result"])
+    for k in [k for k in _mads_cache if k[0] == st["id"]]:
+        _mads_cache.pop(k, None)
+    return done
+
+
+async def _mads_run_rules(st, conn, only_rule: int = None) -> list:
+    """The store's switched-on rules (or one rule now): what they want becomes one proposal per rule, waiting for Do it.
+    The same change isn't proposed again while one waits, nor within a day of being done or rejected."""
+    _mads_db()
+    with db._conn() as con:
+        rules = [dict(r) for r in con.execute("SELECT * FROM mads_rules WHERE store_id = ?" + (" AND id = ?" if only_rule else " AND enabled = 1"),
+                                              (st["id"], only_rule) if only_rule else (st["id"],))]
+        day_ago = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat(timespec="seconds")
+        recent = {(r["obj_id"], r["change"]) for r in con.execute(
+            "SELECT obj_id, change FROM mads_actions WHERE store_id = ? AND (status = 'proposed' OR"
+            " (status IN ('done', 'rejected') AND COALESCE(done_at, created_at) >= ?))", (st["id"], day_ago))}
+    made = []
+    cap = _mads_settings(st["id"])["budget_cap"]
+    for rule in rules:
+        p = json.loads(rule["params"])
+        data = await _mads_rows(st, conn, p["level"], p["days"], fresh=True)
+        wants = [w for w in meta_rules.evaluate(rule["kind"], p, data["rows"], cap) if (w["id"], w["change"]) not in recent]
+        notes = [f"{w['name']}: {w['reason']}" for w in wants][:20]
+        with db._conn() as con:
+            if wants:
+                batch = _mads_batch(f"rule{rule['id']}")
+                for w in wants:
+                    _mads_log(con, st["id"], batch, f"rule:{rule['id']}", w)
+                    recent.add((w["id"], w["change"]))
+                made.append({"rule": rule["name"], "batch": batch, "changes": len(wants)})
+            con.execute("UPDATE mads_rules SET last_run = ?, last_notes = ? WHERE id = ?",
+                        (datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                         json.dumps(notes or ["Nothing to change."]), rule["id"]))
+    return made
+
+
+async def _mads_loop():
+    """Every hour: each managed store's switched-on Meta rules (proposals wait for Do it)."""
+    await asyncio.sleep(300)
+    while True:
+        for st in db.list_stores():
+            try:
+                if st.get("meta_account_id") and _mads_settings(st["id"])["enabled"]:
+                    st2, conn = _mads_store(st["id"])
+                    await _mads_run_rules(st2, conn)
+            except Exception as e:
+                print(f"Meta rules failed for {st['name']}: {str(getattr(e, 'detail', None) or e)[:300]}", flush=True)
+        await asyncio.sleep(3600)
+
+
+def _mads_rules_of(st) -> list:
+    _mads_db()
+    cur = st.get("meta_currency") or st["currency"]
+    with db._conn() as con:
+        rows = [dict(r) for r in con.execute("SELECT * FROM mads_rules WHERE store_id = ? ORDER BY id", (st["id"],))]
+    for r in rows:
+        r["params"] = json.loads(r["params"])
+        r["last_notes"] = json.loads(r["last_notes"]) if r.get("last_notes") else []
+        r["text"] = meta_rules.describe(r["kind"], r["params"], cur + " ")
+        r["kind_name"] = meta_rules.NAMES.get(r["kind"], r["kind"])
+    return rows
+
+
+def _mads_actions_of(store_id, limit=120) -> list:
+    _mads_db()
+    with db._conn() as con:
+        rows = [dict(r) for r in con.execute("SELECT * FROM mads_actions WHERE store_id = ? ORDER BY id DESC LIMIT ?", (store_id, limit))]
+    for r in rows:
+        r["before"] = json.loads(r["before"]) if r.get("before") else None
+    return rows
+
+
+@app.get("/api/metaads/manage")
+def api_mads_manage(store: int):
+    _mads_db()
+    st, _conn = _mads_store(store)
+    with db._conn() as con:
+        chat = [dict(r) for r in con.execute("SELECT role, content, who, created_at FROM mads_chat WHERE store_id = ? ORDER BY id DESC LIMIT 60",
+                                             (st["id"],))]
+    return {"settings": _mads_settings(st["id"]), "rules": _mads_rules_of(st), "actions": _mads_actions_of(st["id"]),
+            "chat": chat[::-1], "kinds": [{"kind": k, "name": meta_rules.NAMES[k], "defaults": meta_rules.DEFAULTS[k]} for k in meta_rules.KINDS],
+            "currency": st.get("meta_currency") or st["currency"], "ai": bool(db.get_setting("anthropic_api_key"))}
+
+
+@app.put("/api/metaads/settings/{store_id}")
+def api_mads_settings(store_id: int, payload: dict):
+    st, _conn = _mads_store(store_id)
+    cfg = _mads_settings(store_id)
+    if "enabled" in payload:
+        cfg["enabled"] = bool(payload["enabled"])
+    if "budget_cap" in payload:
+        try:
+            cfg["budget_cap"] = max(0.0, float(payload["budget_cap"] or 0))
+        except ValueError:
+            raise HTTPException(400, "The budget cap must be a number.")
+    db.set_setting(f"meta_manage:{store_id}", json.dumps({k: cfg[k] for k in ("enabled", "budget_cap")}))
+    return {"ok": True, "settings": _mads_settings(store_id)}
+
+
+@app.post("/api/metaads/rules/{store_id}")
+def api_mads_rule_add(store_id: int, payload: dict, request: Request):
+    _mads_db()
+    st, _conn = _mads_store(store_id)
+    kind = payload.get("kind")
+    try:
+        p = meta_rules.clean(kind, payload.get("params") or {})
+    except (ValueError, TypeError) as e:
+        raise HTTPException(400, str(e))
+    name = str(payload.get("name") or meta_rules.NAMES[kind]).strip()[:120]
+    with db._conn() as con:
+        rid = con.execute("INSERT INTO mads_rules (store_id, name, kind, params, enabled, created_at, created_by) VALUES (?,?,?,?,0,?,?)",
+                          (st["id"], name, kind, json.dumps(p), datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                           (request.state.user or {}).get("email", ""))).lastrowid
+    return {"ok": True, "id": rid}
+
+
+@app.put("/api/metaads/rule/{rule_id}")
+def api_mads_rule_edit(rule_id: int, payload: dict):
+    _mads_db()
+    with db._conn() as con:
+        r = con.execute("SELECT * FROM mads_rules WHERE id = ?", (rule_id,)).fetchone()
+        if not r:
+            raise HTTPException(404, "Rule not found.")
+        if "params" in payload:
+            try:
+                p = meta_rules.clean(r["kind"], {**json.loads(r["params"]), **(payload["params"] or {})})
+            except (ValueError, TypeError) as e:
+                raise HTTPException(400, str(e))
+            con.execute("UPDATE mads_rules SET params = ? WHERE id = ?", (json.dumps(p), rule_id))
+        if "name" in payload and str(payload["name"]).strip():
+            con.execute("UPDATE mads_rules SET name = ? WHERE id = ?", (str(payload["name"]).strip()[:120], rule_id))
+        if "enabled" in payload:
+            con.execute("UPDATE mads_rules SET enabled = ? WHERE id = ?", (1 if payload["enabled"] else 0, rule_id))
+    return {"ok": True}
+
+
+@app.delete("/api/metaads/rule/{rule_id}")
+def api_mads_rule_delete(rule_id: int):
+    _mads_db()
+    with db._conn() as con:
+        con.execute("DELETE FROM mads_rules WHERE id = ?", (rule_id,))
+    return {"ok": True}
+
+
+@app.post("/api/metaads/rule/{rule_id}/run")
+async def api_mads_rule_run(rule_id: int):
+    """Check one rule now (even switched off): anything it wants waits as a proposal."""
+    _mads_db()
+    with db._conn() as con:
+        r = con.execute("SELECT store_id FROM mads_rules WHERE id = ?", (rule_id,)).fetchone()
+    if not r:
+        raise HTTPException(404, "Rule not found.")
+    st, conn = _mads_store(r["store_id"])
+    made = await _mads_run_rules(st, conn, only_rule=rule_id)
+    return {"ok": True, "made": made}
+
+
+@app.post("/api/metaads/batch/{store_id}/{batch}/{what}")
+async def api_mads_batch(store_id: int, batch: str, what: str, request: Request):
+    """Do it (carry out a waiting proposal / plan) or Reject it."""
+    _mads_db()
+    st, conn = _mads_store(store_id)
+    who = (request.state.user or {}).get("email", "")
+    if what == "reject":
+        with db._conn() as con:
+            con.execute("UPDATE mads_actions SET status = 'rejected', decided_by = ?, done_at = ? WHERE store_id = ? AND batch = ?"
+                        " AND status = 'proposed'", (who, datetime.now(timezone.utc).isoformat(timespec="seconds"), st["id"], batch))
+        return {"ok": True}
+    if what != "do":
+        raise HTTPException(404, "Unknown action.")
+    done = await _mads_run_batch(st, conn, batch, who)
+    return {"ok": True, "done": done}
+
+
+@app.post("/api/metaads/action/{action_id}/undo")
+async def api_mads_undo(action_id: int, request: Request):
+    """Put one done change back as it was (a new logged change, so it can be undone too)."""
+    _mads_db()
+    with db._conn() as con:
+        a = con.execute("SELECT * FROM mads_actions WHERE id = ?", (action_id,)).fetchone()
+    if not a or a["status"] != "done" or not a["before"]:
+        raise HTTPException(400, "Only a done change can be undone.")
+    a = dict(a)
+    st, conn = _mads_store(a["store_id"])
+    before = json.loads(a["before"])
+    step = {"change": a["change"], "level": a["level"], "id": a["obj_id"], "name": a["name"], "reason": f"Undo of change #{action_id}",
+            "to": before.get("status") if a["change"] == "status" else before.get("daily_budget")}
+    if step["to"] in (None, ""):
+        raise HTTPException(400, "Nothing saved to put back.")
+    batch = _mads_batch("undo")
+    with db._conn() as con:
+        _mads_log(con, st["id"], batch, f"undo:{action_id}", step)
+    done = await _mads_run_batch(st, conn, batch, (request.state.user or {}).get("email", ""))
+    with db._conn() as con:
+        con.execute("UPDATE mads_actions SET status = 'undone' WHERE id = ?", (action_id,))
+    return {"ok": True, "done": done}
+
+
+@app.post("/api/metaads/quick/{store_id}")
+async def api_mads_quick(store_id: int, payload: dict, request: Request):
+    """A change made by hand on the Overview (pause / switch on / budget): logged like any other, so Undo works."""
+    _mads_db()
+    st, conn = _mads_store(store_id)
+    if payload.get("change") not in ("status", "budget") or payload.get("level") not in meta_manage.LEVELS or not payload.get("id"):
+        raise HTTPException(400, "Pick what to change.")
+    step = {"change": payload["change"], "level": payload["level"], "id": str(payload["id"]), "name": payload.get("name") or "",
+            "to": payload.get("to"), "reason": "Changed by hand on the Overview"}
+    batch = _mads_batch("manual")
+    with db._conn() as con:
+        _mads_log(con, st["id"], batch, "manual", step)
+    done = await _mads_run_batch(st, conn, batch, (request.state.user or {}).get("email", ""))
+    return {"ok": True, "done": done}
+
+
+async def _mads_tool(st, conn, name: str, args: dict, who: str):
+    """The Meta ads AI's tools (meta_brain.TOOLS)."""
+    cur = st.get("meta_currency") or st["currency"]
+    if name == "get_results":
+        data = await _mads_rows(st, conn, args.get("level") or "campaign", args.get("days") or 7)
+        keep = ("id", "name", "campaign", "adset", "status", "effective", "daily_budget", "lifetime_budget", "spend", "impressions",
+                "clicks", "ctr", "cpc", "purchases", "value", "roas", "atc", "cpa", "px_purchases", "px_value", "px_roas")
+        rows = [{k: (round(v, 4) if isinstance(v, float) else v) for k, v in r.items() if k in keep}
+                for r in data["rows"] if not args.get("only_active") or r["effective"] == "ACTIVE"]
+        return {"since": data["since"], "until": data["until"], "currency": cur, "rows": rows[:150], "total": data["total"]}
+    if name == "propose_plan":
+        steps = args.get("steps") or []
+        if not steps:
+            raise HTTPException(400, "A plan needs at least one step.")
+        known = {}
+        for lv in meta_manage.LEVELS:
+            for r in (await _mads_rows(st, conn, lv, 7))["rows"]:
+                known[r["id"]] = r
+        clean = []
+        for s in steps[:40]:
+            r = known.get(str(s.get("id")))
+            if not r or s.get("change") not in ("status", "budget"):
+                raise HTTPException(400, f"Unknown id {s.get('id')}: use ids from get_results.")
+            if s["change"] == "budget":
+                float(s["to"])
+            clean.append({**s, "id": str(s["id"]), "level": r["level"], "name": r["name"]})
+        batch = _mads_batch("ai")
+        with db._conn() as con:
+            for s in clean:
+                _mads_log(con, st["id"], batch, "ai", s)
+        return {"ok": True, "batch": batch, "steps": len(clean), "note": "Waiting for the person's Do it on the Manage tab."}
+    if name == "save_rule":
+        p = meta_rules.clean(args.get("kind"), args.get("params") or {})
+        with db._conn() as con:
+            rid = con.execute("INSERT INTO mads_rules (store_id, name, kind, params, enabled, created_at, created_by) VALUES (?,?,?,?,0,?,?)",
+                              (st["id"], str(args.get("name") or meta_rules.NAMES[args["kind"]])[:120], args["kind"], json.dumps(p),
+                               datetime.now(timezone.utc).isoformat(timespec="seconds"), f"ads AI for {who}")).lastrowid
+        return {"ok": True, "id": rid, "text": meta_rules.describe(args["kind"], p, cur + " "), "note": "Saved OFF: the person turns it on."}
+    if name == "list_rules":
+        return {"rules": [{k: r[k] for k in ("id", "name", "kind", "enabled", "text", "last_run", "last_notes")} for r in _mads_rules_of(st)]}
+    if name == "recent_changes":
+        return {"changes": [{k: a[k] for k in ("id", "batch", "source", "change", "name", "to_value", "reason", "status", "summary", "error", "created_at")}
+                            for a in _mads_actions_of(st["id"], 40)]}
+    raise HTTPException(400, f"Unknown tool {name}.")
+
+
+@app.post("/api/metaads/chat/{store_id}")
+async def api_mads_chat(store_id: int, payload: dict, request: Request):
+    _mads_db()
+    st, conn = _mads_store(store_id)
+    text = str(payload.get("text") or "").strip()
+    if not text:
+        raise HTTPException(400, "Write something first.")
+    key = db.get_setting("anthropic_api_key")
+    if not key:
+        raise HTTPException(400, "Add the AI key first (Settings → AI).")
+    who = (request.state.user or {}).get("email", "")
+    now = lambda: datetime.now(timezone.utc).isoformat(timespec="seconds")
+    with db._conn() as con:
+        con.execute("INSERT INTO mads_chat (store_id, role, content, who, created_at) VALUES (?, 'user', ?, ?, ?)", (st["id"], text, who, now()))
+        hist = [dict(r) for r in con.execute("SELECT role, content FROM mads_chat WHERE store_id = ? ORDER BY id DESC LIMIT 16", (st["id"],))][::-1]
+    ctx = {"store": st["name"].strip(), "today": _store_today(st).isoformat(), "currency": st.get("meta_currency") or st["currency"],
+           "settings": _mads_settings(st["id"])}
+    try:
+        out = await meta_brain.reply(key, hist, lambda n, a: _mads_tool(st, conn, n, a, who), ctx)
+    except meta_brain.BrainError as e:
+        raise HTTPException(400, str(e))
+    with db._conn() as con:
+        con.execute("INSERT INTO mads_chat (store_id, role, content, who, created_at) VALUES (?, 'assistant', ?, 'ads AI', ?)",
+                    (st["id"], out["text"], now()))
+    return {"text": out["text"]}
 
 
 # ---------------------------------------------------------------- Tasks desk
