@@ -62,6 +62,8 @@ import reports
 import ai_chat
 import ai_data
 import products_desk
+import agent
+import slack_client
 import meta_manage
 import meta_rules
 import meta_brain
@@ -194,7 +196,7 @@ _cache: dict[tuple, tuple[float, dict]] = {}
 
 # Reachable without logging in: the login page itself and what it needs.
 _OPEN = {"/login", "/api/login", "/api/logout", "/api/first-user", "/api/first-restore",
-         "/api/scm/webhook", "/api/whatsapp/webhook",
+         "/api/scm/webhook", "/api/whatsapp/webhook", "/api/slack/events",
          "/healthz", "/about", "/privacy", "/terms", "/api/interest",
          "/.well-known/apple-developer-merchantid-domain-association"}
 
@@ -222,17 +224,18 @@ _DESK_PATHS = {
     "checkout": ("/checkout", "/api/checkout"),
     "tasks": ("/tasks", "/api/tasks"),
     "metaads": ("/metaads", "/api/metaads"),
+    "agent": ("/agent", "/api/agent"),
 }
 _DESK_HOME = {"profit": "/", "cash": "/cash", "cog": "/cog", "inbox": "/inbox", "reports": "/reports",
              "expenses": "/expenses", "scm": "/scm", "importer": "/importer",
              "sizecharts": "/sizecharts", "disputes": "/disputes",
              "recordings": "/recordings", "googleads": "/googleads",
-             "tracking": "/tracking", "checkout": "/checkout", "tasks": "/tasks", "metaads": "/metaads"}
+             "tracking": "/tracking", "checkout": "/checkout", "tasks": "/tasks", "metaads": "/metaads", "agent": "/agent"}
 # Shared by every desk's pages: the user's own details and the dropdown lists.
 _EVERYONE = {"/api/me", "/api/me/password", "/api/logout", "/change-password",
              "/api/setup", "/api/chat", "/api/assistant/inbox", "/api/assistant/inbox/read"}
 # What "read & write" people may change (owners may change anything).
-_WRITE_OK = ("/api/googleads/tags", "/api/cog/pdesk", "/api/invoices", "/api/suppliers/payee", "/api/disputes", "/api/cog/sync", "/api/inbox", "/api/expenses", "/api/scm", "/api/importer", "/api/sizecharts", "/api/tasks")
+_WRITE_OK = ("/api/googleads/tags", "/api/cog/pdesk", "/api/invoices", "/api/suppliers/payee", "/api/disputes", "/api/cog/sync", "/api/inbox", "/api/expenses", "/api/scm", "/api/importer", "/api/sizecharts", "/api/tasks", "/api/agent/advice", "/api/agent/questions")
 # What anyone with the desk may do, read-only people included (it changes nothing).
 _ANY_OK = ("/api/reports",)
 
@@ -907,6 +910,12 @@ def api_invoice_archive(start: str = "", end: str = "", store: str = "", supplie
 async def api_invoice_upload(request: Request, filename: str = "invoice"):
     """Upload one supplier invoice (PDF, Excel, or text/CSV with one line per item)."""
     data = await request.body()
+    return await _ingest_invoice(data, filename, (getattr(request.state, "user", None) or {}).get("email", ""))
+
+
+async def _ingest_invoice(data: bytes, filename: str, user: str) -> dict:
+    """Read, match and keep one supplier invoice; costs of matched orders become the invoiced ones (estimates replaced),
+    and the AI reads it again in the background. Used by the upload button and by the agent (Slack invoices)."""
     if not data:
         raise HTTPException(400, "That file is empty.")
     if len(data) > 15 * 1024 * 1024:
@@ -953,7 +962,6 @@ async def api_invoice_upload(request: Request, filename: str = "invoice"):
                         "sum": inv["total"], "counts": {}, "missing": 0}
             raise HTTPException(400, f"Invoice {inv['number']} from {inv['supplier']} is already uploaded.")
     checked, sids, queried = await _check_invoice(inv)
-    user = (getattr(request.state, "user", None) or {}).get("email", "")
     iid = db.save_invoice(inv, checked, filename[:120], user)
     _save_invoice_file(iid, data, filename)
     if ai_state:
@@ -11479,6 +11487,437 @@ async def api_mads_chat(store_id: int, payload: dict, request: Request):
         con.execute("INSERT INTO mads_chat (store_id, role, content, who, created_at) VALUES (?, 'assistant', ?, 'ads AI', ?)",
                     (st["id"], out["text"], now()))
     return {"text": out["text"]}
+
+
+# ---------------------------------------------------------------- Apps → Agent (ops agent: Slack, invoices, job log)
+
+_agent_ready = {"ok": False}
+AGENT_DAYS = 90                    # free Slack keeps 90 days; that's as far back as the agent can read
+
+
+def _agent_db():
+    if _agent_ready["ok"]:
+        return
+    with db._conn() as con:
+        con.executescript(agent.SCHEMA)
+    _agent_ready["ok"] = True
+
+
+def _slack_token() -> str:
+    t = db.get_setting("slack_bot_token")
+    if not t:
+        raise HTTPException(400, "Slack isn't connected yet (Agent → Slack).")
+    return t
+
+
+def _agent_who(request: Request) -> str:
+    return ((getattr(request.state, "user", None) or {}).get("email") or "")
+
+
+async def _agent_sync_slack(token: str) -> dict:
+    """Refresh the channels the agent is in, and the people (for names in the log)."""
+    _agent_db()
+    chans = await slack_client.channels(token)
+    people = await slack_client.users(token)
+    with db._conn() as con:
+        for u in people:
+            con.execute("INSERT OR REPLACE INTO slack_users (id, name, real_name, is_bot, team) VALUES (?,?,?,?,?)",
+                        (u["id"], u.get("name"), (u.get("profile") or {}).get("real_name") or u.get("real_name"),
+                         1 if u.get("is_bot") else 0, u.get("team_id")))
+        for c in chans:
+            role, supplier = agent.guess(c.get("name"))
+            con.execute("INSERT INTO slack_channels (id, name, private, role, supplier, members) VALUES (?,?,?,?,?,?)"
+                        " ON CONFLICT(id) DO UPDATE SET name = excluded.name, private = excluded.private, members = excluded.members",
+                        (c["id"], c.get("name"), 1 if c.get("is_private") else 0, role, supplier, c.get("num_members")))
+    return {"channels": len(chans), "people": len(people)}
+
+
+def _slack_names() -> dict:
+    with db._conn() as con:
+        return {r["id"]: r["real_name"] or r["name"] for r in con.execute("SELECT * FROM slack_users")}
+
+
+def _agent_save_msg(con, channel: str, m: dict):
+    files = [{"id": f.get("id"), "name": f.get("name") or f.get("title"), "mimetype": f.get("mimetype"),
+              "size": f.get("size"), "url": f.get("url_private_download") or f.get("url_private")}
+             for f in m.get("files") or [] if f.get("id")]
+    con.execute("INSERT OR REPLACE INTO slack_messages (channel, ts, thread_ts, user, text, files, subtype, at) VALUES (?,?,?,?,?,?,?,?)",
+                (channel, m["ts"], m.get("thread_ts"), m.get("user") or m.get("bot_id"), m.get("text") or "",
+                 json.dumps(files) if files else None, m.get("subtype"), agent.ts_iso(m["ts"])))
+
+
+def _agent_invoice_file(f: dict) -> bool:
+    name = (f.get("name") or "").lower()
+    return name.endswith(agent.INVOICE_EXT) or (f.get("mimetype") or "") in (
+        "application/pdf", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.ms-excel", "text/csv")
+
+
+async def _agent_file_invoices(job_id: int, ch: dict, items: list):
+    """File each supplier-invoice file (once): download from Slack, read with the normal invoice reader, match to orders.
+    items: [(message dict, file dict)]."""
+    token = _slack_token()
+    names = _slack_names()
+    filed = skipped = failed = 0
+    for m, f in items:
+        with db._conn() as con:
+            if con.execute("SELECT 1 FROM agent_files WHERE file_id = ?", (f["id"],)).fetchone():
+                continue
+        when_ = agent.ts_iso(m["ts"])[:10]
+        who = names.get(m.get("user"), m.get("user") or "someone")
+        agent.step(job_id, "read", f"Found {f['name']}", f"Posted by {who} in #{ch['name']} on {when_}"
+                   + (f": “{(m.get('text') or '')[:200]}”" if m.get("text") else ""), {"file": f["id"], "ts": m["ts"]})
+        outcome, invoice_id = "", None
+        try:
+            data = await slack_client.download(token, f["url"])
+            r = await _ingest_invoice(data, f["name"] or "invoice", f"agent (Slack #{ch['name']})")
+            invoice_id = r.get("id")
+            if r.get("attached"):
+                outcome = f"Already in the app (invoice {r.get('number') or '?'}): kept this file with it"
+                agent.step(job_id, "skip", outcome)
+                skipped += 1
+            else:
+                counts = ", ".join(f"{v} {k}" for k, v in (r.get("counts") or {}).items() if v)
+                outcome = (f"Filed invoice {r.get('number') or '(no number)'} from {r.get('supplier') or '?'}: "
+                           f"{r.get('lines')} lines, total {r.get('total')}")
+                agent.step(job_id, "act", outcome,
+                           (f"Matched: {counts}. " if counts else "") +
+                           (f"{r['missing']} order(s) expected on it weren't. " if r.get("missing") else "") +
+                           "Matched orders now cost what was invoiced (estimates replaced); the AI reads it again to "
+                           "double-check, and holds it for a person if it disagrees.", {"invoice_id": invoice_id})
+                filed += 1
+        except HTTPException as e:
+            msg = str(e.detail)
+            if "already uploaded" in msg:
+                outcome = msg
+                agent.step(job_id, "skip", "Already in the app", msg)
+                skipped += 1
+            else:
+                outcome = f"Couldn't file it: {msg}"
+                agent.step(job_id, "error", "Couldn't read it as an invoice", msg)
+                agent.ask("invoices", f"I couldn't read “{f['name']}” from #{ch['name']} ({when_}) as an invoice. "
+                          "Is it one? If yes, what's different about it (layout, supplier, currency)?", msg, job_id)
+                failed += 1
+        except slack_client.SlackError as e:
+            outcome = f"Slack: {e}"
+            agent.step(job_id, "error", "Couldn't download it from Slack", str(e))
+            failed += 1
+        with db._conn() as con:
+            con.execute("INSERT OR REPLACE INTO agent_files (file_id, channel, ts, name, job_id, invoice_id, outcome, at)"
+                        " VALUES (?,?,?,?,?,?,?,?)", (f["id"], ch["id"], m["ts"], f["name"], job_id, invoice_id, outcome, agent.now()))
+    return filed, skipped, failed
+
+
+async def _agent_read_channel(job_id: int, ch: dict, file_invoices: bool = True):
+    """Copy a channel's last 90 days (and threads) into EcomVital, then file any supplier invoices in it."""
+    token = _slack_token()
+    try:
+        oldest = (datetime.now(timezone.utc) - timedelta(days=AGENT_DAYS)).timestamp()
+        if ch.get("read_to"):
+            oldest = max(oldest, float(ch["read_to"]))
+        msgs = await slack_client.history(token, ch["id"], f"{oldest:.6f}")
+        threads = [m for m in msgs if m.get("reply_count")]
+        for m in threads:
+            msgs += [dict(r, thread_ts=m["ts"]) for r in await slack_client.replies(token, ch["id"], m["ts"])]
+        with db._conn() as con:
+            for m in msgs:
+                if m.get("ts"):
+                    _agent_save_msg(con, ch["id"], m)
+            newest = max([float(m["ts"]) for m in msgs if m.get("ts")] + [float(ch.get("read_to") or 0)])
+            con.execute("UPDATE slack_channels SET read_to = ?, read_at = ? WHERE id = ?",
+                        (f"{newest:.6f}" if newest else ch.get("read_to"), agent.now(), ch["id"]))
+        files = [(m, f) for m in msgs for f in [{"id": x.get("id"), "name": x.get("name") or x.get("title"), "mimetype": x.get("mimetype"),
+                                                  "url": x.get("url_private_download") or x.get("url_private")} for x in m.get("files") or []]
+                 if f.get("id")]
+        agent.step(job_id, "read", f"Read {len(msgs)} messages from #{ch['name']}",
+                   f"Since {agent.ts_iso(oldest)[:10]}, including {len(threads)} thread(s); {len(files)} file(s) attached. "
+                   "Kept in EcomVital (free Slack forgets after 90 days).")
+        if file_invoices and ch.get("role") == "supplier_invoice":
+            inv = sorted([x for x in files if _agent_invoice_file(x[1])], key=lambda x: float(x[0]["ts"]))
+            agent.step(job_id, "think", f"{len(inv)} of them look like invoices (PDF / Excel / CSV)",
+                       "Each is read once with the same reader as COG → Invoices.")
+            filed, skipped, failed = await _agent_file_invoices(job_id, ch, inv)
+            agent.finish(job_id, "done", f"{len(msgs)} messages read · {filed} invoice(s) filed, {skipped} already in, {failed} couldn't be read")
+        else:
+            agent.finish(job_id, "done", f"{len(msgs)} messages read")
+    except Exception as e:
+        agent.step(job_id, "error", "Stopped", str(getattr(e, "detail", None) or e)[:600])
+        agent.finish(job_id, "failed", str(getattr(e, "detail", None) or e)[:300])
+
+
+def _agent_channel(cid: str) -> dict:
+    _agent_db()
+    with db._conn() as con:
+        r = con.execute("SELECT * FROM slack_channels WHERE id = ?", (cid,)).fetchone()
+    if not r:
+        raise HTTPException(404, "Channel not found: press Refresh channels.")
+    return dict(r)
+
+
+@app.get("/agent", response_class=HTMLResponse)
+def agent_page():
+    return _page("agent.html", ("agent.js", "agent.css", "nav.js", "styles.css", "skin.css", "chat.js"))
+
+
+@app.get("/api/agent/status")
+def api_agent_status(request: Request):
+    _agent_db()
+    team = json.loads(db.get_setting("slack_team") or "{}")
+    with db._conn() as con:
+        chans = [dict(r) for r in con.execute("SELECT * FROM slack_channels ORDER BY role, name")]
+        counts = dict(con.execute("SELECT channel, COUNT(*) FROM slack_messages GROUP BY channel").fetchall())
+        filed = dict(con.execute("SELECT channel, COUNT(*) FROM agent_files WHERE invoice_id IS NOT NULL GROUP BY channel").fetchall())
+        open_q = con.execute("SELECT COUNT(*) FROM agent_questions WHERE answer IS NULL").fetchone()[0]
+        running = con.execute("SELECT COUNT(*) FROM agent_jobs WHERE status = 'running'").fetchone()[0]
+    for c in chans:
+        c["messages"], c["invoices"] = counts.get(c["id"], 0), filed.get(c["id"], 0)
+        c["role_name"] = agent.ROLES.get(c["role"], c["role"])
+    owner = (request.state.user or {}).get("role", "owner") == "owner"
+    return {"connected": bool(db.get_setting("slack_bot_token")), "team": team, "channels": chans, "roles": agent.ROLES,
+            "areas": agent.AREAS, "open_questions": open_q, "running": running, "days": AGENT_DAYS,
+            "manifest": slack_client.manifest(BASE_URL) if owner else None, "owner": owner}
+
+
+@app.post("/api/agent/slack/connect")
+async def api_agent_connect(payload: dict, request: Request):
+    """Owner: paste the Slack app's bot token and signing secret."""
+    if (request.state.user or {}).get("role", "owner") != "owner":
+        raise HTTPException(403, "Only an owner can connect Slack.")
+    token = str(payload.get("token") or "").strip()
+    secret = str(payload.get("secret") or "").strip()
+    if not token.startswith("xoxb-"):
+        raise HTTPException(400, "Paste the Bot User OAuth Token: it starts with xoxb-.")
+    if not re.fullmatch(r"[0-9a-f]{32}", secret):
+        raise HTTPException(400, "Paste the Signing Secret (Basic Information → App Credentials): 32 letters and numbers.")
+    try:
+        me = await slack_client.whoami(token)
+    except slack_client.SlackError as e:
+        raise HTTPException(400, str(e))
+    db.set_setting("slack_bot_token", token)
+    db.set_setting("slack_signing_secret", secret)
+    db.set_setting("slack_team", json.dumps(me))
+    got = await _agent_sync_slack(token)
+    return {"ok": True, "team": me, **got}
+
+
+@app.post("/api/agent/slack/sync")
+async def api_agent_sync():
+    try:
+        return {"ok": True, **(await _agent_sync_slack(_slack_token()))}
+    except slack_client.SlackError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.put("/api/agent/channel/{cid}")
+def api_agent_channel(cid: str, payload: dict):
+    ch = _agent_channel(cid)
+    role = payload.get("role") if payload.get("role") in agent.ROLES else ch["role"]
+    supplier = str(payload.get("supplier") if "supplier" in payload else ch["supplier"] or "").strip()[:60]
+    with db._conn() as con:
+        con.execute("UPDATE slack_channels SET role = ?, supplier = ? WHERE id = ?", (role, supplier, cid))
+    return {"ok": True}
+
+
+@app.post("/api/agent/channel/{cid}/read")
+def api_agent_read(cid: str, request: Request):
+    """Read a channel's last 90 days (and file its invoices if it's a supplier-invoice channel), in the background."""
+    _slack_token()
+    ch = _agent_channel(cid)
+    jid = agent.start("history", f"Read #{ch['name']}" + (" and file its invoices" if ch["role"] == "supplier_invoice" else ""),
+                      agent.ROLE_AREA.get(ch["role"], "general"), {"channel": cid, "by": _agent_who(request)})
+    asyncio.create_task(_agent_read_channel(jid, ch))
+    return {"ok": True, "job": jid}
+
+
+@app.post("/api/agent/read-all")
+def api_agent_read_all(request: Request):
+    """Every channel the agent is in: 90 days of messages, and every supplier invoice filed."""
+    _slack_token()
+    _agent_db()
+    with db._conn() as con:
+        chans = [dict(r) for r in con.execute("SELECT * FROM slack_channels ORDER BY CASE role WHEN 'supplier_invoice' THEN 0 ELSE 1 END, name")]
+    if not chans:
+        raise HTTPException(400, "The agent isn't in any channel yet: /invite @EcomVital Agent in each, then Refresh channels.")
+
+    async def run():
+        for ch in chans:
+            jid = agent.start("history", f"Read #{ch['name']}" + (" and file its invoices" if ch["role"] == "supplier_invoice" else ""),
+                              agent.ROLE_AREA.get(ch["role"], "general"), {"channel": ch["id"], "by": _agent_who(request)})
+            await _agent_read_channel(jid, ch)
+    asyncio.create_task(run())
+    return {"ok": True, "channels": len(chans)}
+
+
+@app.get("/api/agent/jobs")
+def api_agent_jobs(status: str = "", area: str = "", q: str = "", limit: int = 100):
+    _agent_db()
+    where, args = [], []
+    if status:
+        where.append("status = ?")
+        args.append(status)
+    if area:
+        where.append("area = ?")
+        args.append(area)
+    if q.strip():
+        where.append("(title LIKE ? OR summary LIKE ?)")
+        args += [f"%{q.strip()}%"] * 2
+    with db._conn() as con:
+        rows = [dict(r) for r in con.execute("SELECT j.*, (SELECT COUNT(*) FROM agent_steps s WHERE s.job_id = j.id) steps,"
+                                             " (SELECT COUNT(*) FROM agent_advice a WHERE a.job_id = j.id) advice FROM agent_jobs j"
+                                             + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY updated_at DESC LIMIT ?",
+                                             (*args, max(1, min(limit, 500))))]
+    return {"jobs": rows}
+
+
+@app.get("/api/agent/jobs/{job_id}")
+def api_agent_job(job_id: int):
+    _agent_db()
+    with db._conn() as con:
+        j = con.execute("SELECT * FROM agent_jobs WHERE id = ?", (job_id,)).fetchone()
+        if not j:
+            raise HTTPException(404, "Job not found.")
+        steps = [dict(r) for r in con.execute("SELECT * FROM agent_steps WHERE job_id = ? ORDER BY id", (job_id,))]
+        advice = [dict(r) for r in con.execute("SELECT * FROM agent_advice WHERE job_id = ? ORDER BY id", (job_id,))]
+        qs = [dict(r) for r in con.execute("SELECT * FROM agent_questions WHERE job_id = ? ORDER BY id", (job_id,))]
+    for s in steps:
+        s["data"] = json.loads(s["data"]) if s.get("data") else None
+    return {"job": {**dict(j), "source": json.loads(j["source"] or "{}")}, "steps": steps, "advice": advice, "questions": qs}
+
+
+@app.post("/api/agent/advice")
+def api_agent_advice(payload: dict, request: Request):
+    """Advice on a job / step. Kept as a lesson the agent reads before similar work (unless lesson is false)."""
+    _agent_db()
+    text = str(payload.get("text") or "").strip()
+    if not text:
+        raise HTTPException(400, "Write the advice first.")
+    who = _agent_who(request)
+    with db._conn() as con:
+        j = con.execute("SELECT area FROM agent_jobs WHERE id = ?", (payload.get("job_id"),)).fetchone()
+        if not j:
+            raise HTTPException(404, "Job not found.")
+        aid = con.execute("INSERT INTO agent_advice (job_id, step_id, by, at, text) VALUES (?,?,?,?,?)",
+                          (payload["job_id"], payload.get("step_id"), who, agent.now(), text[:2000])).lastrowid
+        lid = None
+        if payload.get("lesson", True):
+            area = payload.get("area") if payload.get("area") in agent.AREAS else (j["area"] or "general")
+            lid = con.execute("INSERT INTO agent_lessons (area, text, source, created_by, created_at) VALUES (?,?,?,?,?)",
+                              (area, text[:2000], f"advice:{aid}", who, agent.now())).lastrowid
+            con.execute("UPDATE agent_advice SET lesson_id = ? WHERE id = ?", (lid, aid))
+    return {"ok": True, "advice": aid, "lesson": lid}
+
+
+@app.get("/api/agent/lessons")
+def api_agent_lessons():
+    _agent_db()
+    with db._conn() as con:
+        return {"lessons": [dict(r) for r in con.execute("SELECT * FROM agent_lessons ORDER BY active DESC, id DESC")]}
+
+
+@app.post("/api/agent/lessons")
+def api_agent_lesson_add(payload: dict, request: Request):
+    _agent_db()
+    text = str(payload.get("text") or "").strip()
+    if not text:
+        raise HTTPException(400, "Write the lesson first.")
+    area = payload.get("area") if payload.get("area") in agent.AREAS else "general"
+    with db._conn() as con:
+        lid = con.execute("INSERT INTO agent_lessons (area, text, source, created_by, created_at) VALUES (?,?,?,?,?)",
+                          (area, text[:2000], "manual", _agent_who(request), agent.now())).lastrowid
+    return {"ok": True, "id": lid}
+
+
+@app.put("/api/agent/lessons/{lid}")
+def api_agent_lesson_edit(lid: int, payload: dict):
+    _agent_db()
+    with db._conn() as con:
+        if "text" in payload and str(payload["text"]).strip():
+            con.execute("UPDATE agent_lessons SET text = ? WHERE id = ?", (str(payload["text"]).strip()[:2000], lid))
+        if "active" in payload:
+            con.execute("UPDATE agent_lessons SET active = ? WHERE id = ?", (1 if payload["active"] else 0, lid))
+        if payload.get("area") in agent.AREAS:
+            con.execute("UPDATE agent_lessons SET area = ? WHERE id = ?", (payload["area"], lid))
+    return {"ok": True}
+
+
+@app.get("/api/agent/questions")
+def api_agent_questions(open_only: int = 1):
+    _agent_db()
+    with db._conn() as con:
+        return {"questions": [dict(r) for r in con.execute("SELECT * FROM agent_questions" + (" WHERE answer IS NULL" if open_only else "")
+                                                           + " ORDER BY id DESC LIMIT 200")]}
+
+
+@app.post("/api/agent/questions/{qid}")
+def api_agent_answer(qid: int, payload: dict, request: Request):
+    """Answer the agent's question; the answer becomes a lesson."""
+    _agent_db()
+    text = str(payload.get("answer") or "").strip()
+    if not text:
+        raise HTTPException(400, "Write the answer first.")
+    who = _agent_who(request)
+    with db._conn() as con:
+        q = con.execute("SELECT * FROM agent_questions WHERE id = ?", (qid,)).fetchone()
+        if not q:
+            raise HTTPException(404, "Question not found.")
+        con.execute("UPDATE agent_questions SET answer = ?, answered_by = ?, answered_at = ? WHERE id = ?", (text[:3000], who, agent.now(), qid))
+        con.execute("INSERT INTO agent_lessons (area, text, source, created_by, created_at) VALUES (?,?,?,?,?)",
+                    (q["area"], f"Q: {q['question']}\nA: {text}"[:3000], f"answer:{qid}", who, agent.now()))
+    return {"ok": True}
+
+
+async def _slack_event(ev: dict):
+    """A Slack message as it happens: kept; a file in a supplier-invoice channel is filed as an invoice."""
+    _agent_db()
+    if ev.get("type") != "message" or not ev.get("channel"):
+        return
+    m = ev.get("message") if ev.get("subtype") == "message_changed" else ev
+    if not m or not m.get("ts") or ev.get("subtype") in ("message_deleted", "channel_join", "channel_leave"):
+        return
+    with db._conn() as con:
+        _agent_save_msg(con, ev["channel"], m)
+        ch = con.execute("SELECT * FROM slack_channels WHERE id = ?", (ev["channel"],)).fetchone()
+    if not ch:                                   # a channel the agent was just invited to
+        try:
+            await _agent_sync_slack(_slack_token())
+        except Exception:
+            return
+        with db._conn() as con:
+            ch = con.execute("SELECT * FROM slack_channels WHERE id = ?", (ev["channel"],)).fetchone()
+        if not ch:
+            return
+    ch = dict(ch)
+    files = [{"id": x.get("id"), "name": x.get("name") or x.get("title"), "mimetype": x.get("mimetype"),
+              "url": x.get("url_private_download") or x.get("url_private")} for x in m.get("files") or []]
+    inv = [(m, f) for f in files if f.get("id") and _agent_invoice_file(f)]
+    if ch["role"] == "supplier_invoice" and inv:
+        jid = agent.start("invoice", f"New invoice file in #{ch['name']}", "invoices", {"channel": ch["id"], "ts": m["ts"]})
+        filed, skipped, failed = await _agent_file_invoices(jid, ch, inv)
+        agent.finish(jid, "done" if not failed else "waiting",
+                     f"{filed} filed, {skipped} already in, {failed} couldn't be read" + (" (question for you)" if failed else ""))
+
+
+@app.post("/api/slack/events")
+async def api_slack_events(request: Request):
+    """Slack's Events API (signed). Answered at once; the work happens in the background."""
+    body = await request.body()
+    secret = db.get_setting("slack_signing_secret") or ""
+    if not secret or not slack_client.verify(secret, request.headers.get("X-Slack-Request-Timestamp", ""), body,
+                                             request.headers.get("X-Slack-Signature", "")):
+        raise HTTPException(401, "Bad signature.")
+    payload = json.loads(body or b"{}")
+    if payload.get("type") == "url_verification":
+        return {"challenge": payload.get("challenge")}
+    if request.headers.get("X-Slack-Retry-Num"):          # already got it the first time
+        return {"ok": True}
+    ev = payload.get("event") or {}
+    if ev:
+        async def run():
+            try:
+                await _slack_event(ev)
+            except Exception as e:
+                print(f"Slack event failed: {str(getattr(e, 'detail', None) or e)[:300]}", flush=True)
+        asyncio.create_task(run())
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------- Tasks desk

@@ -1,0 +1,84 @@
+/* Apps → Agent. Shared tokens only. */
+
+.ag-page .content { gap: 14px; }
+.ag-pad { padding: 0 16px; }
+.ag-split { display: grid; grid-template-columns: minmax(280px, 380px) 1fr; gap: 14px; align-items: start; }
+.ag-list { max-height: calc(100vh - 170px); overflow-y: auto; }
+.ag-bar { display: flex; gap: 8px; padding: 10px; border-bottom: 1px solid var(--line-soft); position: sticky; top: 0; background: var(--panel); z-index: 1; }
+.ag-bar .scm-searchbox { flex: 1; }
+.ag-bar .control { width: auto; }
+.ag-job { display: flex; flex-direction: column; gap: 3px; width: 100%; text-align: left; font: inherit; color: var(--ink); background: none;
+  border: 0; border-bottom: 1px solid var(--line-soft); padding: 10px 14px; cursor: pointer; }
+.ag-job:hover { background: var(--line-soft); }
+.ag-job.on { background: var(--tint); }
+[data-theme="dark"] .ag-job.on { background: rgba(16, 185, 129, .08); }
+.ag-job b { font-size: 13px; font-weight: 600; }
+.ag-sub { font-size: 11.5px; color: var(--faint); }
+.ag-sum { font-size: 12px; color: var(--muted); }
+.ag-st { align-self: flex-start; font-size: 10.5px; font-weight: 650; border-radius: 999px; padding: 1px 8px; background: var(--line-soft); color: var(--muted); }
+.ag-st.running { background: rgba(59, 130, 246, .12); color: #2563EB; }
+.ag-st.waiting { background: rgba(217, 119, 6, .14); color: #B45309; }
+.ag-st.done { background: rgba(15, 157, 116, .1); color: var(--up); }
+.ag-st.failed { background: rgba(220, 38, 38, .08); color: var(--down); }
+
+.ag-detail { padding: 16px 18px; min-height: 300px; }
+.ag-job-head h2 { font-size: 16px; margin: 6px 0 2px; }
+.ag-job-head .hint { margin: 0; }
+.ag-sumline { margin: 8px 0 0; font-size: 13px; }
+.ag-steps { list-style: none; margin: 14px 0 0; padding: 0; border-left: 2px solid var(--line); }
+.ag-step { display: flex; gap: 10px; padding: 8px 0 10px 12px; position: relative; }
+.ag-ico { flex: none; width: 22px; text-align: center; margin-left: -24px; background: var(--panel); }
+.ag-step > div { flex: 1; min-width: 0; }
+.ag-step-head { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; }
+.ag-step-head time { font-size: 11px; color: var(--faint); white-space: nowrap; }
+.ag-step p { margin: 3px 0 0; font-size: 12.5px; color: var(--muted); line-height: 1.5; overflow-wrap: anywhere; }
+.ag-step.error .ag-step-head b { color: var(--down); }
+.ag-link { font-size: 12px; }
+.ag-adv { font-size: 12.5px; background: var(--tint); border-radius: 8px; padding: 6px 9px; margin-top: 6px; }
+[data-theme="dark"] .ag-adv { background: rgba(16, 185, 129, .08); }
+.ag-lesson { font-size: 11px; color: var(--up); margin-left: 4px; }
+.ag-advise { margin-top: 4px; font-size: 12px; }
+.ag-advise summary { cursor: pointer; color: var(--faint); }
+.ag-advise textarea { width: 100%; margin-top: 6px; font: inherit; font-size: 13px; }
+.ag-advise-acts { display: flex; justify-content: space-between; align-items: center; margin-top: 6px; color: var(--muted); }
+.ag-advise-acts input { width: auto; margin: 0 4px 0 0; }
+.ag-jq, .ag-jobadv { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line-soft); font-size: 13px; }
+.ag-jq h3, .ag-jobadv h3 { font-size: 13px; margin-bottom: 6px; }
+
+.ag-qs { padding: 8px 16px 16px; }
+.ag-q { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin: 8px 0; }
+.ag-q.done { opacity: .75; }
+.ag-q-head { display: flex; gap: 8px; align-items: center; font-size: 11.5px; color: var(--faint); }
+.ag-q-text { margin: 6px 0; font-size: 13.5px; font-weight: 550; line-height: 1.5; }
+.ag-answer { display: flex; gap: 8px; align-items: flex-end; }
+.ag-answer textarea { flex: 1; font: inherit; font-size: 13px; }
+.ag-ans { font-size: 13px; margin: 6px 0 0; }
+.ag-area { font-size: 10.5px; font-weight: 650; border-radius: 999px; padding: 1px 8px; background: var(--line-soft); color: var(--muted); }
+
+.ag-add { display: flex; gap: 8px; padding: 12px 16px; }
+.ag-add .control:first-child { width: auto; }
+.ag-add input { flex: 1; }
+.ag-lessonrow { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 10px; align-items: start; padding: 10px 16px; border-top: 1px solid var(--line-soft); }
+.ag-lessonrow p { margin: 0; font-size: 13px; line-height: 1.5; }
+.ag-lessonrow .ag-sub { grid-column: 2; }
+.ag-lessonrow .btn { grid-row: 1; grid-column: 3; }
+.ag-lessonrow.off p { text-decoration: line-through; color: var(--faint); }
+
+.ag-card { margin-bottom: 14px; }
+.ag-acts { display: flex; gap: 6px; }
+.ag-guide { margin: 10px 0; padding: 0 16px 0 36px; font-size: 13px; line-height: 1.6; }
+.ag-guide li { margin: 6px 0; }
+.ag-manifest { position: relative; margin: 6px 0; }
+.ag-manifest pre { max-height: 220px; overflow: auto; background: var(--line-soft); border-radius: 8px; padding: 10px; font-size: 11.5px; }
+.ag-manifest .btn { position: absolute; top: 6px; right: 6px; }
+.ag-connect { display: grid; grid-template-columns: 1fr 1fr auto; gap: 10px; align-items: end; padding: 4px 16px 14px; font-size: 12.5px; color: var(--muted); }
+.ag-connect label { display: flex; flex-direction: column; gap: 4px; }
+.ag-chans td, .ag-chans th { text-align: left; }
+.ag-chans .control { min-width: 140px; }
+code { font-size: 12px; background: var(--line-soft); padding: 1px 5px; border-radius: 5px; }
+
+@media (max-width: 900px) {
+  .ag-split { grid-template-columns: 1fr; }
+  .ag-list { max-height: 50vh; }
+  .ag-connect { grid-template-columns: 1fr; }
+}
