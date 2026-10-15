@@ -9698,6 +9698,36 @@ def api_meta_disconnect(connection_id: int):
     return {"ok": True}
 
 
+@app.get("/api/meta/check-manage")
+async def api_meta_check_manage(store: int):
+    """Owner check before EcomVital changes ads: what the store's Meta token may do, the Pages and pixels the
+    ad account can use, and a campaign create in Meta's validate-only mode (checked by Meta, nothing made)."""
+    st, conn = _task_meta(store)
+    token, act = conn["access_token"], st["meta_account_id"]
+    out = {"store": st["name"].strip(), "account_id": act, "account": st.get("meta_account_name") or ""}
+    async with httpx.AsyncClient(timeout=30) as client:
+        try:
+            got = await meta._get(client, "me/permissions", token, {})
+            out["permissions"] = sorted(p["permission"] for p in got.get("data", []) if p.get("status") == "granted")
+        except meta.MetaAdsError as e:
+            out["permissions_error"] = str(e)
+        try:
+            got = await meta._get(client, f"act_{act}", token, {"fields": "name,account_status,currency,user_tasks"})
+            out["account_tasks"] = got.get("user_tasks") or []
+            out["account_status"] = got.get("account_status")
+        except meta.MetaAdsError as e:
+            out["account_error"] = str(e)
+        try:
+            await meta.create_campaign(client, token, act, "EcomVital access check (not created)", validate=True)
+            out["can_create"] = True
+        except meta.MetaAdsError as e:
+            out["can_create"] = False
+            out["create_error"] = str(e)
+    opts = await meta.launch_options(token, act)
+    out.update({"pages": opts["pages"], "pixels": opts["pixels"], "errors": opts["errors"]})
+    return out
+
+
 @app.get("/api/meta/accounts")
 async def api_meta_accounts():
     """Every ad account across every connected Meta business, for the dropdowns."""
