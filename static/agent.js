@@ -41,8 +41,11 @@ async function loadStatus() {
   const s = state.status;
   $("qBadge").hidden = !s.open_questions;
   $("qBadge").textContent = s.open_questions;
-  $("banner").innerHTML = s.connected ? ""
-    : `<div class="warn">The agent isn't connected to Slack yet. ${s.owner ? '<a href="#" data-goto="slack">Set it up on the Slack tab</a> (about 5 minutes).' : "Ask the owner to connect it."}</div>`;
+  $("banner").innerHTML = (s.paused ? `<div class="warn ag-paused"><b>The agent is paused:</b> it files nothing until you resume.
+      ${window.pdLevel === "manage" ? '<button class="btn btn-sm" data-pause="0">Resume</button>' : ""}</div>`
+      : s.connected && window.pdLevel === "manage" ? '<div class="ag-pausebar"><button class="btn btn-sm btn-danger" data-pause="1">Pause the agent</button></div>' : "")
+    + (s.connected ? ""
+    : `<div class="warn">The agent isn't connected to Slack yet. ${s.owner ? '<a href="#" data-goto="slack">Set it up on the Slack tab</a> (about 5 minutes).' : "Ask the owner to connect it."}</div>`);
 }
 
 /* ------------------------------------------------ jobs */
@@ -210,6 +213,23 @@ $("sync").onclick = async () => {
   try { const r = await api("/api/agent/slack/sync", { json: {} }); toast(`In ${r.channels} channel(s).`); await loadStatus(); renderChannels(); }
   catch (e) { toast(e.message, true); }
 };
+$("undoCount").onclick = async () => {
+  try {
+    const r = await api(`/api/agent/filed?contains=${encodeURIComponent($("undoText").value.trim())}`);
+    $("undoOut").textContent = `${r.files.length} invoice(s) filed from files named like that`;
+  } catch (e) { toast(e.message, true); }
+};
+$("undoGo").onclick = async () => {
+  const t = $("undoText").value.trim();
+  if (!t || !confirm(`Remove every invoice the agent filed from files with “${t}” in their name, and put those orders' costs back?`)) return;
+  $("undoGo").disabled = true;
+  try {
+    const r = await api("/api/agent/undo-filed", { json: { contains: t } });
+    $("undoOut").textContent = `Removed ${r.removed}.`;
+    toast(`Removed ${r.removed} wrongly filed invoice(s); costs put back.`);
+  } catch (e) { toast(e.message, true); }
+  $("undoGo").disabled = false;
+};
 $("readAll").onclick = async () => {
   if (!confirm("Read the last 90 days of every channel the agent is in, and file every supplier invoice it finds? It runs in the background; follow it on the Work log.")) return;
   try { const r = await api("/api/agent/read-all", { json: {} }); toast(`Started: ${r.channels} channel(s). Watch the Work log.`); showPage("jobs"); }
@@ -217,9 +237,15 @@ $("readAll").onclick = async () => {
 };
 
 document.addEventListener("click", async (e) => {
-  const el = e.target.closest("[data-job],[data-advise],[data-answer],[data-lesson],[data-read],[data-goto],[data-jobref]");
+  const el = e.target.closest("[data-job],[data-advise],[data-answer],[data-lesson],[data-read],[data-goto],[data-jobref],[data-pause]");
   if (!el) return;
   try {
+    if (el.dataset.pause !== undefined) {
+      await api("/api/agent/pause", { json: { paused: el.dataset.pause === "1" } });
+      toast(el.dataset.pause === "1" ? "Paused: it stops after the file it's on." : "Resumed.");
+      await loadStatus();
+      return;
+    }
     if (el.dataset.job) loadJob(+el.dataset.job);
     else if (el.hasAttribute("data-advise")) sendAdvice(el);
     else if (el.dataset.goto) { e.preventDefault(); showPage(el.dataset.goto); }

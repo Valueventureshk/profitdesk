@@ -63,6 +63,11 @@
 
     <section id="slackPage" hidden>
       <section class="panel ag-card" id="connect"></section>
+      <section class="panel ag-card" data-owner-only>
+        <div class="panel-head"><h2>Undo what it filed by mistake</h2><span class="hint">Removes invoices the agent made from files with this in their name; order costs go back to before</span></div>
+        <div class="ag-undo"><input class="control" id="undoText" value="tracking"><button class="btn btn-sm" id="undoCount">How many?</button>
+          <button class="btn btn-sm btn-danger" id="undoGo">Undo them</button><span class="hint" id="undoOut"></span></div>
+      </section>
       <section class="panel ag-card">
         <div class="panel-head"><h2>Channels the agent is in</h2>
           <div class="ag-acts" data-manage-only><button class="btn btn-sm" id="sync">Refresh channels</button>

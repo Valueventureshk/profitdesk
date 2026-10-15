@@ -11547,9 +11547,16 @@ def _agent_save_msg(con, channel: str, m: dict):
 
 
 def _agent_invoice_file(f: dict) -> bool:
+    """A PDF / Excel / CSV whose name says it's an invoice. Suppliers post other sheets in the same channels
+    (e.g. DayOne's daily "<store> <date> Tracking.xlsx"): those are left alone, never filed as invoices."""
     name = (f.get("name") or "").lower()
-    return name.endswith(agent.INVOICE_EXT) or (f.get("mimetype") or "") in (
+    kind = name.endswith(agent.INVOICE_EXT) or (f.get("mimetype") or "") in (
         "application/pdf", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.ms-excel", "text/csv")
+    return kind and bool(re.search(r"invoice|\binv\b|\binv[-_ ]?\d", name)) and "tracking" not in name
+
+
+def _agent_paused() -> bool:
+    return db.get_setting("agent_paused") == "1"
 
 
 async def _agent_file_invoices(job_id: int, ch: dict, items: list):
@@ -11559,6 +11566,9 @@ async def _agent_file_invoices(job_id: int, ch: dict, items: list):
     names = _slack_names()
     filed = skipped = failed = 0
     for m, f in items:
+        if _agent_paused():
+            agent.step(job_id, "wait", "Paused by a person", "Press Resume on the Agent desk, then read the channel again to carry on.")
+            break
         with db._conn() as con:
             if con.execute("SELECT 1 FROM agent_files WHERE file_id = ?", (f["id"],)).fetchone():
                 continue
@@ -11633,8 +11643,14 @@ async def _agent_read_channel(job_id: int, ch: dict, file_invoices: bool = True)
                    "Kept in EcomVital (free Slack forgets after 90 days).")
         if file_invoices and ch.get("role") == "supplier_invoice":
             inv = sorted([x for x in files if _agent_invoice_file(x[1])], key=lambda x: float(x[0]["ts"]))
-            agent.step(job_id, "think", f"{len(inv)} of them look like invoices (PDF / Excel / CSV)",
-                       "Each is read once with the same reader as COG → Invoices.")
+            other = [x[1]["name"] for x in files if not _agent_invoice_file(x[1])]
+            agent.step(job_id, "think", f"{len(inv)} of them are invoices (named so); {len(other)} other files left alone",
+                       "Each invoice is read once with the same reader as COG → Invoices. Left alone (not named as invoices, e.g. "
+                       "tracking sheets, photos): " + ", ".join(sorted(set(other))[:8]) + ("…" if len(set(other)) > 8 else ""))
+            if other:
+                agent.ask("invoices", f"In #{ch['name']} I only file files named as invoices. I left {len(other)} other files alone "
+                          f"(e.g. {', '.join(sorted(set(other))[:3])}). Are any of those invoices too? If so, how can I tell them apart?",
+                          "", job_id)
             filed, skipped, failed = await _agent_file_invoices(job_id, ch, inv)
             agent.finish(job_id, "done", f"{len(msgs)} messages read · {filed} invoice(s) filed, {skipped} already in, {failed} couldn't be read")
         else:
@@ -11672,7 +11688,7 @@ def api_agent_status(request: Request):
         c["messages"], c["invoices"] = counts.get(c["id"], 0), filed.get(c["id"], 0)
         c["role_name"] = agent.ROLES.get(c["role"], c["role"])
     owner = (request.state.user or {}).get("role", "owner") == "owner"
-    return {"connected": bool(db.get_setting("slack_bot_token")), "team": team, "channels": chans, "roles": agent.ROLES,
+    return {"connected": bool(db.get_setting("slack_bot_token")), "paused": _agent_paused(), "team": team, "channels": chans, "roles": agent.ROLES,
             "areas": agent.AREAS, "open_questions": open_q, "running": running, "days": AGENT_DAYS,
             "manifest": slack_client.manifest(BASE_URL) if owner else None, "owner": owner}
 
@@ -11745,6 +11761,54 @@ async def api_agent_read_all(request: Request):
             await _agent_read_channel(jid, ch)
     asyncio.create_task(run())
     return {"ok": True, "channels": len(chans)}
+
+
+@app.post("/api/agent/pause")
+def api_agent_pause(payload: dict):
+    db.set_setting("agent_paused", "1" if payload.get("paused") else "0")
+    return {"ok": True, "paused": _agent_paused()}
+
+
+@app.get("/api/agent/filed")
+def api_agent_filed(contains: str = ""):
+    """Invoices the agent filed from Slack, optionally only files whose name contains some text (to review / undo)."""
+    _agent_db()
+    with db._conn() as con:
+        rows = [dict(r) for r in con.execute("SELECT * FROM agent_files WHERE invoice_id IS NOT NULL" +
+                                             (" AND lower(name) LIKE ?" if contains else "") + " ORDER BY ts",
+                                             (f"%{contains.lower()}%",) if contains else ())]
+    return {"files": rows}
+
+
+@app.post("/api/agent/undo-filed")
+async def api_agent_undo_filed(payload: dict, request: Request):
+    """Remove invoices the agent filed from files that weren't invoices (e.g. tracking sheets), and put the order
+    costs back as they were. Only invoices the agent made itself; each file can be filed again later if it was right."""
+    if (request.state.user or {}).get("role", "owner") != "owner":
+        raise HTTPException(403, "Only an owner can undo the agent's filing.")
+    _agent_db()
+    contains = str(payload.get("contains") or "").strip().lower()
+    if not contains:
+        raise HTTPException(400, "Say which files, e.g. tracking.")
+    with db._conn() as con:
+        rows = [dict(r) for r in con.execute("SELECT * FROM agent_files WHERE invoice_id IS NOT NULL AND lower(name) LIKE ?",
+                                             (f"%{contains}%",))]
+    jid = agent.start("undo", f"Undo: invoices filed from files named “{contains}”", "invoices", {"by": _agent_who(request)})
+    removed = 0
+    for r in rows:
+        inv = db.get_invoice(r["invoice_id"])
+        if inv and not (inv.get("uploaded_by") or "").startswith("agent"):
+            agent.step(jid, "skip", f"Kept invoice {r['invoice_id']}", "A person uploaded it, not the agent.")
+            continue
+        if inv:
+            await api_invoice_delete(r["invoice_id"])
+            removed += 1
+        with db._conn() as con:
+            con.execute("DELETE FROM agent_files WHERE file_id = ?", (r["file_id"],))
+    agent.step(jid, "act", f"Removed {removed} invoice(s) filed from {contains} files",
+               "Their orders' costs went back to what they were before (sheet / catalog / estimate).")
+    agent.finish(jid, "done", f"{removed} removed")
+    return {"ok": True, "removed": removed}
 
 
 @app.get("/api/agent/jobs")
