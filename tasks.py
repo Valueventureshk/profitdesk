@@ -17,9 +17,41 @@ HISTORY = ("launched", "done", "cancelled")
 KINDS = ("listing", "custom")
 
 # what the admin fills in (brief) and what staff hand back (result), per kind
-BRIEF_FIELDS = ("competitor_ads", "collection", "products", "pages", "angle", "headlines", "budget", "countries", "description")
-RESULT_FIELDS = ("collection_url", "product_urls", "landing_url", "advertorial_url", "primary_text", "headline",
-                 "ad_description", "cta", "other_links", "notes")
+BRIEF_FIELDS = ("competitor_ads", "competitor_landing", "competitor_products", "todo", "description",
+                # older listing tasks (before the to-do picks) — still shown, no longer asked for
+                "collection", "products", "pages", "angle", "headlines", "budget", "countries")
+RESULT_FIELDS = ("landing_url", "collection_url", "product_urls", "advertorial_url", "branded_url", "primary_text",
+                 "headline", "ad_description", "cta", "other_links", "notes")
+
+# What an admin can tick on a listing task, and what each one asks staff to hand back.
+# Anything else typed in the to-do list is a custom item: staff answer it with a link or a note.
+TODO = {
+    "advertorial": "Create advertorial",
+    "collection": "Create collection",
+    "product_pages": "Create product pages",
+    "branded_page": "Create branded page",
+    "creatives": "Create creatives",
+    "ad_copy": "Ad copy, headline and description",
+}
+TODO_NEEDS = {"advertorial": ("advertorial_url",), "collection": ("collection_url",), "product_pages": ("product_urls",),
+              "branded_page": ("branded_url",), "ad_copy": ("primary_text", "headline")}
+
+# Ways to put several approved listing tasks into one Meta campaign (all created PAUSED).
+# Starter set: the owner will replace / add their own tested strategies.
+STRATEGIES = {
+    "x": {"name": "Strategy X · one ad set, every ad",
+          "about": "One campaign, one ad set. Every creative from every picked task becomes an ad, each going to "
+                   "its own task's landing page with that task's copy. Meta spends where it works best.",
+          "budget": "adset", "split": "one"},
+    "y": {"name": "Strategy Y · one ad set per landing page (ABO)",
+          "about": "One campaign, one ad set per task (per landing page), each with the daily budget below. "
+                   "Every page gets a fair test.",
+          "budget": "adset", "split": "task"},
+    "z": {"name": "Strategy Z · campaign budget, ad set per landing page (CBO)",
+          "about": "One campaign holding the daily budget, one ad set per task. Meta moves the budget to the "
+                   "landing pages that sell.",
+          "budget": "campaign", "split": "task"},
+}
 CTAS = ("SHOP_NOW", "LEARN_MORE", "ORDER_NOW", "BUY_NOW", "GET_OFFER", "SIGN_UP")
 
 SCHEMA = """
@@ -78,6 +110,19 @@ CREATE TABLE IF NOT EXISTS task_wa (                      -- WhatsApp messages s
     answered_at TEXT
 );
 CREATE INDEX IF NOT EXISTS task_wa_phone ON task_wa (phone, at);
+CREATE TABLE IF NOT EXISTS task_launches (                -- several approved tasks launched together on Meta
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    store_id    INTEGER NOT NULL,
+    strategy    TEXT    NOT NULL,
+    task_ids    TEXT    NOT NULL,                         -- JSON list
+    settings    TEXT,                                     -- JSON: page, pixel, budget, countries, name
+    progress    TEXT,                                     -- JSON: Meta ids as they're made (to carry on)
+    status      TEXT    NOT NULL DEFAULT 'running',       -- running | waiting (videos) | failed | done
+    error       TEXT,
+    created_by  TEXT,
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+    done_at     TEXT
+);
 """
 
 # WhatsApp replies: "doing" / "done" (optionally with the task number, e.g. "done #12")
@@ -108,7 +153,9 @@ def _clean(d: dict, fields) -> dict:
     out = {}
     for k in fields:
         v = (d or {}).get(k)
-        if isinstance(v, list):
+        if isinstance(v, dict):
+            v = {str(a).strip()[:200]: str(b).strip()[:4000] for a, b in v.items() if str(b or "").strip()}
+        elif isinstance(v, list):
             v = [str(x).strip()[:2000] for x in v if str(x).strip()][:50]
         elif v is not None:
             v = str(v).strip()[:8000]
@@ -125,9 +172,38 @@ def clean_brief(d: dict) -> dict:
 
 
 def clean_result(d: dict) -> dict:
-    out = _clean(d, RESULT_FIELDS)
+    out = _clean(d, RESULT_FIELDS + ("custom", "cant"))
+    for k in ("custom", "cant"):
+        if k in out and not isinstance(out[k], dict):
+            out.pop(k)
     if out.get("cta") and out["cta"] not in CTAS:
         out.pop("cta")
+    return out
+
+
+def todo_label(key: str) -> str:
+    return TODO.get(key, key)
+
+
+def missing(kind: str, brief: dict, result: dict, creatives: int) -> list:
+    """What still stops a listing task being submitted: the main landing page link, and every to-do item
+    that has neither its output nor a "couldn't do it" note for the admin."""
+    if kind != "listing":
+        return []
+    out = [] if result.get("landing_url") else ["the main landing page link"]
+    cant = result.get("cant") or {}
+    for key in brief.get("todo") or []:
+        if cant.get(key):
+            continue
+        if key == "creatives":
+            done = creatives > 0
+        elif key in TODO_NEEDS:
+            done = all(result.get(f) for f in TODO_NEEDS[key])
+        else:
+            done = bool((result.get("custom") or {}).get(key))
+        if not done:
+            label = todo_label(key)
+            out.append(label[:1].lower() + label[1:])
     return out
 
 

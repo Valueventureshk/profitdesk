@@ -10907,7 +10907,7 @@ def _task_out(t: dict, people: dict, stores: dict, files=None, full=False) -> di
     if files is not None:
         out["files"] = files
     if not full:
-        out["brief"] = {k: v for k, v in out["brief"].items() if k in ("collection", "pages")}
+        out["brief"] = {k: v for k, v in out["brief"].items() if k in ("collection", "pages", "todo")}
         out["has_result"] = bool(out.pop("result"))
         out["launched"] = bool(out.pop("launch").get("campaign_id"))
     return out
@@ -11068,13 +11068,16 @@ def _task_wa_move(user: dict, phone: str, task_id, verb: str) -> str:
             _task_log(con, t["id"], user, "status", "Started (WhatsApp)")
             return f"✅ Task {name} is now *In progress*. Reply *Done* when it's finished.\n{link}" + note
         result = tasks.loads(t["result"])
-        if t["kind"] == "listing" and not (result.get("landing_url") or result.get("collection_url") or result.get("advertorial_url")):
+        n_cr = con.execute("SELECT COUNT(*) FROM task_files WHERE task_id = ? AND side = 'staff' AND kind = 'creative'",
+                           (t["id"],)).fetchone()[0]
+        lacking = tasks.missing(t["kind"], tasks.loads(t["brief"]), result, n_cr)
+        if lacking:
             if t["status"] == "todo":
                 con.execute("UPDATE tasks SET status = 'doing' WHERE id = ?", (t["id"],))
                 _task_log(con, t["id"], user, "status", "Started (WhatsApp)")
             _task_log(con, t["id"], user, "whatsapp", "Replied Done, but the hand-back links are missing (asked for them)")
-            return (f"Almost there! Task {name} still needs your links before it can go for review: the collection or landing "
-                    f"page link (plus product links, ad copy and creatives). Add them here, then press Submit or reply *Done* again:\n{link}" + note)
+            return (f"Almost there! Task {name} still needs: {', '.join(lacking)}. If you can't make one, add a note for the "
+                    f"admin under it. Add them here, then press Submit or reply *Done* again:\n{link}" + note)
         con.execute("UPDATE tasks SET status = 'submitted', submitted_at = datetime('now'), closed_at = NULL WHERE id = ?", (t["id"],))
         _task_log(con, t["id"], user, "status", "Submitted for review (WhatsApp)")
         creatives = con.execute("SELECT COUNT(*) FROM task_files WHERE task_id = ? AND side = 'staff' AND kind = 'creative'",
@@ -11208,7 +11211,7 @@ def api_tasks(request: Request, view: str = "board", assignee: int = 0, store: i
         x = _task_out(t, people, stores)
         x["files_staff"], x["files_all"] = counts.get(t["id"], (0, 0))
         out.append(x)
-    return {"tasks": out, "manage": manage, "me": {"id": user.get("id"), "email": user.get("email")},
+    return {"todo": tasks.TODO, "tasks": out, "manage": manage, "me": {"id": user.get("id"), "email": user.get("email")},
             "people": list(people.values()) if manage else [],
             "stores": [{"id": k, "name": v} for k, v in sorted(stores.items(), key=lambda kv: kv[1].lower())],
             "statuses": tasks.STATUS_NAMES, "ctas": tasks.CTAS, "wa_ready": whatsapp.ready(),
@@ -11262,6 +11265,242 @@ def api_tasks_day(request: Request, day: str = "", person: int = 0):
     return {"day": d.isoformat(), "people": out, "known": list(by_email)}
 
 
+def _launch_tasks(con, ids: list) -> list:
+    """The picked tasks with what goes in the ads: landing page, copy, image / video creatives."""
+    out = []
+    for tid in ids:
+        row = con.execute("SELECT * FROM tasks WHERE id = ?", (tid,)).fetchone()
+        if not row:
+            raise HTTPException(404, f"Task #{tid} no longer exists.")
+        t = dict(row)
+        t["result_d"] = tasks.loads(t["result"])
+        t["launch_d"] = tasks.loads(t["launch"])
+        t["creatives"] = [dict(f) for f in con.execute(
+            "SELECT * FROM task_files WHERE task_id = ? AND side = 'staff' AND kind = 'creative' ORDER BY id", (tid,))
+            if f["name"].lower().endswith(_IMG_EXT + _VID_EXT)]
+        out.append(t)
+    return out
+
+
+def _launch_problems(t: dict, resuming: bool) -> list:
+    r = t["result_d"]
+    probs = []
+    if t["kind"] != "listing":
+        probs.append("is a custom task")
+    if t["status"] != "approved":
+        probs.append(f"is “{tasks.STATUS_NAMES.get(t['status'], t['status'])}”, not approved")
+    if not str(r.get("landing_url") or "").startswith("http"):
+        probs.append("has no main landing page link")
+    if not t["creatives"]:
+        probs.append("has no image or video creatives")
+    if not (r.get("primary_text") and r.get("headline")):
+        probs.append("has no ad copy (primary text + headline)")
+    if t["launch_d"].get("batch") and not t["launch_d"].get("campaign_id") and not resuming:
+        probs.append(f"is already in launch #{t['launch_d']['batch']}, which hasn't finished (carry that one on)")
+    return probs
+
+
+def _launch_pending(con, ids: list):
+    """An unfinished launch of exactly these tasks, to carry on instead of starting again."""
+    for b in con.execute("SELECT * FROM task_launches WHERE status != 'done' ORDER BY id DESC"):
+        if sorted(json.loads(b["task_ids"])) == sorted(ids):
+            return dict(b)
+    return None
+
+
+def _launch_ids(raw) -> list:
+    ids = [int(x) for x in re.findall(r"\d+", str(raw if not isinstance(raw, list) else ",".join(map(str, raw))))]
+    ids = list(dict.fromkeys(ids))
+    if not ids:
+        raise HTTPException(400, "Pick at least one task to launch.")
+    return ids
+
+
+@app.get("/api/tasks/launch/options")
+async def api_tasks_launch_options(request: Request, ids: str = ""):
+    """The Launch form for one or several approved tasks: strategies, the ad account's Pages and pixels,
+    and what each task brings (landing page, creatives, copy) or what stops it."""
+    _tasks_db()
+    _need_level(request, "tasks", "manage")
+    ids = _launch_ids(ids)
+    with db._conn() as con:
+        picked = _launch_tasks(con, ids)
+        pending = _launch_pending(con, ids)
+    stores = {t["store_id"] for t in picked}
+    if len(stores) != 1 or None in stores:
+        raise HTTPException(400, "Pick tasks from one store (one Meta ad account). "
+                                 + ("Some have no store: edit their brief." if None in stores else ""))
+    st, conn = _task_meta(stores.pop())
+    opts = await meta.launch_options(conn["access_token"], st["meta_account_id"])
+    saved = tasks.loads(db.get_setting(f"task_launch:{st['id']}") or "")
+    first = tasks.loads(picked[0]["brief"])
+    title = picked[0]["title"] if len(picked) == 1 else f"{len(picked)} landing pages"
+    settings = tasks.loads(pending["settings"]) if pending else {}
+    return {"account_id": st["meta_account_id"], "account": st.get("meta_account_name") or "", "store": st["name"].strip(),
+            "currency": st.get("meta_currency") or "", **opts,
+            "strategies": [{"key": k, **v} for k, v in tasks.STRATEGIES.items()],
+            "tasks": [{"id": t["id"], "title": t["title"], "landing_url": t["result_d"].get("landing_url") or "",
+                       "headline": (tasks.lines(t["result_d"].get("headline")) or [""])[0],
+                       "creatives": [{"id": f["id"], "name": f["name"], "video": f["name"].lower().endswith(_VID_EXT)}
+                                     for f in t["creatives"]],
+                       "problems": _launch_problems(t, bool(pending))} for t in picked],
+            "pending": {"id": pending["id"], "strategy": pending["strategy"], "status": pending["status"],
+                        "error": pending["error"], "settings": settings} if pending else None,
+            "defaults": {"strategy": settings.get("strategy") or saved.get("strategy") or "y",
+                         "page_id": settings.get("page_id") or saved.get("page_id")
+                         or (opts["pages"][0]["id"] if len(opts["pages"]) == 1 else ""),
+                         "pixel_id": settings.get("pixel_id") or saved.get("pixel_id") or _px_cfg(st["id"]).get("meta_pixel") or "",
+                         "daily_budget": settings.get("daily_budget") or re.sub(r"[^\d.]", "", str(first.get("budget") or ""))
+                         or saved.get("daily_budget") or "",
+                         "countries": settings.get("countries") or first.get("countries") or saved.get("countries") or "",
+                         "campaign_name": settings.get("campaign_name") or f"{st['name'].strip()} · {title}"}}
+
+
+@app.post("/api/tasks/launch")
+async def api_tasks_launch(request: Request, payload: dict):
+    """Put the picked approved tasks into one Meta campaign with a strategy, everything PAUSED. Each Meta id is
+    saved as it's made, so pressing again after a problem (or while Meta processes videos) carries on, never doubles."""
+    _tasks_db()
+    _need_level(request, "tasks", "manage")
+    user = _task_user(request)
+    ids = _launch_ids(payload.get("ids"))
+    with db._conn() as con:
+        picked = _launch_tasks(con, ids)
+        batch = _launch_pending(con, ids)
+    by_id = {t["id"]: t for t in picked}
+    picked = [by_id[i] for i in ids]
+    probs = [f"#{t['id']} {t['title']}: {', '.join(p)}" for t in picked if (p := _launch_problems(t, bool(batch)))]
+    if probs:
+        raise HTTPException(400, "Can't launch yet. " + " · ".join(probs))
+    stores = {t["store_id"] for t in picked}
+    if len(stores) != 1:
+        raise HTTPException(400, "Pick tasks from one store (one Meta ad account).")
+    st, conn = _task_meta(stores.pop())
+    token, act = conn["access_token"], st["meta_account_id"]
+
+    strategy = payload.get("strategy") if payload.get("strategy") in tasks.STRATEGIES else ""
+    if batch:                                    # carrying on: the strategy can't change halfway
+        strategy = batch["strategy"]
+    if not strategy:
+        raise HTTPException(400, "Pick a strategy.")
+    strat = tasks.STRATEGIES[strategy]
+    page_id = re.sub(r"\D", "", str(payload.get("page_id") or ""))
+    pixel_id = re.sub(r"\D", "", str(payload.get("pixel_id") or ""))
+    countries = [c for c in re.split(r"[\s,]+", str(payload.get("countries") or "").upper()) if re.fullmatch(r"[A-Z]{2}", c)]
+    try:
+        budget = float(payload.get("daily_budget") or 0)
+    except ValueError:
+        budget = 0
+    name = (str(payload.get("campaign_name") or "").strip() or picked[0]["title"])[:200]
+    missing = [n for n, v in (("Facebook Page", page_id), ("pixel", pixel_id), ("countries", countries),
+                              ("daily budget", budget > 0)) if not v]
+    if missing:
+        raise HTTPException(400, "Fill in: " + ", ".join(missing) + ".")
+    settings = {"strategy": strategy, "page_id": page_id, "pixel_id": pixel_id, "daily_budget": str(payload.get("daily_budget")),
+                "countries": " ".join(countries), "campaign_name": name}
+    db.set_setting(f"task_launch:{st['id']}", json.dumps(settings))
+    with db._conn() as con:
+        if not batch:
+            bid = con.execute("INSERT INTO task_launches (store_id, strategy, task_ids, settings, progress, created_by)"
+                              " VALUES (?, ?, ?, ?, '{}', ?)", (st["id"], strategy, json.dumps(ids), json.dumps(settings),
+                                                                 user.get("email", ""))).lastrowid
+            batch = dict(con.execute("SELECT * FROM task_launches WHERE id = ?", (bid,)).fetchone())
+        else:
+            con.execute("UPDATE task_launches SET settings = ? WHERE id = ?", (json.dumps(settings), batch["id"]))
+        for t in picked:
+            con.execute("UPDATE tasks SET launch = ? WHERE id = ?", (json.dumps({"batch": batch["id"]}), t["id"]))
+    bid = batch["id"]
+    prog = tasks.loads(batch["progress"])
+    prog.setdefault("adsets", {})
+    prog.setdefault("ads", {})
+    prog.setdefault("videos", {})
+    prog["account_id"] = act
+
+    def save(status="running", error=None):
+        with db._conn() as con:
+            con.execute("UPDATE task_launches SET progress = ?, status = ?, error = ? WHERE id = ?",
+                        (json.dumps(prog), status, error, bid))
+
+    minor = meta.minor_units(budget, st.get("meta_currency"))
+    waiting = []
+    try:
+        async with httpx.AsyncClient(timeout=300) as client:
+            if not prog.get("campaign_id"):
+                prog["campaign_id"] = await meta.create_campaign(
+                    client, token, act, name, daily_minor=minor if strat["budget"] == "campaign" else None)
+                save()
+            for t in picked:
+                key = "all" if strat["split"] == "one" else str(t["id"])
+                if key not in prog["adsets"]:
+                    label = name if key == "all" else f"{name} · {t['title']}"
+                    prog["adsets"][key] = await meta.create_adset(
+                        client, token, act, prog["campaign_id"], label[:200],
+                        minor if strat["budget"] == "adset" else None, pixel_id, countries)
+                    save()
+                r = t["result_d"]
+                for f in t["creatives"]:
+                    fk = str(f["id"])
+                    if fk in prog["ads"]:
+                        continue
+                    path, low = _task_file_path(f), f["name"].lower()
+                    ad_name = f"{t['title']} · {f['name']}"[:250]
+                    copy = dict(page_id=page_id, link=r["landing_url"], message=r["primary_text"],
+                                headline=(tasks.lines(r.get("headline")) or [""])[0],
+                                description=r.get("ad_description"), cta=r.get("cta") or "SHOP_NOW")
+                    if low.endswith(_VID_EXT):
+                        if fk not in prog["videos"]:
+                            prog["videos"][fk] = await meta.upload_video(client, token, act, path, f["name"])
+                            save()
+                        thumb = await meta.video_thumbnail(client, token, prog["videos"][fk])
+                        if not thumb:
+                            waiting.append(f["name"])
+                            continue
+                        made = await meta.create_ad(client, token, act, prog["adsets"][key], ad_name, **copy,
+                                                    video_id=prog["videos"][fk], thumb_url=thumb)
+                    else:
+                        send = path
+                        if not low.endswith((".jpg", ".jpeg", ".png", ".gif")):       # HEIC / WebP → JPEG for Meta
+                            send = path + "_ad.jpg"
+                            if not os.path.exists(send) and not await asyncio.to_thread(_att_image, path, send, 2400):
+                                raise meta.MetaAdsError(f"{f['name']} isn't an image Meta can use.")
+                        with open(send, "rb") as fh:
+                            data = fh.read()
+                        image_hash = await meta.upload_image(client, token, act, data, os.path.basename(send))
+                        made = await meta.create_ad(client, token, act, prog["adsets"][key], ad_name, **copy,
+                                                    image_hash=image_hash)
+                    prog["ads"][fk] = {**made, "task_id": t["id"]}
+                    save()
+    except meta.MetaAdsError as e:
+        save("failed", str(e))
+        with db._conn() as con:
+            for t in picked:
+                _task_log(con, t["id"], user, "launch", f"Launch #{bid} stopped: {e}")
+        return JSONResponse({"error": f"{e} What was already made is kept; press Launch again after fixing it.",
+                             "batch_id": bid}, status_code=400)
+    with db._conn() as con:
+        if waiting:
+            save("waiting")
+            for t in picked:
+                _task_log(con, t["id"], user, "launch", f"Launch #{bid}: campaign made (paused); Meta is still processing "
+                                                        f"{len(waiting)} video{'s' if len(waiting) > 1 else ''}")
+        else:
+            prog["done_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            con.execute("UPDATE task_launches SET progress = ?, status = 'done', error = NULL, done_at = datetime('now')"
+                        " WHERE id = ?", (json.dumps(prog), bid))
+            for t in picked:
+                mine = sum(1 for a in prog["ads"].values() if a.get("task_id") == t["id"])
+                info = {"batch": bid, "campaign_id": prog["campaign_id"], "account_id": act, "strategy": strategy,
+                        "strategy_name": strat["name"], "ads": mine, "with": [i for i in ids if i != t["id"]]}
+                con.execute("UPDATE tasks SET launch = ?, status = 'launched', closed_at = datetime('now') WHERE id = ?",
+                            (json.dumps(info), t["id"]))
+                _task_log(con, t["id"], user, "launch",
+                          f"Launched on Meta (paused) with {strat['name'].split(' · ')[0]}: {mine} ad{'s' if mine != 1 else ''}"
+                          + (f", together with {len(ids) - 1} other task{'s' if len(ids) > 2 else ''}" if len(ids) > 1 else "")
+                          + f", campaign {prog['campaign_id']}")
+    return {"ok": True, "batch_id": bid, "waiting": waiting, "campaign_id": prog["campaign_id"], "ads": len(prog["ads"]),
+            "account_id": act}
+
+
 @app.get("/api/tasks/{task_id}")
 def api_task(request: Request, task_id: int):
     _tasks_db()
@@ -11278,6 +11517,7 @@ def api_task(request: Request, task_id: int):
         f["who"] = names.get(f["by"], (f["by"] or "").split("@")[0])
     out = _task_out(t, people, stores, files, full=True)
     out["log"] = log
+    out["todo"] = tasks.TODO
     out["manage"] = _task_manager(user)
     out["mine"] = t["assignee_id"] == user.get("id")
     p = people.get(t["assignee_id"])
@@ -11292,7 +11532,7 @@ def _task_fields(payload: dict) -> dict:
     if not title:
         title = (f"List {brief['collection']}" if brief.get("collection") else "")
     if not title:
-        raise HTTPException(400, "Give the task a title (or the collection to list).")
+        raise HTTPException(400, "Give the task a title.")
     due = str(payload.get("due") or "").strip() or None
     if due and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", due):
         raise HTTPException(400, "Pick a due date.")
@@ -11373,9 +11613,12 @@ def api_task_result(request: Request, task_id: int, payload: dict):
                                      "admin, once it's approved).")
         con.execute("UPDATE tasks SET result = ? WHERE id = ?", (json.dumps(result), task_id))
         if payload.get("submit"):
-            if t["kind"] == "listing" and not (result.get("landing_url") or result.get("collection_url")
-                                               or result.get("advertorial_url")):
-                raise HTTPException(400, "Add at least the collection or landing page link before submitting.")
+            n_cr = con.execute("SELECT COUNT(*) FROM task_files WHERE task_id = ? AND side = 'staff' AND kind = 'creative'",
+                               (task_id,)).fetchone()[0]
+            lacking = tasks.missing(t["kind"], tasks.loads(t["brief"]), result, n_cr)
+            if lacking:
+                raise HTTPException(400, "Still needed: " + ", ".join(lacking) + ". If you can't make one, press "
+                                         "“Can't do this” under it and tell the admin why.")
             con.execute("UPDATE tasks SET status = 'submitted', submitted_at = datetime('now') WHERE id = ?", (task_id,))
             _task_log(con, task_id, user, "status", "Submitted for review")
         else:
@@ -11448,7 +11691,9 @@ async def api_task_files(request: Request, task_id: int):
     user = _task_user(request)
     form = await request.form()
     side = "admin" if form.get("side") == "admin" else "staff"
-    kind = "file" if form.get("kind") == "file" else "creative"
+    kind = form.get("kind") if form.get("kind") in ("file", "instruction") else "creative"
+    if kind == "instruction":
+        side = "admin"
     with db._conn() as con:
         t = _task_row(con, task_id, user)
     if side == "admin" and not _task_manager(user):
@@ -11544,141 +11789,6 @@ def _task_meta(store_id):
     if not st.get("meta_account_id") or not conn:
         raise HTTPException(400, f"{st['name'].strip()} has no Meta ad account connected (Settings → Meta Ads).")
     return st, conn
-
-
-@app.get("/api/tasks/{task_id}/launch")
-async def api_task_launch_options(request: Request, task_id: int):
-    """What the Launch form needs: the store's ad account, its Pages and pixels, and suggested values."""
-    _tasks_db()
-    _need_level(request, "tasks", "manage")
-    with db._conn() as con:
-        t = _task_row(con, task_id, _task_user(request))
-    st, conn = _task_meta(t["store_id"])
-    opts = await meta.launch_options(conn["access_token"], st["meta_account_id"])
-    brief, result = tasks.loads(t["brief"]), tasks.loads(t["result"])
-    saved = tasks.loads(db.get_setting(f"task_launch:{st['id']}") or "")      # last choices for this store
-    pixel = saved.get("pixel_id") or _px_cfg(st["id"]).get("meta_pixel") or ""
-    budget = re.sub(r"[^\d.]", "", str(brief.get("budget") or "")) or saved.get("daily_budget") or ""
-    countries = brief.get("countries") or saved.get("countries") or ""
-    return {"account_id": st["meta_account_id"], "account": st.get("meta_account_name") or "",
-            "currency": st.get("meta_currency") or "", "store": st["name"].strip(), **opts,
-            "defaults": {"page_id": saved.get("page_id") or (opts["pages"][0]["id"] if len(opts["pages"]) == 1 else ""),
-                         "pixel_id": pixel, "daily_budget": budget, "countries": countries,
-                         "campaign_name": f"{st['name'].strip()} · {t['title']}",
-                         "link": result.get("landing_url") or result.get("advertorial_url") or result.get("collection_url") or "",
-                         "message": result.get("primary_text") or "",
-                         "headline": (tasks.lines(result.get("headline")) or [""])[0],
-                         "description": result.get("ad_description") or "", "cta": result.get("cta") or "SHOP_NOW"},
-            "progress": tasks.loads(t["launch"])}
-
-
-@app.post("/api/tasks/{task_id}/launch")
-async def api_task_launch(request: Request, task_id: int, payload: dict):
-    """Create the campaign, ad set and one ad per creative on Meta, all PAUSED. Each id is saved as it's
-    made, so pressing Launch again after a problem carries on where it stopped (never makes doubles)."""
-    _tasks_db()
-    _need_level(request, "tasks", "manage")
-    user = _task_user(request)
-    with db._conn() as con:
-        t = _task_row(con, task_id, user)
-        files = [dict(r) for r in con.execute("SELECT * FROM task_files WHERE task_id = ? AND kind = 'creative'"
-                                              " AND side = 'staff' ORDER BY id", (task_id,))]
-    if t["status"] != "approved":
-        raise HTTPException(400, "Approve the task first.")
-    st, conn = _task_meta(t["store_id"])
-    token, act = conn["access_token"], st["meta_account_id"]
-    want = {int(x) for x in payload.get("file_ids") or []}
-    files = [f for f in files if not want or f["id"] in want]
-    files = [f for f in files if f["name"].lower().endswith(_IMG_EXT + _VID_EXT)]
-    if not files:
-        raise HTTPException(400, "There are no image or video creatives to put in the ads.")
-    page_id = re.sub(r"\D", "", str(payload.get("page_id") or ""))
-    pixel_id = re.sub(r"\D", "", str(payload.get("pixel_id") or ""))
-    link = str(payload.get("link") or "").strip()
-    countries = [c for c in re.split(r"[\s,]+", str(payload.get("countries") or "").upper()) if re.fullmatch(r"[A-Z]{2}", c)]
-    try:
-        budget = float(payload.get("daily_budget") or 0)
-    except ValueError:
-        budget = 0
-    message, headline = str(payload.get("message") or "").strip(), str(payload.get("headline") or "").strip()
-    cta = payload.get("cta") if payload.get("cta") in tasks.CTAS else "SHOP_NOW"
-    missing = [n for n, v in (("Facebook Page", page_id), ("pixel", pixel_id), ("landing page link", link.startswith("http")),
-                              ("countries", countries), ("daily budget", budget > 0), ("primary text", message),
-                              ("headline", headline)) if not v]
-    if missing:
-        raise HTTPException(400, "Fill in: " + ", ".join(missing) + ".")
-    db.set_setting(f"task_launch:{st['id']}", json.dumps({"page_id": page_id, "pixel_id": pixel_id,
-                                                          "daily_budget": str(payload.get("daily_budget")),
-                                                          "countries": " ".join(countries)}))
-    prog = tasks.loads(t["launch"])
-    prog.setdefault("ads", {})
-    prog.setdefault("videos", {})
-    prog["account_id"] = act
-
-    def save():
-        with db._conn() as con:
-            con.execute("UPDATE tasks SET launch = ? WHERE id = ?", (json.dumps(prog), task_id))
-
-    name = (str(payload.get("campaign_name") or "").strip() or t["title"])[:200]
-    waiting = []
-    try:
-        async with httpx.AsyncClient(timeout=300) as client:
-            if not prog.get("campaign_id"):
-                prog["campaign_id"] = await meta.create_campaign(client, token, act, name)
-                save()
-            if not prog.get("adset_id"):
-                prog["adset_id"] = await meta.create_adset(client, token, act, prog["campaign_id"], name,
-                                                           meta.minor_units(budget, st.get("meta_currency")),
-                                                           pixel_id, countries)
-                save()
-            for f in files:
-                key = str(f["id"])
-                if key in prog["ads"]:
-                    continue
-                path = _task_file_path(f)
-                low = f["name"].lower()
-                ad_name = f"{name} · {f['name']}"[:250]
-                if low.endswith(_VID_EXT):
-                    if key not in prog["videos"]:
-                        prog["videos"][key] = await meta.upload_video(client, token, act, path, f["name"])
-                        save()
-                    thumb = await meta.video_thumbnail(client, token, prog["videos"][key])
-                    if not thumb:
-                        waiting.append(f["name"])
-                        continue
-                    made = await meta.create_ad(client, token, act, prog["adset_id"], ad_name, page_id, link, message,
-                                                headline, payload.get("description"), cta,
-                                                video_id=prog["videos"][key], thumb_url=thumb)
-                else:
-                    send = path
-                    if not low.endswith((".jpg", ".jpeg", ".png", ".gif")):       # HEIC / WebP → JPEG for Meta
-                        send = path + "_ad.jpg"
-                        if not os.path.exists(send) and not await asyncio.to_thread(_att_image, path, send, 2400):
-                            raise meta.MetaAdsError(f"{f['name']} isn't an image Meta can use.")
-                    with open(send, "rb") as fh:
-                        data = fh.read()
-                    image_hash = await meta.upload_image(client, token, act, data, os.path.basename(send))
-                    made = await meta.create_ad(client, token, act, prog["adset_id"], ad_name, page_id, link, message,
-                                                headline, payload.get("description"), cta, image_hash=image_hash)
-                prog["ads"][key] = made
-                save()
-    except meta.MetaAdsError as e:
-        save()
-        with db._conn() as con:
-            _task_log(con, task_id, user, "launch", f"Launch stopped: {e}")
-        raise HTTPException(400, f"{e} What was already made is kept; press Launch again after fixing it.")
-    with db._conn() as con:
-        if waiting:
-            _task_log(con, task_id, user, "launch", f"Campaign made (paused); Meta is still processing "
-                                                    f"{len(waiting)} video{'s' if len(waiting) > 1 else ''}")
-        else:
-            prog["done_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
-            con.execute("UPDATE tasks SET launch = ?, status = 'launched', closed_at = datetime('now') WHERE id = ?",
-                        (json.dumps(prog), task_id))
-            _task_log(con, task_id, user, "launch", f"Launched on Meta (paused): {len(prog['ads'])} ad"
-                                                    f"{'s' if len(prog['ads']) != 1 else ''}, campaign {prog['campaign_id']}")
-    return {"ok": True, "waiting": waiting, "campaign_id": prog["campaign_id"], "ads": len(prog["ads"]),
-            "account_id": act}
 
 
 class _Static(StaticFiles):

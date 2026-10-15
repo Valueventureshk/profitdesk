@@ -323,7 +323,8 @@ async def launch_options(token: str, account_id: str) -> dict:
                 rows = await _get_all(client, path, token, {"fields": fields, "limit": 100})
                 out[key] = [{"id": str(x["id"]), "name": x.get("name") or x["id"]} for x in rows]
             except MetaAdsError as e:
-                out["errors"].append(str(e))
+                if str(e) not in out["errors"]:
+                    out["errors"].append(str(e))
     return out
 
 
@@ -355,9 +356,13 @@ async def video_thumbnail(client, token: str, video_id: str):
     return pick.get("uri") if pick else None
 
 
-async def create_campaign(client, token, account_id, name, validate=False) -> str:
-    data = {"name": name, "objective": "OUTCOME_SALES", "status": "PAUSED",
-            "special_ad_categories": [], "is_adset_budget_sharing_enabled": "false"}
+async def create_campaign(client, token, account_id, name, validate=False, daily_minor=None) -> str:
+    """daily_minor set = campaign budget (CBO): Meta shares it across the ad sets."""
+    data = {"name": name, "objective": "OUTCOME_SALES", "status": "PAUSED", "special_ad_categories": []}
+    if daily_minor:
+        data.update({"daily_budget": daily_minor, "bid_strategy": "LOWEST_COST_WITHOUT_CAP"})
+    else:
+        data["is_adset_budget_sharing_enabled"] = "false"
     if validate:
         data["execution_options"] = ["validate_only"]
     got = await _post(client, f"act_{account_id}/campaigns", token, data)
@@ -366,12 +371,13 @@ async def create_campaign(client, token, account_id, name, validate=False) -> st
 
 async def create_adset(client, token, account_id, campaign_id, name, daily_minor, pixel_id, countries,
                        validate=False) -> str:
-    data = {"name": name, "campaign_id": campaign_id, "status": "PAUSED", "daily_budget": daily_minor,
+    data = {"name": name, "campaign_id": campaign_id, "status": "PAUSED",
             "billing_event": "IMPRESSIONS", "optimization_goal": "OFFSITE_CONVERSIONS",
-            "bid_strategy": "LOWEST_COST_WITHOUT_CAP",
             "promoted_object": {"pixel_id": pixel_id, "custom_event_type": "PURCHASE"},
             "targeting": {"geo_locations": {"countries": countries},
                           "targeting_automation": {"advantage_audience": 1}}}
+    if daily_minor:                                  # None = the campaign holds the budget (CBO)
+        data.update({"daily_budget": daily_minor, "bid_strategy": "LOWEST_COST_WITHOUT_CAP"})
     if validate:
         data["execution_options"] = ["validate_only"]
     got = await _post(client, f"act_{account_id}/adsets", token, data)

@@ -35,6 +35,7 @@
       <div class="scm-searchbox tk-search"><span>⌕</span><input id="q" type="search" placeholder="Search tasks, collections, links"></div>
       <select id="fPerson" class="control" data-manage-only><option value="">Everyone</option></select>
       <select id="fStore" class="control"><option value="">All stores</option></select>
+      <button class="btn tk-launchsel" id="launchSel" hidden>Launch selected (0)</button>
       <button class="btn btn-primary" id="newTask" data-manage-only>+ New task</button>
     </div>
 
@@ -73,7 +74,7 @@
         <button data-kind="listing" class="on">Listing + ads</button>
         <button data-kind="custom">Custom task</button>
       </div>
-      <label class="field"><span>Title <em class="tk-opt" data-listing>(leave empty to use “List &lt;collection&gt;”)</em></span><input id="eName" class="control" maxlength="200"></label>
+      <label class="field"><span>Title</span><input id="eName" class="control" maxlength="200" placeholder="e.g. Autumn knitwear: collection + ads"></label>
       <div class="tk-row">
         <label class="field"><span>Store</span><select id="eStore" class="control"><option value="">No store</option></select></label>
         <label class="field"><span>Give it to</span><select id="eWho" class="control"><option value="">Nobody yet</option></select></label>
@@ -83,29 +84,42 @@
         <label class="field"><span>Priority</span><select id="ePrio" class="control"><option value="normal">Normal</option><option value="high">High</option></select></label>
       </div>
       <p class="hint tk-wa" id="eWa" hidden></p>
-      <label class="field"><span>Special notes <em class="tk-opt">(staff always see this first)</em></span><textarea id="eNotes" class="control" rows="3"></textarea></label>
 
       <div data-listing>
-        <label class="field"><span>Competitor ad links <em class="tk-opt">(Facebook ad / Ad Library links, one per line)</em></span><textarea id="eCompetitor" class="control" rows="2" placeholder="https://www.facebook.com/ads/library/?id=…"></textarea></label>
-        <label class="field"><span>Collection to list</span><input id="eCollection" class="control" placeholder="e.g. Autumn knitwear"></label>
-        <label class="field"><span>Products <em class="tk-opt">(links or names, one per line)</em></span><textarea id="eProducts" class="control" rows="3"></textarea></label>
-        <div class="field"><span>What to build</span>
-          <div class="tk-checks" id="ePages"></div></div>
-        <label class="field"><span>Ad angle / copy direction</span><textarea id="eAngle" class="control" rows="3"></textarea></label>
-        <label class="field"><span>Headline ideas <em class="tk-opt">(one per line)</em></span><textarea id="eHeadlines" class="control" rows="2"></textarea></label>
-        <div class="tk-row">
-          <label class="field"><span>Daily budget (ad account currency)</span><input id="eBudget" class="control" inputmode="decimal" placeholder="50"></label>
-          <label class="field"><span>Countries</span><input id="eCountries" class="control" placeholder="US CA GB"></label>
-        </div>
+        <h4 class="tk-formhead">What we're copying</h4>
+        <label class="field"><span>Competitor Meta ad links <em class="tk-opt">(Facebook ad / Ad Library links, one per line)</em></span><textarea id="eCompetitor" class="control" rows="2" placeholder="https://www.facebook.com/ads/library/?id=…"></textarea></label>
+        <label class="field"><span>Their ad's landing page / advertorial links</span><textarea id="eCompLanding" class="control" rows="2" placeholder="https://…"></textarea></label>
+        <label class="field"><span>Their product or collection links</span><textarea id="eCompProducts" class="control" rows="2" placeholder="https://…"></textarea></label>
+        <h4 class="tk-formhead">To do</h4>
+        <div class="tk-checks tk-todo" id="eTodo"></div>
+        <div class="tk-addtodo"><input id="eTodoNew" class="control" placeholder="Add another to-do, e.g. “Translate the advertorial to German”"><button type="button" class="btn btn-sm" id="eTodoAdd">Add</button></div>
+        <p class="hint">Staff hand back the result of each ticked item, or a note saying why they couldn't. Every task also hands back one main landing page link: that's where the ads go.</p>
       </div>
       <label class="field" data-custom-only><span>What needs doing</span><textarea id="eDesc" class="control" rows="6"></textarea></label>
-      <label class="field" data-listing><span>Anything else</span><textarea id="eDesc2" class="control" rows="2"></textarea></label>
-      <p class="hint">Reference files (product photos, examples) can be added once the task is made.</p>
+
+      <h4 class="tk-formhead">Special instructions <em class="tk-opt">(staff always see these first)</em></h4>
+      <textarea id="eNotes" class="control tk-notes" rows="3" placeholder="Write them here, and/or record a voice note or your screen"></textarea>
+      <div class="tk-recbar">
+        <button type="button" class="btn btn-sm" data-rec="voice">🎙 Record voice note</button>
+        <button type="button" class="btn btn-sm" data-rec="screen">🖥 Record screen</button>
+        <label class="btn btn-sm">⬆ Upload a recording<input type="file" accept="audio/*,video/*" id="eRecFile" multiple hidden></label>
+      </div>
+      <div class="tk-recs" id="eRecs"></div>
       <div class="row-actions"><button class="btn btn-primary" id="eSave">Create task</button></div>
     </div>
   </div>
 </div>
 
+<!-- launch one or several approved tasks with a strategy -->
+<div class="drawer tk-drawer" id="launcher" hidden>
+  <div class="drawer-scrim" data-close></div>
+  <div class="drawer-panel">
+    <div class="drawer-head"><h2>Launch on Meta</h2><button class="btn btn-sm btn-ghost" data-close>Close</button></div>
+    <div class="drawer-body" id="lBody"></div>
+  </div>
+</div>
+
+<div class="tk-recording" id="recBar" hidden><span class="tk-dot"></span><span id="recTime">Recording 0:00</span><button class="btn btn-sm" id="recStop">Stop</button></div>
 <div id="toast" class="toast" hidden></div>
 <script src="/static/nav.js"></script>
 <script src="/static/chat.js"></script>

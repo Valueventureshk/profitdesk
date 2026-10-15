@@ -125,3 +125,54 @@
 .tk-wa::before { content: "📱 "; }
 .tk-wa.tk-wa-off { color: var(--muted, #8A8578); }
 .tk-log-row.whatsapp span, .tk-log-row.followup span { color: var(--spend, #3A4E7A); }
+
+/* listing card: to-do picks, per-item hand-back, recordings, combined launch */
+.tk-formhead { font-size: 12.5px; font-weight: 650; color: var(--ink); margin: 18px 0 6px; padding-top: 12px; border-top: 1px solid var(--line-soft); }
+.tk-todo { margin: 4px 0 8px; }
+.tk-todo label.tk-custom { color: #2563EB; }
+.tk-addtodo { display: flex; gap: 8px; }
+.tk-addtodo .control { flex: 1; }
+.tk-notes { width: 100%; }
+.tk-recbar { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.tk-recbar label.btn { cursor: pointer; }
+.tk-recs { display: flex; flex-direction: column; gap: 8px; margin: 8px 0; }
+.tk-rec audio { width: 100%; }
+.tk-rec video { width: 100%; max-height: 360px; border-radius: 8px; background: #000; }
+.tk-rec .tk-file-act { padding: 2px 0; color: var(--muted); }
+.tk-recq { display: flex; gap: 8px; align-items: center; font-size: 12.5px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; }
+.tk-recq button { margin-left: auto; font: inherit; font-size: 12px; background: none; border: 0; color: var(--muted); cursor: pointer; }
+.tk-recording { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 60; display: flex; align-items: center; gap: 10px;
+  background: var(--ink); color: var(--panel); padding: 8px 10px 8px 14px; border-radius: 999px; box-shadow: 0 6px 24px rgba(15, 23, 42, .25); font-size: 13px; }
+.tk-dot { width: 9px; height: 9px; border-radius: 50%; background: #EF4444; animation: tk-blink 1s infinite; }
+@keyframes tk-blink { 50% { opacity: .3; } }
+
+.tk-main { background: var(--tint); border: 1px solid rgba(15, 157, 116, .25); border-radius: 10px; padding: 2px 12px; margin-bottom: 10px; }
+[data-theme="dark"] .tk-main { background: rgba(16, 185, 129, .08); }
+.tk-item { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin: 8px 0; }
+.tk-item-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 13px; }
+.tk-item .tk-files { margin-top: 8px; }
+.tk-cant { margin-top: 6px; font-size: 12.5px; }
+.tk-cant summary { cursor: pointer; color: var(--muted); }
+.tk-cant textarea { width: 100%; margin-top: 6px; }
+
+.tk-card { position: relative; }
+.tk-card.picked { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(16, 185, 129, .25); }
+.tk-sel { position: absolute; top: 8px; right: 8px; display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); cursor: pointer; }
+.tk-sel input { margin: 0; }
+.tk-launchsel { border-color: var(--accent); color: var(--up); font-weight: 600; }
+
+.tk-ltasks { display: flex; flex-direction: column; gap: 8px; }
+.tk-ltask { display: flex; justify-content: space-between; gap: 12px; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font-size: 12.5px; overflow-wrap: anywhere; }
+.tk-ltask.bad { border-color: rgba(220, 38, 38, .4); }
+.tk-bad { color: var(--down); }
+.tk-lthumbs { display: flex; align-items: center; gap: 4px; flex: none; }
+.tk-lthumbs img, .tk-lthumbs .tk-fileicon { width: 34px; height: 34px; object-fit: cover; border-radius: 6px; background: var(--line-soft); display: grid; place-items: center; font-size: 8px; }
+.tk-strats { display: flex; flex-direction: column; gap: 8px; }
+.tk-strat { display: flex; gap: 10px; align-items: flex-start; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; cursor: pointer; }
+.tk-strat input { width: auto; margin: 3px 0 0; }
+.tk-strat b { display: block; font-size: 13px; }
+.tk-strat em { display: block; font-style: normal; font-size: 12px; color: var(--muted); margin-top: 2px; line-height: 1.45; }
+.tk-strat:has(input:checked) { border-color: var(--accent); background: var(--tint); }
+[data-theme="dark"] .tk-strat:has(input:checked) { background: rgba(16, 185, 129, .08); }
+.tk-strat.off { opacity: .45; }
+@media (max-width: 900px) { .tk-ltask { flex-direction: column; } }

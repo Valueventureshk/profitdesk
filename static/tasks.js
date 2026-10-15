@@ -24,7 +24,11 @@ async function api(url, opts = {}) {
   const r = await fetch(url, init);
   let body = {};
   try { body = await r.json(); } catch { /* empty */ }
-  if (!r.ok) throw new Error(body.detail || body.error || `Something went wrong (${r.status}).`);
+  if (!r.ok) {
+    const err = new Error(body.detail || body.error || `Something went wrong (${r.status}).`);
+    err.body = body;
+    throw err;
+  }
   return body;
 }
 const linkify = (u) => /^https?:\/\//.test(u) ? `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(u)}</a>` : esc(u);
@@ -41,7 +45,11 @@ const dueText = (d, today) => {
   return `<span class="tk-due${late ? " late" : ""}">${late ? "Late · " : "Due "}${txt}</span>`;
 };
 
-const PAGES = ["Collection page", "Product pages", "Landing page", "Advertorial", "Ad creatives", "Ad copy"];
+const TODO_DEFAULT = { advertorial: "Create advertorial", collection: "Create collection", product_pages: "Create product pages",
+  branded_page: "Create branded page", creatives: "Create creatives", ad_copy: "Ad copy, headline and description" };
+const todoNames = () => (state.data && state.data.todo) || (state.task && state.task.todo) || TODO_DEFAULT;
+const todoLabel = (k) => todoNames()[k] || k;
+const AUDIO = /\.(m4a|mp3|wav|ogg|oga|aac)$|^voice-note/i;
 const COLUMNS = [
   ["todo", "To do"], ["doing", "In progress"], ["changes", "Changes asked"],
   ["submitted", "Submitted for review"], ["approved", "Waiting to launch"],
@@ -51,7 +59,8 @@ const CTA_NAMES = { SHOP_NOW: "Shop now", LEARN_MORE: "Learn more", ORDER_NOW: "
 const IMG = /\.(jpe?g|png|gif|webp|heic|heif)$/i;
 const VID = /\.(mp4|mov|m4v|webm|avi)$/i;
 
-let state = { page: PDUrl.get("page") || "board", data: null, open: null, editing: null, kind: "listing" };
+let state = { page: PDUrl.get("page") || "board", data: null, open: null, editing: null, kind: "listing",
+  sel: new Set(), recs: [], todo: [] };
 
 /* ------------------------------------------------ board + history */
 
@@ -85,8 +94,12 @@ function fillPickers() {
 
 function card(t) {
   const today = state.data.today;
-  const pages = (t.brief.pages || []).slice(0, 4).map((p) => `<span class="tk-tag">${esc(p)}</span>`).join("");
-  return `<button class="tk-card${t.priority === "high" ? " high" : ""}" data-open="${t.id}">
+  const short = (k) => (k === "ad_copy" ? "Ad copy" : todoLabel(k).replace(/^Create (\w)/, (m, c) => c.toUpperCase()));
+  const items = t.brief.todo ? t.brief.todo.map(short) : (t.brief.pages || []);
+  const pages = items.slice(0, 6).map((p) => `<span class="tk-tag">${esc(p)}</span>`).join("");
+  const pick = state.data.manage && t.status === "approved" && t.kind === "listing";
+  return `<div class="tk-card${t.priority === "high" ? " high" : ""}${state.sel.has(t.id) ? " picked" : ""}" data-open="${t.id}" role="button" tabindex="0">
+    ${pick ? `<label class="tk-sel" title="Pick to launch together"><input type="checkbox" data-sel="${t.id}"${state.sel.has(t.id) ? " checked" : ""}> Launch</label>` : ""}
     <div class="tk-card-top"><span class="tk-kindtag ${t.kind}">${t.kind === "listing" ? "Listing + ads" : "Custom"}</span>
       ${t.priority === "high" ? '<span class="tk-high">High</span>' : ""}${t.special_notes ? '<span class="tk-noteflag" title="Has special notes">Notes</span>' : ""}</div>
     <strong>${esc(t.title)}</strong>
@@ -94,7 +107,15 @@ function card(t) {
     ${pages ? `<div class="tk-tags">${pages}</div>` : ""}
     <div class="tk-card-foot"><span class="tk-who">${t.assignee ? esc(t.assignee) : "<em>Not given to anyone</em>"}</span>
       ${dueText(t.due, today)}${t.files_staff ? `<span class="tk-files" title="Files staff uploaded">📎 ${t.files_staff}</span>` : ""}</div>
-  </button>`;
+  </div>`;
+}
+
+function selBar() {
+  const ok = new Set((state.data ? state.data.tasks : []).filter((t) => t.status === "approved").map((t) => t.id));
+  for (const id of [...state.sel]) if (!ok.has(id)) state.sel.delete(id);
+  const b = $("launchSel");
+  b.hidden = !state.sel.size || state.page !== "board";
+  b.textContent = `Launch selected (${state.sel.size})…`;
 }
 
 function renderBoard() {
@@ -105,6 +126,7 @@ function renderBoard() {
       <div class="tk-col-head"><span>${name}</span><b>${(by[k] || []).length}</b></div>
       <div class="tk-col-body">${(by[k] || []).map(card).join("") || '<p class="tk-empty">Nothing here</p>'}</div>
     </div>`).join("");
+  selBar();
 }
 
 function renderHistory() {
@@ -154,49 +176,86 @@ function uploader(side, kind, label) {
     <span>${label}</span><em>Click or drop files here · images and videos up to 500 MB each</em></label>`;
 }
 
+function player(f, canRemove) {
+  const url = `/api/tasks/file/${f.id}`;
+  const audio = (f.mime || "").startsWith("audio") || AUDIO.test(f.name);
+  return `<div class="tk-rec">${audio ? `<audio src="${url}" controls preload="metadata"></audio>` : `<video src="${url}" controls preload="metadata"></video>`}
+    <div class="tk-file-act"><span>${audio ? "🎙" : "🖥"} ${esc(f.who || "")} · ${when(f.at)}</span>
+      <span><a href="${url}?download=1">Download</a>${canRemove ? ` · <button data-rmfile="${f.id}">Remove</button>` : ""}</span></div></div>`;
+}
+
 function renderTask() {
   const t = state.task;
   const b = t.brief, r = t.result;
   const manage = t.manage, closed = ["launched", "done", "cancelled"].includes(t.status);
   const canWork = (t.mine || manage) && !closed && (manage || !["submitted", "approved"].includes(t.status));
-  const adminFiles = t.files.filter((f) => f.side === "admin");
+  const recs = t.files.filter((f) => f.side === "admin" && f.kind === "instruction");
+  const adminFiles = t.files.filter((f) => f.side === "admin" && f.kind !== "instruction");
   const creatives = t.files.filter((f) => f.side === "staff" && f.kind === "creative");
   const otherFiles = t.files.filter((f) => f.side === "staff" && f.kind !== "creative");
   const me = state.data && state.data.me ? state.data.me.email : "";
   const canRm = (f) => !closed && (manage || (f.by === me && t.status !== "approved"));
+  const dis = canWork ? "" : " disabled";
   $("dTitle").textContent = t.title;
 
+  const links = (v) => lines(v).map(linkify).join("<br>");
+  const todo = b.todo || null;                 // null = a task from before the to-do picks
   const briefRows = [
-    ["Competitor ads", lines(b.competitor_ads).map(linkify).join("<br>")],
-    ["Collection", b.collection && esc(b.collection)], ["Products", lines(b.products).map(linkify).join("<br>")],
+    ["Competitor ads", links(b.competitor_ads)], ["Their landing page", links(b.competitor_landing)],
+    ["Their products", links(b.competitor_products)],
+    ["To do", (todo || []).map((k) => `<span class="tk-tag">${esc(todoLabel(k))}</span>`).join(" ")],
+    ["Collection", b.collection && esc(b.collection)], ["Products", links(b.products)],
     ["Build", (b.pages || []).map((p) => `<span class="tk-tag">${esc(p)}</span>`).join(" ")],
     ["Ad angle", b.angle && esc(b.angle).replace(/\n/g, "<br>")], ["Headline ideas", lines(b.headlines).map(esc).join("<br>")],
-    ["Daily budget", b.budget && esc(b.budget)], ["Countries", b.countries && esc(b.countries)], ["Details", b.description && esc(b.description).replace(/\n/g, "<br>")],
+    ["Daily budget", b.budget && esc(b.budget)], ["Countries", b.countries && esc(b.countries)],
+    ["Details", b.description && esc(b.description).replace(/\n/g, "<br>")],
   ].filter(([, v]) => v);
 
   const f = (k, label, ph = "", rows = 0) => rows
-    ? `<label class="field"><span>${label}</span><textarea class="control" data-r="${k}" rows="${rows}" placeholder="${esc(ph)}"${canWork ? "" : " disabled"}>${esc(r[k] || "")}</textarea></label>`
-    : `<label class="field"><span>${label}</span><input class="control" data-r="${k}" placeholder="${esc(ph)}" value="${esc(r[k] || "")}"${canWork ? "" : " disabled"}></label>`;
-
-  const handBack = t.kind === "listing" ? `
-      <div class="tk-row">${f("collection_url", "Collection link", "https://store.com/collections/…")}${f("landing_url", "Landing page link (the ads go here)", "https://…")}</div>
-      <div class="tk-row">${f("advertorial_url", "Advertorial link", "https://…")}${f("other_links", "Other links", "one per line", 1)}</div>
-      ${f("product_urls", "Product page links (one per line)", "", 3)}
-      <h4>Ad copy</h4>
-      ${f("primary_text", "Primary text", "The text above the ad", 5)}
+    ? `<label class="field"><span>${label}</span><textarea class="control" data-r="${k}" rows="${rows}" placeholder="${esc(ph)}"${dis}>${esc(r[k] || "")}</textarea></label>`
+    : `<label class="field"><span>${label}</span><input class="control" data-r="${k}" placeholder="${esc(ph)}" value="${esc(r[k] || "")}"${dis}></label>`;
+  const creativeBox = `<div class="tk-files">${creatives.map((x) => fileTile(x, canRm(x))).join("") || '<p class="tk-empty">No creatives yet</p>'}</div>
+      ${canWork ? uploader("staff", "creative", "+ Upload ad creatives") : ""}`;
+  const copyBox = `${f("primary_text", "Primary text", "The text above the ad", 5)}
       <div class="tk-row">${f("headline", "Headline (one per line if several)", "", 2)}${f("ad_description", "Description (optional)", "", 2)}</div>
-      <label class="field"><span>Button</span><select class="control" data-r="cta"${canWork ? "" : " disabled"}>${Object.entries(CTA_NAMES).map(([k, v]) =>
-        `<option value="${k}"${(r.cta || "SHOP_NOW") === k ? " selected" : ""}>${v}</option>`).join("")}</select></label>
-      <h4>Ad creatives <em class="tk-opt">(these go in the ads)</em></h4>
-      <div class="tk-files">${creatives.map((x) => fileTile(x, canRm(x))).join("") || '<p class="tk-empty">No creatives yet</p>'}</div>
-      ${canWork ? uploader("staff", "creative", "+ Upload ad creatives") : ""}
-      <h4>Other files</h4>
-      <div class="tk-files">${otherFiles.map((x) => fileTile(x, canRm(x))).join("") || '<p class="tk-empty">None</p>'}</div>
-      ${canWork ? uploader("staff", "file", "+ Upload other files") : ""}`
-    : `${f("other_links", "Links (one per line)", "", 3)}
+      <label class="field"><span>Button</span><select class="control" data-r="cta"${dis}>${Object.entries(CTA_NAMES).map(([k, v]) =>
+        `<option value="${k}"${(r.cta || "SHOP_NOW") === k ? " selected" : ""}>${v}</option>`).join("")}</select></label>`;
+  const ITEM = {
+    advertorial: () => f("advertorial_url", "Advertorial link", "https://…"),
+    collection: () => f("collection_url", "Collection link", "https://store.com/collections/…"),
+    product_pages: () => f("product_urls", "Product page links (one per line)", "", 3),
+    branded_page: () => f("branded_url", "Branded page link", "https://…"),
+    creatives: () => creativeBox,
+    ad_copy: () => copyBox,
+  };
+  const cant = r.cant || {}, custom = r.custom || {};
+  const OUT = { advertorial: "advertorial_url", collection: "collection_url", product_pages: "product_urls", branded_page: "branded_url" };
+  const made = (k) => k === "creatives" ? creatives.length > 0
+    : k === "ad_copy" ? !!(r.primary_text && r.headline)
+    : OUT[k] ? !!r[OUT[k]] : !!custom[k];
+  const item = (k) => {
+    const state_ = cant[k] ? '<span class="tk-st tk-st-changes">Couldn\'t do</span>' : made(k) ? '<span class="tk-st tk-st-done">✓ Made</span>' : '<span class="tk-st">To do</span>';
+    const body = ITEM[k] ? ITEM[k]() : `<label class="field"><span>Link or answer</span><textarea class="control" data-custom="${esc(k)}" rows="2"${dis}>${esc(custom[k] || "")}</textarea></label>`;
+    return `<div class="tk-item"><div class="tk-item-head"><b>${esc(todoLabel(k))}</b>${state_}</div>
+      ${body}
+      <details class="tk-cant"${cant[k] ? " open" : ""}><summary>Can't do this? Tell the admin why</summary>
+        <textarea class="control" data-cant="${esc(k)}" rows="2" placeholder="e.g. The supplier has no photos of the blue one"${dis}>${esc(cant[k] || "")}</textarea></details></div>`;
+  };
+
+  const handBack = t.kind !== "listing" ? `${f("other_links", "Links (one per line)", "", 3)}
       <h4>Files</h4>
       <div class="tk-files">${creatives.concat(otherFiles).map((x) => fileTile(x, canRm(x))).join("") || '<p class="tk-empty">None</p>'}</div>
-      ${canWork ? uploader("staff", "file", "+ Upload files") : ""}`;
+      ${canWork ? uploader("staff", "file", "+ Upload files") : ""}`
+    : `<div class="tk-main">${f("landing_url", "Main landing page link · the ads go here", "https://…")}</div>
+      ${todo ? todo.map(item).join("") : `
+        <div class="tk-row">${f("collection_url", "Collection link", "https://store.com/collections/…")}${f("advertorial_url", "Advertorial link", "https://…")}</div>
+        ${f("product_urls", "Product page links (one per line)", "", 3)}
+        <h4>Ad copy</h4>${copyBox}
+        <h4>Ad creatives <em class="tk-opt">(these go in the ads)</em></h4>${creativeBox}`}
+      ${f("other_links", "Other links (one per line)", "", 2)}
+      <h4>Other files</h4>
+      <div class="tk-files">${otherFiles.map((x) => fileTile(x, canRm(x))).join("") || '<p class="tk-empty">None</p>'}</div>
+      ${canWork ? uploader("staff", "file", "+ Upload other files") : ""}`;
 
   // the buttons that move the task on, for who's looking
   const acts = [];
@@ -213,14 +272,17 @@ function renderTask() {
     acts.push(`<button class="btn" data-move="approved" data-confirm="Reopen this task (back to Waiting to launch)?">Reopen</button>`);
   }
   const adminActs = manage ? `<div class="tk-admin-acts">
-      ${!closed && t.assignee_id ? `<button class="btn btn-sm" data-followup${t.wa.ready && t.wa.number ? "" : ` disabled title="${t.wa.ready ? "No WhatsApp number for this person: add it in Settings → WhatsApp" : "WhatsApp isn't connected (Settings → WhatsApp)"}"`}>Follow up on WhatsApp</button>` : ""}
+      ${!closed && t.assignee_id ? `<button class="btn btn-sm" data-followup${t.wa && t.wa.ready && t.wa.number ? "" : ` disabled title="${t.wa && t.wa.ready ? "No WhatsApp number for this person: add it in Settings → WhatsApp" : "WhatsApp isn't connected (Settings → WhatsApp)"}"`}>Follow up on WhatsApp</button>` : ""}
       ${!closed ? '<button class="btn btn-sm btn-ghost" data-edit>Edit brief</button>' : ""}
       ${!closed ? '<button class="btn btn-sm btn-ghost" data-move="cancelled" data-confirm="Cancel this task? It moves to History.">Cancel task</button>' : ""}
       <button class="btn btn-sm btn-ghost btn-danger" data-delete>Delete</button></div>` : "";
 
   const launch = t.launch || {};
-  const launchInfo = launch.campaign_id ? `<div class="tk-launched">Meta campaign <b>${esc(launch.campaign_id)}</b> · ${Object.keys(launch.ads || {}).length} ad(s), all paused.
-      <a href="https://adsmanager.facebook.com/adsmanager/manage/campaigns?act=${esc(launch.account_id || "")}&selected_campaign_ids=${esc(launch.campaign_id)}" target="_blank" rel="noopener">Open in Ads Manager ↗</a></div>` : "";
+  const nAds = typeof launch.ads === "number" ? launch.ads : Object.keys(launch.ads || {}).length;
+  const launchInfo = launch.campaign_id ? `<div class="tk-launched">Launched on Meta${launch.strategy_name ? ` with <b>${esc(launch.strategy_name)}</b>` : ""}:
+      campaign <b>${esc(launch.campaign_id)}</b>, ${nAds} ad(s) from this task, all paused${(launch.with || []).length ? `, together with ${launch.with.map((i) => `<a href="#" data-open="${i}">#${i}</a>`).join(", ")}` : ""}.
+      <a href="https://adsmanager.facebook.com/adsmanager/manage/campaigns?act=${esc(launch.account_id || "")}&selected_campaign_ids=${esc(launch.campaign_id)}" target="_blank" rel="noopener">Open in Ads Manager ↗</a></div>`
+    : launch.batch ? `<div class="warn">Launch #${esc(launch.batch)} started but hasn't finished. Press “Launch ads on Meta…” to carry it on.</div>` : "";
 
   $("dBody").innerHTML = `
     <div class="tk-head">
@@ -231,7 +293,13 @@ function renderTask() {
       ${t.due ? `<span>· ${dueText(t.due, state.data && state.data.today)}</span>` : ""}
       ${t.priority === "high" ? '<span class="tk-high">High priority</span>' : ""}
     </div>
-    ${t.special_notes ? `<div class="tk-special"><b>Special notes</b><p>${esc(t.special_notes).replace(/\n/g, "<br>")}</p></div>` : ""}
+    ${t.special_notes || recs.length || (manage && !closed) ? `<div class="tk-special"><b>Special instructions</b>
+      ${t.special_notes ? `<p>${esc(t.special_notes).replace(/\n/g, "<br>")}</p>` : ""}
+      ${recs.length ? `<div class="tk-recs">${recs.map((x) => player(x, manage && !closed)).join("")}</div>` : ""}
+      ${manage && !closed ? `<div class="tk-recbar"><button type="button" class="btn btn-sm" data-rec="voice">🎙 Record voice note</button>
+        <button type="button" class="btn btn-sm" data-rec="screen">🖥 Record screen</button>
+        <label class="btn btn-sm">⬆ Upload a recording<input type="file" accept="audio/*,video/*" data-recfile multiple hidden></label></div>` : ""}
+    </div>` : ""}
     ${launchInfo}
     <section class="tk-sec"><h3>The brief <em class="tk-opt">from ${esc((t.created_by || "").split("@")[0])}</em></h3>
       ${briefRows.length ? `<dl class="tk-dl">${briefRows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>` : '<p class="tk-empty">No details given</p>'}
@@ -243,7 +311,6 @@ function renderTask() {
       ${f("notes", "Notes for the admin", "", 2)}
     </section>
     <div class="tk-acts">${acts.join("")}</div>
-    <div id="launchBox"></div>
     ${adminActs}
     <section class="tk-sec"><h3>Activity</h3>
       <div class="tk-log">${t.log.slice().reverse().map((l) => `<div class="tk-log-row ${l.action}"><b>${esc(l.who)}</b>
@@ -254,8 +321,10 @@ function renderTask() {
 }
 
 function readResult() {
-  const out = {};
+  const out = { custom: {}, cant: {} };
   for (const el of $("dBody").querySelectorAll("[data-r]")) out[el.dataset.r] = el.value;
+  for (const el of $("dBody").querySelectorAll("[data-custom]")) out.custom[el.dataset.custom] = el.value;
+  for (const el of $("dBody").querySelectorAll("[data-cant]")) out.cant[el.dataset.cant] = el.value;
   return out;
 }
 
@@ -278,12 +347,19 @@ async function move(status, comment = "") {
   } catch (e) { toast(e.message, true); }
 }
 
+async function sendFiles(taskId, side, kind, files) {
+  const fd = new FormData();
+  fd.append("side", side);
+  fd.append("kind", kind);
+  for (const f of files) fd.append("files", f);
+  const r = await fetch(`/api/tasks/${taskId}/files`, { method: "POST", body: fd });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.detail || body.error || "Upload failed.");
+  return body;
+}
+
 async function upload(drop, files) {
   if (!files.length) return;
-  const fd = new FormData();
-  fd.append("side", drop.dataset.side);
-  fd.append("kind", drop.dataset.kind);
-  for (const f of files) fd.append("files", f);
   // keep what staff typed: save the hand-back first, quietly
   if (drop.dataset.side === "staff" && $("dBody").querySelector("[data-r]:not([disabled])")) {
     try { await api(`/api/tasks/${state.task.id}/result`, { json: { result: readResult(), submit: false } }); } catch { /* upload anyway */ }
@@ -291,31 +367,112 @@ async function upload(drop, files) {
   drop.classList.add("busy");
   drop.querySelector("span").textContent = `Uploading ${files.length} file${files.length > 1 ? "s" : ""}…`;
   try {
-    const r = await fetch(`/api/tasks/${state.task.id}/files`, { method: "POST", body: fd });
-    const body = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(body.detail || "Upload failed.");
+    const body = await sendFiles(state.task.id, drop.dataset.side, drop.dataset.kind, files);
     toast(`Uploaded ${body.added}`);
   } catch (e) { toast(e.message, true); }
   await openTask(state.task.id);
   load();
 }
 
-/* ------------------------------------------------ launch on Meta */
+/* ------------------------------------------------ voice notes + screen recordings */
 
-async function openLaunch() {
-  const box = $("launchBox");
-  box.innerHTML = '<div class="tk-launch"><p class="empty">Reading the ad account…</p></div>';
+let recorder = null;
+async function record(kind) {
+  if (recorder) { toast("A recording is already running: press Stop first.", true); return null; }
+  if (!navigator.mediaDevices || !window.MediaRecorder) { toast("This browser can't record. Use Chrome, or upload a recording.", true); return null; }
+  let stream, extra = [];
+  try {
+    if (kind === "voice") stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    else {
+      const screen = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+      let mic = null;
+      try { mic = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch { /* screen only */ }
+      extra = [screen, mic].filter(Boolean);
+      stream = new MediaStream([...screen.getVideoTracks(), ...(mic ? mic.getAudioTracks() : screen.getAudioTracks())]);
+    }
+  } catch {
+    toast(`Recording didn't start: allow the ${kind === "voice" ? "microphone" : "screen and microphone"} when the browser asks.`, true);
+    return null;
+  }
+  const types = kind === "voice" ? ["audio/webm;codecs=opus", "audio/mp4", "audio/webm"] : ["video/webm;codecs=vp9,opus", "video/webm", "video/mp4"];
+  const mime = types.find((x) => MediaRecorder.isTypeSupported(x)) || "";
+  const mr = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+  const chunks = [];
+  mr.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+  const started = Date.now();
+  const tick = setInterval(() => {
+    const s = Math.round((Date.now() - started) / 1000);
+    $("recTime").textContent = `Recording ${kind === "voice" ? "voice" : "screen"} ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  }, 500);
+  recorder = mr;
+  $("recBar").hidden = false;
+  return new Promise((resolve) => {
+    mr.onstop = () => {
+      clearInterval(tick);
+      for (const s of [stream, ...extra]) for (const tr of s.getTracks()) tr.stop();
+      recorder = null;
+      $("recBar").hidden = true;
+      const type = (mr.mimeType || mime || (kind === "voice" ? "audio/webm" : "video/webm")).split(";")[0];
+      const ext = type.includes("mp4") ? (kind === "voice" ? "m4a" : "mp4") : "webm";
+      const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "");
+      resolve(chunks.length ? new File(chunks, `${kind === "voice" ? "voice-note" : "screen-recording"}-${stamp}.${ext}`, { type }) : null);
+    };
+    for (const tr of stream.getVideoTracks()) tr.onended = () => { if (mr.state !== "inactive") mr.stop(); };  // "Stop sharing"
+    mr.start(1000);
+  });
+}
+$("recStop").onclick = () => { if (recorder && recorder.state !== "inactive") recorder.stop(); };
+
+async function addRecordings(files) {
+  files = files.filter(Boolean);
+  if (!files.length) return;
+  if (!$("editor").hidden) {                 // new / edited task: sent when it's saved
+    state.recs.push(...files);
+    renderRecs();
+    return;
+  }
+  try {
+    toast("Uploading the recording…");
+    await sendFiles(state.task.id, "admin", "instruction", files);
+    toast("Recording added to the special instructions");
+  } catch (e) { toast(e.message, true); }
+  await openTask(state.task.id);
+}
+
+function renderRecs() {
+  $("eRecs").innerHTML = state.recs.map((f, i) => `<div class="tk-recq">${f.type.startsWith("audio") ? "🎙" : "🖥"} ${esc(f.name)}
+    <span class="tk-opt">${(f.size / 1048576).toFixed(1)} MB · sent when you save</span><button type="button" data-unrec="${i}">Remove</button></div>`).join("");
+}
+
+/* ------------------------------------------------ launch on Meta: one or several approved tasks, with a strategy */
+
+async function openLauncher(ids) {
+  $("launcher").hidden = false;
+  const box = $("lBody");
+  box.innerHTML = '<p class="empty">Reading the ad account…</p>';
   let o;
-  try { o = await api(`/api/tasks/${state.task.id}/launch`); } catch (e) { box.innerHTML = `<div class="tk-launch"><p class="warn">${esc(e.message)}</p></div>`; return; }
-  const d = o.defaults;
-  const creatives = state.task.files.filter((f) => f.side === "staff" && f.kind === "creative" && (IMG.test(f.name) || VID.test(f.name)));
-  const done = (o.progress && o.progress.ads) || {};
+  try { o = await api(`/api/tasks/launch/options?ids=${ids.join(",")}`); } catch (e) { box.innerHTML = `<p class="warn">${esc(e.message)}</p>`; return; }
+  const d = o.defaults, pend = o.pending;
+  const blocked = o.tasks.some((t) => t.problems.length);
   const sel = (list, v, none) => `<option value="">${none}</option>` + list.map((x) => `<option value="${esc(x.id)}"${x.id === v ? " selected" : ""}>${esc(x.name)} (${esc(x.id)})</option>`).join("");
-  box.innerHTML = `<div class="tk-launch">
-    <h3>Launch on Meta</h3>
-    <p class="hint">Makes one campaign (Sales), one ad set and one ad per creative in <b>${esc(o.account || o.account_id)}</b> (${esc(o.currency)}).
-      Everything is created <b>paused</b>: check it in Ads Manager, then switch it on there.</p>
+  box.innerHTML = `
+    <p class="hint">Into <b>${esc(o.account || o.account_id)}</b> (${esc(o.store)}, ${esc(o.currency)}). Everything is created <b>paused</b>:
+      check it in Ads Manager, then switch it on there.</p>
     ${o.errors.length ? `<p class="warn">${o.errors.map(esc).join("<br>")}</p>` : ""}
+    ${pend ? `<p class="warn">This launch (#${pend.id}) was started before and ${pend.status === "waiting" ? "is waiting for Meta to process videos" : "stopped"}${pend.error ? `: ${esc(pend.error)}` : ""}.
+      Launch carries on where it stopped, with the same strategy.</p>` : ""}
+    <h4 class="tk-formhead">${o.tasks.length} landing page${o.tasks.length > 1 ? "s" : ""}</h4>
+    <div class="tk-ltasks">${o.tasks.map((t) => `<div class="tk-ltask${t.problems.length ? " bad" : ""}">
+      <div><b>#${t.id} ${esc(t.title)}</b><br>${t.landing_url ? linkify(t.landing_url) : "<em>no landing page</em>"}
+        ${t.headline ? `<br><span class="tk-opt">“${esc(t.headline)}”</span>` : ""}
+        ${t.problems.length ? `<br><span class="tk-bad">This task ${esc(t.problems.join(", "))}.</span>` : ""}</div>
+      <div class="tk-lthumbs">${t.creatives.slice(0, 6).map((c) => c.video ? '<span class="tk-fileicon">VIDEO</span>' : `<img src="/api/tasks/file/${c.id}?thumb=1" alt="">`).join("")}
+        <span class="tk-opt">${t.creatives.length} creative${t.creatives.length === 1 ? "" : "s"}</span></div></div>`).join("")}</div>
+    <h4 class="tk-formhead">Strategy</h4>
+    <div class="tk-strats">${o.strategies.map((s) => `<label class="tk-strat${pend && pend.strategy !== s.key ? " off" : ""}">
+      <input type="radio" name="lStrat" value="${s.key}" data-budget="${s.budget}"${(pend ? pend.strategy : d.strategy) === s.key ? " checked" : ""}${pend ? " disabled" : ""}>
+      <span><b>${esc(s.name)}</b><em>${esc(s.about)}</em></span></label>`).join("")}</div>
+    <p class="hint">These are starter strategies; tell us your own tested ones and they'll be added here.</p>
     <label class="field"><span>Campaign name</span><input class="control" id="lName" value="${esc(d.campaign_name)}"></label>
     <div class="tk-row">
       <label class="field"><span>Facebook Page</span><select class="control" id="lPage">${sel(o.pages, d.page_id, "Pick the Page")}</select></label>
@@ -323,46 +480,43 @@ async function openLaunch() {
         : `<input class="control" id="lPixel" value="${esc(d.pixel_id)}" placeholder="Pixel ID">`}</label>
     </div>
     <div class="tk-row">
-      <label class="field"><span>Daily budget (${esc(o.currency)})</span><input class="control" id="lBudget" inputmode="decimal" value="${esc(d.daily_budget)}"></label>
+      <label class="field"><span id="lBudgetLbl">Daily budget</span><input class="control" id="lBudget" inputmode="decimal" value="${esc(d.daily_budget)}"></label>
       <label class="field"><span>Countries</span><input class="control" id="lCountries" value="${esc(d.countries)}" placeholder="US CA GB"></label>
     </div>
-    <label class="field"><span>Ads go to</span><input class="control" id="lLink" value="${esc(d.link)}"></label>
-    <label class="field"><span>Primary text</span><textarea class="control" id="lMsg" rows="4">${esc(d.message)}</textarea></label>
-    <div class="tk-row">
-      <label class="field"><span>Headline</span><input class="control" id="lHead" value="${esc(d.headline)}"></label>
-      <label class="field"><span>Button</span><select class="control" id="lCta">${Object.entries(CTA_NAMES).map(([k, v]) => `<option value="${k}"${d.cta === k ? " selected" : ""}>${v}</option>`).join("")}</select></label>
-    </div>
-    <label class="field"><span>Description (optional)</span><input class="control" id="lDesc" value="${esc(d.description)}"></label>
-    <div class="field"><span>Creatives (one ad each)</span><div class="tk-pick">${creatives.map((f) => `<label class="${done[f.id] ? "made" : ""}">
-      <input type="checkbox" value="${f.id}" checked${done[f.id] ? " disabled" : ""}>
-      ${IMG.test(f.name) ? `<img src="/api/tasks/file/${f.id}?thumb=1" alt="">` : '<span class="tk-fileicon">VIDEO</span>'}
-      <span>${esc(f.name)}${done[f.id] ? " · made" : ""}</span></label>`).join("") || '<p class="tk-empty">No image or video creatives uploaded</p>'}</div></div>
-    ${o.progress && o.progress.campaign_id ? `<p class="hint">Already made: campaign ${esc(o.progress.campaign_id)}${o.progress.adset_id ? ", ad set" : ""}, ${Object.keys(done).length} ad(s). Launch carries on from there.</p>` : ""}
-    <div class="row-actions"><button class="btn btn-primary" id="lGo">Create paused ads</button><button class="btn" id="lCancel">Close</button></div>
-  </div>`;
-  $("lCancel").onclick = () => { box.innerHTML = ""; };
+    <p class="hint">Each creative becomes one ad, going to its own task's landing page with that task's ad copy.</p>
+    <div class="row-actions"><button class="btn btn-primary" id="lGo"${blocked ? " disabled" : ""}>${pend ? "Carry on the launch" : "Create paused campaign"}</button>
+      <button class="btn" data-close>Close</button></div>`;
+  const budgetLabel = () => {
+    const r = box.querySelector("input[name=lStrat]:checked");
+    $("lBudgetLbl").textContent = `Daily budget (${o.currency}) ${r && r.dataset.budget === "campaign" ? "for the whole campaign" : ids.length > 1 && r && r.value !== "x" ? "per ad set (each landing page)" : "for the ad set"}`;
+  };
+  box.querySelectorAll("input[name=lStrat]").forEach((x) => { x.onchange = budgetLabel; });
+  budgetLabel();
   $("lGo").onclick = async () => {
-    const ids = [...box.querySelectorAll(".tk-pick input:checked")].map((x) => +x.value);
     const btn = $("lGo");
+    const strat = box.querySelector("input[name=lStrat]:checked");
     btn.disabled = true;
     btn.textContent = "Creating on Meta… (videos can take a minute)";
     try {
-      const r = await api(`/api/tasks/${state.task.id}/launch`, { json: {
+      const r = await api("/api/tasks/launch", { json: { ids, strategy: strat ? strat.value : "",
         campaign_name: $("lName").value, page_id: $("lPage").value, pixel_id: $("lPixel").value,
-        daily_budget: $("lBudget").value, countries: $("lCountries").value, link: $("lLink").value,
-        message: $("lMsg").value, headline: $("lHead").value, description: $("lDesc").value, cta: $("lCta").value,
-        file_ids: ids } });
-      if (r.waiting.length) toast(`Campaign made (paused). Meta is still processing ${r.waiting.length} video(s): press Create again in a minute.`, true);
-      else toast(`Done: ${r.ads} paused ad(s) on Meta. Switch them on in Ads Manager.`);
-      await openTask(state.task.id);
+        daily_budget: $("lBudget").value, countries: $("lCountries").value } });
+      if (r.waiting.length) {
+        toast(`Campaign made (paused). Meta is still processing ${r.waiting.length} video(s): press Carry on in a minute.`, true);
+        openLauncher(ids);
+      } else {
+        toast(`Done: ${r.ads} paused ad(s) on Meta. Switch them on in Ads Manager.`);
+        $("launcher").hidden = true;
+        state.sel.clear();
+        if (state.task) await openTask(state.task.id);
+      }
       load();
     } catch (e) {
       toast(e.message, true);
-      btn.disabled = false;
-      btn.textContent = "Create paused ads";
+      if (e.body && e.body.batch_id) openLauncher(ids);
+      else { btn.disabled = false; btn.textContent = "Create paused campaign"; }
     }
   };
-  box.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 /* ------------------------------------------------ new / edit */
@@ -374,9 +528,21 @@ function setKind(kind) {
   for (const el of $("editor").querySelectorAll("[data-custom-only]")) el.hidden = kind !== "custom";
 }
 
+function renderTodo() {
+  const names = todoNames();
+  const custom = state.todo.filter((k) => !names[k]);
+  $("eTodo").innerHTML = Object.entries(names).map(([k, v]) => `<label><input type="checkbox" value="${k}"${state.todo.includes(k) ? " checked" : ""}> ${esc(v)}</label>`).join("")
+    + custom.map((k) => `<label class="tk-custom"><input type="checkbox" value="${esc(k)}" checked> ${esc(k)}</label>`).join("");
+}
+
+function readTodo() {
+  return [...$("eTodo").querySelectorAll("input:checked")].map((x) => x.value);
+}
+
 function openEditor(t = null) {
   state.editing = t ? t.id : null;
-  const b = (t && t.brief) || {};
+  state.editBrief = (t && t.brief) || {};
+  const b = state.editBrief;
   $("eTitle").textContent = t ? "Edit task" : "New task";
   $("eSave").textContent = t ? "Save" : "Create task";
   $("eName").value = t ? t.title : "";
@@ -386,16 +552,13 @@ function openEditor(t = null) {
   $("ePrio").value = t ? t.priority : "normal";
   $("eNotes").value = t ? (t.special_notes || "") : "";
   $("eCompetitor").value = b.competitor_ads || "";
-  $("eCollection").value = b.collection || "";
-  $("eProducts").value = b.products || "";
-  $("eAngle").value = b.angle || "";
-  $("eHeadlines").value = b.headlines || "";
-  $("eBudget").value = b.budget || "";
-  $("eCountries").value = b.countries || "";
+  $("eCompLanding").value = b.competitor_landing || "";
+  $("eCompProducts").value = b.competitor_products || "";
   $("eDesc").value = b.description || "";
-  $("eDesc2").value = b.description || "";
-  const picked = t ? (b.pages || []) : PAGES;
-  $("ePages").innerHTML = PAGES.map((p) => `<label><input type="checkbox" value="${esc(p)}"${picked.includes(p) ? " checked" : ""}> ${esc(p)}</label>`).join("");
+  state.todo = t ? (b.todo || []) : Object.keys(todoNames());
+  renderTodo();
+  state.recs = [];
+  renderRecs();
   setKind(t ? t.kind : "listing");
   waHint();
   $("editor").hidden = false;
@@ -415,30 +578,29 @@ function waHint() {
 
 async function saveEditor() {
   const listing = state.kind === "listing";
-  const brief = listing ? {
-    competitor_ads: $("eCompetitor").value, collection: $("eCollection").value, products: $("eProducts").value, angle: $("eAngle").value,
-    headlines: $("eHeadlines").value, budget: $("eBudget").value, countries: $("eCountries").value,
-    pages: [...$("ePages").querySelectorAll("input:checked")].map((x) => x.value), description: $("eDesc2").value,
-  } : { description: $("eDesc").value };
+  // older tasks keep the brief fields this form no longer shows
+  const brief = listing ? { ...state.editBrief, competitor_ads: $("eCompetitor").value, competitor_landing: $("eCompLanding").value,
+    competitor_products: $("eCompProducts").value, todo: readTodo() } : { ...state.editBrief, description: $("eDesc").value };
   const body = { kind: state.kind, title: $("eName").value, store_id: $("eStore").value, assignee_id: $("eWho").value,
     due: $("eDue").value, priority: $("ePrio").value, special_notes: $("eNotes").value, brief };
+  if (listing && !brief.todo.length && !confirm("Nothing is ticked under To do. Create it anyway?")) return;
   const btn = $("eSave");
   btn.disabled = true;
   try {
-    if (state.editing) {
-      const r = await api(`/api/tasks/${state.editing}`, { method: "PUT", json: body });
-      toast(r.whatsapp ? `Saved · ${r.whatsapp}` : "Saved", /failed|no WhatsApp/.test(r.whatsapp || ""));
-      $("editor").hidden = true;
-      await openTask(state.editing);
-    } else {
-      const r = await api("/api/tasks", { json: body });
-      toast(r.whatsapp ? `Task made · ${r.whatsapp}` : "Task made", /failed|no WhatsApp/.test(r.whatsapp || ""));
-      $("editor").hidden = true;
-      await openTask(r.id);
+    const r = state.editing ? await api(`/api/tasks/${state.editing}`, { method: "PUT", json: body }) : await api("/api/tasks", { json: body });
+    const id = state.editing || r.id;
+    if (state.recs.length) {
+      btn.textContent = "Uploading recordings…";
+      try { await sendFiles(id, "admin", "instruction", state.recs); } catch (e) { toast(`Task saved, but the recording didn't upload: ${e.message}`, true); }
+      state.recs = [];
     }
+    toast(`${state.editing ? "Saved" : "Task made"}${r.whatsapp ? ` · ${r.whatsapp}` : ""}`, /failed|no WhatsApp/.test(r.whatsapp || ""));
+    $("editor").hidden = true;
+    await openTask(id);
     load();
   } catch (e) { toast(e.message, true); }
   btn.disabled = false;
+  btn.textContent = state.editing ? "Save" : "Create task";
 }
 
 /* ------------------------------------------------ end of day */
@@ -481,17 +643,23 @@ function showPage(p) {
   $("historyPage").hidden = p !== "history";
   $("dayPage").hidden = p !== "day";
   $("bar").hidden = p === "day";
+  selBar();
   if (p === "day") loadDay(); else load();
 }
 
 document.addEventListener("click", (e) => {
-  const el = e.target.closest("[data-open],[data-close],[data-move],[data-save],[data-submit],[data-changes],[data-launch],[data-edit],[data-delete],[data-comment],[data-rmfile],[data-followup]");
+  if (e.target.closest(".tk-sel")) return;            // the Launch tick box on a card, not the card
+  const el = e.target.closest("[data-open],[data-close],[data-move],[data-save],[data-submit],[data-changes],[data-launch],[data-edit],[data-delete],[data-comment],[data-rmfile],[data-followup],[data-rec],[data-unrec]");
   if (!el) return;
   if (el.dataset.open) { e.preventDefault(); openTask(+el.dataset.open); return; }
   if (el.hasAttribute("data-close")) {
-    if (el.closest("#editor")) $("editor").hidden = true; else closeTask();
+    if (el.closest("#editor")) $("editor").hidden = true;
+    else if (el.closest("#launcher")) $("launcher").hidden = true;
+    else closeTask();
     return;
   }
+  if (el.dataset.rec) { record(el.dataset.rec).then((f) => addRecordings([f])); return; }
+  if (el.dataset.unrec) { state.recs.splice(+el.dataset.unrec, 1); renderRecs(); return; }
   if (el.dataset.move) {
     if (el.dataset.confirm && !confirm(el.dataset.confirm)) return;
     move(el.dataset.move);
@@ -500,7 +668,7 @@ document.addEventListener("click", (e) => {
   else if (el.hasAttribute("data-changes")) {
     const why = prompt("What needs changing? (the staff member sees this)");
     if (why && why.trim()) move("changes", why.trim());
-  } else if (el.hasAttribute("data-launch")) openLaunch();
+  } else if (el.hasAttribute("data-launch")) openLauncher([state.task.id]);
   else if (el.hasAttribute("data-edit")) openEditor(state.task);
   else if (el.hasAttribute("data-followup")) {
     if (!confirm(`WhatsApp ${state.task.assignee} asking for an update on this task? Their reply shows here and comes to you.`)) return;
@@ -523,6 +691,14 @@ document.addEventListener("click", (e) => {
 
 // uploads: pick or drop
 document.addEventListener("change", (e) => {
+  if (e.target.dataset.sel) {
+    const id = +e.target.dataset.sel;
+    if (e.target.checked) state.sel.add(id); else state.sel.delete(id);
+    e.target.closest(".tk-card").classList.toggle("picked", e.target.checked);
+    selBar();
+    return;
+  }
+  if (e.target.matches("[data-recfile], #eRecFile")) { addRecordings([...e.target.files]); e.target.value = ""; return; }
   const drop = e.target.closest(".tk-drop");
   if (drop && e.target.type === "file") upload(drop, [...e.target.files]);
 });
@@ -536,12 +712,23 @@ document.addEventListener("drop", (e) => {
   upload(d, [...e.dataTransfer.files]);
 });
 document.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && e.target.matches(".tk-card")) { openTask(+e.target.dataset.open); return; }
   if (e.key !== "Escape") return;
-  if (!$("editor").hidden) $("editor").hidden = true; else if (!$("drawer").hidden) closeTask();
+  if (!$("launcher").hidden) $("launcher").hidden = true;
+  else if (!$("editor").hidden) $("editor").hidden = true; else if (!$("drawer").hidden) closeTask();
 });
 
 $("pages").onclick = (e) => { const b = e.target.closest("button[data-page]"); if (b) showPage(b.dataset.page); };
 $("newTask").onclick = () => openEditor();
+$("launchSel").onclick = () => openLauncher([...state.sel]);
+$("eTodoAdd").onclick = () => {
+  const v = $("eTodoNew").value.trim();
+  if (!v) return;
+  state.todo = [...readTodo(), v];
+  $("eTodoNew").value = "";
+  renderTodo();
+};
+$("eTodoNew").onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); $("eTodoAdd").click(); } };
 $("eSave").onclick = saveEditor;
 $("eWho").onchange = waHint;
 $("eKind").onclick = (e) => { const b = e.target.closest("button[data-kind]"); if (b) setKind(b.dataset.kind); };
