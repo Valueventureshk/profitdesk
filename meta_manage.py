@@ -47,6 +47,18 @@ CREATE TABLE IF NOT EXISTS mads_actions (         -- every proposal / change, wi
     done_at    TEXT
 );
 CREATE INDEX IF NOT EXISTS mads_actions_store ON mads_actions (store_id, status);
+CREATE TABLE IF NOT EXISTS mads_boosts (          -- "$10 up every purchase": each pixel purchase once
+    store_id    INTEGER NOT NULL,
+    order_key   TEXT    NOT NULL,                 -- Shopify order id (else checkout token / event id)
+    at          TEXT,                             -- when the purchase happened (UTC)
+    value       REAL,
+    campaign    TEXT,                             -- the campaign the pixel credited (utm_campaign)
+    campaign_id TEXT,
+    action_id   INTEGER,                          -- the logged budget change (mads_actions), for Undo
+    outcome     TEXT,
+    raised      INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (store_id, order_key)
+);
 CREATE TABLE IF NOT EXISTS mads_chat (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     store_id   INTEGER NOT NULL,

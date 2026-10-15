@@ -73,3 +73,20 @@
   .ma-rule-fields { grid-template-columns: 1fr 1fr; }
 }
 .ma-log th, .ma-log td { text-align: left; }
+
+.ma-strat { padding: 14px 16px; margin-bottom: 14px; border-left: 4px solid var(--line); }
+.ma-strat.on { border-left-color: var(--up); }
+.ma-strat-head { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+.ma-strat-head b { font-size: 15px; margin-left: 6px; }
+.ma-strat-head .hint { margin: 6px 0 0; max-width: 720px; }
+.ma-strat-head .hint b { font-size: inherit; margin: 0; }
+.ma-strat-acts { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.ma-strat-acts details summary { cursor: pointer; font-size: 12px; color: var(--muted); }
+.ma-strat-acts .ma-rule-fields { grid-template-columns: 1fr 1fr; }
+/* the off switch must always stand out, whatever skin is on */
+.ma-strat .btn.ma-off { background: #DC2626 !important; border-color: #DC2626 !important; color: #fff !important; font-weight: 650; }
+.ma-strat .btn.ma-off:hover { background: #B91C1C !important; border-color: #B91C1C !important; }
+.ma-feed { list-style: none; margin: 10px 0 0; padding: 0; font-size: 12.5px; border-top: 1px solid var(--line-soft); }
+.ma-feed li { display: flex; gap: 10px; padding: 5px 0; border-bottom: 1px solid var(--line-soft); color: var(--muted); }
+.ma-feed li.up { color: var(--ink); }
+.ma-feed time { flex: none; width: 110px; color: var(--faint); font-variant-numeric: tabular-nums; }

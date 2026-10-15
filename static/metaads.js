@@ -68,6 +68,53 @@ function storeInfo() {
   try { localStorage.setItem("pdMetaStore", state.store); } catch { /* private mode */ }
 }
 
+/* ------------------------------------------------ strategy: "$10 up every purchase" (autopilot) */
+
+async function loadStrategy() {
+  if (!state.store) return;
+  let s;
+  try { s = await api(`/api/metaads/strategy?store=${state.store}`); } catch { $("strategy").hidden = true; return; }
+  state.strat = s;
+  const manage = window.pdLevel === "manage";
+  const box = $("strategy");
+  box.hidden = false;
+  box.classList.toggle("on", !!s.on);
+  const feed = s.feed.slice(0, 8).map((f) => `<li class="${f.raised ? "up" : ""}"><time>${when(f.at)}</time>
+    <span>${f.raised ? "▲ " : ""}${esc(f.outcome || "")}</span></li>`).join("");
+  box.innerHTML = `<div class="ma-strat-head">
+      <div><span class="ma-pill ${s.on ? "on" : "off"}">${s.on ? "AUTOPILOT ON" : "Off"}</span>
+        <b>${esc(s.name)}</b>
+        <p class="hint">Every purchase your pixel credits to a Meta campaign raises that campaign's daily budget by
+          <b>${s.currency} ${num(s.step, 0)}</b>, up to <b>${s.currency} ${num(s.cap, 0)}</b> a day per campaign.
+          ${s.on ? `Running since ${when(s.started_at)}: ${s.purchases} purchase${s.purchases === 1 ? "" : "s"}, ${s.raises} raise${s.raises === 1 ? "" : "s"} (+${s.currency} ${num(s.added, 0)}).`
+            : s.stopped_at ? `Switched off ${when(s.stopped_at)}.` : "Counts purchases from the moment it's switched on."}</p></div>
+      ${manage ? `<div class="ma-strat-acts">
+        <button class="btn ${s.on ? "btn-danger ma-off" : "btn-primary"}" id="stratToggle">${s.on ? "Turn off autopilot" : "Turn on"}</button>
+        <details><summary>Settings</summary><div class="ma-rule-fields">
+          <label>Raise by (${s.currency})<input class="control" id="stratStep" value="${s.step}"></label>
+          <label>Cap per campaign (${s.currency}/day)<input class="control" id="stratCap" value="${s.cap}"></label>
+          <div class="row-actions"><button class="btn btn-sm" id="stratSave">Save</button></div></div></details></div>` : ""}
+    </div>
+    ${feed ? `<ul class="ma-feed">${feed}</ul>` : ""}`;
+  if (!manage) return;
+  $("stratToggle").onclick = async () => {
+    const on = !s.on;
+    if (on && !confirm(`Turn on “${s.name}”? From now on every purchase raises its campaign's daily budget by ${s.currency} ${s.step} on Meta, without asking.`)) return;
+    try {
+      await api(`/api/metaads/strategy/${state.store}`, { method: "PUT", json: { on } });
+      toast(on ? "Autopilot on: budgets now rise with every purchase." : "Autopilot off. No more raises.");
+      loadStrategy();
+    } catch (e) { toast(e.message, true); }
+  };
+  $("stratSave").onclick = async () => {
+    try {
+      await api(`/api/metaads/strategy/${state.store}`, { method: "PUT", json: { step: $("stratStep").value, cap: $("stratCap").value } });
+      toast("Saved");
+      loadStrategy();
+    } catch (e) { toast(e.message, true); }
+  };
+}
+
 /* ------------------------------------------------ overview */
 
 async function loadOverview(fresh = false) {
@@ -230,7 +277,7 @@ $("levels").onclick = (e) => {
   for (const x of $("levels").querySelectorAll("button")) x.classList.toggle("on", x === b);
   loadOverview();
 };
-$("store").onchange = () => { state.store = +$("store").value; storeInfo(); showPage(state.page); };
+$("store").onchange = () => { state.store = +$("store").value; storeInfo(); loadStrategy(); showPage(state.page); };
 $("days").onchange = () => loadOverview();
 $("refresh").onclick = () => loadOverview(true);
 $("activeOnly").onchange = $("q").oninput = () => state.data && renderOverview();
@@ -329,5 +376,6 @@ document.addEventListener("change", async (e) => {
   await (window.pdMe ? window.pdMe() : null);
   await loadStores();
   for (const x of $("levels").querySelectorAll("button")) x.classList.toggle("on", x.dataset.level === state.level);
-  if (state.store) showPage(state.page);
+  if (state.store) { loadStrategy(); showPage(state.page); }
+  setInterval(() => { if (document.visibilityState === "visible") loadStrategy(); }, 30000);
 })();

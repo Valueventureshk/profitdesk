@@ -147,6 +147,7 @@ async def lifespan(app):
     asyncio.create_task(_gdesk_loop())
     asyncio.create_task(_ads_loop())
     asyncio.create_task(_mads_loop())
+    asyncio.create_task(_up_loop())
     asyncio.create_task(_gconv_loop())
     asyncio.create_task(_assist_loop())
     asyncio.create_task(_co_loop())
@@ -10971,6 +10972,148 @@ async def _mads_rows(st, conn, level: str, days: int, fresh=False) -> dict:
             "pixel": tracking.health(st["id"]) if hasattr(tracking, "health") else None}
 
 
+# ---- Strategy "$10 up every purchase" (Autopilot): every pixel purchase credited to a Meta campaign raises that
+# campaign's daily budget by `step`, from the moment it's switched on until someone switches it off. One raise per
+# order (mads_boosts), never above `cap`. Each raise is a logged change with Undo, like any other.
+
+UP_DEFAULTS = {"on": False, "name": "$10 up every purchase", "step": 10.0, "cap": 500.0, "started_at": None,
+               "stopped_at": None, "by": ""}
+_up_lock: dict = {}
+
+
+def _up_cfg(store_id: int) -> dict:
+    try:
+        got = json.loads(db.get_setting(f"meta_up:{store_id}") or "{}")
+    except ValueError:
+        got = {}
+    return {**UP_DEFAULTS, **got}
+
+
+async def _up_run(st, conn) -> list:
+    """Raise budgets for purchases the pixel saw since the strategy was switched on (each order once)."""
+    cfg = _up_cfg(st["id"])
+    if not cfg["on"] or not cfg["started_at"]:
+        return []
+    lock = _up_lock.setdefault(st["id"], asyncio.Lock())
+    if lock.locked():
+        return []
+    async with lock:
+        _mads_db()
+        with db._conn() as con:
+            seen = {r[0] for r in con.execute("SELECT order_key FROM mads_boosts WHERE store_id = ?", (st["id"],))}
+            buys = [dict(r) for r in con.execute(
+                "SELECT id, at, value, order_id, token, a_campaign, a_source FROM px_events WHERE store_id = ? AND"
+                " name = 'checkout_completed' AND at >= ? ORDER BY at", (st["id"], cfg["started_at"]))]
+        todo, keys = [], set()
+        for b in buys:
+            key = b["order_id"] or b["token"] or b["id"]
+            if key in seen or key in keys:
+                continue
+            keys.add(key)
+            todo.append((key, b))
+        if not todo:
+            return []
+        cur = st.get("meta_currency") or st["currency"]
+        camps = await _mads_cached((st["id"], "up-campaigns"), False,
+                                   lambda: meta_manage.objects(conn["access_token"], st["meta_account_id"], "campaign", cur))
+        by_name = {(c["name"] or "").strip().lower(): c for c in camps}
+        by_id = {c["id"]: c for c in camps}
+        out, fresh = [], False
+        for key, b in todo:
+            utm = (b["a_campaign"] or "").strip()
+            c = by_id.get(utm) or by_name.get(utm.lower())
+            if utm and not c and not fresh:          # a campaign started since the list was read: read it again once
+                fresh = True
+                camps = await _mads_cached((st["id"], "up-campaigns"), True,
+                                           lambda: meta_manage.objects(conn["access_token"], st["meta_account_id"], "campaign", cur))
+                by_name = {(x["name"] or "").strip().lower(): x for x in camps}
+                by_id = {x["id"]: x for x in camps}
+                c = by_id.get(utm) or by_name.get(utm.lower())
+            outcome, action = "", None
+            if not utm:
+                outcome = "No ad campaign on this purchase (not from an ad, or the click was over 7 days ago)."
+            elif not c:
+                outcome = f"“{utm}” isn't a running campaign in this Meta ad account (another channel, or paused)."
+            else:
+                try:
+                    now_ = await meta_manage.read(conn["access_token"], c["id"])
+                    budget = meta_manage._money(now_.get("daily_budget"), cur)
+                    if not budget:
+                        outcome = f"{c['name']}: its budget is on the ad sets (or lifetime), so it wasn't raised."
+                    elif budget + cfg["step"] > cfg["cap"] + 0.009:
+                        outcome = f"{c['name']}: already at {budget:.2f}; +{cfg['step']:g} would pass the cap {cfg['cap']:g}."
+                    else:
+                        batch = _mads_batch("up")
+                        with db._conn() as con:
+                            _mads_log(con, st["id"], batch, "strategy:up", {
+                                "change": "budget", "level": "campaign", "id": c["id"], "name": c["name"],
+                                "to": round(budget + cfg["step"], 2),
+                                "reason": f"{cfg['name']}: purchase {('#' + str(b['order_id'])) if b['order_id'] else ''} "
+                                          f"({(b['value'] or 0):.2f}) from this campaign"})
+                            action = con.execute("SELECT max(id) FROM mads_actions WHERE batch = ?", (batch,)).fetchone()[0]
+                        done = await _mads_run_batch(st, conn, batch, f"{cfg['name']} (autopilot)", cap=cfg["cap"])
+                        outcome = done[0] if done else "Raised"
+                except (meta.MetaAdsError, HTTPException) as e:
+                    outcome = f"Meta refused: {str(getattr(e, 'detail', None) or e)[:300]}"
+            with db._conn() as con:
+                con.execute("INSERT OR IGNORE INTO mads_boosts (store_id, order_key, at, value, campaign, campaign_id, action_id, outcome,"
+                            " raised) VALUES (?,?,?,?,?,?,?,?,?)",
+                            (st["id"], key, b["at"], b["value"], utm, c["id"] if c else None, action, outcome,
+                             1 if action and outcome.startswith("Daily budget") else 0))
+            out.append(outcome)
+        return out
+
+
+async def _up_loop():
+    """Every minute: stores with the strategy on."""
+    await asyncio.sleep(90)
+    while True:
+        for st in db.list_stores():
+            try:
+                if st.get("meta_account_id") and _up_cfg(st["id"])["on"]:
+                    st2, conn = _mads_store(st["id"])
+                    await _up_run(st2, conn)
+            except Exception as e:
+                print(f"$10-up strategy failed for {st['name']}: {str(getattr(e, 'detail', None) or e)[:300]}", flush=True)
+        await asyncio.sleep(60)
+
+
+@app.get("/api/metaads/strategy")
+def api_up_get(store: int):
+    _mads_db()
+    st, _conn = _mads_store(store)
+    cfg = _up_cfg(st["id"])
+    with db._conn() as con:
+        feed = [dict(r) for r in con.execute("SELECT * FROM mads_boosts WHERE store_id = ? ORDER BY at DESC LIMIT 40", (st["id"],))]
+        since = cfg["started_at"] or "9999"
+        n = con.execute("SELECT COUNT(*), COALESCE(SUM(raised), 0) FROM mads_boosts WHERE store_id = ? AND at >= ?", (st["id"], since)).fetchone()
+    return {**cfg, "currency": st.get("meta_currency") or st["currency"], "feed": feed, "purchases": n[0], "raises": n[1],
+            "added": n[1] * cfg["step"]}
+
+
+@app.put("/api/metaads/strategy/{store_id}")
+def api_up_set(store_id: int, payload: dict, request: Request):
+    """Switch the strategy on (it counts purchases from this moment) or off, or change its step / cap."""
+    st, _conn = _mads_store(store_id)
+    cfg = _up_cfg(st["id"])
+    who = (request.state.user or {}).get("email", "")
+    now_ = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    if "on" in payload:
+        on = bool(payload["on"])
+        if on and not cfg["on"]:
+            cfg.update(on=True, started_at=now_, stopped_at=None, by=who)
+        elif not on and cfg["on"]:
+            cfg.update(on=False, stopped_at=now_, by=who)
+    for k in ("step", "cap"):
+        if k in payload:
+            try:
+                cfg[k] = max(1.0, float(payload[k]))
+            except (TypeError, ValueError):
+                raise HTTPException(400, f"{k} must be a number.")
+    db.set_setting(f"meta_up:{st['id']}", json.dumps({k: cfg[k] for k in UP_DEFAULTS}))
+    return {"ok": True}
+
+
 @app.get("/metaads", response_class=HTMLResponse)
 def metaads_page():
     return _page("metaads.html", ("metaads.js", "metaads.css", "nav.js", "styles.css", "skin.css", "chat.js"))
@@ -11005,7 +11148,7 @@ def _mads_batch(prefix: str) -> str:
     return f"{prefix}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{secrets.token_hex(2)}"
 
 
-async def _mads_step(st, conn, a: dict) -> dict:
+async def _mads_step(st, conn, a: dict, cap=None) -> dict:
     """Check one change with Meta (validate-only), then make it. Returns {before, result}."""
     token, cur = conn["access_token"], st.get("meta_currency") or st["currency"]
     before = await meta_manage.read(token, a["obj_id"])
@@ -11019,16 +11162,16 @@ async def _mads_step(st, conn, a: dict) -> dict:
     if not before.get("daily_budget"):
         raise meta.MetaAdsError(f"{name} has no daily budget of its own (its budget is on the "
                                 f"{'campaign' if a['level'] == 'adset' else 'ad sets'}, or it's a lifetime budget).")
-    cap = _mads_settings(st["id"])["budget_cap"]
+    cap = cap if cap is not None else _mads_settings(st["id"])["budget_cap"]
     if cap and amount > cap:
-        raise meta.MetaAdsError(f"{amount:.2f} is above the store's daily budget cap ({cap:g}). Raise the cap in Manage settings.")
+        raise meta.MetaAdsError(f"{amount:.2f} is above the daily budget cap ({cap:g}). Raise the cap in Manage settings.")
     await meta_manage.set_budget(token, a["obj_id"], amount, cur, validate=True)
     await meta_manage.set_budget(token, a["obj_id"], amount, cur)
     was = meta_manage._money(before.get("daily_budget"), cur)
     return {"before": {"daily_budget": was}, "result": f"Daily budget of {name}: {was:.2f} → {amount:.2f} {cur}"}
 
 
-async def _mads_run_batch(st, conn, batch: str, who: str) -> list:
+async def _mads_run_batch(st, conn, batch: str, who: str, cap=None) -> list:
     """Carry out a proposal / plan step by step; stops at the first step Meta refuses."""
     with db._conn() as con:
         acts = [dict(r) for r in con.execute("SELECT * FROM mads_actions WHERE store_id = ? AND batch = ? AND status = 'proposed'"
@@ -11039,7 +11182,7 @@ async def _mads_run_batch(st, conn, batch: str, who: str) -> list:
     now = lambda: datetime.now(timezone.utc).isoformat(timespec="seconds")
     for i, a in enumerate(acts):
         try:
-            got = await _mads_step(st, conn, a)
+            got = await _mads_step(st, conn, a, cap)
         except (meta.MetaAdsError, ValueError) as e:
             with db._conn() as con:
                 con.execute("UPDATE mads_actions SET status = 'failed', error = ?, decided_by = ?, done_at = ? WHERE id = ?",
