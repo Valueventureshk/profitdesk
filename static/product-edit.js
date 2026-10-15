@@ -115,6 +115,14 @@ function peRender() {
     </div>
 
     <div class="pe-col pe-side">
+      ${peHasOptions() ? `<div class="panel pe-card">
+        <div class="pe-cardhead"><h3>Variant names</h3><span class="hint">Renaming a value changes every variant that has it</span></div>
+        ${p.options.map((o) => `<div class="pe-opt" data-oid="${esc(o.id)}">
+          <label class="imp-field"><span>Option</span><input class="control pe-oname" value="${esc(o.name)}"></label>
+          <div class="pe-ovals">${(o.optionValues || []).map((v) => `<input class="control pe-oval" data-vid="${esc(v.id)}" value="${esc(v.name)}" title="${esc(o.name)}">`).join("")}</div>
+        </div>`).join("")}
+      </div>` : ""}
+
       <div class="panel pe-card">
         <div class="pe-cardhead"><h3>Prices</h3><span class="hint">${esc(cur)}</span></div>
         <div class="pe-setall">
@@ -135,6 +143,10 @@ function peRender() {
       <div class="panel pe-card">
         <div class="pe-cardhead"><h3>Size chart</h3><a class="pe-chartlink" id="peChartLink" target="_blank" rel="noopener"></a></div>
         <select class="control" id="peChart">${peChartOptions()}</select>
+        ${(pe.copies || []).length ? `<div class="pe-copies"><span class="hint">Also use this chart for the same product in:</span>
+          ${pe.copies.map((c, i) => `<label class="imp-check"><input type="checkbox" data-copy="${i}"${c.chart_id && c.chart_id === pe.size_chart_id ? " checked" : ""}>
+            <span>${esc(c.store_name)}${c.chart_id ? ` <small class="hint">(has ${esc((pe.charts.find((x) => x.id === c.chart_id) || {}).name || "a chart")})</small>` : ""}</span></label>`).join("")}
+          <span class="hint">Applied when you press Save.</span></div>` : ""}
         <label class="btn btn-ghost pe-scup"><input type="file" id="peScFiles" accept="image/*" multiple hidden>⬆ Upload a size chart image (AI builds it)</label>
         <div id="peScDone"></div>
         ${peImages().length ? `<div class="pe-scai">
@@ -155,11 +167,16 @@ function peRender() {
   peWire();
 }
 
+function peHasOptions() {
+  const o = pe.product.options || [];
+  return !(o.length === 1 && o[0].name === "Title" && (o[0].values || [])[0] === "Default Title");
+}
 function peChartOptions() {
   return `<option value="0">No size chart</option>` + pe.charts.map((c) => `<option value="${c.id}"${c.id === pe.size_chart_id ? " selected" : ""}>${esc(c.name)}${c.status === "draft" ? " (draft)" : ""}</option>`).join("");
 }
 function peChartLink() {
   const id = +$("peChart").value, a = $("peChartLink");
+  window.pdMe?.().then((m) => { a.hidden = !(m && (m.role === "owner" || (m.access || {}).sizecharts)); });
   a.href = id ? `/sizecharts?edit=${id}` : `/sizecharts?new=1&store=${pe.store.id}&product=${encodeURIComponent(pe.product.id)}&title=${encodeURIComponent($("peTitle").value)}`;
   a.textContent = id ? "Edit this chart ↗" : "Create a chart for this product ↗";
 }
@@ -195,6 +212,10 @@ function peCollect() {
       id: r.dataset.vid, title: r.querySelector(".pe-vname").textContent,
       price: r.querySelector('[data-f="price"]').value, compare_at: r.querySelector('[data-f="compare_at"]').value })),
     size_chart_id: +$("peChart").value,
+    chart_copies: [...document.querySelectorAll("[data-copy]:checked")].map((x) => pe.copies[+x.dataset.copy]),
+    options: [...document.querySelectorAll(".pe-opt")].map((o) => ({
+      id: o.dataset.oid, name: o.querySelector(".pe-oname").value,
+      values: [...o.querySelectorAll(".pe-oval")].map((v) => ({ id: v.dataset.vid, name: v.value })) })),
   };
 }
 
@@ -227,6 +248,7 @@ function peWire() {
   if ($("peActivate")) $("peActivate").onclick = () => peSave("ACTIVE");
   if ($("peDraft")) $("peDraft").onclick = () => peSave("DRAFT");
   $("peChart").onchange = () => { $("peChart").dataset.touched = "1"; peChartLink(); mark(); };
+  for (const c of document.querySelectorAll("[data-copy]")) c.onchange = mark;
   peChartLink();
   $("peScFiles").onchange = async (e) => {
     const files = [...e.target.files];

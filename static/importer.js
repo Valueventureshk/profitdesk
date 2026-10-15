@@ -423,7 +423,7 @@ for (const b of $("pages").querySelectorAll("[data-page]")) b.onclick = () => {
     const d = await api("/api/importer/settings");
     cfg = d.settings;
     stores = d.stores;
-    try { window.__charts = (await api("/api/sizecharts?brief=1")).charts; } catch { window.__charts = []; }
+    try { window.__charts = (await api("/api/importer/charts")).charts; } catch { window.__charts = []; }
     renderStorePickers();
     renderSettings();
     renderCollectionPickers();

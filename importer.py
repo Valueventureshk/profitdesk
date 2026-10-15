@@ -328,7 +328,7 @@ mutation P($id: ID!, $input: [PublicationInput!]!) {
 
 PRODUCT_GET = """
 query P($id: ID!) { product(id: $id) { id title handle status descriptionHtml productType vendor tags
-  onlineStorePreviewUrl onlineStoreUrl options { name values }
+  onlineStorePreviewUrl onlineStoreUrl options { id name values optionValues { id name } }
   media(first: 50) { nodes { id mediaContentType alt preview { image { url } } } }
   variants(first: 100) { nodes { id title price compareAtPrice sku selectedOptions { name value } } } } }"""
 PRODUCT_UPDATE = """
@@ -337,6 +337,9 @@ mutation U($product: ProductUpdateInput!, $media: [CreateMediaInput!]) {
 VARIANTS_UPDATE = """
 mutation V($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
   productVariantsBulkUpdate(productId: $productId, variants: $variants) { userErrors { field message } } }"""
+OPTION_UPDATE = """
+mutation O($productId: ID!, $option: OptionUpdateInput!, $values: [OptionValueUpdateInput!]) {
+  productOptionUpdate(productId: $productId, option: $option, optionValuesToUpdate: $values) { userErrors { field message } } }"""
 MEDIA_REORDER = """
 mutation R($id: ID!, $moves: [MoveInput!]!) {
   productReorderMedia(id: $id, moves: $moves) { job { id } mediaUserErrors { field message } } }"""

@@ -5597,10 +5597,35 @@ async def api_importer_product(store: int, id: str):
                         (st["id"], gid)).fetchone()
         charts = [dict(x) for x in con.execute("SELECT id, name, status FROM size_charts ORDER BY name COLLATE NOCASE")]
     lang = db.get_setting(f"track_lang:{st['id']}") or "en"
-    return {"product": p, "size_chart_id": r[0] if r else 0, "charts": charts,
+    return {"product": p, "size_chart_id": r[0] if r else 0, "charts": charts, "copies": _imp_copies(st["id"], gid),
             "store": {"id": st["id"], "name": st["name"].strip(), "currency": st.get("currency"), "lang": lang,
                       "language": LANG_NAME.get(lang, "English")},
             "admin_url": f"https://{st['shop_domain']}/admin/products/{gid.rsplit('/', 1)[1]}"}
+
+
+def _imp_copies(store_id: int, gid: str) -> list:
+    """The same source product imported into other stores, with the size chart each copy has now."""
+    names = {x["id"]: x["name"].strip() for x in db.list_stores()}
+    with db._conn() as con:
+        src = [r[0] for r in con.execute("SELECT DISTINCT source_url FROM import_items WHERE store_id = ? AND product_id = ?"
+                                         " AND source_url IS NOT NULL AND source_url != ''", (store_id, gid))]
+        out = {}
+        for u in src:
+            for sid, pid in con.execute("SELECT store_id, product_id FROM import_items WHERE source_url = ? AND status = 'done'"
+                                        " AND product_id IS NOT NULL AND NOT (store_id = ? AND product_id = ?)", (u, store_id, gid)):
+                if sid in names and (sid, pid) not in out:
+                    r = con.execute("SELECT chart_id FROM size_chart_rules WHERE store_id = ? AND kind = 'product' AND value = ?",
+                                    (sid, pid)).fetchone()
+                    out[(sid, pid)] = {"store": sid, "store_name": names[sid], "product_id": pid, "chart_id": r[0] if r else 0}
+    return sorted(out.values(), key=lambda c: c["store_name"])
+
+
+@app.get("/api/importer/charts")
+def api_importer_charts():
+    """Size charts to pick from in the Product Importer (people with importer access, no Size Charts desk needed)."""
+    with db._conn() as con:
+        return {"charts": [dict(x) for x in con.execute(
+            "SELECT id, name, status FROM size_charts ORDER BY name COLLATE NOCASE")]}
 
 
 @app.put("/api/importer/product")
@@ -5634,13 +5659,41 @@ async def api_importer_product_save(payload: dict):
         variants.append({"id": v["id"], "price": f"{price:.2f}", "compareAtPrice": f"{cmp_:.2f}" if cmp_ else None})
     if variants:
         await _imp_gql(client, importer.VARIANTS_UPDATE, {"productId": gid, "variants": variants}, "productVariantsBulkUpdate")
+    # option names and values ("Size" / "S" -> "Small"): renaming a value renames it on every variant that has it
+    if payload.get("options"):
+        now = (await client.gql(importer.PRODUCT_GET, {"id": gid}))["product"]
+        have = {o["id"]: o for o in (now or {}).get("options") or []}
+        for o in payload["options"]:
+            cur = have.get(o.get("id"))
+            if not cur:
+                continue
+            name = str(o.get("name") or "").strip()[:255]
+            old_vals = {v["id"]: v["name"] for v in cur.get("optionValues") or []}
+            vals = [{"id": v["id"], "name": str(v.get("name") or "").strip()[:255]} for v in o.get("values") or []
+                    if v.get("id") in old_vals and str(v.get("name") or "").strip() and str(v["name"]).strip() != old_vals[v["id"]]]
+            if not name:
+                raise HTTPException(400, "An option name can't be empty.")
+            seen = [v["name"].lower() for v in vals] + [n.lower() for i, n in old_vals.items() if i not in {v["id"] for v in vals}]
+            if len(seen) != len(set(seen)):
+                raise HTTPException(400, f"Two values of “{name}” would have the same name.")
+            if name != cur["name"] or vals:
+                await _imp_gql(client, importer.OPTION_UPDATE, {"productId": gid, "option": {"id": cur["id"], "name": name},
+                                                                "values": vals or None}, "productOptionUpdate")
     if "size_chart_id" in payload:
         cid = int(payload.get("size_chart_id") or 0)
+        title = prod.get("title") or payload.get("title") or ""
+        # this product, plus its copies in the other stores that were ticked
+        targets = [(st["id"], gid)] + [(int(c["store"]), str(c["product_id"])) for c in payload.get("chart_copies") or []
+                                       if c.get("store") and str(c.get("product_id", "")).startswith("gid://shopify/Product/")]
+        allowed = {(c["store"], c["product_id"]) for c in _imp_copies(st["id"], gid)}
         with db._conn() as con:
-            con.execute("DELETE FROM size_chart_rules WHERE store_id = ? AND kind = 'product' AND value = ?", (st["id"], gid))
-            if cid:
-                con.execute("INSERT INTO size_chart_rules (chart_id, store_id, kind, value, label) VALUES (?, ?, 'product', ?, ?)",
-                            (cid, st["id"], gid, prod.get("title") or payload.get("title") or ""))
+            for sid, pid in targets:
+                if (sid, pid) != (st["id"], gid) and (sid, pid) not in allowed:
+                    continue
+                con.execute("DELETE FROM size_chart_rules WHERE store_id = ? AND kind = 'product' AND value = ?", (sid, pid))
+                if cid:
+                    con.execute("INSERT INTO size_chart_rules (chart_id, store_id, kind, value, label) VALUES (?, ?, 'product', ?, ?)",
+                                (cid, sid, pid, title))
         _sc_cache.clear()
     if prod.get("title"):
         with db._conn() as con:
