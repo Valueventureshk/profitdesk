@@ -26,6 +26,7 @@ window.PDUrl = {
     { href: "/scm", desk: "scm", label: "SCM", note: "Every order's shipping and tracking" },
     { href: "/expenses", desk: "expenses", label: "Expenses", note: "Every payment out, by category" },
     { href: "/disputes", desk: "disputes", label: "Disputes", note: "PayPal cases and card chargebacks" },
+    { href: "/tasks", desk: "tasks", label: "Tasks", note: "Give the team work, check it, launch the ads" },
     // Apps: tools for the stores themselves
     { href: "/tracking", desk: "tracking", label: "Tracking", note: "Adds to cart, checkouts and orders per ad", group: "Apps" },
     { href: "/googleads", desk: "googleads", label: "Google Ads", note: "Every product's Google spend vs real sales and profit", group: "Apps" },
@@ -116,6 +117,7 @@ window.PDUrl = {
     "/reports": '<path d="M5 3h10l4 4v14H5z"/><path d="M14 3v5h5M9 13h6M9 17h6"/>',
     "/importer": '<path d="M12 3v12M7 10l5 5 5-5"/><path d="M4 17v3h16v-3"/>',
     "/sizecharts": '<path d="M3 15l12-12 6 6-12 12z"/><path d="M7 11l2 2M10 8l2 2M13 5l2 2"/>',
+    "/tasks": '<rect x="3" y="4" width="5" height="16" rx="1"/><rect x="10" y="4" width="5" height="10" rx="1"/><rect x="17" y="4" width="4" height="7" rx="1"/>',
     "/disputes": '<path d="M12 3l8 4v5c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V7z"/><path d="M12 8v5M12 16v.01"/>',
     "/tracking": '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>',
     "/googleads": '<path d="M4 19l6-10 4 7 3-5 3 8"/><circle cx="17" cy="6" r="2"/>',

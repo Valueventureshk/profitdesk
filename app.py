@@ -62,6 +62,7 @@ import reports
 import ai_chat
 import ai_data
 import products_desk
+import tasks
 import db
 import demo
 import fx
@@ -214,17 +215,18 @@ _DESK_PATHS = {
     "googleads": ("/googleads", "/api/googleads", "/api/ads"),
     "tracking": ("/tracking", "/api/tracking"),
     "checkout": ("/checkout", "/api/checkout"),
+    "tasks": ("/tasks", "/api/tasks"),
 }
 _DESK_HOME = {"profit": "/", "cash": "/cash", "cog": "/cog", "inbox": "/inbox", "reports": "/reports",
              "expenses": "/expenses", "scm": "/scm", "importer": "/importer",
              "sizecharts": "/sizecharts", "disputes": "/disputes",
              "recordings": "/recordings", "googleads": "/googleads",
-             "tracking": "/tracking", "checkout": "/checkout"}
+             "tracking": "/tracking", "checkout": "/checkout", "tasks": "/tasks"}
 # Shared by every desk's pages: the user's own details and the dropdown lists.
 _EVERYONE = {"/api/me", "/api/me/password", "/api/logout", "/change-password",
              "/api/setup", "/api/chat", "/api/assistant/inbox", "/api/assistant/inbox/read"}
 # What "read & write" people may change (owners may change anything).
-_WRITE_OK = ("/api/googleads/tags", "/api/cog/pdesk", "/api/invoices", "/api/suppliers/payee", "/api/disputes", "/api/cog/sync", "/api/inbox", "/api/expenses", "/api/scm", "/api/importer", "/api/sizecharts")
+_WRITE_OK = ("/api/googleads/tags", "/api/cog/pdesk", "/api/invoices", "/api/suppliers/payee", "/api/disputes", "/api/cog/sync", "/api/inbox", "/api/expenses", "/api/scm", "/api/importer", "/api/sizecharts", "/api/tasks")
 # What anyone with the desk may do, read-only people included (it changes nothing).
 _ANY_OK = ("/api/reports",)
 
@@ -10820,6 +10822,587 @@ strong{{color:{tone}}}</style>
 <div><p><strong>{message}</strong></p></div>
 <script>if(window.opener){{window.opener.postMessage('profitdesk:connected','*');
 setTimeout(()=>window.close(),1500);}}</script>"""
+
+
+# ---------------------------------------------------------------- Tasks desk
+
+TASK_DIR = os.path.join(os.path.dirname(os.path.abspath(db.DB_PATH)), "task_files")
+TASK_FILE_MAX = 500 * 1024 * 1024                  # one video can be big; images are far smaller
+_tasks_ready = {"ok": False}
+
+
+def _tasks_db():
+    if _tasks_ready["ok"]:
+        return
+    with db._conn() as con:
+        con.executescript(tasks.SCHEMA)
+    _tasks_ready["ok"] = True
+
+
+def _task_user(request: Request) -> dict:
+    return getattr(request.state, "user", None) or {}
+
+
+def _task_manager(user: dict) -> bool:
+    return auth.at_least(user, "tasks", "manage")
+
+
+def _task_people() -> list:
+    """Everyone who can be given a task: owners and anyone with the Tasks desk."""
+    out = []
+    for u in db.list_users():
+        lvl = auth.level(u, "tasks")
+        if lvl:
+            out.append({"id": u["id"], "name": (u.get("name") or "").strip() or u["email"].split("@")[0],
+                        "email": u["email"], "level": lvl, "owner": u.get("role", "owner") == "owner"})
+    return out
+
+
+def _task_row(con, task_id: int, user: dict) -> dict:
+    row = con.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "Task not found.")
+    t = dict(row)
+    if not _task_manager(user) and t["assignee_id"] != user.get("id"):
+        raise HTTPException(403, "That task belongs to someone else.")
+    return t
+
+
+def _task_log(con, task_id: int, user: dict, action: str, text: str = ""):
+    con.execute("INSERT INTO task_log (task_id, by, action, text) VALUES (?, ?, ?, ?)",
+                (task_id, user.get("email", ""), action, (text or "")[:4000]))
+    con.execute("UPDATE tasks SET updated_at = datetime('now') WHERE id = ?", (task_id,))
+
+
+def _task_out(t: dict, people: dict, stores: dict, files=None, full=False) -> dict:
+    out = {k: t[k] for k in ("id", "kind", "title", "store_id", "assignee_id", "status", "priority", "due",
+                             "special_notes", "created_by", "created_at", "updated_at", "submitted_at",
+                             "approved_by", "approved_at", "closed_at")}
+    out["store"] = stores.get(t["store_id"], "")
+    p = people.get(t["assignee_id"])
+    out["assignee"] = p["name"] if p else ""
+    out["status_name"] = tasks.STATUS_NAMES.get(t["status"], t["status"])
+    out["brief"] = tasks.loads(t["brief"])
+    out["result"] = tasks.loads(t["result"])
+    out["launch"] = tasks.loads(t["launch"])
+    if files is not None:
+        out["files"] = files
+    if not full:
+        out["brief"] = {k: v for k, v in out["brief"].items() if k in ("collection", "pages")}
+        out["has_result"] = bool(out.pop("result"))
+        out["launched"] = bool(out.pop("launch").get("campaign_id"))
+    return out
+
+
+def _task_lookups():
+    people = {p["id"]: p for p in _task_people()}
+    stores = {s["id"]: s["name"].strip() for s in db.list_stores() if not demo.is_demo(s)}
+    return people, stores
+
+
+@app.get("/tasks", response_class=HTMLResponse)
+def tasks_page():
+    return _page("tasks.html", ("tasks.js", "tasks.css", "nav.js", "styles.css", "skin.css", "chat.js"))
+
+
+@app.get("/api/tasks")
+def api_tasks(request: Request, view: str = "board", assignee: int = 0, store: int = 0, q: str = ""):
+    """The board (open tasks) or History (launched / done / cancelled). Staff see only their own."""
+    _tasks_db()
+    user = _task_user(request)
+    manage = _task_manager(user)
+    people, stores = _task_lookups()
+    where, args = [], []
+    marks = ",".join("?" * len(tasks.HISTORY))
+    where.append(f"status {'IN' if view == 'history' else 'NOT IN'} ({marks})")
+    args += list(tasks.HISTORY)
+    if not manage:
+        where.append("assignee_id = ?")
+        args.append(user.get("id"))
+    elif assignee:
+        where.append("assignee_id = ?")
+        args.append(assignee)
+    if store:
+        where.append("store_id = ?")
+        args.append(store)
+    if q.strip():
+        where.append("(title LIKE ? OR brief LIKE ? OR result LIKE ?)")
+        args += [f"%{q.strip()}%"] * 3
+    order = "closed_at DESC" if view == "history" else "CASE priority WHEN 'high' THEN 0 ELSE 1 END, COALESCE(due, '9999'), id"
+    with db._conn() as con:
+        rows = [dict(r) for r in con.execute(f"SELECT * FROM tasks WHERE {' AND '.join(where)} ORDER BY {order}"
+                                             f"{' LIMIT 300' if view == 'history' else ''}", args)]
+        counts = {r[0]: (r[1], r[2]) for r in con.execute(
+            "SELECT task_id, SUM(side = 'staff'), COUNT(*) FROM task_files GROUP BY task_id")}
+    out = []
+    for t in rows:
+        x = _task_out(t, people, stores)
+        x["files_staff"], x["files_all"] = counts.get(t["id"], (0, 0))
+        out.append(x)
+    return {"tasks": out, "manage": manage, "me": {"id": user.get("id"), "email": user.get("email")},
+            "people": list(people.values()) if manage else [],
+            "stores": [{"id": k, "name": v} for k, v in sorted(stores.items(), key=lambda kv: kv[1].lower())],
+            "statuses": tasks.STATUS_NAMES, "ctas": tasks.CTAS,
+            "today": datetime.now(CASH_TZ).date().isoformat()}
+
+
+@app.get("/api/tasks/day")
+def api_tasks_day(request: Request, day: str = "", person: int = 0):
+    """End of day: what each person did on a Hong Kong day (from the task log), plus what's still open."""
+    _tasks_db()
+    _need_level(request, "tasks", "manage")
+    try:
+        d = date.fromisoformat(day) if day else datetime.now(CASH_TZ).date()
+    except ValueError:
+        raise HTTPException(400, "Pick a day.")
+    utc = lambda x: datetime.combine(x, clock.min, CASH_TZ).astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    a, b = utc(d), utc(d + timedelta(days=1))
+    people, stores = _task_lookups()
+    by_email = {p["email"]: p for p in people.values()}
+    with db._conn() as con:
+        logs = [dict(r) for r in con.execute(
+            "SELECT l.*, t.title, t.kind, t.store_id, t.status, t.assignee_id FROM task_log l JOIN tasks t ON t.id = l.task_id"
+            " WHERE l.at >= ? AND l.at < ? ORDER BY l.at", (a, b))]
+        open_rows = [dict(r) for r in con.execute(
+            f"SELECT * FROM tasks WHERE status NOT IN ({','.join('?' * len(tasks.HISTORY))})", tasks.HISTORY)]
+        files = [dict(r) for r in con.execute(
+            "SELECT f.id, f.task_id, f.name, f.mime, f.by FROM task_files f WHERE f.at >= ? AND f.at < ?", (a, b))]
+    report = {}
+    for p in people.values():
+        if person and p["id"] != person:
+            continue
+        report[p["email"]] = {"person": p, "events": [], "files": [], "open": [], "done": 0, "submitted": 0}
+    for l in logs:
+        r = report.get(l["by"])
+        if r is None:
+            continue
+        r["events"].append({"at": l["at"], "task_id": l["task_id"], "title": l["title"], "store": stores.get(l["store_id"], ""),
+                            "action": l["action"], "text": l["text"]})
+        if l["action"] == "status" and (l["text"] or "").startswith("Submitted"):
+            r["submitted"] += 1
+    for f in files:
+        if f["by"] in report:
+            report[f["by"]]["files"].append(f)
+    for t in open_rows:
+        p = people.get(t["assignee_id"])
+        if p and p["email"] in report:
+            report[p["email"]]["open"].append({"id": t["id"], "title": t["title"], "status": t["status"],
+                                               "status_name": tasks.STATUS_NAMES.get(t["status"]), "due": t["due"],
+                                               "store": stores.get(t["store_id"], "")})
+    out = sorted(report.values(), key=lambda r: (-len(r["events"]), r["person"]["name"].lower()))
+    return {"day": d.isoformat(), "people": out, "known": list(by_email)}
+
+
+@app.get("/api/tasks/{task_id}")
+def api_task(request: Request, task_id: int):
+    _tasks_db()
+    user = _task_user(request)
+    people, stores = _task_lookups()
+    with db._conn() as con:
+        t = _task_row(con, task_id, user)
+        files = [dict(r) for r in con.execute("SELECT * FROM task_files WHERE task_id = ? ORDER BY id", (task_id,))]
+        log = [dict(r) for r in con.execute("SELECT * FROM task_log WHERE task_id = ? ORDER BY id", (task_id,))]
+    names = {p["email"]: p["name"] for p in people.values()}
+    for l in log:
+        l["who"] = names.get(l["by"], (l["by"] or "").split("@")[0])
+    for f in files:
+        f["who"] = names.get(f["by"], (f["by"] or "").split("@")[0])
+    out = _task_out(t, people, stores, files, full=True)
+    out["log"] = log
+    out["manage"] = _task_manager(user)
+    out["mine"] = t["assignee_id"] == user.get("id")
+    return out
+
+
+def _task_fields(payload: dict) -> dict:
+    kind = payload.get("kind") if payload.get("kind") in tasks.KINDS else "listing"
+    title = str(payload.get("title") or "").strip()[:200]
+    brief = tasks.clean_brief(payload.get("brief") or {})
+    if not title:
+        title = (f"List {brief['collection']}" if brief.get("collection") else "")
+    if not title:
+        raise HTTPException(400, "Give the task a title (or the collection to list).")
+    due = str(payload.get("due") or "").strip() or None
+    if due and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", due):
+        raise HTTPException(400, "Pick a due date.")
+    people = {p["id"] for p in _task_people()}
+    assignee = int(payload.get("assignee_id") or 0) or None
+    if assignee and assignee not in people:
+        raise HTTPException(400, "That person doesn't have the Tasks desk. Give them access in Settings → People.")
+    return {"kind": kind, "title": title, "store_id": int(payload.get("store_id") or 0) or None,
+            "assignee_id": assignee, "priority": "high" if payload.get("priority") == "high" else "normal",
+            "due": due, "special_notes": str(payload.get("special_notes") or "").strip()[:8000],
+            "brief": json.dumps(brief)}
+
+
+@app.post("/api/tasks")
+def api_task_create(request: Request, payload: dict):
+    _tasks_db()
+    _need_level(request, "tasks", "manage")
+    user = _task_user(request)
+    f = _task_fields(payload)
+    with db._conn() as con:
+        tid = con.execute("INSERT INTO tasks (kind, title, store_id, assignee_id, priority, due, special_notes, brief,"
+                          " created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                          (f["kind"], f["title"], f["store_id"], f["assignee_id"], f["priority"], f["due"],
+                           f["special_notes"], f["brief"], user.get("email", ""))).lastrowid
+        _task_log(con, tid, user, "created", "Created the task")
+    return {"ok": True, "id": tid}
+
+
+@app.put("/api/tasks/{task_id}")
+def api_task_edit(request: Request, task_id: int, payload: dict):
+    _tasks_db()
+    _need_level(request, "tasks", "manage")
+    user = _task_user(request)
+    f = _task_fields(payload)
+    with db._conn() as con:
+        old = _task_row(con, task_id, user)
+        con.execute("UPDATE tasks SET kind = ?, title = ?, store_id = ?, assignee_id = ?, priority = ?, due = ?,"
+                    " special_notes = ?, brief = ? WHERE id = ?",
+                    (f["kind"], f["title"], f["store_id"], f["assignee_id"], f["priority"], f["due"],
+                     f["special_notes"], f["brief"], task_id))
+        what = "Brief edited"
+        if old["assignee_id"] != f["assignee_id"]:
+            p = {x["id"]: x["name"] for x in _task_people()}.get(f["assignee_id"], "nobody")
+            what += f", given to {p}"
+        _task_log(con, task_id, user, "edit", what)
+    return {"ok": True}
+
+
+@app.delete("/api/tasks/{task_id}")
+def api_task_delete(request: Request, task_id: int):
+    _tasks_db()
+    _need_level(request, "tasks", "manage")
+    with db._conn() as con:
+        _task_row(con, task_id, _task_user(request))
+        for table in ("task_files", "task_log"):
+            con.execute(f"DELETE FROM {table} WHERE task_id = ?", (task_id,))
+        con.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+    import shutil
+    shutil.rmtree(os.path.join(TASK_DIR, str(task_id)), ignore_errors=True)
+    return {"ok": True}
+
+
+@app.post("/api/tasks/{task_id}/result")
+def api_task_result(request: Request, task_id: int, payload: dict):
+    """Staff's hand-back: links, ad copy, notes. submit=true also sends it for review."""
+    _tasks_db()
+    user = _task_user(request)
+    result = tasks.clean_result(payload.get("result") or {})
+    with db._conn() as con:
+        t = _task_row(con, task_id, user)
+        if t["status"] in tasks.HISTORY or (t["status"] in ("submitted", "approved") and not _task_manager(user)):
+            raise HTTPException(400, "This task is with the admins now. Press “Take back to edit” first (or ask an "
+                                     "admin, once it's approved).")
+        con.execute("UPDATE tasks SET result = ? WHERE id = ?", (json.dumps(result), task_id))
+        if payload.get("submit"):
+            if t["kind"] == "listing" and not (result.get("landing_url") or result.get("collection_url")
+                                               or result.get("advertorial_url")):
+                raise HTTPException(400, "Add at least the collection or landing page link before submitting.")
+            con.execute("UPDATE tasks SET status = 'submitted', submitted_at = datetime('now') WHERE id = ?", (task_id,))
+            _task_log(con, task_id, user, "status", "Submitted for review")
+        else:
+            if t["status"] == "todo":
+                con.execute("UPDATE tasks SET status = 'doing' WHERE id = ?", (task_id,))
+                _task_log(con, task_id, user, "status", "Started")
+            _task_log(con, task_id, user, "edit", "Saved their work")
+    return {"ok": True}
+
+
+# who may move a task where: staff (the assignee) / admins (Manage)
+_TASK_STAFF_MOVES = {("todo", "doing"), ("changes", "doing"), ("submitted", "doing")}
+_TASK_MOVE_TEXT = {"doing": "Started", "changes": "Sent back for changes", "approved": "Approved",
+                   "launched": "Marked as launched", "done": "Marked done", "cancelled": "Cancelled",
+                   "todo": "Moved back to To do", "submitted": "Submitted for review"}
+
+
+@app.post("/api/tasks/{task_id}/status")
+def api_task_status(request: Request, task_id: int, payload: dict):
+    _tasks_db()
+    user = _task_user(request)
+    to = payload.get("status")
+    comment = str(payload.get("comment") or "").strip()
+    if to not in tasks.STATUSES:
+        raise HTTPException(400, "Unknown step.")
+    with db._conn() as con:
+        t = _task_row(con, task_id, user)
+        if not _task_manager(user) and (t["status"], to) not in _TASK_STAFF_MOVES:
+            raise HTTPException(403, "Only an admin can do that.")
+        if to == "changes" and not comment:
+            raise HTTPException(400, "Say what needs changing.")
+        sets = ["status = ?"]
+        if to == "approved":
+            sets += ["approved_by = ?", "approved_at = datetime('now')"]
+        if to in tasks.HISTORY:
+            sets.append("closed_at = datetime('now')")
+        else:
+            sets.append("closed_at = NULL")
+        args = [to] + ([user.get("email", "")] if to == "approved" else []) + [task_id]
+        con.execute(f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?", args)
+        _task_log(con, task_id, user, "status", _TASK_MOVE_TEXT.get(to, to) + (f": {comment}" if comment else ""))
+    return {"ok": True}
+
+
+@app.post("/api/tasks/{task_id}/comment")
+def api_task_comment(request: Request, task_id: int, payload: dict):
+    _tasks_db()
+    user = _task_user(request)
+    text = str(payload.get("text") or "").strip()
+    if not text:
+        raise HTTPException(400, "Write something first.")
+    with db._conn() as con:
+        _task_row(con, task_id, user)
+        _task_log(con, task_id, user, "comment", text)
+    return {"ok": True}
+
+
+_IMG_EXT = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif")
+_VID_EXT = (".mp4", ".mov", ".m4v", ".webm", ".avi")
+
+
+def _task_file_path(f: dict) -> str:
+    return os.path.join(TASK_DIR, str(f["task_id"]), f"{f['id']}-{tasks.safe_name(f['name'])}")
+
+
+@app.post("/api/tasks/{task_id}/files")
+async def api_task_files(request: Request, task_id: int):
+    """Creatives (images / videos that go in the ads) or any other file, kept on the volume."""
+    _tasks_db()
+    user = _task_user(request)
+    form = await request.form()
+    side = "admin" if form.get("side") == "admin" else "staff"
+    kind = "file" if form.get("kind") == "file" else "creative"
+    with db._conn() as con:
+        t = _task_row(con, task_id, user)
+    if side == "admin" and not _task_manager(user):
+        raise HTTPException(403, "Only an admin can add files to the brief.")
+    if t["status"] in tasks.HISTORY:
+        raise HTTPException(400, "This task is closed.")
+    if t["status"] in ("submitted", "approved") and not _task_manager(user):
+        raise HTTPException(400, "This task is with the admins now. Press “Take back to edit” first.")
+    os.makedirs(os.path.join(TASK_DIR, str(task_id)), exist_ok=True)
+    added = []
+    for up in [f for f in form.getlist("files") if hasattr(f, "read")][:30]:
+        name = (up.filename or "file")[-120:]
+        with db._conn() as con:
+            fid = con.execute("INSERT INTO task_files (task_id, side, kind, name, mime, by) VALUES (?, ?, ?, ?, ?, ?)",
+                              (task_id, side, kind, name, up.content_type or "", user.get("email", ""))).lastrowid
+        rec = {"id": fid, "task_id": task_id, "name": name}
+        path, size = _task_file_path(rec), 0
+        try:
+            with open(path, "wb") as fh:
+                while chunk := await up.read(1024 * 1024):
+                    size += len(chunk)
+                    if size > TASK_FILE_MAX:
+                        raise HTTPException(400, f"{name} is bigger than 500 MB.")
+                    fh.write(chunk)
+        except BaseException:
+            with db._conn() as con:
+                con.execute("DELETE FROM task_files WHERE id = ?", (fid,))
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            raise
+        if name.lower().endswith(_IMG_EXT):
+            await asyncio.to_thread(_att_image, path, path + "_t.jpg", 480)
+        with db._conn() as con:
+            con.execute("UPDATE task_files SET size = ? WHERE id = ?", (size, fid))
+            added.append(name)
+    if added:
+        with db._conn() as con:
+            _task_log(con, task_id, user, "file", f"Uploaded {len(added)} file{'s' if len(added) > 1 else ''}: "
+                      + ", ".join(added[:6]) + ("…" if len(added) > 6 else ""))
+            if t["status"] == "todo" and side == "staff":
+                con.execute("UPDATE tasks SET status = 'doing' WHERE id = ?", (task_id,))
+    return {"ok": True, "added": len(added)}
+
+
+@app.get("/api/tasks/file/{file_id}")
+def api_task_file(request: Request, file_id: int, thumb: int = 0, download: int = 0):
+    _tasks_db()
+    with db._conn() as con:
+        row = con.execute("SELECT * FROM task_files WHERE id = ?", (file_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "File not found.")
+        f = dict(row)
+        _task_row(con, f["task_id"], _task_user(request))
+    path = _task_file_path(f)
+    if thumb and os.path.exists(path + "_t.jpg"):
+        return FileResponse(path + "_t.jpg", media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
+    if not os.path.exists(path):
+        raise HTTPException(404, "That file is missing from storage.")
+    return FileResponse(path, media_type=f["mime"] or None, filename=f["name"] if download else None,
+                        content_disposition_type="attachment" if download else "inline",
+                        headers={"Cache-Control": "private, max-age=86400"})
+
+
+@app.delete("/api/tasks/file/{file_id}")
+def api_task_file_delete(request: Request, file_id: int):
+    _tasks_db()
+    user = _task_user(request)
+    with db._conn() as con:
+        row = con.execute("SELECT * FROM task_files WHERE id = ?", (file_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "File not found.")
+        f = dict(row)
+        t = _task_row(con, f["task_id"], user)
+        if not _task_manager(user) and (f["by"] != user.get("email") or t["status"] in ("approved",) + tasks.HISTORY):
+            raise HTTPException(403, "Only an admin can remove that file now.")
+        con.execute("DELETE FROM task_files WHERE id = ?", (file_id,))
+        _task_log(con, f["task_id"], user, "file", f"Removed {f['name']}")
+    for p in (_task_file_path(f), _task_file_path(f) + "_t.jpg"):
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+    return {"ok": True}
+
+
+def _task_meta(store_id):
+    st = next((x for x in db.list_stores() if x["id"] == store_id), None)
+    if not st:
+        raise HTTPException(400, "Pick the task's store first (edit the brief).")
+    conn = next((c for c in db.list_meta_connections() if c["id"] == st.get("meta_connection_id")), None)
+    if not st.get("meta_account_id") or not conn:
+        raise HTTPException(400, f"{st['name'].strip()} has no Meta ad account connected (Settings → Meta Ads).")
+    return st, conn
+
+
+@app.get("/api/tasks/{task_id}/launch")
+async def api_task_launch_options(request: Request, task_id: int):
+    """What the Launch form needs: the store's ad account, its Pages and pixels, and suggested values."""
+    _tasks_db()
+    _need_level(request, "tasks", "manage")
+    with db._conn() as con:
+        t = _task_row(con, task_id, _task_user(request))
+    st, conn = _task_meta(t["store_id"])
+    opts = await meta.launch_options(conn["access_token"], st["meta_account_id"])
+    brief, result = tasks.loads(t["brief"]), tasks.loads(t["result"])
+    saved = tasks.loads(db.get_setting(f"task_launch:{st['id']}") or "")      # last choices for this store
+    pixel = saved.get("pixel_id") or _px_cfg(st["id"]).get("meta_pixel") or ""
+    budget = re.sub(r"[^\d.]", "", str(brief.get("budget") or "")) or saved.get("daily_budget") or ""
+    countries = brief.get("countries") or saved.get("countries") or ""
+    return {"account_id": st["meta_account_id"], "account": st.get("meta_account_name") or "",
+            "currency": st.get("meta_currency") or "", "store": st["name"].strip(), **opts,
+            "defaults": {"page_id": saved.get("page_id") or (opts["pages"][0]["id"] if len(opts["pages"]) == 1 else ""),
+                         "pixel_id": pixel, "daily_budget": budget, "countries": countries,
+                         "campaign_name": f"{st['name'].strip()} · {t['title']}",
+                         "link": result.get("landing_url") or result.get("advertorial_url") or result.get("collection_url") or "",
+                         "message": result.get("primary_text") or "",
+                         "headline": (tasks.lines(result.get("headline")) or [""])[0],
+                         "description": result.get("ad_description") or "", "cta": result.get("cta") or "SHOP_NOW"},
+            "progress": tasks.loads(t["launch"])}
+
+
+@app.post("/api/tasks/{task_id}/launch")
+async def api_task_launch(request: Request, task_id: int, payload: dict):
+    """Create the campaign, ad set and one ad per creative on Meta, all PAUSED. Each id is saved as it's
+    made, so pressing Launch again after a problem carries on where it stopped (never makes doubles)."""
+    _tasks_db()
+    _need_level(request, "tasks", "manage")
+    user = _task_user(request)
+    with db._conn() as con:
+        t = _task_row(con, task_id, user)
+        files = [dict(r) for r in con.execute("SELECT * FROM task_files WHERE task_id = ? AND kind = 'creative'"
+                                              " AND side = 'staff' ORDER BY id", (task_id,))]
+    if t["status"] != "approved":
+        raise HTTPException(400, "Approve the task first.")
+    st, conn = _task_meta(t["store_id"])
+    token, act = conn["access_token"], st["meta_account_id"]
+    want = {int(x) for x in payload.get("file_ids") or []}
+    files = [f for f in files if not want or f["id"] in want]
+    files = [f for f in files if f["name"].lower().endswith(_IMG_EXT + _VID_EXT)]
+    if not files:
+        raise HTTPException(400, "There are no image or video creatives to put in the ads.")
+    page_id = re.sub(r"\D", "", str(payload.get("page_id") or ""))
+    pixel_id = re.sub(r"\D", "", str(payload.get("pixel_id") or ""))
+    link = str(payload.get("link") or "").strip()
+    countries = [c for c in re.split(r"[\s,]+", str(payload.get("countries") or "").upper()) if re.fullmatch(r"[A-Z]{2}", c)]
+    try:
+        budget = float(payload.get("daily_budget") or 0)
+    except ValueError:
+        budget = 0
+    message, headline = str(payload.get("message") or "").strip(), str(payload.get("headline") or "").strip()
+    cta = payload.get("cta") if payload.get("cta") in tasks.CTAS else "SHOP_NOW"
+    missing = [n for n, v in (("Facebook Page", page_id), ("pixel", pixel_id), ("landing page link", link.startswith("http")),
+                              ("countries", countries), ("daily budget", budget > 0), ("primary text", message),
+                              ("headline", headline)) if not v]
+    if missing:
+        raise HTTPException(400, "Fill in: " + ", ".join(missing) + ".")
+    db.set_setting(f"task_launch:{st['id']}", json.dumps({"page_id": page_id, "pixel_id": pixel_id,
+                                                          "daily_budget": str(payload.get("daily_budget")),
+                                                          "countries": " ".join(countries)}))
+    prog = tasks.loads(t["launch"])
+    prog.setdefault("ads", {})
+    prog.setdefault("videos", {})
+    prog["account_id"] = act
+
+    def save():
+        with db._conn() as con:
+            con.execute("UPDATE tasks SET launch = ? WHERE id = ?", (json.dumps(prog), task_id))
+
+    name = (str(payload.get("campaign_name") or "").strip() or t["title"])[:200]
+    waiting = []
+    try:
+        async with httpx.AsyncClient(timeout=300) as client:
+            if not prog.get("campaign_id"):
+                prog["campaign_id"] = await meta.create_campaign(client, token, act, name)
+                save()
+            if not prog.get("adset_id"):
+                prog["adset_id"] = await meta.create_adset(client, token, act, prog["campaign_id"], name,
+                                                           meta.minor_units(budget, st.get("meta_currency")),
+                                                           pixel_id, countries)
+                save()
+            for f in files:
+                key = str(f["id"])
+                if key in prog["ads"]:
+                    continue
+                path = _task_file_path(f)
+                low = f["name"].lower()
+                ad_name = f"{name} · {f['name']}"[:250]
+                if low.endswith(_VID_EXT):
+                    if key not in prog["videos"]:
+                        prog["videos"][key] = await meta.upload_video(client, token, act, path, f["name"])
+                        save()
+                    thumb = await meta.video_thumbnail(client, token, prog["videos"][key])
+                    if not thumb:
+                        waiting.append(f["name"])
+                        continue
+                    made = await meta.create_ad(client, token, act, prog["adset_id"], ad_name, page_id, link, message,
+                                                headline, payload.get("description"), cta,
+                                                video_id=prog["videos"][key], thumb_url=thumb)
+                else:
+                    send = path
+                    if not low.endswith((".jpg", ".jpeg", ".png", ".gif")):       # HEIC / WebP → JPEG for Meta
+                        send = path + "_ad.jpg"
+                        if not os.path.exists(send) and not await asyncio.to_thread(_att_image, path, send, 2400):
+                            raise meta.MetaAdsError(f"{f['name']} isn't an image Meta can use.")
+                    with open(send, "rb") as fh:
+                        data = fh.read()
+                    image_hash = await meta.upload_image(client, token, act, data, os.path.basename(send))
+                    made = await meta.create_ad(client, token, act, prog["adset_id"], ad_name, page_id, link, message,
+                                                headline, payload.get("description"), cta, image_hash=image_hash)
+                prog["ads"][key] = made
+                save()
+    except meta.MetaAdsError as e:
+        save()
+        with db._conn() as con:
+            _task_log(con, task_id, user, "launch", f"Launch stopped: {e}")
+        raise HTTPException(400, f"{e} What was already made is kept; press Launch again after fixing it.")
+    with db._conn() as con:
+        if waiting:
+            _task_log(con, task_id, user, "launch", f"Campaign made (paused); Meta is still processing "
+                                                    f"{len(waiting)} video{'s' if len(waiting) > 1 else ''}")
+        else:
+            prog["done_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            con.execute("UPDATE tasks SET launch = ?, status = 'launched', closed_at = datetime('now') WHERE id = ?",
+                        (json.dumps(prog), task_id))
+            _task_log(con, task_id, user, "launch", f"Launched on Meta (paused): {len(prog['ads'])} ad"
+                                                    f"{'s' if len(prog['ads']) != 1 else ''}, campaign {prog['campaign_id']}")
+    return {"ok": True, "waiting": waiting, "campaign_id": prog["campaign_id"], "ads": len(prog["ads"]),
+            "account_id": act}
 
 
 class _Static(StaticFiles):

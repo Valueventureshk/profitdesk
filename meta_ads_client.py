@@ -265,3 +265,133 @@ async def level_spend(token: str, account_id: str, since: str, until: str, level
              "adset": r.get("adset_name") or "", "spend": float(r.get("spend") or 0),
              "impressions": int(r.get("impressions") or 0), "clicks": int(r.get("inline_link_clicks") or 0)}
             for r in rows]
+
+
+# ---------------------------------------------------------------- creating ads (Tasks desk → Launch)
+# Everything is created PAUSED: an admin checks it in Ads Manager and switches it on there.
+# Needs the ads_management permission on the System User token.
+
+_ZERO_DECIMAL = {"JPY", "KRW", "VND", "CLP", "ISK", "HUF", "TWD", "COP", "IDR", "PYG", "CRC"}
+
+
+def minor_units(amount: float, currency: str) -> int:
+    """Meta takes budgets in the account currency's smallest unit (cents)."""
+    return int(round(float(amount) * (1 if (currency or "").upper() in _ZERO_DECIMAL else 100)))
+
+
+def _explain_write(r: httpx.Response) -> MetaAdsError:
+    try:
+        err = r.json().get("error", {})
+    except ValueError:
+        err = {}
+    if err.get("code") in _NO_PERMISSION or err.get("code") == 100 and "permission" in str(err).lower():
+        return MetaAdsError("Meta refused to create ads. The System User token needs the ads_management "
+                            "permission and the ad account (and Facebook Page) assigned to it.")
+    detail = err.get("error_user_msg") or err.get("error_user_title") or err.get("message") or r.text[:300]
+    return MetaAdsError(f"Meta said: {detail}")
+
+
+async def _post(client, path: str, token: str, data: dict, files=None) -> dict:
+    body = {k: (json.dumps(v) if isinstance(v, (dict, list)) else v) for k, v in data.items()}
+    try:
+        r = await client.post(f"{GRAPH}/{_version()}/{path}", data=_params(token, body), files=files)
+    except httpx.RequestError as e:
+        raise MetaAdsError(f"Could not reach Meta ({type(e).__name__}).") from e
+    if r.status_code >= 400:
+        raise _explain_write(r)
+    return r.json()
+
+
+async def _get(client, path: str, token: str, params: dict) -> dict:
+    try:
+        r = await client.get(f"{GRAPH}/{_version()}/{path}", params=_params(token, params))
+    except httpx.RequestError as e:
+        raise MetaAdsError(f"Could not reach Meta ({type(e).__name__}).") from e
+    if r.status_code >= 400:
+        raise _explain(r)
+    return r.json()
+
+
+async def launch_options(token: str, account_id: str) -> dict:
+    """Facebook Pages and pixels the ad account can use, for the Launch form."""
+    act = f"act_{account_id}"
+    out = {"pages": [], "pixels": [], "errors": []}
+    async with httpx.AsyncClient(timeout=30) as client:
+        for key, path, fields in (("pages", f"{act}/promote_pages", "id,name"),
+                                  ("pixels", f"{act}/adspixels", "id,name")):
+            try:
+                rows = await _get_all(client, path, token, {"fields": fields, "limit": 100})
+                out[key] = [{"id": str(x["id"]), "name": x.get("name") or x["id"]} for x in rows]
+            except MetaAdsError as e:
+                out["errors"].append(str(e))
+    return out
+
+
+async def upload_image(client, token: str, account_id: str, data: bytes, name: str) -> str:
+    got = await _post(client, f"act_{account_id}/adimages", token, {}, files={"filename": (name, data)})
+    images = got.get("images") or {}
+    first = next(iter(images.values()), {})
+    if not first.get("hash"):
+        raise MetaAdsError(f"Meta didn't take the image {name}.")
+    return first["hash"]
+
+
+async def upload_video(client, token: str, account_id: str, path: str, name: str) -> str:
+    with open(path, "rb") as fh:
+        got = await _post(client, f"act_{account_id}/advideos", token, {"name": name},
+                          files={"source": (name, fh)})
+    if not got.get("id"):
+        raise MetaAdsError(f"Meta didn't take the video {name}.")
+    return str(got["id"])
+
+
+async def video_thumbnail(client, token: str, video_id: str):
+    """Meta's preferred still of an uploaded video, or None while it's still processing."""
+    got = await _get(client, f"{video_id}", token, {"fields": "status,thumbnails{uri,is_preferred}"})
+    if (got.get("status") or {}).get("video_status") not in (None, "ready"):
+        return None
+    thumbs = (got.get("thumbnails") or {}).get("data") or []
+    pick = next((t for t in thumbs if t.get("is_preferred")), thumbs[0] if thumbs else None)
+    return pick.get("uri") if pick else None
+
+
+async def create_campaign(client, token, account_id, name, validate=False) -> str:
+    data = {"name": name, "objective": "OUTCOME_SALES", "status": "PAUSED",
+            "special_ad_categories": [], "is_adset_budget_sharing_enabled": "false"}
+    if validate:
+        data["execution_options"] = ["validate_only"]
+    got = await _post(client, f"act_{account_id}/campaigns", token, data)
+    return str(got.get("id") or "")
+
+
+async def create_adset(client, token, account_id, campaign_id, name, daily_minor, pixel_id, countries,
+                       validate=False) -> str:
+    data = {"name": name, "campaign_id": campaign_id, "status": "PAUSED", "daily_budget": daily_minor,
+            "billing_event": "IMPRESSIONS", "optimization_goal": "OFFSITE_CONVERSIONS",
+            "bid_strategy": "LOWEST_COST_WITHOUT_CAP",
+            "promoted_object": {"pixel_id": pixel_id, "custom_event_type": "PURCHASE"},
+            "targeting": {"geo_locations": {"countries": countries},
+                          "targeting_automation": {"advantage_audience": 1}}}
+    if validate:
+        data["execution_options"] = ["validate_only"]
+    got = await _post(client, f"act_{account_id}/adsets", token, data)
+    return str(got.get("id") or "")
+
+
+async def create_ad(client, token, account_id, adset_id, name, page_id, link, message, headline,
+                    description, cta, image_hash=None, video_id=None, thumb_url=None) -> dict:
+    call = {"type": cta or "SHOP_NOW", "value": {"link": link}}
+    if video_id:
+        story = {"page_id": page_id, "video_data": {
+            "video_id": video_id, "image_url": thumb_url, "message": message, "title": headline,
+            "link_description": description or "", "call_to_action": call}}
+    else:
+        story = {"page_id": page_id, "link_data": {
+            "image_hash": image_hash, "link": link, "message": message, "name": headline,
+            "description": description or "", "call_to_action": call}}
+    creative = await _post(client, f"act_{account_id}/adcreatives", token,
+                           {"name": name, "object_story_spec": story})
+    ad = await _post(client, f"act_{account_id}/ads", token,
+                     {"name": name, "adset_id": adset_id, "creative": {"creative_id": creative["id"]},
+                      "status": "PAUSED"})
+    return {"creative_id": str(creative["id"]), "ad_id": str(ad["id"])}
