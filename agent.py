@@ -178,3 +178,33 @@ def lessons(area: str = None) -> list:
         rows = con.execute("SELECT * FROM agent_lessons WHERE active = 1" + (" AND area IN (?, 'general')" if area else "")
                            + " ORDER BY id", (area,) if area else ()).fetchall()
     return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------- what is this file? (before filing anything)
+
+CLASSIFY_MODEL = "claude-haiku-5-5"
+CLASSIFY_SYSTEM = """You sort files that suppliers post in Slack for an e-commerce business (several Shopify stores; suppliers
+such as DayOne and Graypop pack and ship the orders). Decide what ONE file is from its name and the start of its text:
+- invoice: a bill asking to be paid for goods / fulfilment: amounts per order or item, a total due, often an invoice number.
+- tracking: a list of orders with tracking numbers / carriers / shipping status (even if it shows some prices).
+- other: anything else (price lists, quotes, catalogues, labels, photos, reports, statements).
+Be strict: only "invoice" when it is clearly a bill. confidence 0-1.
+{lessons}"""
+CLASSIFY_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["kind", "confidence", "reason"],
+                   "properties": {"kind": {"type": "string", "enum": ["invoice", "tracking", "other"]},
+                                  "confidence": {"type": "number"}, "reason": {"type": "string"}}}
+
+
+async def classify(api_key: str, filename: str, text: str) -> dict:
+    """{"kind": invoice | tracking | other, "confidence", "reason"} for one file, following the team's invoice lessons."""
+    import anthropic
+    taught = [l["text"] for l in lessons("invoices")][-30:]
+    client = anthropic.AsyncAnthropic(api_key=api_key, max_retries=2, timeout=60)
+    resp = await client.messages.create(
+        model=CLASSIFY_MODEL, max_tokens=400,
+        system=CLASSIFY_SYSTEM.format(lessons=("What the team has taught you (follow it):\n- " + "\n- ".join(taught)) if taught else ""),
+        output_config={"effort": "low", "format": {"type": "json_schema", "schema": CLASSIFY_SCHEMA}},
+        messages=[{"role": "user", "content": f"File name: {filename}\n\nStart of its text:\n{(text or '')[:6000]}"}])
+    if resp.stop_reason == "refusal":
+        return {"kind": "other", "confidence": 0, "reason": "The AI declined to read it."}
+    return json.loads(next((b.text for b in resp.content if b.type == "text"), "{}"))

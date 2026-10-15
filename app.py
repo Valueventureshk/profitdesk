@@ -11500,6 +11500,8 @@ def _agent_db():
         return
     with db._conn() as con:
         con.executescript(agent.SCHEMA)
+        con.execute("UPDATE agent_jobs SET status = 'failed', summary = 'Stopped by an app restart: read the channel again to carry on '"
+                    " || '(nothing is filed twice).' WHERE status = 'running'")
     _agent_ready["ok"] = True
 
 
@@ -11552,7 +11554,22 @@ def _agent_invoice_file(f: dict) -> bool:
     name = (f.get("name") or "").lower()
     kind = name.endswith(agent.INVOICE_EXT) or (f.get("mimetype") or "") in (
         "application/pdf", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.ms-excel", "text/csv")
-    return kind and bool(re.search(r"invoice|\binv\b|\binv[-_ ]?\d", name)) and "tracking" not in name
+    return kind and "tracking" not in name
+
+
+def _named_invoice(name: str) -> bool:
+    return bool(re.search(r"invoice|\binv\b|\binv[-_ ]?\d", (name or "").lower()))
+
+
+def _file_text(data: bytes, name: str) -> str:
+    try:
+        if data[:4] == b"%PDF":
+            return invoices.pdf_text(data)
+        if data[:2] == b"PK":
+            return invoices.xlsx_text(data, name)
+        return data.decode("utf-8", "ignore")
+    except Exception as e:
+        return f"(couldn't read the text: {type(e).__name__})"
 
 
 def _agent_paused() -> bool:
@@ -11579,6 +11596,32 @@ async def _agent_file_invoices(job_id: int, ch: dict, items: list):
         outcome, invoice_id = "", None
         try:
             data = await slack_client.download(token, f["url"])
+            key = db.get_setting("anthropic_api_key")
+            if key:
+                try:
+                    what = await agent.classify(key, f["name"] or "", await asyncio.to_thread(_file_text, data, f["name"] or ""))
+                except Exception as e:
+                    what = {"kind": "invoice" if _named_invoice(f["name"]) else "other", "confidence": 0.5,
+                            "reason": f"AI unavailable ({type(e).__name__}); went by the name"}
+            else:
+                what = {"kind": "invoice" if _named_invoice(f["name"]) else "other", "confidence": 0.9 if _named_invoice(f["name"]) else 0.5,
+                        "reason": "No AI key: went by the name"}
+            sure = float(what.get("confidence") or 0)
+            agent.step(job_id, "think", f"Looks like: {what.get('kind')} ({sure:.0%} sure)", what.get("reason") or "")
+            if what.get("kind") != "invoice" or sure < 0.75:
+                outcome = f"Not filed: {what.get('kind')} ({sure:.0%}) – {what.get('reason') or ''}"[:300]
+                if what.get("kind") == "invoice" or (sure < 0.6 and _named_invoice(f["name"])):
+                    agent.ask("invoices", f"Is “{f['name']}” from #{ch['name']} ({when_}) an invoice? I wasn't sure enough to file it "
+                              f"({what.get('reason') or ''}). If yes, upload it in COG → Invoices and tell me how to recognise them.",
+                              "", job_id)
+                    agent.step(job_id, "wait", "Not sure: asked you instead of filing it")
+                else:
+                    agent.step(job_id, "skip", "Not an invoice: left alone")
+                with db._conn() as con:
+                    con.execute("INSERT OR REPLACE INTO agent_files (file_id, channel, ts, name, job_id, invoice_id, outcome, at)"
+                                " VALUES (?,?,?,?,?,NULL,?,?)", (f["id"], ch["id"], m["ts"], f["name"], job_id, outcome, agent.now()))
+                skipped += 1
+                continue
             r = await _ingest_invoice(data, f["name"] or "invoice", f"agent (Slack #{ch['name']})")
             invoice_id = r.get("id")
             if r.get("attached"):
@@ -11635,24 +11678,24 @@ async def _agent_read_channel(job_id: int, ch: dict, file_invoices: bool = True)
             newest = max([float(m["ts"]) for m in msgs if m.get("ts")] + [float(ch.get("read_to") or 0)])
             con.execute("UPDATE slack_channels SET read_to = ?, read_at = ? WHERE id = ?",
                         (f"{newest:.6f}" if newest else ch.get("read_to"), agent.now(), ch["id"]))
-        files = [(m, f) for m in msgs for f in [{"id": x.get("id"), "name": x.get("name") or x.get("title"), "mimetype": x.get("mimetype"),
-                                                  "url": x.get("url_private_download") or x.get("url_private")} for x in m.get("files") or []]
-                 if f.get("id")]
+        since = agent.ts_iso((datetime.now(timezone.utc) - timedelta(days=AGENT_DAYS)).timestamp())
+        with db._conn() as con:
+            kept = [dict(r) for r in con.execute("SELECT * FROM slack_messages WHERE channel = ? AND files IS NOT NULL AND at >= ?"
+                                                 " ORDER BY ts", (ch["id"], since))]
+        files = [({"ts": k["ts"], "user": k["user"], "text": k["text"]}, f) for k in kept for f in json.loads(k["files"]) if f.get("id")]
         agent.step(job_id, "read", f"Read {len(msgs)} messages from #{ch['name']}",
                    f"Since {agent.ts_iso(oldest)[:10]}, including {len(threads)} thread(s); {len(files)} file(s) attached. "
                    "Kept in EcomVital (free Slack forgets after 90 days).")
         if file_invoices and ch.get("role") == "supplier_invoice":
-            inv = sorted([x for x in files if _agent_invoice_file(x[1])], key=lambda x: float(x[0]["ts"]))
+            with db._conn() as con:
+                done_ids = {r[0] for r in con.execute("SELECT file_id FROM agent_files WHERE channel = ?", (ch["id"],))}
+            inv = sorted([x for x in files if _agent_invoice_file(x[1]) and x[1]["id"] not in done_ids], key=lambda x: float(x[0]["ts"]))
             other = [x[1]["name"] for x in files if not _agent_invoice_file(x[1])]
-            agent.step(job_id, "think", f"{len(inv)} of them are invoices (named so); {len(other)} other files left alone",
-                       "Each invoice is read once with the same reader as COG → Invoices. Left alone (not named as invoices, e.g. "
-                       "tracking sheets, photos): " + ", ".join(sorted(set(other))[:8]) + ("…" if len(set(other)) > 8 else ""))
-            if other:
-                agent.ask("invoices", f"In #{ch['name']} I only file files named as invoices. I left {len(other)} other files alone "
-                          f"(e.g. {', '.join(sorted(set(other))[:3])}). Are any of those invoices too? If so, how can I tell them apart?",
-                          "", job_id)
+            agent.step(job_id, "think", f"{len(inv)} file(s) to look at; {len(other)} left alone (tracking sheets, photos)",
+                       "Each file is read by the AI first: only real invoices are filed, with the same reader as COG → Invoices. "
+                       "Unsure ones become questions for you.")
             filed, skipped, failed = await _agent_file_invoices(job_id, ch, inv)
-            agent.finish(job_id, "done", f"{len(msgs)} messages read · {filed} invoice(s) filed, {skipped} already in, {failed} couldn't be read")
+            agent.finish(job_id, "done", f"{len(msgs)} messages read · {filed} invoice(s) filed, {skipped} skipped (already in, or not invoices), {failed} couldn't be read")
         else:
             agent.finish(job_id, "done", f"{len(msgs)} messages read")
     except Exception as e:
@@ -11957,7 +12000,7 @@ async def _slack_event(ev: dict):
         jid = agent.start("invoice", f"New invoice file in #{ch['name']}", "invoices", {"channel": ch["id"], "ts": m["ts"]})
         filed, skipped, failed = await _agent_file_invoices(jid, ch, inv)
         agent.finish(jid, "done" if not failed else "waiting",
-                     f"{filed} filed, {skipped} already in, {failed} couldn't be read" + (" (question for you)" if failed else ""))
+                     f"{filed} filed, {skipped} skipped (already in, or not an invoice), {failed} couldn't be read" + (" (question for you)" if failed else ""))
 
 
 @app.post("/api/slack/events")
