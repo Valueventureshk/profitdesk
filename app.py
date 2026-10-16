@@ -64,6 +64,7 @@ import ai_chat
 import ai_data
 import products_desk
 import adcopy
+import paypal_track
 import timetrack
 import agent
 import slack_client
@@ -157,6 +158,7 @@ async def lifespan(app):
     asyncio.create_task(_gconv_loop())
     asyncio.create_task(_assist_loop())
     asyncio.create_task(_co_loop())
+    asyncio.create_task(paypal_track.loop())
     for i in db.list_invoices():                     # AI double-checks cut off by a restart
         if i.get("ai_check") == "pending":
             asyncio.create_task(_ai_check_invoice(i["id"]))
@@ -230,12 +232,14 @@ _DESK_PATHS = {
     "metaads": ("/metaads", "/api/metaads"),
     "agent": ("/agent", "/api/agent"),
     "time": ("/time", "/api/time"),
+    "paypaltrack": ("/paypal-tracking", "/api/paypal-tracking"),
 }
 _DESK_HOME = {"profit": "/", "cash": "/cash", "cog": "/cog", "inbox": "/inbox", "reports": "/reports",
              "expenses": "/expenses", "scm": "/scm", "importer": "/importer",
              "sizecharts": "/sizecharts", "disputes": "/disputes",
              "recordings": "/recordings", "googleads": "/googleads",
-             "tracking": "/tracking", "checkout": "/checkout", "tasks": "/tasks", "metaads": "/metaads", "agent": "/agent", "time": "/time"}
+             "tracking": "/tracking", "checkout": "/checkout", "tasks": "/tasks", "metaads": "/metaads", "agent": "/agent", "time": "/time",
+             "paypaltrack": "/paypal-tracking"}
 # Shared by every desk's pages: the user's own details and the dropdown lists.
 _EVERYONE = {"/api/me", "/api/me/password", "/api/logout", "/change-password",
              "/api/setup", "/api/chat", "/api/assistant/inbox", "/api/assistant/inbox/read"}
@@ -14498,6 +14502,14 @@ class _Static(StaticFiles):
 
 
 app.include_router(adcopy.router)          # Product Importer → Ad copy
+app.include_router(paypal_track.router)    # Apps → PayPal Tracking
+
+
+@app.get("/paypal-tracking", response_class=HTMLResponse)
+def paypal_tracking_page():
+    return _page("paypaltrack.html", ("paypaltrack.js", "paypaltrack.css", "nav.js", "styles.css", "skin.css", "chat.js"))
+
+
 app.mount("/static", _Static(directory=STATIC_DIR), name="static")
 
 

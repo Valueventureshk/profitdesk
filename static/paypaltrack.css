@@ -1,0 +1,38 @@
+/* Apps → PayPal Tracking. Uses the shared tokens in styles.css. */
+.pt-switch { display: grid; gap: 14px; }
+.pt-main { display: flex; gap: 14px; align-items: center; }
+.pt-main strong { font-size: 16px; }
+.pt-main .hint { margin: 2px 0 0; }
+.pt-toggle { position: relative; width: 46px; height: 26px; flex: none; cursor: pointer; }
+.pt-toggle input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; z-index: 1; }
+.pt-knob { position: absolute; inset: 0; border-radius: 999px; background: var(--line, #D6D3CB); transition: background .15s; }
+.pt-knob::after { content: ""; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%;
+  background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.2); transition: transform .15s; }
+.pt-toggle input:checked + .pt-knob { background: var(--profit, #1F6F5C); }
+.pt-toggle input:checked + .pt-knob::after { transform: translateX(20px); }
+.pt-toggle input:disabled { cursor: default; }
+.pt-label { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+.pt-picks { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.pt-picks label, .pt-later { display: flex; gap: 6px; align-items: center; font-size: 13px; cursor: pointer; }
+.pt-picks input, .pt-later input { width: auto; margin: 0; }
+.pt-later { align-items: flex-start; color: var(--muted); }
+.pt-later input { margin-top: 2px; }
+#lastRun { margin: 0; }
+.pt-filters { display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.pt-filters .exp-periods { margin-bottom: 0; }
+.pt-tabs button { font: inherit; font-size: 13px; padding: 7px 14px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--line, #D6D3CB); background: transparent; color: inherit; }
+.pt-tabs button.on { background: var(--ink); color: var(--panel); border-color: var(--ink); }
+.pt-tabs b { font-weight: 600; margin-left: 4px; font-family: "IBM Plex Mono", monospace; }
+.pt-search { display: flex; gap: 8px; flex-wrap: wrap; }
+.pt-search input { width: 300px; max-width: 100%; margin: 0; }
+.pt-search select { width: auto; margin: 0; }
+.pt-list th, .pt-list td { text-align: left; vertical-align: top; white-space: normal; }
+.pt-list .mono { font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; font-size: 12.5px; }
+.pt-list small { display: block; color: var(--faint); font-size: 11.5px; margin-top: 2px; }
+.pt-list .why { max-width: 260px; margin-top: 4px; font-size: 12px; color: var(--muted); }
+.pt-list .why.bad { color: var(--down); }
+@media (max-width: 640px) {
+  .pt-search input { width: 100%; }
+  .pt-list th:nth-child(5), .pt-list td:nth-child(5) { display: none; }
+}

@@ -36,6 +36,7 @@ window.PDUrl = {
     { href: "/sizecharts", desk: "sizecharts", label: "Size Charts", note: "Size charts for every store, with AI", group: "Apps" },
     { href: "/importer", desk: "importer", label: "Product Importer", note: "Copy products from any Shopify store", group: "Apps" },
     { href: "/recordings", desk: "recordings", label: "Session Recordings", note: "Watch what shoppers did on your stores", group: "Apps" },
+    { href: "/paypal-tracking", desk: "paypaltrack", label: "PayPal Tracking", note: "Sends in-transit tracking numbers to PayPal", group: "Apps" },
     { href: "/checkout", desk: "checkout", label: "Checkout", note: "Own payment page with subscriptions (Airwallex)", group: "Apps" },
   ];
   // a group's title goes above its first item
@@ -127,6 +128,7 @@ window.PDUrl = {
     "/agent": '<rect x="5" y="8" width="14" height="11" rx="3"/><path d="M12 8V4M9 13v.01M15 13v.01M9.5 16.5h5"/><circle cx="12" cy="3.5" r="1"/>',
     "/metaads": '<path d="M3 15c0-5 2.5-8 4.5-8 3 0 4.5 10 7.5 10 2 0 3.5-3 3.5-6s-1.5-5-3-5c-2.5 0-4.5 5-7 5"/>',
     "/googleads": '<path d="M4 19l6-10 4 7 3-5 3 8"/><circle cx="17" cy="6" r="2"/>',
+    "/paypal-tracking": '<path d="M2 7h11v9H2zM13 10h4l4 3v3h-8z"/><circle cx="6" cy="17.5" r="1.8"/><circle cx="17" cy="17.5" r="1.8"/><path d="M5 11.5l2 2 3.5-3.5"/>',
     "/recordings": '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 9.5v5l4.5-2.5z"/>',
     settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>',
     theme: '<path d="M20 14.5A8 8 0 019.5 4a8 8 0 1010.5 10.5z"/>',
