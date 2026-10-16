@@ -183,6 +183,39 @@ def api_debug_google_usage(days: int = 7):
             "note": "Breakdown recorded from 14 Oct 2026; earlier days have the total only."}
 
 
+@app.get("/api/debug/awx-transfers")
+async def api_debug_awx_transfers(days: int = 40):
+    """Owner: what Airwallex says about money sent out by transfer (names and types only)."""
+    def names(d, path=""):
+        out = {}
+        if isinstance(d, dict):
+            for k, v in d.items():
+                if isinstance(v, (dict, list)):
+                    out.update(names(v, f"{path}{k}."))
+                elif any(w in k.lower() for w in ("name", "type", "method", "status", "reference", "reason", "nickname")):
+                    out[path + k] = v
+        elif isinstance(d, list):
+            for i, v in enumerate(d[:3]):
+                out.update(names(v, f"{path}{i}."))
+        return out
+    now = datetime.now(timezone.utc)
+    res = []
+    for c in db.list_cash_connections():
+        if c["provider"] != "airwallex":
+            continue
+        rows = await awx.transactions(c["client_id"], c["secret"], now - timedelta(days=days), now, c["account_id"])
+        outs = [r for r in rows if ((awx._f(r, "transaction_type") or "").startswith("DC_")
+                                    or awx._f(r, "source_type") == "TRANSFER") and float(r.get("net") or 0) < 0]
+        for r in outs[:4]:
+            t = {k: r.get(k) for k in r if k not in ("client_rate",)}
+            try:
+                tr = names(await awx.transfer(c["client_id"], c["secret"], awx._f(r, "source_id"), c["account_id"]))
+            except Exception as e:
+                tr = {"error": str(e)[:200]}
+            res.append({"account": c["label"], "row": t, "transfer": tr})
+    return {"transfers": res}
+
+
 @app.get("/api/debug/stalls")
 def api_debug_stalls():
     """Owner: the last times the server was stuck on one job, how long, and where."""
