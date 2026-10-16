@@ -121,7 +121,7 @@ def order_kind(cancelled: bool, inv_lines: list, sources: set, mark: dict) -> tu
 
 
 def order_rows(lines: list, inv_by_order: dict, invoices: dict, fulfilled: set, marks: dict,
-               sale_usd, cutoff: str, stores: dict, billed: dict = None, usual: dict = None) -> list:
+               sale_usd, cutoff: str, stores: dict, billed: dict = None, usual: dict = None, shares: dict = None) -> list:
     """One row per order for Check orders.
     lines: cog_lines rows; inv_by_order: {(store, order key): [invoice lines]}; invoices: {id: invoice};
     fulfilled: {(store, order name)}; marks: {(store, order name): {answer, note, ...}};
@@ -166,7 +166,8 @@ def order_rows(lines: list, inv_by_order: dict, invoices: dict, fulfilled: set, 
             state = "invoiced"
         elif (sid, name) in fulfilled:
             state = "notinv"
-            sup = next((i["supplier"] for i in o["items"] if i["supplier"]), "") or (usual or {}).get(sid, "")
+            sup = assign_supplier(sid, next((i["supplier"] for i in o["items"] if i["supplier"]), ""), shares or {},
+                                  (usual or {}).get(sid, ""))
             cover = covered_by(billed or {}, sid, sup, name)
             if cover:                       # older than the supplier's newest invoice for this store: billed
                 state = "billed"
@@ -190,7 +191,8 @@ def order_rows(lines: list, inv_by_order: dict, invoices: dict, fulfilled: set, 
                     (state == "billed" and invoice_paid(invs_cover, cutoff)),
             "billed_by": ({"number": invs_cover.get("number"), "date": invs_cover.get("date")} if state == "billed" else None),
             "invoices": [{"id": i["id"], "number": i.get("number"), "date": i.get("date"), "supplier": i.get("supplier")} for i in invs],
-            "supplier": next((i["supplier"] for i in o["items"] if i["supplier"]), "") or (invs[0].get("supplier") if invs else ""),
+            "supplier": (invs[0].get("supplier") if invs else "") or assign_supplier(          # who billed it / will bill it
+                sid, next((i["supplier"] for i in o["items"] if i["supplier"]), ""), shares or {}, (usual or {}).get(sid, "")),
             "note": mark.get("note") or "", "answer": mark.get("answer") or "", "answer_by": mark.get("by") or "",
         })
     out.sort(key=lambda o: o["created"] or "")
@@ -222,6 +224,12 @@ def compare(order_lines: list, history: list) -> dict:
     return {"this": side(order_lines), "last": side(last) if last else None}
 
 
+def _range(lines: list) -> dict:
+    """Which orders an invoice bills: count, first and last (order number order)."""
+    names = sorted({l.get("order_name") or l["order_key"] for l in lines if l["status"] not in DROP}, key=order_no)
+    return {"count": len(names), "first": names[0] if names else "", "last": names[-1] if names else ""}
+
+
 def by_day(invoices: list, lines_of: dict, cutoff: str, supplier: str = "") -> list:
     """Invoices for the Invoices tab: replaced ones left out, each with paid / flag."""
     out = []
@@ -247,7 +255,8 @@ def by_day(invoices: list, lines_of: dict, cutoff: str, supplier: str = "") -> l
                     "store": i.get("store") or "", "number": i.get("number") or "", "total": round(i.get("total") or 0.0, 2),
                     "paid": invoice_paid(i, cutoff), "marked": bool(i.get("paid")), "before_cutoff": (i.get("date") or "") < cutoff,
                     "paid_by": i.get("paid_by") or "", "paid_at": i.get("paid_at") or "",
-                    "flag": "; ".join(flags), "note": i.get("note") or "", "file": bool(i.get("file_ext"))})
+                    "flag": "; ".join(flags), "note": i.get("note") or "", "file": bool(i.get("file_ext")),
+                    "orders": _range(ls)})
     out.sort(key=lambda x: (x["date"], x["supplier"], x["store"]), reverse=True)
     return out
 
@@ -282,3 +291,59 @@ def group_days(invs: list) -> list:
         d["by_supplier"][i["supplier"]] += 1
     return [{**d, "total": round(d["total"], 2), "by_supplier": dict(d["by_supplier"])}
             for d in sorted(days.values(), key=lambda d: d["date"], reverse=True)]
+
+
+MINOR_SHARE = 0.10      # a supplier billing under 10% of a store's invoiced orders only cross-fulfils there
+
+
+def supplier_shares(inv_lines: list) -> dict:
+    """Who bills each store, from the invoices: {store: {"main": supplier name, "minor": {supplier keys}}}.
+    When the store's usual supplier can't source an item another supplier ships it and bills it (e.g. Graypop for a
+    Tendance Montreal order Dayone couldn't get): that supplier is "minor" for the store."""
+    orders = defaultdict(lambda: defaultdict(set))
+    names = {}
+    for l in inv_lines:
+        if l["status"] in DROP or not l.get("store_id") or not l.get("supplier"):
+            continue
+        k = sup_key(l["supplier"])
+        names[k] = l["supplier"]
+        orders[l["store_id"]][k].add(order_no(l.get("order_name") or l["order_key"]))
+    out = {}
+    for sid, per in orders.items():
+        total = sum(len(v) for v in per.values())
+        main = max(per, key=lambda k: len(per[k]))
+        out[sid] = {"main": names[main], "minor": {k for k, v in per.items() if k != main and len(v) < MINOR_SHARE * total}}
+    return out
+
+
+def assign_supplier(store_id, supplier: str, shares: dict, usual: str = "") -> str:
+    """The supplier expected to bill an order that isn't on an invoice yet: its products' supplier, unless that one
+    only cross-fulfils for this store (then the store's main supplier)."""
+    sh = shares.get(store_id)
+    if not sh:
+        return supplier or usual
+    if not supplier or sup_key(supplier) in sh["minor"]:
+        return sh["main"]
+    return supplier
+
+
+def set_suppliers(lines: list, inv_lines: list, shares: dict) -> list:
+    """cog_lines rows: an order on an invoice belongs to the supplier who invoiced it (a cross-fulfilled order goes to
+    whoever shipped it); others to assign_supplier. Changes the rows in place."""
+    from cog import order_key
+    billed_by = {}
+    for l in inv_lines:
+        if l["status"] not in DROP and l.get("store_id") and l.get("supplier"):
+            billed_by[(l["store_id"], order_key(l["order_key"]))] = l["supplier"]
+    usual = defaultdict(lambda: defaultdict(int))
+    for l in lines:
+        if l.get("supplier"):
+            usual[l["store_id"]][l["supplier"]] += 1
+    for l in lines:
+        who = billed_by.get((l["store_id"], order_key(l["order_name"])))
+        if who:
+            l["supplier"] = who
+        else:
+            u = usual.get(l["store_id"])
+            l["supplier"] = assign_supplier(l["store_id"], l.get("supplier") or "", shares, max(u, key=u.get) if u else "")
+    return lines

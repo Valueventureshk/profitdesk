@@ -915,9 +915,11 @@ async def api_cog_orders(start: str, end: str = None, store: str = "all"):
     lines_of = defaultdict(list)
     for l in db.invoice_lines():
         lines_of[l["invoice_id"]].append(l)
+    all_inv = [l for ls in lines_of.values() for l in ls]
+    shares = cog_desk.supplier_shares(all_inv)
     rows = cog_desk.order_rows(lines, inv_by_order, imap, fulfilled, _cog_marks(), sale_usd, _cog_cutoff(),
                                {x["id"]: x["name"].strip() for x in stores}, cog_desk.billed_up_to(imap, lines_of),
-                               _usual_suppliers())
+                               _usual_suppliers(), shares)
     count = defaultdict(int)
     for o in rows:
         count[o["kind"]] += 1
@@ -1185,10 +1187,12 @@ def _fulfilled_rows(since_day: date) -> list:
         fulfilled = {(r[0], r[1]): r[2] for r in con.execute(
             "SELECT store_id, order_name, MIN(fulfilled_at) FROM shipments WHERE fulfilled_at IS NOT NULL"
             " AND fulfilled_at != '' GROUP BY store_id, order_name")}
-    on_invoice = {(l["store_id"], cog.order_key(l["order_key"])) for l in db.invoice_lines()
+    inv_lines = db.invoice_lines()
+    on_invoice = {(l["store_id"], cog.order_key(l["order_key"])) for l in inv_lines
                   if l["status"] not in cog_desk.DROP and l.get("ai_check") != "review"}
     for l in lines:
         l["on_invoice"] = (l["store_id"], cog.order_key(l["order_name"])) in on_invoice
+    cog_desk.set_suppliers(lines, inv_lines, cog_desk.supplier_shares(inv_lines))     # cross-fulfilled orders
     return suppliers.fulfilled_orders(lines, fulfilled, CASH_TZ)
 
 
@@ -1584,6 +1588,8 @@ async def api_suppliers():
             on_invoice.add((l["store_id"], cog.order_key(l["order_key"])))
     for l in lines:
         l["on_invoice"] = (l["store_id"], cog.order_key(l["order_name"])) in on_invoice
+    all_inv = db.invoice_lines()
+    cog_desk.set_suppliers(lines, all_inv, cog_desk.supplier_shares(all_inv))      # cross-fulfilled orders
     orders = suppliers.fulfilled_orders(lines, fulfilled, CASH_TZ)
 
     # payments: what the Expenses desk files under "Supplier payments", told apart by payee

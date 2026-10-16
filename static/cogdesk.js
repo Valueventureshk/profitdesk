@@ -289,6 +289,7 @@
         <td class="note">${note ? `<span class="notetext">📝 ${esc(note)}</span>` : '<span class="hint">+ note</span>'}</td></tr>`);
       if (inv.open === day) rows.push(`<tr class="inner"><td colspan="6"><div class="cd-invgrid">
         ${its.map((x) => `<div class="cd-ivr ${x.flag ? "fl" : ""}"><span class="cd-ivn"><b>${esc(x.supplier)}</b> · ${esc(x.store)} <span class="hint">#${esc(x.number || "—")}</span>
+          ${x.orders && x.orders.count ? `<span class="sub">Bills ${x.orders.count} order${x.orders.count === 1 ? "" : "s"}${x.orders.count > 1 ? `: ${esc(x.orders.first)} to ${esc(x.orders.last)}` : `: ${esc(x.orders.first)}`}</span>` : ""}
           ${x.flag ? `<span class="sub">⚑ ${esc(x.flag)}</span>` : ""}${x.note ? `<span class="sub">📝 ${esc(x.note)}</span>` : ""}</span>
           <span class="cd-n">${usd(x.total)}</span>
           ${x.file ? `<a class="btn btn-sm btn-ghost" href="/api/invoices/${x.id}/file" target="_blank" rel="noopener">Open</a>` : ""}
