@@ -212,7 +212,7 @@ def paypal_moves(label: str, rows: list) -> list:
             continue
         who = ((d.get("payer_info") or {}).get("payer_name") or {}).get("alternate_full_name") or ""
         domain = ((d.get("payer_info") or {}).get("email_address") or "").split("@")[-1]
-        base = {"time": when, "currency": cur, "source": f"PayPal · {label}",
+        base = {"time": when, "currency": cur, "source": f"PayPal · {label}", "code": code,
                 "id": t.get("transaction_id"), "desc": (t.get("transaction_subject") or t.get("transaction_note") or "")[:120],
                 "who": who or domain}
 

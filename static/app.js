@@ -26,7 +26,7 @@ const CARDS = [
   { key: "net_margin",     label: "Net Margin",      fmt: "pct",   dot: "var(--up)",     dir: "up" },
   { key: "processing_fee", label: "Processing Fees", fmt: "money", dot: "var(--spend)",  dir: "none" },
   { key: "orders",         label: "Orders",          fmt: "int",   dot: "var(--sales)",  dir: "up" },
-  { key: "refunds_total",  label: "Refunds + chargebacks", fmt: "money", dot: "var(--spend)", dir: "none" },
+  { key: "refunds_total",  label: "Refunds", fmt: "money", dot: "var(--spend)", dir: "none" },
 ];
 
 /* ------------------------------------------------ formatting */
@@ -491,11 +491,11 @@ function feeSplit(t) {
     </div>`;
 }
 
-// Refunds (by the day they were made) and chargebacks
+// Refunds (by the day they were made), incl. disputes once lost
 function refundSplit(t) {
   return `<div class="spend-split">
       <div><span class="nologo"></span><span>Refunds${t.refund_count ? ` (${fmt(t.refund_count, "int")})` : ""}</span><b>${fmt(t.refunds, "money")}</b></div>
-      <div><span class="nologo"></span><span>Chargebacks</span><b>${fmt(t.chargebacks, "money")}</b></div>
+      <div><span class="nologo"></span><span title="Disputes and chargebacks count only once lost (or accepted), on the day the case closed">Lost disputes</span><b>${fmt(t.chargebacks, "money")}</b></div>
     </div>`;
 }
 
@@ -601,7 +601,7 @@ function renderStoreTable(d) {
     const profitClass = t.net_profit >= 0 ? "pos" : "neg";
     return `<tr>
       <td class="name">${esc(s.name)}
-        <span class="sub">${esc(s.outside ? "Refunds + chargebacks made in PayPal / Airwallex" : linkedAccounts(s))}</span></td>
+        <span class="sub">${esc(s.outside ? "Refunds made in PayPal / Airwallex + lost disputes" : linkedAccounts(s))}</span></td>
       <td>${fmt(t.sales, "money")}</td>
       <td>${fmt(t.ad_spend, "money")}</td>
       <td class="roas">${fmt(t.roas, "ratio")}</td>
@@ -617,7 +617,7 @@ function renderStoreTable(d) {
 
   $("storeTable").innerHTML = `
     <thead><tr>
-      <th>Store</th><th>Total sales</th><th>Ad spend</th><th>ROAS</th><th>Fees</th><th title="Refunds made in the period (by refund day) + chargebacks">Refunds</th>
+      <th>Store</th><th>Total sales</th><th>Ad spend</th><th>ROAS</th><th>Fees</th><th title="Refunds made in the period (by refund day), incl. partial refunds and disputes once lost">Refunds</th>
       <th title="Cost of goods as a % of sales">COG %</th><th>AOV</th>
       <th>Net profit</th><th>Margin</th><th>Orders</th>
     </tr></thead>

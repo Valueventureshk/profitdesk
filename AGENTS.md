@@ -304,7 +304,7 @@ These identities must hold exactly. Verify after any change to `metrics.py`:
 
 ```
 sales - refunds - chargebacks - processing_fee - cogs - ad_spend == net_profit   (metrics.day)
-refunds_total == refunds + chargebacks
+refunds_total == refunds + chargebacks          (chargebacks = lost disputes, see below)
 payment_fee == paypal_fee + airwallex_fee + other_payment_fee
 ad_spend == google_spend + meta_spend
 processing_fee == payment_fee + shopify_fee
@@ -312,6 +312,7 @@ processing_fee == payment_fee + shopify_fee
 
 Other rules:
 
+- **Disputes count only once lost** (owner, 16 Oct 2026; `_lost_disputes`, field `chargebacks`, shown as “Lost disputes” inside Refunds): Airwallex cases closed lost or accepted, on the day they closed (from the `disputes` table, refreshed by `_outside_loop`), less what that order already refunded in Shopify, skipped when an outside refund of the same amount within 5 days already counts; PayPal reversals (T1106, `PP_LOST`); PayPal chargebacks only from PayPal's Disputes API (feature not yet ticked). Open cases, holds, won cases and dispute debits on open count nothing. Partial refunds count for what was refunded.
 - **Sales = full order value on the order day; refunds count on the day they're made** (Shopify
   refunds by refund date, plus PayPal / Airwallex refunds that match no Shopify refund and all
   chargebacks, the latter two in the all-stores view as "PayPal / Airwallex (not in Shopify)").

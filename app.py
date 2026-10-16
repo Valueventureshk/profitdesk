@@ -10635,10 +10635,15 @@ async def _outside_refunds(stores: list, start: str, end: str, base: str, fx_tab
             for r in recs:
                 shop.append({"amount": r["amount"], "currency": st["currency"],
                              "time": datetime.fromisoformat(r["time"]), "used": False})
-        days = {}
+        days, counted = {}, []
         for m in moves:
             line = m.get("line")
             if line not in ("Refunds to customers", "Disputes and chargebacks"):
+                continue
+            # Disputes count only once lost (owner, 16 Oct 2026): Airwallex cases from their outcome below
+            # (_lost_disputes); in PayPal a reversal (T1106) is a lost claim. Holds and open chargebacks don't count.
+            if line == "Disputes and chargebacks" and (not str(m.get("source", "")).startswith("PayPal")
+                                                       or m.get("code") not in PP_LOST):
                 continue
             when = m["time"].astimezone(CASH_TZ)
             d = when.date().isoformat()
@@ -10659,12 +10664,77 @@ async def _outside_refunds(stores: list, start: str, end: str, base: str, fx_tab
             if line == "Refunds to customers":
                 row["refunds"] += amt * f
                 row["count"] += 1
+                counted.append({"amount": amt, "currency": m.get("currency"), "time": when, "used": False})
             else:
                 row["chargebacks"] += amt * f
+        if not fx_table:
+            fx_table = await fx.table(base)
+        for d, amt in await _lost_disputes(start, end, base, fx_table, counted):
+            row = days.setdefault(d, {"refunds": 0.0, "count": 0, "chargebacks": 0.0})
+            row["chargebacks"] += amt
         rows = [metrics.day(d, 0.0, 0, 0.0, 0.0, 0.0, refunds=v["refunds"], refund_count=v["count"],
                             chargebacks=v["chargebacks"]) for d, v in sorted(days.items())]
         _outside_cache[ck] = (time.time(), rows)
     return rows
+
+
+PP_LOST = {"T1106"}           # PayPal took the payment back for good (claim decided for the buyer)
+_refunded_cache: dict = {}    # (store id, order) -> (time, refunded in Shopify)
+
+
+async def _lost_disputes(start: str, end: str, base: str, fx_table, counted: list = ()) -> list:
+    """[(Hong Kong day it closed, amount in base)] for Airwallex disputes lost or accepted (money gone), and PayPal
+    chargebacks lost (only known when PayPal's Disputes feature is on). Won / open / cancelled cases count nothing.
+    A case whose order was already refunded in Shopify counts only what wasn't refunded there (no double count)."""
+    cases = []
+    for r in db.list_disputes():
+        c = json.loads(r["data"])
+        if c.get("state") != "closed" or c.get("outcome") not in ("lost", "refunded"):
+            continue
+        if c.get("provider") == "paypal" and c.get("stage") != "Chargeback":
+            continue                                # PayPal claims: the T1106 reversal / T1107 refund counts them
+        try:
+            when = datetime.fromisoformat(str(c.get("updated") or c.get("created")).replace("Z", "+00:00")).astimezone(CASH_TZ)
+        except ValueError:
+            continue
+        d = when.date().isoformat()
+        if start <= d <= end and c.get("amount"):
+            cases.append((d, c, r.get("store_id"), r.get("order_name")))
+    stores = {x["id"]: x for x in db.list_stores()}
+    want = defaultdict(list)
+    for d, c, sid, name in cases:
+        hit = _refunded_cache.get((sid, name))
+        if sid in stores and name and not (hit and time.time() - hit[0] < 6 * 3600):
+            want[sid].append(name)
+    for sid, names in want.items():
+        st = stores[sid]
+        client = ShopifyClient(st["shop_domain"], st["access_token"])
+        for i in range(0, len(names), 5):
+            try:
+                for o in await client.lookup_orders(names[i:i + 5]):
+                    _refunded_cache[(sid, o["name"])] = (time.time(), o["refunded"], o["currency"] or st["currency"])
+            except Exception:
+                pass
+    out = []
+    for d, c, sid, name in cases:
+        try:
+            closed = datetime.fromisoformat(str(c.get("updated") or c.get("created")).replace("Z", "+00:00"))
+        except ValueError:
+            closed = None
+        twin = closed and next((x for x in counted if not x["used"] and x["currency"] == c.get("currency")
+                                and abs(x["amount"] - c["amount"]) < 0.02
+                                and abs((x["time"] - closed).total_seconds()) < 5 * 86400), None)
+        if twin:                                    # settled by a refund that's already counted
+            twin["used"] = True
+            continue
+        f = fx.factor(fx_table, c.get("currency") or base, base) if fx_table else 1.0
+        amt = c["amount"] * f
+        hit = _refunded_cache.get((sid, name))
+        if hit and hit[1]:
+            amt -= hit[1] * (fx.factor(fx_table, hit[2], base) if fx_table else 1.0)
+        if amt >= 0.5:
+            out.append((d, amt))
+    return out
 
 
 async def _gdesk_loop():
@@ -10711,6 +10781,10 @@ async def _outside_loop():
     while True:
         try:
             if db.list_cash_connections():
+                try:
+                    await _disputes_refresh()                # case outcomes: lost disputes count as refunds
+                except Exception as e:
+                    print(f"Disputes refresh failed: {e}", flush=True)
                 stores = [x for x in db.list_stores() if not demo.is_demo(x) and x.get("access_token")]
                 base = _display_currency().upper()
                 end = datetime.now(CASH_TZ).date()

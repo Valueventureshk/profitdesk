@@ -6,8 +6,11 @@ Every number the dashboard shows is defined here and nowhere else.
   - Refunds            money refunded to customers that day, whatever day the order was
                        placed (partial refunds count for what was refunded); refunds made
                        straight in PayPal / Airwallex count too (all-stores view)
-  - Chargebacks        chargebacks / disputes taken by PayPal or Airwallex that day; money
-                       won back counts on the day it returns (all-stores view)
+  - Lost disputes      (field "chargebacks") disputes / chargebacks only once lost: Airwallex
+                       cases lost or accepted, on the day they closed (less anything already
+                       refunded on that order in Shopify); PayPal reversals (claims decided for
+                       the buyer). Open cases, holds and won cases count nothing. They count
+                       as refunds: refunds_total = refunds + lost disputes (all-stores view)
   - Processing fees    payment provider fees + Shopify's third-party fee
   - COG                what the supplier charged for the goods (incl. shipping),
                        per order from the orders sheet / product costs (cog.py);
