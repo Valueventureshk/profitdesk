@@ -911,8 +911,13 @@ async def api_cog_orders(start: str, end: str = None, store: str = "all"):
         fulfilled = {(r[0], r[1]) for r in con.execute(
             "SELECT DISTINCT store_id, order_name FROM shipments WHERE fulfilled_at IS NOT NULL AND fulfilled_at != ''"
             f" AND order_name IN ({','.join('?' * len(names)) or "''"})", tuple(names))} if names else set()
-    rows = cog_desk.order_rows(lines, inv_by_order, _invoice_map(), fulfilled, _cog_marks(), sale_usd, _cog_cutoff(),
-                               {x["id"]: x["name"].strip() for x in stores})
+    imap = _invoice_map()
+    lines_of = defaultdict(list)
+    for l in db.invoice_lines():
+        lines_of[l["invoice_id"]].append(l)
+    rows = cog_desk.order_rows(lines, inv_by_order, imap, fulfilled, _cog_marks(), sale_usd, _cog_cutoff(),
+                               {x["id"]: x["name"].strip() for x in stores}, cog_desk.billed_up_to(imap, lines_of),
+                               _usual_suppliers())
     count = defaultdict(int)
     for o in rows:
         count[o["kind"]] += 1
@@ -1155,6 +1160,22 @@ async def api_cog_orders_ai(payload: dict, request: Request):
     return {"orders": got.get("orders") or []}
 
 
+_usual_cache = {}
+
+
+def _usual_suppliers() -> dict:
+    """{store id: the supplier most of its costed lines come from} (lines with no supplier go to it)."""
+    hit = _usual_cache.get("v")
+    if hit and time.time() - hit[0] < 3600:
+        return hit[1]
+    with db._conn() as con:
+        rows = [dict(r) for r in con.execute("SELECT store_id, supplier FROM cog_lines WHERE supplier IS NOT NULL AND supplier != ''"
+                                             " AND day >= date('now', '-90 day')")]
+    v = suppliers.default_suppliers(rows)
+    _usual_cache["v"] = (time.time(), v)
+    return v
+
+
 def _fulfilled_rows(since_day: date) -> list:
     """suppliers.fulfilled_orders for orders fulfilled since a day (invoiced or not)."""
     with db._conn() as con:
@@ -1184,10 +1205,13 @@ def _supplier_payable(supplier: str = "", fresh: bool = False) -> dict:
     lines_of = defaultdict(list)
     for l in db.invoice_lines():
         lines_of[l["invoice_id"]].append(l)
-    invs = cog_desk.by_day(list(_invoice_map().values()), lines_of, cutoff, supplier)
+    imap = _invoice_map()
+    invs = cog_desk.by_day(list(imap.values()), lines_of, cutoff, supplier)
     credit = round(sum(i["total"] for i in invs if not i["paid"]), 2)
-    est = cog_desk.not_invoiced(_fulfilled_rows(date.fromisoformat(cutoff)), cutoff, supplier)
+    est = cog_desk.not_invoiced(_fulfilled_rows(date.fromisoformat(cutoff)), cutoff, supplier,
+                                cog_desk.billed_up_to(imap, lines_of))
     out = {"cutoff": cutoff, "credit": credit, "estimated": est["total"], "estimated_orders": est["orders"],
+           "billed_no_file": est["billed_no_file"], "billed_no_file_cost": est["billed_no_file_cost"],
            "total": round(credit + est["total"], 2), "invoices": invs,
            "by_supplier": est["by_supplier"]}
     _payable_cache[supplier] = (time.time(), out)

@@ -6,7 +6,8 @@
   const GROUP = { up: "up", down: "up", review: "up", inv: "inv", real: "inv", kept: "inv", bundle: "inv", note: "inv",
                   same: "same", new: "new", est: "est", cancel: "" };
   const STATE = { invoiced: '<span class="cd-tag t-same">Invoiced</span>', notinv: '<span class="cd-tag t-est">Not invoiced yet</span>',
-                  unfulfilled: '<span class="cd-tag t-same">Not fulfilled</span>', cancelled: '<span class="cd-tag t-same">Cancelled</span>' };
+                  unfulfilled: '<span class="cd-tag t-same">Not fulfilled</span>',
+                  billed: '<span class="cd-tag t-same" title="Older than this supplier\'s newest invoice for the store, so it was billed; its invoice file isn\'t in the app">Billed, no invoice file</span>', cancelled: '<span class="cd-tag t-same">Cancelled</span>' };
   const TAG = {
     cancel: '<span class="cd-tag t-same">No cost: cancelled</span>', inv: '<span class="cd-tag t-inv">✓ Invoiced price</span>',
     same: '<span class="cd-tag t-same">= Same as last time</span>', new: '<span class="cd-tag t-new">★ First-time product</span>',
@@ -253,7 +254,8 @@
     $("cdCutoff").value = d.cutoff;
     $("cdCredit").textContent = usd(d.credit);
     $("cdEst").textContent = usd(d.estimated);
-    $("cdEstNote").textContent = `${d.estimated_orders} shipped order${d.estimated_orders === 1 ? "" : "s"} since ${niceDate(d.cutoff)} the supplier hasn't billed (our estimate)`;
+    $("cdEstNote").textContent = `${d.estimated_orders} shipped order${d.estimated_orders === 1 ? "" : "s"} newer than the supplier's latest invoice (our estimate)` +
+      (d.billed_no_file ? `. Not counted: ${d.billed_no_file} older orders (${usd(d.billed_no_file_cost)}) already billed on invoices that never reached the app.` : "");
     $("cdTotal").textContent = usd(d.total);
     drawDays();
   };

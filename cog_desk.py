@@ -16,10 +16,52 @@ An order's "kind" says where its cost comes from and whether someone should look
   inv     invoiced (nothing to compare with)
   est     not invoiced yet: the product's last price or the store's usual COG %
 """
+import re
+from bisect import bisect_left
 from collections import defaultdict
 
 CUTOFF_DEFAULT = "2026-09-01"     # owner: everything invoiced before 1 Sep 2026 is paid
 DROP = ("unmatched", "duplicate", "superseded")
+
+
+def order_no(name) -> int:
+    """#16277CH -> 16277 (a store's orders are numbered in sequence)."""
+    m = re.findall(r"\d+", str(name or ""))
+    return int(m[-1]) if m else 0
+
+
+def sup_key(name) -> str:
+    return re.sub(r"[^a-z0-9]", "", (name or "").lower())
+
+
+def billed_up_to(invoices: dict, lines_of: dict) -> dict:
+    """Suppliers bill a store's orders in sequence, so an order older than the newest order on one of their
+    invoices for that store was billed, even when that invoice file never reached the app (e.g. not posted in
+    Slack). {(store, supplier key): sorted [(highest order number on the invoice, invoice)]}."""
+    out = defaultdict(list)
+    for iid, inv in invoices.items():
+        ls = [l for l in lines_of.get(iid, []) if l["status"] not in DROP and l.get("store_id")]
+        if not ls:
+            continue
+        by_store = defaultdict(int)
+        for l in ls:
+            by_store[l["store_id"]] = max(by_store[l["store_id"]], order_no(l.get("order_name") or l["order_key"]))
+        for sid, top in by_store.items():
+            if top:
+                out[(sid, sup_key(inv.get("supplier")))].append((top, inv))
+    for v in out.values():
+        v.sort(key=lambda x: (x[0], x[1].get("date") or ""))
+    return out
+
+
+def covered_by(table: dict, store_id, supplier, name):
+    """The first invoice of this supplier + store whose orders go past this order (it was billed by then), or None."""
+    rows = table.get((store_id, sup_key(supplier)))
+    if not rows:
+        return None
+    no = order_no(name)
+    i = bisect_left([r[0] for r in rows], no)
+    return rows[i][1] if i < len(rows) else None
 
 
 def invoice_paid(inv: dict, cutoff: str) -> bool:
@@ -79,7 +121,7 @@ def order_kind(cancelled: bool, inv_lines: list, sources: set, mark: dict) -> tu
 
 
 def order_rows(lines: list, inv_by_order: dict, invoices: dict, fulfilled: set, marks: dict,
-               sale_usd, cutoff: str, stores: dict) -> list:
+               sale_usd, cutoff: str, stores: dict, billed: dict = None, usual: dict = None) -> list:
     """One row per order for Check orders.
     lines: cog_lines rows; inv_by_order: {(store, order key): [invoice lines]}; invoices: {id: invoice};
     fulfilled: {(store, order name)}; marks: {(store, order name): {answer, note, ...}};
@@ -116,6 +158,7 @@ def order_rows(lines: list, inv_by_order: dict, invoices: dict, fulfilled: set, 
         else:
             sub = kind
         ids = sorted({l["invoice_id"] for l in inv_lines})
+        invs_cover = None
         invs = [invoices[i] for i in ids if i in invoices]
         if o["cancelled"]:
             state = "cancelled"
@@ -123,6 +166,11 @@ def order_rows(lines: list, inv_by_order: dict, invoices: dict, fulfilled: set, 
             state = "invoiced"
         elif (sid, name) in fulfilled:
             state = "notinv"
+            sup = next((i["supplier"] for i in o["items"] if i["supplier"]), "") or (usual or {}).get(sid, "")
+            cover = covered_by(billed or {}, sid, sup, name)
+            if cover:                       # older than the supplier's newest invoice for this store: billed
+                state = "billed"
+                invs_cover = cover
         else:
             state = "unfulfilled"
         bundle = None
@@ -138,7 +186,9 @@ def order_rows(lines: list, inv_by_order: dict, invoices: dict, fulfilled: set, 
             "sale": round(o["sale"], 2), "cog": round(o["cog"], 2),
             "cog_pct": round(o["cog"] / o["sale"] * 100, 1) if o["sale"] else None,
             "kind": kind, "sub": sub, "pct": pct, "state": state,
-            "paid": bool(invs) and all(invoice_paid(i, cutoff) for i in invs),
+            "paid": (bool(invs) and all(invoice_paid(i, cutoff) for i in invs)) or
+                    (state == "billed" and invoice_paid(invs_cover, cutoff)),
+            "billed_by": ({"number": invs_cover.get("number"), "date": invs_cover.get("date")} if state == "billed" else None),
             "invoices": [{"id": i["id"], "number": i.get("number"), "date": i.get("date"), "supplier": i.get("supplier")} for i in invs],
             "supplier": next((i["supplier"] for i in o["items"] if i["supplier"]), "") or (invs[0].get("supplier") if invs else ""),
             "note": mark.get("note") or "", "answer": mark.get("answer") or "", "answer_by": mark.get("by") or "",
@@ -202,17 +252,24 @@ def by_day(invoices: list, lines_of: dict, cutoff: str, supplier: str = "") -> l
     return out
 
 
-def not_invoiced(orders: list, cutoff: str, supplier: str = "") -> dict:
+def not_invoiced(orders: list, cutoff: str, supplier: str = "", billed: dict = None) -> dict:
     """Shipped orders the supplier hasn't billed yet, since the cut-off: our estimate of what's coming.
+    Orders older than the supplier's newest invoice for that store were billed (billed_up_to) and are left out.
     orders: suppliers.fulfilled_orders rows."""
     total, n, per = 0.0, 0, defaultdict(float)
+    gap_n, gap_cost = 0, 0.0
     for o in orders:
         if o["invoiced"] or o["day"] < cutoff or (supplier and o["supplier"] != supplier):
+            continue
+        if covered_by(billed or {}, o["store_id"], o["supplier"], o["order"]):
+            gap_n += 1
+            gap_cost += o["cost"]
             continue
         total += o["cost"]
         n += 1
         per[o["supplier"]] += o["cost"]
-    return {"total": round(total, 2), "orders": n, "by_supplier": {k: round(v, 2) for k, v in per.items()}}
+    return {"total": round(total, 2), "orders": n, "by_supplier": {k: round(v, 2) for k, v in per.items()},
+            "billed_no_file": gap_n, "billed_no_file_cost": round(gap_cost, 2)}
 
 
 def group_days(invs: list) -> list:
