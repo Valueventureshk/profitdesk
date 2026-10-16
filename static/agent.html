@@ -26,6 +26,8 @@
     <nav class="scm-pages" id="pages">
       <button data-page="jobs" class="on">Work log</button>
       <button data-page="questions">Questions <span class="tab-badge" id="qBadge" hidden></span></button>
+      <button data-page="suppliers">Suppliers</button>
+      <button data-page="ask">Ask the agent</button>
       <button data-page="lessons">Lessons</button>
       <button data-page="slack">Slack</button>
     </nav>
@@ -49,6 +51,22 @@
     <section id="questionsPage" class="panel" hidden>
       <div class="panel-head"><h2>The agent's questions</h2><span class="hint">Your answers become lessons it follows</span></div>
       <div id="questions" class="ag-qs"></div>
+    </section>
+
+    <section id="suppliersPage" hidden>
+      <div class="ag-bar ag-bar-plain"><span class="hint">Opening balance (COG → Suppliers) + invoices − bank payments, oldest first.
+        Transfer notices from Slack are checked against the bank.</span>
+        <button class="btn btn-sm" id="checkProofs" data-manage-only>Check transfer notices against the bank</button></div>
+      <div id="suppliers"></div>
+    </section>
+
+    <section id="askPage" class="panel" hidden>
+      <div class="panel-head"><h2>Ask the agent</h2><span class="hint">It reads invoices, payments, transfer notices, Slack and its lessons. It asks the team when unsure.</span></div>
+      <div class="ag-chat" id="chat"></div>
+      <form class="ag-ask" id="askForm" data-write-only>
+        <textarea id="ask" class="control" rows="2" placeholder="e.g. Up to which order have we paid DayOne? What's on credit with Graypop?"></textarea>
+        <button class="btn btn-primary" id="askBtn">Ask</button>
+      </form>
     </section>
 
     <section id="lessonsPage" class="panel" hidden>

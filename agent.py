@@ -98,6 +98,31 @@ CREATE TABLE IF NOT EXISTS agent_questions (
     answered_by TEXT,
     answered_at TEXT
 );
+CREATE TABLE IF NOT EXISTS agent_payments (           -- bank transfer notices / payment proofs posted in Slack
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id    TEXT UNIQUE,
+    channel    TEXT,
+    ts         TEXT,
+    name       TEXT,
+    path       TEXT,                  -- kept copy on the volume (<DB dir>/agent_proofs/)
+    supplier   TEXT,
+    amount     REAL,
+    currency   TEXT,
+    paid_on    TEXT,
+    reference  TEXT,
+    payee      TEXT,
+    note       TEXT,                  -- the AI's reading in words
+    matched    TEXT,                  -- the bank payment it matches (Airwallex / PayPal id), or NULL
+    match_note TEXT,
+    at         TEXT
+);
+CREATE TABLE IF NOT EXISTS agent_chat (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    role    TEXT NOT NULL,
+    content TEXT NOT NULL,
+    who     TEXT,
+    at      TEXT
+);
 CREATE TABLE IF NOT EXISTS agent_files (              -- each Slack file the agent handled, once
     file_id    TEXT PRIMARY KEY,
     channel    TEXT,
@@ -110,6 +135,7 @@ CREATE TABLE IF NOT EXISTS agent_files (              -- each Slack file the age
 );
 """
 
+CANDIDATE_EXT = (".pdf", ".xlsx", ".xls", ".csv", ".doc", ".docx", ".png", ".jpg", ".jpeg", ".webp")
 AREAS = ("general", "invoices", "suppliers", "supply_chain", "customers", "products")
 ROLE_AREA = {"supplier_invoice": "invoices", "supply_chain": "supply_chain", "customer_support": "customers",
              "eod": "general", "other": "general"}
@@ -183,28 +209,167 @@ def lessons(area: str = None) -> list:
 # ---------------------------------------------------------------- what is this file? (before filing anything)
 
 CLASSIFY_MODEL = "claude-haiku-5-5"
-CLASSIFY_SYSTEM = """You sort files that suppliers post in Slack for an e-commerce business (several Shopify stores; suppliers
-such as DayOne and Graypop pack and ship the orders). Decide what ONE file is from its name and the start of its text:
+CLASSIFY_SYSTEM = """You sort files that suppliers and the team post in Slack for an e-commerce business (several Shopify stores;
+suppliers such as DayOne and Graypop pack and ship the orders). Decide what ONE file is from its name and its content:
 - invoice: a bill asking to be paid for goods / fulfilment: amounts per order or item, a total due, often an invoice number.
+- payment: proof that money was sent: a bank transfer notice / confirmation, remittance advice, payment receipt or a
+  screenshot of a transfer (amount, date, reference, payer / payee).
 - tracking: a list of orders with tracking numbers / carriers / shipping status (even if it shows some prices).
-- other: anything else (price lists, quotes, catalogues, labels, photos, reports, statements).
+- other: anything else (price lists, quotes, catalogues, labels, product photos, reports, statements).
 Be strict: only "invoice" when it is clearly a bill. confidence 0-1.
+store: the shop / brand the file is for, exactly as written on it or in the file name (e.g. "CUTEHOME", "Creston Perth"), or "".
+supplier: who issued an invoice or received a payment (e.g. "Dayone", "Graypop"), or "".
+For a payment also fill amount (number), currency (3 letters), paid_on (YYYY-MM-DD), reference, payee; otherwise null / "".
 {lessons}"""
-CLASSIFY_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["kind", "confidence", "reason"],
-                   "properties": {"kind": {"type": "string", "enum": ["invoice", "tracking", "other"]},
-                                  "confidence": {"type": "number"}, "reason": {"type": "string"}}}
+CLASSIFY_SCHEMA = {"type": "object", "additionalProperties": False,
+                   "required": ["kind", "confidence", "reason", "store", "supplier", "amount", "currency", "paid_on", "reference", "payee"],
+                   "properties": {"kind": {"type": "string", "enum": ["invoice", "payment", "tracking", "other"]},
+                                  "confidence": {"type": "number"}, "reason": {"type": "string"},
+                                  "store": {"type": "string"}, "supplier": {"type": "string"},
+                                  "amount": {"type": ["number", "null"]}, "currency": {"type": "string"},
+                                  "paid_on": {"type": "string"}, "reference": {"type": "string"}, "payee": {"type": "string"}}}
+IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif"}
 
 
-async def classify(api_key: str, filename: str, text: str) -> dict:
-    """{"kind": invoice | tracking | other, "confidence", "reason"} for one file, following the team's invoice lessons."""
+async def classify(api_key: str, filename: str, text: str, image: bytes = None) -> dict:
+    """What one file is (invoice / payment proof / tracking / other), whose store and supplier it is, and for a payment
+    proof its amount, date and reference. Follows the team's invoice and supplier lessons."""
     import anthropic
-    taught = [l["text"] for l in lessons("invoices")][-30:]
-    client = anthropic.AsyncAnthropic(api_key=api_key, max_retries=2, timeout=60)
+    import base64
+    taught = [l["text"] for l in lessons("invoices")][-30:] + [l["text"] for l in lessons("suppliers") if l["area"] == "suppliers"][-15:]
+    client = anthropic.AsyncAnthropic(api_key=api_key, max_retries=2, timeout=90)
+    content = [{"type": "text", "text": f"File name: {filename}\n\n" + (f"Start of its text:\n{(text or '')[:6000]}" if not image else "The file is the image below.")}]
+    if image:
+        ext = "." + (filename or "").lower().rsplit(".", 1)[-1]
+        content.append({"type": "image", "source": {"type": "base64", "media_type": IMAGE_TYPES.get(ext, "image/png"),
+                                                    "data": base64.b64encode(image).decode()}})
     resp = await client.messages.create(
-        model=CLASSIFY_MODEL, max_tokens=400,
+        model=CLASSIFY_MODEL, max_tokens=600,
         system=CLASSIFY_SYSTEM.format(lessons=("What the team has taught you (follow it):\n- " + "\n- ".join(taught)) if taught else ""),
         output_config={"effort": "low", "format": {"type": "json_schema", "schema": CLASSIFY_SCHEMA}},
-        messages=[{"role": "user", "content": f"File name: {filename}\n\nStart of its text:\n{(text or '')[:6000]}"}])
+        messages=[{"role": "user", "content": content}])
     if resp.stop_reason == "refusal":
-        return {"kind": "other", "confidence": 0, "reason": "The AI declined to read it."}
+        return {"kind": "other", "confidence": 0, "reason": "The AI declined to read it.", "store": "", "supplier": ""}
     return json.loads(next((b.text for b in resp.content if b.type == "text"), "{}"))
+
+
+def norm(name: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", (name or "").lower())
+
+
+def store_from_name(filename: str) -> str:
+    """DayOne names invoices "<Store>-Invoice <date> Dayone.pdf"."""
+    m = re.match(r"\s*(.+?)\s*-\s*invoice\b", filename or "", re.I)
+    return m.group(1).strip() if m else ""
+
+
+def store_decisions() -> dict:
+    """{normalised store name: "include" | "exclude"}: the owner's answer for stores that aren't connected."""
+    try:
+        return json.loads(db.get_setting("agent_stores") or "{}")
+    except ValueError:
+        return {}
+
+
+def known_store(name: str, stores: list):
+    """The connected store a name means (exact or contained, ignoring case / spaces), else None."""
+    n = norm(name)
+    if not n:
+        return None
+    for st in stores:
+        sn = norm(st["name"])
+        if sn and (sn == n or (len(n) >= 5 and (n in sn or sn in n))):
+            return st
+    return None
+
+
+
+# ---------------------------------------------------------------- the agent's brain (Ask the agent)
+
+BRAIN_MODEL = "claude-sonnet-5-5"
+BRAIN_BETAS = ["server-side-fallback-2026-07-01"]
+
+
+class BrainError(RuntimeError):
+    pass
+
+
+def _t(name, description, props, required):
+    return {"name": name, "description": description,
+            "input_schema": {"type": "object", "properties": props, "required": required, "additionalProperties": False}}
+
+
+BRAIN_TOOLS = [
+    _t("supplier_positions", "Each supplier's account: opening balance (owner's figure and date), invoices oldest first with "
+       "store, order range and paid / part paid / on credit (payments from Airwallex / PayPal applied oldest first after the "
+       "opening), paid up to which invoice and order, invoiced up to which order per store, unpaid invoiced, shipped but not "
+       "invoiced, total on credit, and the bank transfer notices kept from Slack with their bank match.",
+       {"supplier": {"type": ["string", "null"], "description": "e.g. Dayone, Graypop; null for all"}}, ["supplier"]),
+    _t("find_invoices", "Invoices in the app (COG → Invoices), filtered by supplier / store (in the file name) / date from.",
+       {"supplier": {"type": ["string", "null"]}, "store": {"type": ["string", "null"]},
+        "since": {"type": ["string", "null"], "description": "YYYY-MM-DD"}}, ["supplier", "store", "since"]),
+    _t("search_slack", "Search EcomVital's copy of the Slack channels (suppliers, supply chain, customer support, EOD) for text "
+       "or file names over the last N days (max 90).",
+       {"text": {"type": "string"}, "channel": {"type": ["string", "null"], "description": "part of a channel name, or null"},
+        "days": {"type": "integer"}}, ["text", "channel", "days"]),
+    _t("check_transfer_notices", "Match the kept bank transfer notices against the actual payments out of Airwallex / PayPal.", {}, []),
+    _t("ask_team", "Ask the team a question when you can't tell from the data (it appears on the Questions tab; the answer "
+       "becomes a lesson). Use it instead of guessing.",
+       {"question": {"type": "string"}, "area": {"type": "string", "enum": list(AREAS)}, "why": {"type": "string"}},
+       ["question", "area", "why"]),
+]
+
+BRAIN_SYSTEM = """You are EcomVital's ops agent for a group of Shopify stores, working with the owner and their team.
+Today is {today} (Hong Kong). Suppliers (DayOne, Graypop …) pack and ship orders and bill them; talk with them happens
+in Slack. You keep the supplier invoices, the bank transfer notices and the supplier accounts straight.
+
+How to work:
+- Use your tools; never make up a figure, an order number or a date. Say where a number comes from.
+- Supplier money: opening balance (the owner sets it in COG → Suppliers) + invoices − payments = what's owed. "Paid up to"
+  = the last invoice the payments fully cover, oldest first. "On credit" = invoiced but unpaid + shipped but not invoiced.
+- Bank transfer notices posted in Slack are claims; the bank (Airwallex / PayPal) payment is the proof. Say when a notice has
+  no matching bank payment.
+- When something doesn't add up or you can't tell, say so plainly and use ask_team rather than guessing.
+- Short answers for a busy owner who isn't a developer: the answer first, then a small table if useful.
+{lessons}"""
+
+
+async def brain(api_key: str, history: list, run_tool, today: str) -> dict:
+    import anthropic
+    client = anthropic.AsyncAnthropic(api_key=api_key, max_retries=3, timeout=240)
+    messages = [{"role": m["role"], "content": m["content"]} for m in history[-14:]
+                if m.get("content") and m.get("role") in ("user", "assistant")]
+    while messages and messages[0]["role"] != "user":
+        messages.pop(0)
+    taught = [f"[{l['area']}] {l['text']}" for l in lessons()][-60:]
+    system = BRAIN_SYSTEM.format(today=today, lessons=("\nWhat the team has taught you (follow it):\n- " + "\n- ".join(taught)) if taught else "")
+    for _ in range(10):
+        try:
+            resp = await client.beta.messages.create(
+                model=BRAIN_MODEL, max_tokens=12000, betas=BRAIN_BETAS, fallbacks="default", system=system, tools=BRAIN_TOOLS,
+                thinking={"type": "adaptive"}, output_config={"effort": "medium"}, messages=messages)
+        except anthropic.AuthenticationError as e:
+            raise BrainError("Anthropic didn't accept the API key. Check it in Settings → AI.") from e
+        except anthropic.RateLimitError as e:
+            raise BrainError("The AI is busy right now. Try again in a minute.") from e
+        except anthropic.APIStatusError as e:
+            raise BrainError(f"Anthropic error {e.status_code}: {str(e)[:200]}") from e
+        except anthropic.APIConnectionError as e:
+            raise BrainError("Couldn't reach Anthropic.") from e
+        if resp.stop_reason == "refusal":
+            return {"text": "I can't help with that one."}
+        if resp.stop_reason != "tool_use":
+            return {"text": "".join(b.text for b in resp.content if b.type == "text").strip() or "(no answer)"}
+        messages.append({"role": "assistant", "content": resp.content})
+        results = []
+        for b in resp.content:
+            if b.type != "tool_use":
+                continue
+            try:
+                out = await run_tool(b.name, b.input)
+                results.append({"type": "tool_result", "tool_use_id": b.id, "content": json.dumps(out, default=str)[:60000]})
+            except Exception as e:
+                results.append({"type": "tool_result", "tool_use_id": b.id, "is_error": True,
+                                "content": str(getattr(e, "detail", None) or e)[:600]})
+        messages.append({"role": "user", "content": results})
+    return {"text": "That took too many steps. Try a narrower question."}

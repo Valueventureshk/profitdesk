@@ -115,10 +115,67 @@ async function loadQuestions() {
         ${q.job_id ? `<a href="#" data-jobref="${q.job_id}">from job #${q.job_id}</a>` : ""}</div>
       <p class="ag-q-text">${esc(q.question)}</p>
       ${q.context ? `<p class="hint">${esc(q.context)}</p>` : ""}
-      ${q.answer ? `<p class="ag-ans"><b>${esc((q.answered_by || "").split("@")[0])}:</b> ${esc(q.answer)}</p>`
+      ${q.kind === "store" && !q.answer ? storeButtons(q)
+        : q.answer ? `<p class="ag-ans"><b>${esc((q.answered_by || "").split("@")[0])}:</b> ${esc(q.answer)}</p>`
         : canAnswer ? `<div class="ag-answer"><textarea class="control" rows="2" placeholder="Your answer (it becomes a lesson)"></textarea>
           <button class="btn btn-sm btn-primary" data-answer="${q.id}">Answer</button></div>` : ""}</div>`).join("")
     || '<p class="empty">No questions yet. When it\'s unsure, it asks here instead of guessing.</p>';
+}
+
+function storeButtons(q) {
+  let d = {};
+  try { d = JSON.parse(q.data || "{}"); } catch { /* none */ }
+  const owner = state.status && state.status.owner;
+  const files = (d.files || []).slice(0, 4).map(esc).join(", ");
+  return `<p class="hint">Files: ${files}${(d.files || []).length > 4 ? " …" : ""}${d.filed ? ` · ${d.filed} already filed before this check` : ""}</p>
+    ${owner ? `<div class="ag-yesno"><button class="btn btn-sm btn-primary" data-store="${q.id}" data-inc="1">Yes, include (a store we ran before)</button>
+      <button class="btn btn-sm" data-store="${q.id}" data-inc="0">No, not ours</button>
+      ${d.filed ? `<label><input type="checkbox" data-rm="${q.id}" checked> and remove the ${d.filed} already filed</label>` : ""}</div>`
+      : '<p class="hint">The owner decides.</p>'}`;
+}
+
+/* ------------------------------------------------ suppliers + ask */
+
+const money = (v, cur = "USD") => (v === null || v === undefined ? "–" : `${cur} ${Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
+
+async function loadSuppliers() {
+  $("suppliers").innerHTML = '<p class="empty">Working it out (reads the bank payments; can take a minute)…</p>';
+  let r;
+  try { r = await api("/api/agent/suppliers"); } catch (e) { $("suppliers").innerHTML = `<p class="empty">${esc(e.message)}</p>`; return; }
+  const proofRow = (p) => `<tr><td>${esc(p.paid_on || "")}</td><td>${money(p.amount, p.currency || "")}</td><td>${esc(p.reference || "")}</td>
+    <td>${esc(p.payee || p.supplier || "")}</td><td>${p.matched ? '<span class="ag-st done">In the bank</span>' : '<span class="ag-st waiting">Not found yet</span>'}
+      <span class="ag-sub">${esc(p.match_note || "")}</span></td><td><a href="/api/agent/proof/${p.id}" target="_blank" rel="noopener">${esc(p.name)}</a></td></tr>`;
+  $("suppliers").innerHTML = r.suppliers.map((s) => `<section class="panel ag-sup">
+      <div class="panel-head"><h2>${esc(s.supplier)}</h2><span class="hint">${s.opening_set ? `Opening ${money(s.opening)} on ${esc(s.opening_date)}`
+        : 'No opening balance yet: <a href="/cog?tab=suppliers">set it in COG → Suppliers</a>'}</span></div>
+      <div class="ag-tiles">${[["Invoiced", s.invoiced], ["Paid (bank)", s.paid], ["Invoiced, unpaid", s.unpaid_invoiced],
+        ["Shipped, not invoiced", s.not_invoiced], ["On credit", s.credit]].map(([k, v]) => `<div><span>${k}</span><b>${money(v)}</b></div>`).join("")}</div>
+      <div class="ag-pos">
+        <p><b>Paid up to:</b> ${s.paid_up_to ? `invoice ${esc(s.paid_up_to.number || "?")} (${esc(s.paid_up_to.date || "")}, ${esc(s.paid_up_to.store || "")}), up to order ${esc(s.paid_up_to.last_order || "?")}` : "nothing paid off yet"}
+          ${s.part_paid ? ` · then <b>${esc(s.part_paid.paid)}</b> on invoice ${esc(s.part_paid.number || "?")} (${esc(s.part_paid.date || "")})` : ""}
+          ${s.overpaid ? ` · <b>${money(s.overpaid)}</b> paid ahead of the invoices` : ""}</p>
+        <p><b>Invoiced up to:</b> ${Object.entries(s.invoiced_up_to).map(([st, v]) => `${esc(st)} order ${esc(v.order)} (${esc(v.date || "")})`).join(" · ") || "no invoices yet"}</p>
+        ${s.late_count ? `<p class="hint">${s.late_count} order(s) shipped 14+ days ago aren't on an invoice yet (COG → Suppliers lists them).</p>` : ""}
+      </div>
+      <details><summary>${s.invoices.length} invoice(s)</summary><div class="table-wrap"><table class="table ag-tbl"><thead><tr><th>Date</th><th>Invoice</th><th>Store</th>
+        <th>Orders</th><th>Total</th><th>Paid?</th></tr></thead><tbody>${s.invoices.slice().reverse().map((i) => `<tr><td>${esc(i.date || "")}</td>
+        <td>${esc(i.number || "(no number)")}</td><td>${esc(i.store || "")}</td><td>${esc(i.first_order)}${i.last_order && i.last_order !== i.first_order ? ` – ${esc(i.last_order)}` : ""} <span class="ag-sub">${i.orders}</span></td>
+        <td>${money(i.total)}</td><td>${esc(i.paid)}</td></tr>`).join("")}</tbody></table></div></details>
+      <details${s.proofs.length ? " open" : ""}><summary>${s.proofs.length} bank transfer notice(s) from Slack</summary>${s.proofs.length ? `<div class="table-wrap"><table class="table ag-tbl"><thead><tr><th>Date</th><th>Amount</th>
+        <th>Reference</th><th>To</th><th>Bank check</th><th>File</th></tr></thead><tbody>${s.proofs.map(proofRow).join("")}</tbody></table></div>` : '<p class="hint ag-pad">None yet.</p>'}</details>
+    </section>`).join("")
+    + (r.proofs_unassigned.length ? `<section class="panel ag-sup"><div class="panel-head"><h2>Transfer notices not linked to a supplier</h2></div>
+      <div class="table-wrap"><table class="table ag-tbl"><tbody>${r.proofs_unassigned.map(proofRow).join("")}</tbody></table></div></section>` : "")
+    || '<p class="empty">No supplier accounts yet.</p>';
+}
+
+async function loadChat() {
+  let r;
+  try { r = await api("/api/agent/chat"); } catch (e) { toast(e.message, true); return; }
+  $("chat").innerHTML = r.chat.map((c) => `<div class="ag-msg ${c.role}"><b>${c.role === "user" ? esc((c.who || "").split("@")[0]) : "Agent"}</b>
+    <div>${esc(c.content).replace(/\n/g, "<br>")}</div></div>`).join("")
+    || `<p class="hint ag-pad">${r.ai ? "Ask about suppliers, invoices, payments or what's in Slack." : "Add the AI key in Settings → AI first."}</p>`;
+  $("chat").scrollTop = $("chat").scrollHeight;
 }
 
 async function loadLessons() {
@@ -193,7 +250,9 @@ function showPage(p) {
   state.page = p;
   PDUrl.set({ tab: p === "jobs" ? null : p });
   for (const b of $("pages").querySelectorAll("button")) b.classList.toggle("on", b.dataset.page === p);
-  for (const k of ["jobs", "questions", "lessons", "slack"]) $(k + "Page").hidden = k !== p;
+  for (const k of ["jobs", "questions", "suppliers", "ask", "lessons", "slack"]) $(k + "Page").hidden = k !== p;
+  if (p === "suppliers") loadSuppliers();
+  if (p === "ask") loadChat();
   if (p === "jobs") loadJobs();
   if (p === "questions") loadQuestions();
   if (p === "lessons") loadLessons();
@@ -208,6 +267,25 @@ $("lessonForm").onsubmit = async (e) => {
   e.preventDefault();
   try { await api("/api/agent/lessons", { json: { area: $("lArea").value, text: $("lText").value } }); $("lText").value = ""; loadLessons(); }
   catch (err) { toast(err.message, true); }
+};
+$("checkProofs").onclick = async () => {
+  $("checkProofs").disabled = true;
+  try { const r = await api("/api/agent/proofs/check", { json: {} }); toast(`${r.matched} of ${r.proofs} transfer notice(s) newly matched to the bank.`); loadSuppliers(); }
+  catch (e) { toast(e.message, true); }
+  $("checkProofs").disabled = false;
+};
+$("askForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const text = $("ask").value.trim();
+  if (!text) return;
+  $("askBtn").disabled = true;
+  $("askBtn").textContent = "Thinking…";
+  $("chat").insertAdjacentHTML("beforeend", `<div class="ag-msg user"><b>you</b><div>${esc(text)}</div></div>`);
+  $("ask").value = "";
+  try { await api("/api/agent/chat", { json: { text } }); } catch (err) { toast(err.message, true); }
+  $("askBtn").disabled = false;
+  $("askBtn").textContent = "Ask";
+  loadChat();
 };
 $("sync").onclick = async () => {
   try { const r = await api("/api/agent/slack/sync", { json: {} }); toast(`In ${r.channels} channel(s).`); await loadStatus(); renderChannels(); }
@@ -237,9 +315,21 @@ $("readAll").onclick = async () => {
 };
 
 document.addEventListener("click", async (e) => {
-  const el = e.target.closest("[data-job],[data-advise],[data-answer],[data-lesson],[data-read],[data-goto],[data-jobref],[data-pause]");
+  const el = e.target.closest("[data-job],[data-advise],[data-answer],[data-lesson],[data-read],[data-goto],[data-jobref],[data-pause],[data-store]");
   if (!el) return;
   try {
+    if (el.dataset.store) {
+      const inc = el.dataset.inc === "1";
+      const rm = document.querySelector(`[data-rm="${el.dataset.store}"]`);
+      const remove = !inc && rm && rm.checked;
+      if (remove && !confirm("Remove the invoices already filed for this store and put those orders' costs back?")) return;
+      el.disabled = true;
+      const r = await api("/api/agent/store-decision", { json: { question_id: +el.dataset.store, include: inc, remove_filed: remove } });
+      toast(inc ? "Included: its waiting invoices are being filed (Work log)." : `Left out${r.removed ? `; removed ${r.removed} filed invoice(s)` : ""}.`);
+      loadQuestions();
+      loadStatus();
+      return;
+    }
     if (el.dataset.pause !== undefined) {
       await api("/api/agent/pause", { json: { paused: el.dataset.pause === "1" } });
       toast(el.dataset.pause === "1" ? "Paused: it stops after the file it's on." : "Resumed.");

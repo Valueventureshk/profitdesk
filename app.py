@@ -11500,6 +11500,9 @@ def _agent_db():
         return
     with db._conn() as con:
         con.executescript(agent.SCHEMA)
+        for table, col, kind in (("agent_questions", "kind", "TEXT"), ("agent_questions", "data", "TEXT")):
+            if col not in {r[1] for r in con.execute(f"PRAGMA table_info({table})")}:
+                con.execute(f"ALTER TABLE {table} ADD COLUMN {col} {kind}")
         con.execute("UPDATE agent_jobs SET status = 'failed', summary = 'Stopped by an app restart: read the channel again to carry on '"
                     " || '(nothing is filed twice).' WHERE status = 'running'")
     _agent_ready["ok"] = True
@@ -11549,11 +11552,12 @@ def _agent_save_msg(con, channel: str, m: dict):
 
 
 def _agent_invoice_file(f: dict) -> bool:
-    """A PDF / Excel / CSV whose name says it's an invoice. Suppliers post other sheets in the same channels
-    (e.g. DayOne's daily "<store> <date> Tracking.xlsx"): those are left alone, never filed as invoices."""
+    """A file worth the AI's look: PDF / Excel / CSV / Word / image. DayOne's daily "<store> <date> Tracking.xlsx"
+    sheets are left alone without opening them."""
     name = (f.get("name") or "").lower()
-    kind = name.endswith(agent.INVOICE_EXT) or (f.get("mimetype") or "") in (
-        "application/pdf", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.ms-excel", "text/csv")
+    kind = name.endswith(agent.CANDIDATE_EXT) or (f.get("mimetype") or "") in (
+        "application/pdf", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.ms-excel",
+        "text/csv", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "image/png", "image/jpeg")
     return kind and "tracking" not in name
 
 
@@ -11565,6 +11569,11 @@ def _file_text(data: bytes, name: str) -> str:
     try:
         if data[:4] == b"%PDF":
             return invoices.pdf_text(data)
+        if data[:2] == b"PK" and (name or "").lower().endswith(".docx"):
+            import io
+            import zipfile
+            xml = zipfile.ZipFile(io.BytesIO(data)).read("word/document.xml").decode("utf-8", "ignore")
+            return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", xml))
         if data[:2] == b"PK":
             return invoices.xlsx_text(data, name)
         return data.decode("utf-8", "ignore")
@@ -11576,11 +11585,38 @@ def _agent_paused() -> bool:
     return db.get_setting("agent_paused") == "1"
 
 
+PROOF_DIR = os.path.join(os.path.dirname(os.path.abspath(db.DB_PATH)), "agent_proofs")
+
+
+def _agent_store_question(store: str, file_names: list, job_id=None):
+    """One Yes / No question per store that isn't connected: include its invoices or not."""
+    n = agent.norm(store)
+    with db._conn() as con:
+        old = con.execute("SELECT id, data FROM agent_questions WHERE kind = 'store' AND answer IS NULL AND data LIKE ?",
+                          (f'%"norm": "{n}"%',)).fetchone()
+        filed = con.execute("SELECT COUNT(*) FROM agent_files WHERE invoice_id IS NOT NULL AND lower(name) LIKE ?",
+                            (f"%{store.lower()}%",)).fetchone()[0]
+        if old:
+            d = json.loads(old["data"] or "{}")
+            d["files"] = sorted(set(d.get("files", []) + file_names))[:50]
+            d["filed"] = filed
+            con.execute("UPDATE agent_questions SET data = ? WHERE id = ?", (json.dumps(d), old["id"]))
+            return old["id"]
+        return con.execute("INSERT INTO agent_questions (area, kind, question, context, data, job_id, asked_at) VALUES (?,?,?,?,?,?,?)",
+                           ("invoices", "store", f"“{store}” isn't one of your connected stores. Include its invoices in the supplier "
+                            "accounts (a store you ran before), or leave them out (not yours)?",
+                            "Until you answer, its invoices wait and change nothing.",
+                            json.dumps({"store": store, "norm": n, "files": file_names[:50], "filed": filed}), job_id, agent.now())).lastrowid
+
+
 async def _agent_file_invoices(job_id: int, ch: dict, items: list):
-    """File each supplier-invoice file (once): download from Slack, read with the normal invoice reader, match to orders.
+    """Look at each file once: the AI says what it is. Invoices are filed (a store that isn't connected waits for the
+    owner's yes / no), bank transfer notices are kept for the supplier accounts, the rest is left alone.
     items: [(message dict, file dict)]."""
     token = _slack_token()
     names = _slack_names()
+    stores = db.list_stores()
+    decided = agent.store_decisions()
     filed = skipped = failed = 0
     for m, f in items:
         if _agent_paused():
@@ -11594,12 +11630,15 @@ async def _agent_file_invoices(job_id: int, ch: dict, items: list):
         agent.step(job_id, "read", f"Found {f['name']}", f"Posted by {who} in #{ch['name']} on {when_}"
                    + (f": “{(m.get('text') or '')[:200]}”" if m.get("text") else ""), {"file": f["id"], "ts": m["ts"]})
         outcome, invoice_id = "", None
+        low = (f["name"] or "").lower()
+        is_image = low.endswith(tuple(agent.IMAGE_TYPES))
         try:
             data = await slack_client.download(token, f["url"])
             key = db.get_setting("anthropic_api_key")
             if key:
                 try:
-                    what = await agent.classify(key, f["name"] or "", await asyncio.to_thread(_file_text, data, f["name"] or ""))
+                    what = await agent.classify(key, f["name"] or "", "" if is_image else await asyncio.to_thread(_file_text, data, f["name"] or ""),
+                                                image=data if is_image and len(data) < 4_500_000 else None)
                 except Exception as e:
                     what = {"kind": "invoice" if _named_invoice(f["name"]) else "other", "confidence": 0.5,
                             "reason": f"AI unavailable ({type(e).__name__}); went by the name"}
@@ -11607,10 +11646,38 @@ async def _agent_file_invoices(job_id: int, ch: dict, items: list):
                 what = {"kind": "invoice" if _named_invoice(f["name"]) else "other", "confidence": 0.9 if _named_invoice(f["name"]) else 0.5,
                         "reason": "No AI key: went by the name"}
             sure = float(what.get("confidence") or 0)
-            agent.step(job_id, "think", f"Looks like: {what.get('kind')} ({sure:.0%} sure)", what.get("reason") or "")
-            if what.get("kind") != "invoice" or sure < 0.75:
-                outcome = f"Not filed: {what.get('kind')} ({sure:.0%}) – {what.get('reason') or ''}"[:300]
-                if what.get("kind") == "invoice" or (sure < 0.6 and _named_invoice(f["name"])):
+            kind = what.get("kind")
+            agent.step(job_id, "think", f"Looks like: {'bank transfer notice' if kind == 'payment' else kind} ({sure:.0%} sure)"
+                       + (f" · store “{what.get('store')}”" if what.get("store") else ""), what.get("reason") or "")
+
+            # a bank transfer notice / payment proof: keep it, for the supplier accounts
+            if kind == "payment" and sure >= 0.7:
+                os.makedirs(PROOF_DIR, exist_ok=True)
+                ext = "." + low.rsplit(".", 1)[-1] if "." in low else ".bin"
+                path = os.path.join(PROOF_DIR, f"{f['id']}{ext}")
+                with open(path, "wb") as fh:
+                    fh.write(data)
+                sup = (what.get("supplier") or ch.get("supplier") or "").strip()
+                with db._conn() as con:
+                    con.execute("INSERT OR REPLACE INTO agent_payments (file_id, channel, ts, name, path, supplier, amount, currency, paid_on,"
+                                " reference, payee, note, at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                (f["id"], ch["id"], m["ts"], f["name"], path, sup, what.get("amount"), (what.get("currency") or "").upper()[:3],
+                                 (what.get("paid_on") or when_)[:10], (what.get("reference") or "")[:120], (what.get("payee") or "")[:120],
+                                 (what.get("reason") or "")[:500], agent.now()))
+                outcome = (f"Kept bank transfer notice: {what.get('currency') or ''} {what.get('amount') if what.get('amount') is not None else '?'}"
+                           f" on {what.get('paid_on') or when_}" + (f", ref {what.get('reference')}" if what.get("reference") else "")
+                           + (f", to {sup}" if sup else ""))
+                agent.step(job_id, "act", outcome, "Kept with the supplier's payments; checked against the bank (Airwallex / PayPal) "
+                           "payments on the Agent desk → Suppliers.")
+                with db._conn() as con:
+                    con.execute("INSERT OR REPLACE INTO agent_files (file_id, channel, ts, name, job_id, invoice_id, outcome, at)"
+                                " VALUES (?,?,?,?,?,NULL,?,?)", (f["id"], ch["id"], m["ts"], f["name"], job_id, outcome, agent.now()))
+                filed += 1
+                continue
+
+            if kind != "invoice" or sure < 0.75:
+                outcome = f"Not filed: {kind} ({sure:.0%}) – {what.get('reason') or ''}"[:300]
+                if kind == "invoice" or (sure < 0.6 and _named_invoice(f["name"])):
                     agent.ask("invoices", f"Is “{f['name']}” from #{ch['name']} ({when_}) an invoice? I wasn't sure enough to file it "
                               f"({what.get('reason') or ''}). If yes, upload it in COG → Invoices and tell me how to recognise them.",
                               "", job_id)
@@ -11622,6 +11689,26 @@ async def _agent_file_invoices(job_id: int, ch: dict, items: list):
                                 " VALUES (?,?,?,?,?,NULL,?,?)", (f["id"], ch["id"], m["ts"], f["name"], job_id, outcome, agent.now()))
                 skipped += 1
                 continue
+
+            # whose store? one that isn't connected waits for the owner's yes / no
+            store = agent.store_from_name(f["name"]) or (what.get("store") or "").strip()
+            if store and not agent.known_store(store, stores):
+                d = decided.get(agent.norm(store))
+                if d == "exclude":
+                    outcome = f"Not filed: “{store}” isn't yours (your answer)"
+                    agent.step(job_id, "skip", outcome)
+                    with db._conn() as con:
+                        con.execute("INSERT OR REPLACE INTO agent_files (file_id, channel, ts, name, job_id, invoice_id, outcome, at)"
+                                    " VALUES (?,?,?,?,?,NULL,?,?)", (f["id"], ch["id"], m["ts"], f["name"], job_id, outcome, agent.now()))
+                    skipped += 1
+                    continue
+                if d != "include":
+                    _agent_store_question(store, [f["name"]], job_id)
+                    agent.step(job_id, "wait", f"“{store}” isn't a connected store: asked you whether to include it",
+                               "This invoice waits (changes nothing) until you answer on the Questions tab.")
+                    skipped += 1
+                    continue                     # not recorded: filed (or not) once you answer
+
             r = await _ingest_invoice(data, f["name"] or "invoice", f"agent (Slack #{ch['name']})")
             invoice_id = r.get("id")
             if r.get("attached"):
@@ -11630,8 +11717,8 @@ async def _agent_file_invoices(job_id: int, ch: dict, items: list):
                 skipped += 1
             else:
                 counts = ", ".join(f"{v} {k}" for k, v in (r.get("counts") or {}).items() if v)
-                outcome = (f"Filed invoice {r.get('number') or '(no number)'} from {r.get('supplier') or '?'}: "
-                           f"{r.get('lines')} lines, total {r.get('total')}")
+                outcome = (f"Filed invoice {r.get('number') or '(no number)'} from {r.get('supplier') or '?'}"
+                           + (f" for {store}" if store else "") + f": {r.get('lines')} lines, total {r.get('total')}")
                 agent.step(job_id, "act", outcome,
                            (f"Matched: {counts}. " if counts else "") +
                            (f"{r['missing']} order(s) expected on it weren't. " if r.get("missing") else "") +
@@ -11658,6 +11745,21 @@ async def _agent_file_invoices(job_id: int, ch: dict, items: list):
             con.execute("INSERT OR REPLACE INTO agent_files (file_id, channel, ts, name, job_id, invoice_id, outcome, at)"
                         " VALUES (?,?,?,?,?,?,?,?)", (f["id"], ch["id"], m["ts"], f["name"], job_id, invoice_id, outcome, agent.now()))
     return filed, skipped, failed
+
+
+def _agent_review_filed_stores():
+    """Invoices already filed for stores that aren't connected: ask about each store once."""
+    stores = db.list_stores()
+    decided = agent.store_decisions()
+    by = defaultdict(list)
+    with db._conn() as con:
+        for r in con.execute("SELECT name FROM agent_files WHERE invoice_id IS NOT NULL"):
+            s = agent.store_from_name(r["name"])
+            if s and not agent.known_store(s, stores) and agent.norm(s) not in decided:
+                by[s].append(r["name"])
+    for s, files in by.items():
+        _agent_store_question(s, files)
+    return len(by)
 
 
 async def _agent_read_channel(job_id: int, ch: dict, file_invoices: bool = True):
@@ -11695,7 +11797,7 @@ async def _agent_read_channel(job_id: int, ch: dict, file_invoices: bool = True)
                        "Each file is read by the AI first: only real invoices are filed, with the same reader as COG → Invoices. "
                        "Unsure ones become questions for you.")
             filed, skipped, failed = await _agent_file_invoices(job_id, ch, inv)
-            agent.finish(job_id, "done", f"{len(msgs)} messages read · {filed} invoice(s) filed, {skipped} skipped (already in, or not invoices), {failed} couldn't be read")
+            agent.finish(job_id, "done", f"{len(msgs)} messages read · {filed} filed (invoices + bank transfer notices), {skipped} skipped or waiting for you, {failed} couldn't be read")
         else:
             agent.finish(job_id, "done", f"{len(msgs)} messages read")
     except Exception as e:
@@ -11721,6 +11823,10 @@ def agent_page():
 def api_agent_status(request: Request):
     _agent_db()
     team = json.loads(db.get_setting("slack_team") or "{}")
+    try:
+        _agent_review_filed_stores()
+    except Exception:
+        pass
     with db._conn() as con:
         chans = [dict(r) for r in con.execute("SELECT * FROM slack_channels ORDER BY role, name")]
         counts = dict(con.execute("SELECT channel, COUNT(*) FROM slack_messages GROUP BY channel").fetchall())
@@ -11825,18 +11931,23 @@ def api_agent_filed(contains: str = ""):
 
 @app.post("/api/agent/undo-filed")
 async def api_agent_undo_filed(payload: dict, request: Request):
-    """Remove invoices the agent filed from files that weren't invoices (e.g. tracking sheets), and put the order
-    costs back as they were. Only invoices the agent made itself; each file can be filed again later if it was right."""
+    """Remove invoices the agent filed from files that weren't invoices (e.g. tracking sheets) and put the order costs back."""
     if (request.state.user or {}).get("role", "owner") != "owner":
         raise HTTPException(403, "Only an owner can undo the agent's filing.")
-    _agent_db()
-    contains = str(payload.get("contains") or "").strip().lower()
+    contains = str(payload.get("contains") or "").strip()
     if not contains:
         raise HTTPException(400, "Say which files, e.g. tracking.")
+    return {"ok": True, "removed": await _agent_undo(contains, _agent_who(request))}
+
+
+async def _agent_undo(contains: str, who: str) -> int:
+    """Remove invoices the agent filed from files whose name contains this, putting order costs back. Agent-made only."""
+    _agent_db()
+    contains = contains.strip().lower()
     with db._conn() as con:
         rows = [dict(r) for r in con.execute("SELECT * FROM agent_files WHERE invoice_id IS NOT NULL AND lower(name) LIKE ?",
                                              (f"%{contains}%",))]
-    jid = agent.start("undo", f"Undo: invoices filed from files named “{contains}”", "invoices", {"by": _agent_who(request)})
+    jid = agent.start("undo", f"Undo: invoices filed from files named “{contains}”", "invoices", {"by": who})
     removed = 0
     for r in rows:
         inv = db.get_invoice(r["invoice_id"])
@@ -11848,10 +11959,265 @@ async def api_agent_undo_filed(payload: dict, request: Request):
             removed += 1
         with db._conn() as con:
             con.execute("DELETE FROM agent_files WHERE file_id = ?", (r["file_id"],))
-    agent.step(jid, "act", f"Removed {removed} invoice(s) filed from {contains} files",
+    agent.step(jid, "act", f"Removed {removed} invoice(s) filed from files named “{contains}”",
                "Their orders' costs went back to what they were before (sheet / catalog / estimate).")
     agent.finish(jid, "done", f"{removed} removed")
-    return {"ok": True, "removed": removed}
+    return removed
+
+
+@app.post("/api/agent/store-decision")
+async def api_agent_store_decision(payload: dict, request: Request):
+    """The owner's answer about a store that isn't connected: include its invoices (a store run before) or not."""
+    _agent_db()
+    if (request.state.user or {}).get("role", "owner") != "owner":
+        raise HTTPException(403, "Only an owner decides which stores count.")
+    with db._conn() as con:
+        q = con.execute("SELECT * FROM agent_questions WHERE id = ? AND kind = 'store'", (payload.get("question_id"),)).fetchone()
+    if not q:
+        raise HTTPException(404, "Question not found.")
+    d = json.loads(q["data"] or "{}")
+    include = bool(payload.get("include"))
+    who = _agent_who(request)
+    decisions = agent.store_decisions()
+    decisions[d["norm"]] = "include" if include else "exclude"
+    db.set_setting("agent_stores", json.dumps(decisions))
+    text = (f"Yes: include “{d['store']}” (a store we ran before)." if include else f"No: “{d['store']}” isn't ours, leave its invoices out.")
+    with db._conn() as con:
+        con.execute("UPDATE agent_questions SET answer = ?, answered_by = ?, answered_at = ? WHERE id = ?", (text, who, agent.now(), q["id"]))
+        con.execute("INSERT INTO agent_lessons (area, text, source, created_by, created_at) VALUES (?,?,?,?,?)",
+                    ("invoices", f"Invoices for the store “{d['store']}”: " + ("include them (an old store of ours)." if include
+                                                                              else "not ours, never file them."),
+                     f"answer:{q['id']}", who, agent.now()))
+    removed = 0
+    if not include and payload.get("remove_filed"):
+        removed = await _agent_undo(d["store"], who)
+    started = False
+    if include:                                  # the invoices that waited: file them now
+        with db._conn() as con:
+            chans = [dict(r) for r in con.execute("SELECT * FROM slack_channels WHERE role = 'supplier_invoice'")]
+
+        async def run():
+            for ch in chans:
+                jid = agent.start("history", f"File the invoices that waited for “{d['store']}” (#{ch['name']})", "invoices", {"by": who})
+                await _agent_read_channel(jid, ch)
+        asyncio.create_task(run())
+        started = True
+    return {"ok": True, "removed": removed, "filing": started}
+
+
+async def _agent_bank_payments():
+    """Supplier accounts as COG → Suppliers shows them (opening, invoices, bank payments), and every payment to a supplier
+    or still to sort, from Airwallex / PayPal."""
+    data = await api_suppliers()
+    pays = []
+    for led in data["suppliers"]:
+        pays += [{**p, "supplier": led["supplier"]} for p in led["payments"]]
+    pays += [{**p, "supplier": None} for p in data["to_assign"]]
+    return data, pays
+
+
+async def _agent_match_proofs() -> dict:
+    """Check each kept bank transfer notice against the real payments out of Airwallex / PayPal (same amount within 1%
+    or $1, within 5 days)."""
+    _agent_db()
+    data, pays = await _agent_bank_payments()
+    try:
+        table = await fx.table("USD")
+    except Exception:
+        table = None
+    usd = lambda amt, cur: amt * (fx.factor(table, cur, "USD") if table and cur and cur != "USD" else 1.0)
+    with db._conn() as con:
+        proofs = [dict(r) for r in con.execute("SELECT * FROM agent_payments ORDER BY paid_on")]
+    taken = {p["matched"] for p in proofs if p["matched"]}
+    matched = 0
+    for pr in proofs:
+        if pr["matched"] or pr["amount"] is None:
+            continue
+        try:
+            want = usd(float(pr["amount"]), pr["currency"] or "USD")
+            day = date.fromisoformat((pr["paid_on"] or "")[:10])
+        except (ValueError, TypeError):
+            continue
+        best = None
+        for p in pays:
+            if str(p["id"]) in taken:
+                continue
+            try:
+                gap = abs((date.fromisoformat(p["day"]) - day).days)
+            except ValueError:
+                continue
+            if gap <= 5 and abs(p["usd"] - want) <= max(1.0, want * 0.01):
+                if not best or gap < best[0]:
+                    best = (gap, p)
+        with db._conn() as con:
+            if best:
+                p = best[1]
+                taken.add(str(p["id"]))
+                matched += 1
+                con.execute("UPDATE agent_payments SET matched = ?, match_note = ? WHERE id = ?",
+                            (str(p["id"]), f"Matches {p['name']}: {p['currency']} {p['amount']:.2f} on {p['day']}"
+                             + (f" (filed under {p['supplier']})" if p.get("supplier") else " (not yet assigned to a supplier in Expenses)"),
+                             pr["id"]))
+            else:
+                con.execute("UPDATE agent_payments SET match_note = ? WHERE id = ?",
+                            (f"No bank payment of about USD {want:.2f} found within 5 days of {day}", pr["id"]))
+    return {"matched": matched, "proofs": len(proofs)}
+
+
+def _order_sort(name: str):
+    m = re.findall(r"\d+", name or "")
+    return (int(m[-1]) if m else 0, name or "")
+
+
+async def _agent_positions() -> list:
+    """Per supplier: opening balance, invoices oldest first with the payments applied to them (oldest first), so:
+    paid up to which invoice / order, invoiced up to which order, and what's on credit (invoiced but unpaid, plus
+    shipped but not invoiced yet). Transfer notices kept by the agent are shown with their bank match."""
+    _agent_db()
+    data, _pays = await _agent_bank_payments()
+    lines = defaultdict(list)
+    for l in db.invoice_lines():
+        if l["status"] not in ("duplicate", "superseded") and (l.get("order_name") or l.get("order_key")):
+            lines[l["invoice_id"]].append(l.get("order_name") or l.get("order_key"))
+    excluded = {k for k, v in agent.store_decisions().items() if v == "exclude"}
+    with db._conn() as con:
+        proofs = [dict(r) for r in con.execute("SELECT * FROM agent_payments ORDER BY paid_on")]
+        files = {r["invoice_id"]: r["name"] for r in con.execute("SELECT invoice_id, name FROM agent_files WHERE invoice_id IS NOT NULL")}
+    out = []
+    for led in data["suppliers"]:
+        invs = []
+        for i in sorted(led["invoices"], key=lambda x: (x.get("date") or "", x["id"])):
+            fname = files.get(i["id"], "")
+            st = agent.store_from_name(fname) or i.get("store") or ""
+            if agent.norm(st) in excluded:
+                continue
+            orders = sorted(set(lines.get(i["id"], [])), key=_order_sort)
+            invs.append({"id": i["id"], "number": i.get("number"), "date": i.get("date"), "store": st or i.get("store"),
+                         "total": round(float(i.get("total") or 0), 2), "first_order": orders[0] if orders else "",
+                         "last_order": orders[-1] if orders else "", "orders": len(orders), "ai_check": i.get("ai_check")})
+        opening = float(led.get("opening") or 0)
+        left = float(led.get("paid") or 0) - opening              # payments clear the opening balance first
+        paid_to, part = None, None
+        for i in invs:
+            if left >= i["total"] - 0.005:
+                left -= i["total"]
+                i["paid"] = "paid"
+                paid_to = i
+            elif left > 0.005:
+                i["paid"] = f"part paid ({left:.2f} of {i['total']:.2f})"
+                part = i
+                left = 0
+            else:
+                i["paid"] = "on credit"
+        invoiced = round(sum(i["total"] for i in invs), 2)
+        unpaid = round(max(0.0, opening + invoiced - float(led.get("paid") or 0)), 2)
+        last_by_store = {}
+        for i in invs:
+            if i["last_order"]:
+                last_by_store[i["store"]] = {"order": i["last_order"], "invoice": i["number"], "date": i["date"]}
+        mine = [p for p in proofs if agent.norm(led["supplier"]) and (agent.norm(led["supplier"]) in agent.norm(p["supplier"])
+                                                                       or agent.norm(p["supplier"]) in agent.norm(led["supplier"]))
+                and p["supplier"]]
+        out.append({
+            "supplier": led["supplier"], "opening": opening, "opening_date": led.get("opening_date"), "opening_set": led.get("set"),
+            "invoiced": invoiced, "paid": round(float(led.get("paid") or 0), 2), "unpaid_invoiced": unpaid,
+            "not_invoiced": led.get("not_invoiced"), "credit": round(unpaid + float(led.get("not_invoiced") or 0), 2),
+            "overpaid": round(max(0.0, left), 2) if invs else 0.0,
+            "paid_up_to": paid_to and {k: paid_to[k] for k in ("number", "date", "store", "last_order")},
+            "part_paid": part and {k: part[k] for k in ("number", "date", "store", "last_order", "paid")},
+            "invoiced_up_to": last_by_store, "invoices": invs[-60:], "late_count": led.get("late_count"),
+            "proofs": [{k: p[k] for k in ("id", "name", "amount", "currency", "paid_on", "reference", "payee", "matched", "match_note")} for p in mine],
+        })
+    unassigned = [{k: p[k] for k in ("id", "name", "amount", "currency", "paid_on", "reference", "payee", "supplier", "matched", "match_note")}
+                  for p in proofs if not any(p["id"] in [x["id"] for x in o["proofs"]] for o in out)]
+    return {"suppliers": out, "proofs_unassigned": unassigned, "payments_from": data.get("payments_from")}
+
+
+@app.get("/api/agent/suppliers")
+async def api_agent_suppliers():
+    _agent_db()
+    return await _agent_positions()
+
+
+@app.post("/api/agent/proofs/check")
+async def api_agent_proofs_check():
+    return await _agent_match_proofs()
+
+
+@app.get("/api/agent/proof/{pid}")
+def api_agent_proof(pid: int):
+    _agent_db()
+    with db._conn() as con:
+        p = con.execute("SELECT * FROM agent_payments WHERE id = ?", (pid,)).fetchone()
+    if not p or not p["path"] or not os.path.exists(p["path"]):
+        raise HTTPException(404, "File not found.")
+    return FileResponse(p["path"], filename=p["name"], content_disposition_type="inline")
+
+
+async def _agent_tool(name: str, args: dict, who: str):
+    """The agent brain's tools (agent.BRAIN_TOOLS): the app's own figures, never invented."""
+    if name == "supplier_positions":
+        data = await _agent_positions()
+        want = agent.norm(args.get("supplier") or "")
+        data["suppliers"] = [s for s in data["suppliers"] if not want or want in agent.norm(s["supplier"])]
+        return data
+    if name == "find_invoices":
+        rows = db.list_invoices()
+        want, st = agent.norm(args.get("supplier") or ""), agent.norm(args.get("store") or "")
+        out = [{k: i.get(k) for k in ("id", "supplier", "number", "date", "total", "filename", "ai_check", "uploaded_by")}
+               for i in rows if (not want or want in agent.norm(i.get("supplier"))) and (not st or st in agent.norm(i.get("filename")))
+               and (not args.get("since") or (i.get("date") or "") >= args["since"])]
+        return {"invoices": sorted(out, key=lambda x: x["date"] or "")[-150:], "count": len(out)}
+    if name == "search_slack":
+        q = f"%{(args.get('text') or '').strip()}%"
+        days = max(1, min(int(args.get("days") or 30), 90))
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
+        names = _slack_names()
+        with db._conn() as con:
+            rows = [dict(r) for r in con.execute(
+                "SELECT m.*, c.name chan FROM slack_messages m JOIN slack_channels c ON c.id = m.channel WHERE m.at >= ? AND"
+                " (m.text LIKE ? OR m.files LIKE ?)" + (" AND c.name LIKE ?" if args.get("channel") else "") + " ORDER BY m.at DESC LIMIT 60",
+                (since, q, q) + ((f"%{args['channel']}%",) if args.get("channel") else ()))]
+        return {"messages": [{"channel": r["chan"], "at": r["at"], "who": names.get(r["user"], r["user"]), "text": (r["text"] or "")[:600],
+                              "files": [x.get("name") for x in json.loads(r["files"] or "[]")]} for r in rows]}
+    if name == "ask_team":
+        qid = agent.ask(args.get("area") if args.get("area") in agent.AREAS else "general", str(args.get("question") or "")[:1000],
+                        str(args.get("why") or "")[:1000])
+        return {"ok": True, "question": qid, "note": "It's on the Questions tab; the answer becomes a lesson."}
+    if name == "check_transfer_notices":
+        return await _agent_match_proofs()
+    raise HTTPException(400, f"Unknown tool {name}.")
+
+
+@app.get("/api/agent/chat")
+def api_agent_chat_get():
+    _agent_db()
+    with db._conn() as con:
+        return {"chat": [dict(r) for r in con.execute("SELECT * FROM agent_chat ORDER BY id DESC LIMIT 60")][::-1],
+                "ai": bool(db.get_setting("anthropic_api_key"))}
+
+
+@app.post("/api/agent/chat")
+async def api_agent_chat(payload: dict, request: Request):
+    """Talk to the agent: it reasons over invoices, payments, transfer notices, Slack and its lessons with its tools."""
+    _agent_db()
+    text = str(payload.get("text") or "").strip()
+    if not text:
+        raise HTTPException(400, "Write something first.")
+    key = db.get_setting("anthropic_api_key")
+    if not key:
+        raise HTTPException(400, "Add the AI key first (Settings → AI).")
+    who = _agent_who(request)
+    with db._conn() as con:
+        con.execute("INSERT INTO agent_chat (role, content, who, at) VALUES ('user', ?, ?, ?)", (text, who, agent.now()))
+        hist = [dict(r) for r in con.execute("SELECT role, content FROM agent_chat ORDER BY id DESC LIMIT 16")][::-1]
+    try:
+        out = await agent.brain(key, hist, lambda n, a: _agent_tool(n, a, who), datetime.now(CASH_TZ).date().isoformat())
+    except agent.BrainError as e:
+        raise HTTPException(400, str(e))
+    with db._conn() as con:
+        con.execute("INSERT INTO agent_chat (role, content, who, at) VALUES ('assistant', ?, 'agent', ?)", (out["text"], agent.now()))
+    return {"text": out["text"]}
 
 
 @app.get("/api/agent/jobs")
@@ -12000,7 +12366,7 @@ async def _slack_event(ev: dict):
         jid = agent.start("invoice", f"New invoice file in #{ch['name']}", "invoices", {"channel": ch["id"], "ts": m["ts"]})
         filed, skipped, failed = await _agent_file_invoices(jid, ch, inv)
         agent.finish(jid, "done" if not failed else "waiting",
-                     f"{filed} filed, {skipped} skipped (already in, or not an invoice), {failed} couldn't be read" + (" (question for you)" if failed else ""))
+                     f"{filed} filed (invoice / transfer notice), {skipped} skipped or waiting for you, {failed} couldn't be read" + (" (question for you)" if failed else ""))
 
 
 @app.post("/api/slack/events")
