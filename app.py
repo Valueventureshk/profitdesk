@@ -3180,7 +3180,8 @@ async def _chat_tool(name: str, args: dict, user: dict) -> dict:
                        "categories": [{"name": c["name"], "total": c["total"], "payments": c["count"],
                                        "top": [{"name": l["name"], "total": l["total"]} for l in c["lines"][:5]]}
                                       for c in e["categories"] if c["count"] and c["key"] != "ignore"],
-                       "to_sort": [{"name": x["name"], "total": x["total"]} for x in e["to_sort"][:10]]})
+                       "to_sort": [{"name": x["name"], "total": x["total"]} for x in e["to_sort"][:10]],
+                       "own_account_unknown": [{"name": x["name"], "total": x["total"]} for x in e["to_confirm"][:10]]})
     if name == "get_cog":
         _need(user, "cog")
         stores = {x["id"]: x for x in db.list_stores() if not demo.is_demo(x)}
@@ -3749,7 +3750,12 @@ async def _cash_state(currency: str = None, with_ads: bool = False) -> dict:
     fx_table = await fx.table(base) if codes - {base} else None
     factor = (lambda code: fx.factor(fx_table, code, base)) if fx_table else (lambda code: 1.0)
     today = datetime.now(CASH_TZ).date()
-    summary = cashflow.summarize(accounts, factor, today, CASH_TZ)
+    transit = []
+    try:
+        transit = await _in_transit(conns, accounts)
+    except Exception as e:
+        problems.append(f"Money on its way between your accounts couldn't be checked: {e}")
+    summary = cashflow.summarize(accounts, factor, today, CASH_TZ, transit)
     if ad_rows is not None:
         ads = adbills.summarize(ad_rows, factor)
         summary["ads"] = ads
@@ -3757,6 +3763,44 @@ async def _cash_state(currency: str = None, with_ads: bool = False) -> dict:
         summary["after_ads"] = summary["position"] - ads["total"]
     return {"base": base, "conns": conns, "problems": problems, "factor": factor, "today": today,
             "fx_table": fx_table, "summary": summary}
+
+
+_transit_cache: dict = {}
+
+
+async def _in_transit(conns: list, accounts: list) -> list:
+    """PayPal withdrawals still on their way to our Airwallex (statement.in_transit). Their
+    pending Airwallex deposits are taken out of the accounts' pending list, since the money
+    is counted as available in transit instead."""
+    moves = []
+    for a in accounts:
+        if a["provider"] == "paypal" and a.get("withdrawals"):
+            moves += statement.paypal_moves(a["label"], [{"transaction_info": t} for t in a["withdrawals"]])
+    sent = [m for m in moves if m.get("withdrawal")]
+    if not sent:
+        return []
+    now = datetime.now(timezone.utc)
+    since = min(m["time"] for m in sent) - timedelta(days=1)
+    ck = since.date().isoformat()
+    hit = _transit_cache.get(ck)
+    if hit and time.time() - hit[0] < 180:
+        deposits = hit[1]
+    else:
+        awx_conns = [c for c in conns if c["provider"] == "airwallex"]
+        got = await asyncio.gather(*[awx.transactions(c["client_id"], c["secret"], since, now, c["account_id"])
+                                     for c in awx_conns])     # a failure: nothing counted in transit
+        deposits = [m for c, rows in zip(awx_conns, got)
+                    for m in statement.airwallex_moves(c["label"], rows, []) if m.get("deposit")]
+        _transit_cache.clear()
+        _transit_cache[ck] = (time.time(), deposits)
+    moves += [dict(d) for d in deposits]
+    statement._pair_transfers(moves, now)
+    transit = statement.in_transit(moves)
+    landing = {t["deposit_id"] for t in transit if t.get("deposit_id")}
+    if landing:
+        for a in accounts:
+            a["pending"] = [p for p in a["pending"] if p.get("id") not in landing]
+    return transit
 
 
 @app.get("/api/cash")
@@ -3929,7 +3973,7 @@ async def api_cash_statement(start: str, end: str = None, currency: str = None):
         pass
 
     out = statement.build(moves, st["factor"], st["summary"]["position"], t0, t1, now,
-                          shopify=by_gateway if shop_ok else None, ad_spend=ad_spend)
+                          shopify=by_gateway if shop_ok else None, ad_spend=ad_spend, ours=_own_payees())
     return {"currency": st["base"], "problems": problems, **out}
 
 
@@ -4327,6 +4371,11 @@ _exp_cache: dict = {}
 _suggesting: set = set()
 
 
+def _own_payees() -> set:
+    """Airwallex payees the owner confirmed are their own accounts (not connected here)."""
+    return {r["key"] for r in db.expense_rules() if r["key"].startswith("awx-transfer:") and r["category"] == "ignore"}
+
+
 async def _expense_moves(since: datetime, until: datetime) -> tuple:
     """Every Airwallex and PayPal movement in [since, until), paired like the statement.
     Kept for 3 minutes per window. Returns (moves, problems)."""
@@ -4356,8 +4405,7 @@ async def _expense_moves(since: datetime, until: datetime) -> tuple:
             problems.append(f"{c['label']}: {g}")
         else:
             moves.extend(g)
-    statement._pair_transfers(moves)
-    statement._pair_own(moves)
+    statement.pair(moves, datetime.now(timezone.utc), _own_payees())
     _exp_cache.clear()
     _exp_cache[ck] = (time.time(), moves, problems)
     return moves, problems
@@ -4414,7 +4462,11 @@ async def api_expenses(period: str = "month", start: str = None, end: str = None
     if missing and api_key and not _suggesting:
         _suggesting.add(1)
         asyncio.create_task(_suggest_expenses(api_key, missing, rules))
+    sups = set(db.supplier_accounts()) | set(db.supplier_payees().values())
+    with db._conn() as con:
+        sups |= {r[0] for r in con.execute("SELECT DISTINCT supplier FROM invoices WHERE supplier IS NOT NULL")}
     return {**out, "start": d0.isoformat(), "end": d1.isoformat(), "period": period,
+            "suppliers": sorted((x for x in sups if x), key=str.lower),
             "today": now.date().isoformat(), "live": d1 >= now.date(), "problems": problems,
             "suggesting": bool(_suggesting), "category_list": [{"key": k, "name": n} for k, n in expenses.CATEGORIES],
             "fx": None if not table else {"date": table.get("date")}}

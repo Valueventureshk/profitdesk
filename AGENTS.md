@@ -146,7 +146,11 @@ file and have it work.
   chat tool `get_cash_history`. Days before 10 Oct 2026 have none; the chat falls back
   to the statement (`get_cash_statement`), which only rebuilds available + receivable.
 - Expenses desk (desk `expenses`): reads movements via statement.py, nets card holds per
-  card transaction, skips moves between own accounts. Unknown payees go to "To sort";
+  card transaction, skips moves between own accounts (incl. PayPal withdrawals in transit, PayPal ↔ PayPal).
+  Airwallex transfers to an account not connected here are asked, not guessed: "Is this your own account?"
+  panel (`to_confirm`, not sent to the AI): **Ours, internal move** saves rule `ignore` for that payee;
+  **Not ours, real payment** saves the category (default supplier) and, for supplier, the supplier
+  (`/api/suppliers/payee`), so it counts in COG → Suppliers payments. Until answered they count as money out. Unknown payees go to "To sort";
   the owner's pick is saved per payee key and applies to past and future payments.
   Conversion cost is the only computed line (legs at today's rate).
 - SCM desk (desk `scm`, replacing Parcel Panel): `_scm_loop` every 10 min reads each store's
@@ -213,7 +217,19 @@ Cash flow rules learned the hard way:
 - PayPal holds: T2103 reserve (released 60 days later, T2104), T2101 monthly-limit
   hold (21 days, T2102). The schedule is fitted to PayPal's withheld balance.
 - Statement: opening = position now − movements since; internal moves (reserves,
-  PayPal → Airwallex, sub-account transfers) don't change the total. Sales check
+  PayPal → Airwallex, PayPal → PayPal, sub-account transfers) don't change the total.
+- Own-account moves (16 Oct 2026, `statement.pair`): a PayPal withdrawal (T04) stays **available while in
+  transit**: no Airwallex deposit yet and ≤ `statement.TRANSIT_DAYS` (7) old, or its deposit still PENDING
+  (`statement.in_transit` → `cashflow.summarize(transit=)`, `summary.in_transit`, note on the Available card;
+  `app._in_transit` reads Airwallex deposits since the oldest recent withdrawal and drops the paired pending
+  deposit). Paired withdrawal + deposit both count 0; only PayPal's fee (and an Airwallex deposit fee) is money
+  out. Not in Airwallex after 7 days = withdrawn to a bank not connected here (money out, Expenses "To sort").
+  A withdrawal the bank sent back (T1101/T1104) pairs with it, both 0. PayPal → PayPal between connected
+  accounts (T00 out in one, same amount in within a day in another) = "Between your PayPal accounts", 0, not
+  a sale, not an expense. Airwallex transfers with no partner in a connected account = **money out** (Money
+  out "Sent to an Airwallex account not connected here", e.g. DayOne's own Airwallex), unless the owner
+  answered "ours" on the Expenses desk (rule `ignore` on its `awx-transfer:` key → `_own_payees()` → Moved
+  "To your own Airwallex account"). Sales check
   uses Shopify on the Hong Kong clock, split by gateway; completed days match to the cent.
 - Google bills: match card charges by the account number in the merchant name
   (`GOOGLE*ADS5460462568`). A monthly bill on the 1st covers last month only.

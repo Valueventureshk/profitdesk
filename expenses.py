@@ -12,7 +12,14 @@ Each one gets a category from, in order:
        suggestion pre-selected (Claude Haiku 5.5, learning from earlier picks)
 
 Money that only moved between the owner's own accounts (reserves, PayPal ->
-Airwallex, connected sub-accounts) is not an expense and is left out.
+Airwallex incl. withdrawals still on their way, PayPal -> PayPal, connected
+sub-accounts) is not an expense and is left out; a fee on such a move is.
+
+Money sent to an Airwallex account that isn't connected here can't be told apart
+by itself: one of the owner's own accounts, or someone else's (DayOne, the
+supplier, has its own Airwallex). Until the owner answers per payee ("ask"),
+it is listed under "Is this your own account?" and counted as money out; the
+answer is saved as a rule ("ignore" = ours) like any other pick.
 
 Card holds: a hold, its release and its capture are one card payment. They are
 netted per card transaction and dated at the first charge, so a hold that was
@@ -99,17 +106,18 @@ def classify(moves: list, factor) -> list:
             continue
         if sec == statement.FEES:
             items.append(_item(m, -m["amount"], "fees:" + _norm(line), line.split(" (")[0], "fees", line))
-        elif sec == statement.MOVED:
-            if m.get("withdrawal") and not m.get("partner"):
-                items.append(_item(m, -m["amount"], "pp-withdrawal", "Withdrawn from PayPal to a bank",
-                                   None))
-            elif m.get("returned"):           # the bank sent a withdrawal back: cancels it out
-                items.append(_item(m, -m["amount"], "pp-withdrawal", "Withdrawn from PayPal to a bank",
-                                   None))
-            elif m.get("own") and not m.get("matched") and m["amount"] < 0:
+        elif m.get("own") and not m.get("matched"):
+            if m["amount"] < 0:                             # to an Airwallex account not connected here
                 who = m.get("desc") or "an Airwallex account not connected here"
-                items.append(_item(m, -m["amount"], "awx-transfer:" + _norm(re.sub(r"\d{3,}", "#", who)),
-                                   f"Sent to {who}", None))
+                items.append({**_item(m, -m["amount"], m.get("key") or statement.transfer_key(m),
+                                      f"Sent to {who}", None), "ask": True})
+        elif sec == statement.MOVED:
+            if m.get("withdrawal") and not m.get("partner") and not m.get("transit"):
+                items.append(_item(m, -m["amount"], "pp-withdrawal", "Withdrawn from PayPal to a bank",
+                                   None))
+            elif m.get("returned") and not m.get("partner"):   # the bank sent a withdrawal back: cancels it out
+                items.append(_item(m, -m["amount"], "pp-withdrawal", "Withdrawn from PayPal to a bank",
+                                   None))
         elif sec == statement.OUT:
             if line == "Refunds to customers":
                 items.append(_item(m, -m["amount"], "refunds", line, "refunds"))
@@ -125,6 +133,7 @@ def classify(moves: list, factor) -> list:
         elif sec == statement.IN and line.startswith("Other · ") and m["amount"] < 0:
             items.append(_item(m, -m["amount"], "tx:" + str(m.get("id")), line, None))
 
+    items = [it for it in items if abs(it["amount"]) >= 0.005]
     for m in _cards(cards):
         line = m["line"]
         if line in ("Card spend", "Card refunds and released holds"):
@@ -170,12 +179,13 @@ def summarize(items: list, factor, start, end, tz, base: str) -> dict:
         inside.append({**it, "value": it["amount"] * f, "day": it["time"].astimezone(tz).date().isoformat()})
 
     cats = {k: {"key": k, "name": n, "total": 0.0, "count": 0, "lines": {}} for k, n in CATEGORIES}
-    days, sort = {}, {}
+    days, sort, ask = {}, {}, {}
     for it in inside:
         c = it["category"]
         if c is None:
-            s = sort.setdefault(it["key"], {"key": it["key"], "name": it["name"], "total": 0.0, "count": 0,
-                                            "sources": set(), "examples": []})
+            s = (ask if it.get("ask") else sort).setdefault(
+                it["key"], {"key": it["key"], "name": it["name"], "total": 0.0, "count": 0,
+                            "sources": set(), "examples": []})
             s["total"] += it["value"]
             s["count"] += 1
             s["sources"].add(it["source"].split(" · ")[0])
@@ -197,7 +207,7 @@ def summarize(items: list, factor, start, end, tz, base: str) -> dict:
             d["total"] += it["value"]
             d["by"][c] = d["by"].get(c, 0.0) + it["value"]
 
-    unsorted = sum(s["total"] for s in sort.values())
+    unsorted = sum(s["total"] for s in sort.values()) + sum(s["total"] for s in ask.values())
     categories = []
     for c in cats.values():
         c["lines"] = sorted(c["lines"].values(), key=lambda l: -abs(l["total"]))
@@ -210,6 +220,8 @@ def summarize(items: list, factor, start, end, tz, base: str) -> dict:
         "days": sorted(days.values(), key=lambda d: d["day"]),
         "to_sort": sorted(({**s, "sources": " + ".join(sorted(s["sources"]))} for s in sort.values()),
                           key=lambda s: -abs(s["total"])),
+        "to_confirm": sorted(({**s, "sources": " + ".join(sorted(s["sources"]))} for s in ask.values()),
+                             key=lambda s: -abs(s["total"])),
     }
 
 
@@ -230,7 +242,7 @@ SUGGEST_SCHEMA = {
 
 SUGGEST_SYSTEM = """You sort the outgoing payments of a small group of Shopify stores (dropshipping; products come from suppliers in China) into categories, for the owner's own expense view.
 Categories: {cats}.
-Use the owner's earlier picks as the strongest guide: the same or a similar payee gets the same category. Clues: company names that sound like manufacturers, trading or tech/logistics companies in China or Hong Kong are usually suppliers; a person's name paid a round amount each month is usually a salary (staff, or directors if the owner's earlier picks say so); software and SaaS names are subscriptions; "Sent to" an Airwallex account or a PayPal withdrawal to a bank is often the owner's own money moving (ignore), unless it names someone else.
+Use the owner's earlier picks as the strongest guide: the same or a similar payee gets the same category. Clues: company names that sound like manufacturers, trading or tech/logistics companies in China or Hong Kong are usually suppliers; a person's name paid a round amount each month is usually a salary (staff, or directors if the owner's earlier picks say so); software and SaaS names are subscriptions; a PayPal withdrawal to a bank is often the owner's own money moving (ignore).
 Give one pick per payee key, with a short reason (under 12 words)."""
 
 

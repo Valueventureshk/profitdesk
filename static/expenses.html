@@ -40,6 +40,15 @@
     </div>
     <div id="problems" class="warnings"></div>
 
+    <section class="panel exp-sort" id="askPanel" hidden>
+      <div class="panel-head"><h2>Is this your own account?</h2><span class="hint" id="askNote"></span></div>
+      <p class="hint exp-help">These payments went to an Airwallex account that isn't connected to EcomVital,
+        so we can't tell if it's yours or someone else's (a supplier like DayOne has its own Airwallex).
+        Your answer applies to every past and future payment to the same account. Until you answer,
+        they count as money out.</p>
+      <div id="askList"></div>
+    </section>
+
     <section class="panel exp-sort" id="sortPanel" hidden>
       <div class="panel-head"><h2>To sort</h2><span class="hint" id="sortNote"></span></div>
       <p class="hint exp-help">Pick what each payment is. Your pick applies to every past and future

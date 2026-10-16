@@ -100,6 +100,7 @@ function renderCards(s) {
       <div class="card-label"><span class="dot" style="background:var(--up)"></span>Available now</div>
       <div class="card-value">${money(s.available)}</div>
       <div class="card-note">${s.reserved ? `Plus ${money(s.reserved)} held (payment reserves and card holds)` : "&nbsp;"}</div>
+      ${Math.abs(s.in_transit || 0) >= 0.5 ? `<div class="card-note" title="A PayPal withdrawal to your own Airwallex: still your money, counted as available until it lands">Incl. ${money(s.in_transit)} on its way from PayPal to Airwallex</div>` : ""}
     </div>`;
   const horizons = s.horizons.map((h) => `<div class="card">
       <div class="card-label"><span class="dot" style="background:var(--sales)"></span>${esc(h.label)}</div>

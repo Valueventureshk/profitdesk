@@ -69,10 +69,75 @@ function render() {
   const range = data.start === data.end ? niceDate(data.start) : `${niceDate(data.start)} – ${niceDate(data.end)}`;
   $("sub").textContent = `${range}${data.live ? " · today keeps changing until midnight (Hong Kong time)" : ""} · actual payments, nothing estimated`;
   $("problems").innerHTML = (data.problems || []).map((p) => `<div class="warning">${esc(p)}</div>`).join("");
+  renderAsk();
   renderSort();
   renderCards();
   renderDetail();
   renderDays();
+}
+
+async function saveSort(key, category, name) {
+  await api("/api/expenses/sort", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ key, category, name }) });
+}
+
+function renderAsk() {
+  const list = data.to_confirm || [];
+  $("askPanel").hidden = !list.length;
+  if (!list.length) return;
+  $("askNote").textContent = `${list.length} account${list.length === 1 ? "" : "s"} · ${money(list.reduce((t, s) => t + s.total, 0))}`;
+  const sups = (data.suppliers || []).map((n) => `<option>${esc(n)}</option>`).join("");
+  $("askList").innerHTML = list.map((s, i) => {
+    const ex = s.examples.map((e) => `${niceDate(e.day)} ${money(e.amount)}${e.original ? ` (${esc(e.original)})` : ""}${e.detail ? ` · ${esc(e.detail)}` : ""}`).join("<br>");
+    return `<div class="exp-sort-row">
+      <div class="exp-sort-what"><strong>${esc(s.name)}</strong>
+        <span class="sub">${s.count} payment${s.count === 1 ? "" : "s"} via ${esc(s.sources)}</span>
+        <span class="exp-ex">${ex}</span></div>
+      <div class="exp-sort-amt">${money(s.total)}</div>
+      <div class="exp-sort-pick" data-write-only>
+        <button class="btn btn-sm" data-ours="${i}" title="Money moved to another account of yours: not an expense">Ours, internal move</button>
+        <button class="btn btn-sm btn-primary" data-not="${i}">Not ours, real payment</button>
+        <span class="exp-not" data-box="${i}" hidden>
+          <select class="control" data-cat="${i}">${options("supplier")}</select>
+          <select class="control" data-sup="${i}"><option value="">Which supplier…</option>${sups}<option value="+">New supplier…</option></select>
+          <button class="btn btn-sm btn-primary" data-save="${i}">Save</button>
+        </span>
+      </div></div>`;
+  }).join("");
+  const q = (sel) => $("askList").querySelector(sel);
+  for (const b of $("askList").querySelectorAll("[data-ours]")) b.onclick = async () => {
+    const s = list[+b.dataset.ours];
+    b.disabled = true;
+    try { await saveSort(s.key, "ignore", s.name); toast("Saved: your own account, not an expense."); load(); }
+    catch (e) { toast(e.message, true); b.disabled = false; }
+  };
+  for (const b of $("askList").querySelectorAll("[data-not]")) b.onclick = () => {
+    q(`[data-box="${b.dataset.not}"]`).hidden = false;
+    b.hidden = true;
+  };
+  for (const sel of $("askList").querySelectorAll("[data-cat]")) sel.onchange = () => {
+    q(`[data-sup="${sel.dataset.cat}"]`).hidden = sel.value !== "supplier";
+  };
+  for (const sel of $("askList").querySelectorAll("[data-sup]")) sel.onchange = () => {
+    if (sel.value !== "+") return;
+    const name = (prompt("Supplier name") || "").trim();
+    if (!name) { sel.value = ""; return; }
+    sel.insertAdjacentHTML("beforeend", `<option selected>${esc(name)}</option>`);
+  };
+  for (const b of $("askList").querySelectorAll("[data-save]")) b.onclick = async () => {
+    const i = b.dataset.save, s = list[+i];
+    const cat = q(`[data-cat="${i}"]`).value, sup = q(`[data-sup="${i}"]`).value;
+    if (!cat || cat === "ignore") { toast("Pick what the payment was for.", true); return; }
+    if (cat === "supplier" && (!sup || sup === "+")) { toast("Pick which supplier.", true); return; }
+    b.disabled = true;
+    try {
+      await saveSort(s.key, cat, s.name);
+      if (cat === "supplier") await api("/api/suppliers/payee", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: s.key, supplier: sup }) });
+      toast(`${s.name} saved.`);
+      load();
+    } catch (e) { toast(e.message, true); b.disabled = false; }
+  };
 }
 
 function renderSort() {

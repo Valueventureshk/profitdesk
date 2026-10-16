@@ -153,7 +153,11 @@ async def snapshot(client_id: str, secret: str) -> dict:
         rows = await transactions(client_id, secret)
     except (PayPalError, httpx.HTTPError):
         rows = []          # balances still show; holds just stay undated
-    return {"balances": balances, "pending": _fit(balances, releases(rows))}
+    cut = (datetime.now(timezone.utc) - timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%S")
+    # withdrawals (and ones the bank sent back) from the last days: money on its way to Airwallex
+    withdrawals = [t for t in rows if (t.get("transaction_event_code") or "").startswith(("T04", "T1101", "T1104"))
+                   and (t.get("transaction_initiation_date") or "") >= cut]
+    return {"balances": balances, "pending": _fit(balances, releases(rows)), "withdrawals": withdrawals}
 
 
 async def transactions(client_id: str, secret: str, days: int = 75, fields: str = "transaction_info",

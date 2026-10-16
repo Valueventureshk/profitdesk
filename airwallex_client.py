@@ -113,6 +113,7 @@ async def snapshot(client_id: str, api_key: str, lookback_days: int = 120,
             "total": float(_f(b, "total_amount") or 0),
         } for b in rows if b.get("currency")],
         "pending": [{
+            "id": t.get("id"),
             "currency": t.get("currency"),
             "net": float(t.get("net") if t.get("net") is not None else t.get("amount") or 0),
             "type": _f(t, "transaction_type") or _f(t, "source_type") or "",

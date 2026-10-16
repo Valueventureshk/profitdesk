@@ -13,6 +13,12 @@ connected account's balances and its pending (not-yet-settled) transactions.
     Available + receivable   available now + receivable: everything that is
                          yours, spendable now or on its way
 
+In transit between own accounts: a PayPal withdrawal to our own Airwallex leaves
+PayPal's balance at once and lands in Airwallex a day or few later. It stays
+counted as available the whole way (statement.in_transit: withdrawals with no
+Airwallex deposit yet, up to statement.TRANSIT_DAYS old, or whose deposit is
+still pending). Only a fee on the withdrawal is money out.
+
 Pending amounts are net: refunds and payouts waiting to leave are negative.
 Card spending on hold (ISSUING_AUTHORISATION_HOLD/RELEASE) is left out: the
 provider has already taken it off the available balance, so counting it as
@@ -62,10 +68,13 @@ def _due(estimated: str, tz) -> date | None:
         return None
 
 
-def summarize(accounts: list, factor, today: date, tz) -> dict:
+def summarize(accounts: list, factor, today: date, tz, transit: list = ()) -> dict:
     """accounts: [{"id", "label", "provider", "balances": [...], "pending": [...]}]
-    factor(currency) -> multiplier into the display currency."""
-    available = reserved = 0.0
+    factor(currency) -> multiplier into the display currency.
+    transit: statement.in_transit() (money on its way between own accounts)."""
+    in_transit = sum(t["amount"] * factor(t["currency"]) for t in transit)
+    available = in_transit
+    reserved = 0.0
     incoming = {key: 0.0 for key, _, _ in HORIZONS}
     by_kind = {key: {} for key, _, _ in HORIZONS}
     later = 0.0
@@ -117,6 +126,8 @@ def summarize(accounts: list, factor, today: date, tz) -> dict:
     receivable = incoming[HORIZONS[-1][0]] + later
     return {
         "available": available,
+        "in_transit": in_transit,
+        "transit": [{**t, "value": t["amount"] * factor(t["currency"])} for t in transit],
         "reserved": reserved,
         "receivable": receivable,
         "position": available + receivable,

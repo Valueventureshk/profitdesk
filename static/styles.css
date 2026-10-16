@@ -933,6 +933,7 @@ body.not-manager [data-manage-only] { display: none !important; }
 .exp-ex { display: block; font-size: 12px; color: var(--muted, #6b7280); margin-top: 4px; font-family: "IBM Plex Mono", monospace; }
 .exp-sort-amt { font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
 .exp-sort-pick { display: grid; gap: 6px; }
+.exp-not:not([hidden]) { display: grid; gap: 6px; }
 .exp-ai { font-size: 12px; color: var(--sales); }
 .exp-move { font-size: 12px; padding: 4px 6px; }
 @media (max-width: 700px) {

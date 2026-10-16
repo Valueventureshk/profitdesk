@@ -11,8 +11,15 @@ so the opening and closing always tie back to the live card on the page.
 
 Movements that only shift money between "available" and "receivable"
 (reserve holds and releases, settlement) or between your own accounts
-(PayPal -> Airwallex, Airwallex sub-account transfers) don't change the total.
-They are listed under "Moved between your accounts" for reference.
+(PayPal -> Airwallex, PayPal -> PayPal, Airwallex sub-account transfers) don't
+change the total. They are listed under "Moved between your accounts" for
+reference. A PayPal withdrawal still on its way to Airwallex (up to
+TRANSIT_DAYS) counts as available the whole time (cashflow.py adds it), so
+here it changes nothing either; only its fee is money out.
+
+Money sent to an Airwallex account that isn't connected here is money out
+(a supplier like DayOne has its own Airwallex), unless the owner said that
+payee is one of their own accounts (Expenses desk question, `ours`).
 
 Each movement is converted at today's daily rate, the same rate the live
 card uses, so the statement adds up exactly.
@@ -163,8 +170,12 @@ def airwallex_moves(label: str, rows: list, cards: list) -> list:
                 out.append({**base, "section": FEES, "line": "Transfer fees · Airwallex",
                             "amount": -abs(fee)})
         elif typ == "DEPOSIT":
-            out.append({**base, "section": IN, "line": "Deposits received", "amount": net,
-                        "deposit": True, "detail": desc[:60]})
+            gross = amount or net
+            out.append({**base, "section": IN, "line": "Deposits received", "amount": gross,
+                        "deposit": True, "detail": desc[:60], "status": status})
+            if abs(gross - net) >= 0.005:
+                out.append({**base, "section": FEES, "line": "Deposit fees · Airwallex",
+                            "amount": net - gross})
         elif typ.startswith("CONVERSION"):
             key = str(_f(t, "created_at"))[:19]     # both legs are booked together
             conversions.setdefault(key, []).append({**base, "amount": net})
@@ -222,9 +233,10 @@ def paypal_moves(label: str, rows: list) -> list:
                         "info": amount, "withdrawal": True})
         elif code.startswith("T00") and amount > 0:
             out.append({**base, "section": IN, "line": "Sales received · PayPal", "amount": amount,
-                        "count": 1, "kind": "sales"})
+                        "count": 1, "kind": "sales", "pp_pay": True})
         elif code.startswith("T00"):
-            out.append({**base, "section": OUT, "line": payee(who or domain), "amount": amount})
+            out.append({**base, "section": OUT, "line": payee(who or domain), "amount": amount,
+                        "pp_pay": True})
         elif code.startswith("T01"):
             line = "PayPal dispute fees" if code == "T0114" else "PayPal fees"
             out.append({**base, "section": FEES, "line": line, "amount": amount})
@@ -255,10 +267,22 @@ def paypal_moves(label: str, rows: list) -> list:
     return out
 
 
-def _pair_own(moves: list):
+TRANSIT_DAYS = 7      # a PayPal withdrawal not in Airwallex after this went to a bank not connected here
+OWN_PAYPAL = "Between your PayPal accounts"
+OWN_AWX_OUT = "To your own Airwallex account (not connected here)"
+
+
+def transfer_key(m: dict) -> str:
+    """Who an Airwallex transfer went to, as the Expenses desk remembers it (per payee)."""
+    who = m.get("desc") or "an Airwallex account not connected here"
+    return "awx-transfer:" + re.sub(r"\s+", " ", re.sub(r"\d{3,}", "#", who).strip().lower())
+
+
+def _pair_own(moves: list, ours: set = ()):
     """Airwallex account-to-account transfers: a debit in one connected account and
     the matching credit in another cancel out. Whatever has no partner went to (or
-    came from) an Airwallex account that isn't connected here."""
+    came from) an Airwallex account that isn't connected here: money out, unless the
+    owner said that payee is one of their own accounts (`ours`: transfer keys)."""
     own = [m for m in moves if m.get("own")]
     for m in own:
         if m.get("matched"):
@@ -270,31 +294,95 @@ def _pair_own(moves: list):
                 m["matched"] = o["matched"] = True
                 break
     for m in own:
-        if not m.get("matched"):
-            m["line"] = ("Sent to an Airwallex account not connected here" if m["amount"] < 0
-                         else "Received from an Airwallex account not connected here")
+        if m.get("matched"):
+            continue
+        if m["amount"] < 0:
+            m["key"] = transfer_key(m)
+            if m["key"] in ours:
+                m["line"] = OWN_AWX_OUT
+            else:
+                m.update(section=OUT, line="Sent to an Airwallex account not connected here")
+        else:
+            m["line"] = "Received from an Airwallex account not connected here"
 
 
-def _pair_transfers(moves: list):
-    """A PayPal withdrawal and the Airwallex deposit it becomes are one move.
-    Matched by currency and amount within 7 days; the deposit side is relabelled."""
-    deposits = [m for m in moves if m.get("deposit")]
-    for w in [m for m in moves if m.get("withdrawal")]:
-        for dep in deposits:
-            if (dep["currency"] == w["currency"] and abs(dep["amount"] + w["amount"]) < 0.01
-                    and timedelta(0) <= dep["time"] - w["time"] <= timedelta(days=7)):
-                dep.update(section=MOVED, deposit=False, partner=w)
-                w["partner"] = dep
-                deposits.remove(dep)
+def _pair_paypal(moves: list):
+    """Money sent from one connected PayPal account to another: the payment out of
+    one and the payment into the other are one move, not a cost and not a sale."""
+    pays = [m for m in moves if m.get("pp_pay")]
+    for out in pays:
+        if out["amount"] >= 0 or out.get("pp_own"):
+            continue
+        for into in pays:
+            if (into["amount"] > 0 and not into.get("pp_own") and into["source"] != out["source"]
+                    and into["currency"] == out["currency"] and abs(into["amount"] + out["amount"]) < 0.01
+                    and abs((into["time"] - out["time"]).total_seconds()) <= 86400):
+                for x in (out, into):
+                    x.update(section=MOVED, line=OWN_PAYPAL, info=x["amount"], amount=0.0, pp_own=True)
+                    x.pop("kind", None)
+                    x.pop("count", None)
                 break
 
 
+def _pair_transfers(moves: list, now: datetime = None):
+    """A PayPal withdrawal and the Airwallex deposit it becomes are one move.
+    Matched by currency and amount within TRANSIT_DAYS; the deposit side is relabelled.
+    Both sides count 0: the money stays available on its way (cashflow.py counts a
+    withdrawal not landed yet, at most TRANSIT_DAYS old, as available "in transit").
+    A withdrawal not in Airwallex after TRANSIT_DAYS went to a bank not connected here."""
+    now = now or datetime.now(timezone.utc)
+    deposits = [m for m in moves if m.get("deposit")]
+    returns = [m for m in moves if m.get("returned") and not m.get("partner")]
+    for w in [m for m in moves if m.get("withdrawal") and not m.get("partner")]:
+        sent = w["info"]                                    # the amount as PayPal booked it (negative)
+        back = next((r for r in returns if r["currency"] == w["currency"] and abs(r["info"] + sent) < 0.01
+                     and timedelta(0) <= r["time"] - w["time"] <= timedelta(days=30)), None)
+        if back:
+            # bounced back to PayPal: it never left, both sides count 0
+            returns.remove(back)
+            back.update(partner=w, amount=0.0)
+            w.update(partner=back, amount=0.0, transit=False)
+            continue
+        for dep in sorted(deposits, key=lambda d: d["time"]):
+            if (dep["currency"] == w["currency"] and abs(dep["amount"] + sent) < 0.01
+                    and timedelta(minutes=-10) <= dep["time"] - w["time"] <= timedelta(days=TRANSIT_DAYS)):
+                dep.update(section=MOVED, deposit=False, partner=w, info=dep["amount"], amount=0.0)
+                w.update(partner=dep, amount=0.0)
+                deposits.remove(dep)
+                break
+        else:
+            if now - w["time"] <= timedelta(days=TRANSIT_DAYS):
+                w.update(transit=True, amount=0.0)
+
+
+def pair(moves: list, now: datetime = None, ours: set = ()):
+    """Every own-account pairing, in order. Run once on all accounts' moves together."""
+    _pair_transfers(moves, now)
+    _pair_paypal(moves)
+    _pair_own(moves, ours)
+
+
+def in_transit(moves: list) -> list:
+    """PayPal withdrawals on their way (after pair()), plus withdrawals whose Airwallex
+    deposit is still pending: money that is still yours and spendable soon."""
+    out = []
+    for m in moves:
+        if not m.get("withdrawal"):
+            continue
+        p = m.get("partner")
+        if m.get("transit") or (p and p.get("status") == "PENDING"):
+            out.append({"currency": m["currency"], "amount": -m["info"], "time": m["time"].isoformat(),
+                        "from": m["source"], "to": p["source"] if p else None,
+                        "deposit_id": p and p.get("id")})
+    return out
+
+
 def build(moves: list, factor, position_now: float, start: datetime, end: datetime,
-          now: datetime, shopify: dict = None, ad_spend: float = None) -> dict:
-    """shopify: Shopify sales on the same clock, {"PayPal"|"Airwallex"|"Other": {orders, amount}}."""
-    """moves: from airwallex_moves/paypal_moves. Returns the statement."""
-    _pair_transfers(moves)
-    _pair_own(moves)
+          now: datetime, shopify: dict = None, ad_spend: float = None, ours: set = ()) -> dict:
+    """moves: from airwallex_moves/paypal_moves. Returns the statement.
+    shopify: Shopify sales on the same clock, {"PayPal"|"Airwallex"|"Other": {orders, amount}}.
+    ours: Airwallex transfer keys the owner confirmed are their own accounts."""
+    pair(moves, now, ours)
     # Into the display currency at today's rate.
     for m in moves:
         if "legs" in m:
@@ -313,9 +401,12 @@ def build(moves: list, factor, position_now: float, start: datetime, end: dateti
     # otherwise say which end is missing so the amount makes sense.
     for m in inside:
         p = m.get("partner")
-        if m.get("withdrawal"):
+        if (m.get("withdrawal") and p and p.get("returned")) or (m.get("returned") and p):
+            m["line"] = "PayPal withdrawal sent back to PayPal"
+        elif m.get("withdrawal"):
             m["line"] = ("PayPal → Airwallex" if p and start <= p["time"] < end else
-                         "Sent from PayPal, arriving in Airwallex later" if p or m["time"] > end - timedelta(days=4)
+                         "Sent from PayPal, arriving in Airwallex later" if p
+                         else "On its way from PayPal (still counted as available)" if m.get("transit")
                          else "Withdrawn from PayPal to a bank not connected here")
         elif p:
             m["line"] = ("PayPal → Airwallex" if start <= p["time"] < end
