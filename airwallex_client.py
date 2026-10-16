@@ -143,20 +143,6 @@ async def transactions(client_id: str, api_key: str, since: datetime, until: dat
     return out
 
 
-async def transfer(client_id: str, api_key: str, transfer_id: str, account_id: str = None) -> dict:
-    """One transfer (payout) by id: who it went to (beneficiary) and how."""
-    async with httpx.AsyncClient(timeout=30) as client:
-        token = await _token(client, client_id, api_key, account_id)
-        last = None
-        for path in ("/api/v1/transfers/{}", "/api/v1/connected_account_transfers/{}",
-                     "/api/v1/account_transfers/{}", "/api/v1/global_transfers/{}"):
-            try:
-                return {"_path": path, **await _get(client, path.format(transfer_id), token, what="transfer")}
-            except AirwallexError as e:
-                last = e
-        raise last
-
-
 async def card_transactions(client_id: str, api_key: str, since: datetime,
                             account_id: str = None) -> list:
     """Card (Issuing) transactions since `since`: merchant name and card nickname

@@ -19,7 +19,12 @@ Money sent to an Airwallex account that isn't connected here can't be told apart
 by itself: one of the owner's own accounts, or someone else's (DayOne, the
 supplier, has its own Airwallex). Until the owner answers per payee ("ask"),
 it is listed under "Is this your own account?" and counted as money out; the
-answer is saved as a rule ("ignore" = ours) like any other pick.
+answer is saved as a rule ("ignore" = ours) like any other pick. Airwallex gives no
+payee name for these (the restricted keys can't read transfer details), only the
+reference typed when sending ("own" on the owner's own moves). With a reference
+the answer is kept per reference; with none (NO_REF, e.g. DayOne payments) it is
+asked per payment, except payments from before the owner's one answer for all
+no-reference transfers (kept: it was given before this split, 16 Oct 2026).
 
 Card holds: a hold, its release and its capture are one card payment. They are
 netted per card transaction and dated at the first charge, so a hold that was
@@ -27,7 +32,7 @@ released without being charged adds nothing.
 """
 import json
 import re
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import anthropic
 
@@ -157,10 +162,32 @@ def _payee_key(name: str) -> tuple:
     return "merchant:" + n, name, None
 
 
-def apply_rules(items: list, rules: dict) -> list:
+NO_REF = statement.transfer_key({})     # Airwallex transfer out with no reference typed
+
+
+def rule_map(rows: list) -> tuple:
+    """db.expense_rules() rows -> (rules for apply_rules, until when the no-reference answer counts)."""
+    rules = {r["key"]: r["category"] for r in rows}
+    gen = next((r for r in rows if r["key"] == NO_REF), None)
+    until = None
+    if gen and gen.get("set_at"):
+        try:
+            until = datetime.fromisoformat(gen["set_at"]).replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
+    return rules, until
+
+
+def apply_rules(items: list, rules: dict, no_ref_until=None) -> list:
     """rules: key -> category (an owner's pick). A pick for one transaction ("tx:<id>")
-    beats a pick for its payee, which beats the built-in category."""
+    beats a pick for its payee, which beats the built-in category. Airwallex transfers
+    with no reference are asked one by one (key "tx:<id>"); the old answer for all of
+    them only covers payments up to when it was given (no_ref_until)."""
     for it in items:
+        if it["key"] == NO_REF and not rules.get("tx:" + str(it["id"])) and not (
+                no_ref_until and it["time"] <= no_ref_until and rules.get(NO_REF)):
+            it["key"] = "tx:" + str(it["id"])
+            continue
         pick = rules.get("tx:" + str(it["id"])) or rules.get(it["key"])
         if pick:
             it["category"] = pick

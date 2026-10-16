@@ -298,7 +298,7 @@ def _pair_own(moves: list, ours: set = ()):
             continue
         if m["amount"] < 0:
             m["key"] = transfer_key(m)
-            if m["key"] in ours:
+            if m["key"] in ours or f"tx:{m.get('id')}" in ours:
                 m["line"] = OWN_AWX_OUT
             else:
                 m.update(section=OUT, line="Sent to an Airwallex account not connected here")

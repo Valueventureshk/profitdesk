@@ -150,7 +150,12 @@ file and have it work.
   Airwallex transfers to an account not connected here are asked, not guessed: "Is this your own account?"
   panel (`to_confirm`, not sent to the AI): **Ours, internal move** saves rule `ignore` for that payee;
   **Not ours, real payment** saves the category (default supplier) and, for supplier, the supplier
-  (`/api/suppliers/payee`), so it counts in COG → Suppliers payments. Until answered they count as money out. Unknown payees go to "To sort";
+  (`/api/suppliers/payee`), so it counts in COG → Suppliers payments. Until answered they count as money out.
+  Airwallex gives no payee name for these (restricted keys can't read transfers; 404 / not allowed), only the
+  reference typed when sending ("own" on the owner's own moves). With a reference the answer is kept per
+  reference (`awx-transfer:<reference>`); with none (`expenses.NO_REF`, e.g. DayOne payments) it is asked per
+  payment (`tx:<id>`), except payments up to the owner's earlier answer for all no-reference transfers
+  (`expense_rules.set_at` of NO_REF, `expenses.rule_map`). Unknown payees go to "To sort";
   the owner's pick is saved per payee key and applies to past and future payments.
   Conversion cost is the only computed line (legs at today's rate).
 - SCM desk (desk `scm`, replacing Parcel Panel): `_scm_loop` every 10 min reads each store's
