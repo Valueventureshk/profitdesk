@@ -29,6 +29,7 @@ window.PDUrl = {
     { href: "/tasks", desk: "tasks", label: "Tasks", note: "Give the team work, check it, launch the ads" },
     // Apps: tools for the stores themselves
     { href: "/tracking", desk: "tracking", label: "Tracking", note: "Adds to cart, checkouts and orders per ad", group: "Apps" },
+    { href: "/time", desk: "time", label: "Time", note: "Staff hours, activity and screenshots (desktop app)", group: "Apps" },
     { href: "/agent", desk: "agent", label: "Agent", note: "The ops agent: its work log, your advice, its questions", group: "Apps" },
     { href: "/metaads", desk: "metaads", label: "Meta Ads", note: "Campaigns, results and Claude managing them (Ask me first)", group: "Apps" },
     { href: "/googleads", desk: "googleads", label: "Google Ads", note: "Every product's Google spend vs real sales and profit", group: "Apps" },
@@ -122,6 +123,7 @@ window.PDUrl = {
     "/tasks": '<rect x="3" y="4" width="5" height="16" rx="1"/><rect x="10" y="4" width="5" height="10" rx="1"/><rect x="17" y="4" width="4" height="7" rx="1"/>',
     "/disputes": '<path d="M12 3l8 4v5c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V7z"/><path d="M12 8v5M12 16v.01"/>',
     "/tracking": '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>',
+    "/time": '<circle cx="12" cy="13" r="8"/><path d="M12 9v4l3 2M9 2h6"/>',
     "/agent": '<rect x="5" y="8" width="14" height="11" rx="3"/><path d="M12 8V4M9 13v.01M15 13v.01M9.5 16.5h5"/><circle cx="12" cy="3.5" r="1"/>',
     "/metaads": '<path d="M3 15c0-5 2.5-8 4.5-8 3 0 4.5 10 7.5 10 2 0 3.5-3 3.5-6s-1.5-5-3-5c-2.5 0-4.5 5-7 5"/>',
     "/googleads": '<path d="M4 19l6-10 4 7 3-5 3 8"/><circle cx="17" cy="6" r="2"/>',

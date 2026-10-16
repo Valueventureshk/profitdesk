@@ -23,3 +23,8 @@ shopify-app/node_modules/
 shopify-app/.shopify/
 shopify-app/extensions/*/dist/
 private-docs/
+
+# EcomVital Time build leftovers
+desktop/build/
+desktop/dist/
+desktop/*.spec

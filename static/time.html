@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EcomVital · Time</title>
+<script>try{var t=localStorage.getItem("pdTheme")||(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");document.documentElement.dataset.theme=t;if((localStorage.getItem("pdSkin")||"new")==="new")document.documentElement.classList.add("skin-new");}catch(e){}</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;550;600;650;700&display=swap">
+<link rel="stylesheet" href="/static/styles.css">
+<link rel="stylesheet" href="/static/skin.css">
+<link rel="stylesheet" href="/static/time.css">
+</head>
+<body class="tm-body">
+<div class="cash-page tm-page">
+  <header class="cash-top">
+    <div class="brand" data-section-menu title="Switch section">
+      <span class="brand-mark"><img src="/static/brand/ecomvital-120.png" alt=""></span>
+      <span class="brand-name">EcomVital</span>
+    </div>
+    <div class="crumb">
+      <h1>Time</h1>
+      <p id="sub">Hours, activity, apps and screenshots from the EcomVital Time app</p>
+    </div>
+    <nav class="scm-pages" id="pages">
+      <button data-page="week" class="on">Team</button>
+      <button data-page="day">Day</button>
+      <button data-page="app">Get the app</button>
+      <button data-page="devices" data-manage-only>Computers</button>
+    </nav>
+  </header>
+
+  <main class="content">
+    <section id="weekPage">
+      <div class="tm-bar"><button class="btn btn-sm" id="wPrev">‹</button><span id="wLabel"></span><button class="btn btn-sm" id="wNext">›</button></div>
+      <section class="panel"><div class="table-wrap"><table class="table tm-week" id="week"></table></div></section>
+      <p class="hint">Hours = time tracked in the app. Activity = share of those minutes with keyboard or mouse use (what was typed is never recorded). Days are Hong Kong days.</p>
+    </section>
+
+    <section id="dayPage" hidden>
+      <div class="tm-bar"><select id="person" class="control"></select><button class="btn btn-sm" id="dPrev">‹</button>
+        <input type="date" id="day" class="control"><button class="btn btn-sm" id="dNext">›</button></div>
+      <div class="tm-tiles" id="tiles"></div>
+      <section class="panel"><div class="panel-head"><h2>Timeline</h2><span class="hint">10-minute blocks: colour = activity, one screenshot at a random moment in each</span></div>
+        <div id="timeline" class="tm-timeline"></div></section>
+      <section class="panel"><div class="panel-head"><h2>Apps &amp; sites</h2></div><div class="table-wrap"><table class="table tm-apps" id="apps"></table></div></section>
+    </section>
+
+    <section id="appPage" class="panel" hidden>
+      <div class="panel-head"><h2>EcomVital Time for Mac and Windows</h2></div>
+      <div class="tm-dl" id="downloads"></div>
+      <div class="tm-guide">
+        <h3>Setting it up (each person, once)</h3>
+        <ol>
+          <li>Download the right file above and open it.
+            <ul><li><b>Mac:</b> unzip, drag <b>EcomVital Time</b> into Applications, then <b>right-click → Open</b> the first time (it isn't from the App Store).
+              When asked, allow <b>Screen Recording</b> and <b>Input Monitoring / Accessibility</b> in System Settings → Privacy &amp; Security, then quit and reopen it.</li>
+              <li><b>Windows:</b> run the file. If Windows shows “protected your PC”, click <b>More info → Run anyway</b>.</li></ul></li>
+          <li>Sign in with your EcomVital email and password.</li>
+          <li>Pick the task you're working on (optional) and press <b>Start</b>. Press <b>Pause</b> for breaks and <b>Stop</b> at the end of the day.</li>
+        </ol>
+        <h3>What it records, only while started</h3>
+        <ul>
+          <li>Time worked, and each minute whether the keyboard / mouse was used (counts only: never what you typed).</li>
+          <li>The app and window title in front (e.g. “Chrome · Shopify”).</li>
+          <li>One screenshot of all screens at a random moment in each 10-minute block. You can remove one of your own screenshots within a few minutes if something private was on screen; that's logged.</li>
+          <li>Screenshots are deleted after <span id="keep">30</span> days; hours stay.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section id="devicesPage" class="panel" hidden>
+      <div class="panel-head"><h2>Computers signed in</h2></div>
+      <div class="table-wrap"><table class="table tm-dev" id="devices"></table></div>
+      <div class="tm-settings" data-owner-only>
+        <label>Keep screenshots (days) <input class="control" id="sKeep" inputmode="numeric"></label>
+        <label>Idle after (minutes) <input class="control" id="sIdle" inputmode="numeric"></label>
+        <label>Staff may remove own screenshot within (minutes) <input class="control" id="sDel" inputmode="numeric"></label>
+        <button class="btn btn-sm btn-primary" id="sSave">Save</button>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div class="tm-light" id="light" hidden>
+  <div class="tm-light-box"><button class="btn btn-sm tm-close" id="lClose">Close</button><img id="lImg" alt=""><p id="lInfo"></p>
+    <button class="btn btn-sm btn-danger" id="lDel" hidden>Remove this screenshot</button></div>
+</div>
+<div id="toast" class="toast" hidden></div>
+<script src="/static/nav.js"></script>
+<script src="/static/chat.js"></script>
+<script src="/static/time.js"></script>
+</body>
+</html>

@@ -62,6 +62,7 @@ import reports
 import ai_chat
 import ai_data
 import products_desk
+import timetrack
 import agent
 import slack_client
 import meta_manage
@@ -149,6 +150,7 @@ async def lifespan(app):
     asyncio.create_task(_gdesk_loop())
     asyncio.create_task(_ads_loop())
     asyncio.create_task(_mads_loop())
+    asyncio.create_task(_time_loop())
     asyncio.create_task(_up_loop())
     asyncio.create_task(_gconv_loop())
     asyncio.create_task(_assist_loop())
@@ -225,12 +227,13 @@ _DESK_PATHS = {
     "tasks": ("/tasks", "/api/tasks"),
     "metaads": ("/metaads", "/api/metaads"),
     "agent": ("/agent", "/api/agent"),
+    "time": ("/time", "/api/time"),
 }
 _DESK_HOME = {"profit": "/", "cash": "/cash", "cog": "/cog", "inbox": "/inbox", "reports": "/reports",
              "expenses": "/expenses", "scm": "/scm", "importer": "/importer",
              "sizecharts": "/sizecharts", "disputes": "/disputes",
              "recordings": "/recordings", "googleads": "/googleads",
-             "tracking": "/tracking", "checkout": "/checkout", "tasks": "/tasks", "metaads": "/metaads", "agent": "/agent"}
+             "tracking": "/tracking", "checkout": "/checkout", "tasks": "/tasks", "metaads": "/metaads", "agent": "/agent", "time": "/time"}
 # Shared by every desk's pages: the user's own details and the dropdown lists.
 _EVERYONE = {"/api/me", "/api/me/password", "/api/logout", "/change-password",
              "/api/setup", "/api/chat", "/api/assistant/inbox", "/api/assistant/inbox/read"}
@@ -320,7 +323,7 @@ async def _require_login(request: Request, call_next):
             return RedirectResponse(f"{BASE_URL}{path}", status_code=302)
     user = auth.user_for(request.cookies.get(auth.SESSION_COOKIE))
     request.state.user = user
-    if path in _OPEN or path.startswith(("/static/", "/proxy/", "/apps/", "/w/", "/t/", "/pay/")) or path == "/proxy":
+    if path in _OPEN or path.startswith(("/static/", "/proxy/", "/apps/", "/w/", "/t/", "/pay/", "/api/time/client/")) or path == "/proxy":
         return await call_next(request)
     launched = _shopify_launch(request)
     if launched:
@@ -12466,6 +12469,392 @@ async def api_slack_events(request: Request):
                 print(f"Slack event failed: {str(getattr(e, 'detail', None) or e)[:300]}", flush=True)
         asyncio.create_task(run())
     return {"ok": True}
+
+
+# ---------------------------------------------------------------- Apps → Time (desktop app: hours, activity, screenshots)
+
+TIME_DIR = os.path.join(os.path.dirname(os.path.abspath(db.DB_PATH)), "time_shots")
+DOWNLOADS_DIR = os.path.join(STATIC_DIR, "downloads")
+_time_ready = {"ok": False}
+
+
+def _time_db():
+    if _time_ready["ok"]:
+        return
+    with db._conn() as con:
+        con.executescript(timetrack.SCHEMA)
+    _time_ready["ok"] = True
+
+
+def _time_cfg() -> dict:
+    try:
+        got = json.loads(db.get_setting("time_settings") or "{}")
+    except ValueError:
+        got = {}
+    return {**timetrack.DEFAULTS, **{k: v for k, v in got.items() if k in timetrack.DEFAULTS}}
+
+
+def _time_device(request: Request):
+    """The desktop app's device token (Authorization: Bearer evt_…) → (device, user); 401 if not valid."""
+    _time_db()
+    h = request.headers.get("Authorization", "")
+    got = timetrack.device_for(h[7:].strip() if h.lower().startswith("bearer ") else "")
+    if not got:
+        raise HTTPException(401, "Signed out: sign in again in EcomVital Time.")
+    return got
+
+
+def _time_day_bounds(day: date):
+    a = datetime.combine(day, clock.min, CASH_TZ).astimezone(timezone.utc)
+    b = datetime.combine(day + timedelta(days=1), clock.min, CASH_TZ).astimezone(timezone.utc)
+    return a.strftime("%Y-%m-%dT%H:%M"), b.strftime("%Y-%m-%dT%H:%M")
+
+
+def _time_totals(con, user_id: int, day: date) -> dict:
+    a, b = _time_day_bounds(day)
+    r = con.execute("SELECT COUNT(*), COALESCE(SUM(active), 0) FROM time_minutes WHERE user_id = ? AND minute >= ? AND minute < ?",
+                    (user_id, a, b)).fetchone()
+    return {"minutes": r[0], "active": r[1], "activity": round(r[1] / r[0], 3) if r[0] else None}
+
+
+# ---- what the desktop app calls (open path; it proves itself with its device token)
+
+@app.post("/api/time/client/login")
+async def api_time_login(payload: dict, request: Request):
+    """Sign the desktop app in with the person's EcomVital email + password; it gets its own device token."""
+    _time_db()
+    try:
+        token = auth.log_in(payload.get("email"), payload.get("password"), _client_ip(request))
+    except auth.AuthError as e:
+        raise HTTPException(400, str(e))
+    user = auth.user_for(token)
+    auth.log_out(token)                          # only the device token is kept
+    if not user:
+        raise HTTPException(400, "Couldn't sign in.")
+    if user.get("must_change"):
+        raise HTTPException(400, "Choose your own password first: log in at hq.ecomvital.com once, then sign in here.")
+    dev = timetrack.new_device(user["id"], payload.get("device") or "", payload.get("os") or "", payload.get("version") or "")
+    return {"ok": True, "token": dev, "name": user.get("name") or user["email"], "email": user["email"]}
+
+
+def _time_latest() -> str:
+    """The app version the download page has (written by the installer build)."""
+    try:
+        with open(os.path.join(DOWNLOADS_DIR, "version.txt")) as fh:
+            return fh.read().strip()[:20]
+    except OSError:
+        return ""
+
+
+@app.get("/api/time/client/config")
+def api_time_config(request: Request):
+    d, u = _time_device(request)
+    today = datetime.now(CASH_TZ).date()
+    with db._conn() as con:
+        tot = _time_totals(con, u["id"], today)
+        try:
+            tasks_ = [{"id": r[0], "title": r[1]} for r in con.execute(
+                "SELECT id, title FROM tasks WHERE assignee_id = ? AND status NOT IN ('launched', 'done', 'cancelled') ORDER BY id DESC LIMIT 30",
+                (u["id"],))]
+        except Exception:
+            tasks_ = []
+    return {"name": u.get("name") or u["email"], "email": u["email"], **_time_cfg(), "today": tot, "tasks": tasks_,
+            "latest": _time_latest()}
+
+
+@app.post("/api/time/client/start")
+def api_time_start(payload: dict, request: Request):
+    d, u = _time_device(request)
+    with db._conn() as con:
+        sid = con.execute("INSERT INTO time_sessions (user_id, device_id, started_at, last_seen) VALUES (?,?,?,?)",
+                          (u["id"], d["id"], timetrack.now(), timetrack.now())).lastrowid
+    return {"ok": True, "session": sid}
+
+
+@app.post("/api/time/client/stop")
+def api_time_stop(payload: dict, request: Request):
+    d, u = _time_device(request)
+    with db._conn() as con:
+        con.execute("UPDATE time_sessions SET ended_at = ?, last_seen = ? WHERE id = ? AND user_id = ?",
+                    (timetrack.now(), timetrack.now(), payload.get("session"), u["id"]))
+    return {"ok": True}
+
+
+@app.post("/api/time/client/minutes")
+def api_time_minutes(payload: dict, request: Request):
+    """A batch of tracked minutes (sent every minute; queued on the computer while offline)."""
+    d, u = _time_device(request)
+    rows = payload.get("rows") or []
+    saved = 0
+    with db._conn() as con:
+        for r in rows[:2000]:
+            try:
+                m = timetrack.minute_key(r["minute"])
+            except (KeyError, ValueError, TypeError):
+                continue
+            con.execute("INSERT OR REPLACE INTO time_minutes (user_id, minute, session_id, active, keys, clicks, moves, app, title, task_id)"
+                        " VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        (u["id"], m, payload.get("session"), 1 if r.get("active") else 0, int(r.get("keys") or 0),
+                         int(r.get("clicks") or 0), int(r.get("moves") or 0), str(r.get("app") or "")[:120],
+                         str(r.get("title") or "")[:300], int(r["task_id"]) if r.get("task_id") else None))
+            saved += 1
+        con.execute("UPDATE time_sessions SET last_seen = ? WHERE id = ? AND user_id = ?", (timetrack.now(), payload.get("session"), u["id"]))
+        tot = _time_totals(con, u["id"], datetime.now(CASH_TZ).date())
+    return {"ok": True, "saved": saved, "today": tot}
+
+
+@app.post("/api/time/client/discard")
+def api_time_discard(payload: dict, request: Request):
+    """The person said "remove" after being away: the idle minutes (and screenshots in them) are taken back."""
+    d, u = _time_device(request)
+    try:
+        a, b = timetrack.minute_key(payload["from"]), timetrack.minute_key(payload["to"])
+    except (KeyError, ValueError, TypeError):
+        raise HTTPException(400, "Which minutes?")
+    with db._conn() as con:
+        n = con.execute("DELETE FROM time_minutes WHERE user_id = ? AND minute >= ? AND minute <= ? AND active = 0", (u["id"], a, b)).rowcount
+        gone = [dict(r) for r in con.execute("SELECT id, taken_at FROM time_shots WHERE user_id = ? AND taken_at >= ? AND taken_at <= ?"
+                                             " AND deleted_at IS NULL", (u["id"], a, b + ":59"))]
+        con.execute("UPDATE time_shots SET deleted_at = ?, deleted_by = 'idle removed by the person' WHERE user_id = ? AND taken_at >= ?"
+                    " AND taken_at <= ? AND deleted_at IS NULL", (timetrack.now(), u["id"], a, b + ":59"))
+    for g in gone:
+        for nm in (f"{g['id']}.jpg", f"{g['id']}_t.jpg"):
+            try:
+                os.remove(os.path.join(TIME_DIR, str(u["id"]), g["taken_at"][:10], nm))
+            except OSError:
+                pass
+    with db._conn() as con:
+        tot = _time_totals(con, u["id"], datetime.now(CASH_TZ).date())
+    return {"ok": True, "removed": n, "today": tot}
+
+
+@app.post("/api/time/client/shot")
+async def api_time_shot(request: Request):
+    """One screenshot (JPEG of all screens) with when it was taken and what was in front."""
+    d, u = _time_device(request)
+    form = await request.form()
+    up = form.get("file")
+    if not up or not hasattr(up, "read"):
+        raise HTTPException(400, "No screenshot.")
+    data = await up.read()
+    if len(data) > 8 * 1024 * 1024:
+        raise HTTPException(400, "Screenshot too big.")
+    taken = str(form.get("taken_at") or timetrack.now())
+    with db._conn() as con:
+        sid = con.execute("INSERT INTO time_shots (user_id, session_id, taken_at, screens, width, height, bytes, app, title) VALUES (?,?,?,?,?,?,?,?,?)",
+                          (u["id"], form.get("session"), taken, int(form.get("screens") or 1), int(form.get("width") or 0),
+                           int(form.get("height") or 0), len(data), str(form.get("app") or "")[:120],
+                           str(form.get("title") or "")[:300])).lastrowid
+    folder = os.path.join(TIME_DIR, str(u["id"]), taken[:10])
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, f"{sid}.jpg")
+    with open(path, "wb") as fh:
+        fh.write(data)
+    await asyncio.to_thread(_att_image, path, os.path.join(folder, f"{sid}_t.jpg"), 400)
+    return {"ok": True, "id": sid}
+
+
+# ---- the Time desk
+
+def _time_can_see(request: Request, user_id: int) -> bool:
+    me = getattr(request.state, "user", None) or {}
+    return me.get("id") == user_id or auth.at_least(me, "time", "manage")
+
+
+@app.get("/time", response_class=HTMLResponse)
+def time_page():
+    return _page("time.html", ("time.js", "time.css", "nav.js", "styles.css", "skin.css", "chat.js"))
+
+
+@app.get("/api/time/people")
+def api_time_people(request: Request):
+    _time_db()
+    me = request.state.user
+    manage = auth.at_least(me, "time", "manage")
+    with db._conn() as con:
+        tracked = {r[0] for r in con.execute("SELECT DISTINCT user_id FROM time_devices")}
+    people = [{"id": u["id"], "name": (u.get("name") or "").strip() or u["email"].split("@")[0], "email": u["email"],
+               "has_app": u["id"] in tracked} for u in db.list_users() if manage or u["id"] == me["id"]]
+    downloads = sorted(f for f in os.listdir(DOWNLOADS_DIR)) if os.path.isdir(DOWNLOADS_DIR) else []
+    return {"people": people, "manage": manage, "me": me["id"], "today": datetime.now(CASH_TZ).date().isoformat(),
+            "settings": _time_cfg(), "downloads": downloads, "owner": me.get("role", "owner") == "owner"}
+
+
+@app.get("/api/time/day")
+def api_time_day(request: Request, user: int, day: str = ""):
+    """One person's day: totals, 10-minute blocks (activity + screenshots), apps & sites."""
+    _time_db()
+    if not _time_can_see(request, user):
+        raise HTTPException(403, "You can only see your own time.")
+    try:
+        d = date.fromisoformat(day) if day else datetime.now(CASH_TZ).date()
+    except ValueError:
+        raise HTTPException(400, "Pick a day.")
+    a, b = _time_day_bounds(d)
+    cfg = _time_cfg()
+    with db._conn() as con:
+        mins = [dict(r) for r in con.execute("SELECT * FROM time_minutes WHERE user_id = ? AND minute >= ? AND minute < ? ORDER BY minute",
+                                             (user, a, b))]
+        shots = [dict(r) for r in con.execute("SELECT * FROM time_shots WHERE user_id = ? AND taken_at >= ? AND taken_at < ? AND deleted_at IS NULL"
+                                              " ORDER BY taken_at", (user, a + ":00", b + ":00"))]
+        tot = _time_totals(con, user, d)
+        tasks_ = {r[0]: r[1] for r in con.execute("SELECT id, title FROM tasks")} if any(m["task_id"] for m in mins) else {}
+    blocks = {}
+    for m in mins:
+        t = datetime.fromisoformat(m["minute"] + ":00+00:00").astimezone(CASH_TZ)
+        k = t.replace(minute=t.minute - t.minute % cfg["block_minutes"], second=0).strftime("%H:%M")
+        bl = blocks.setdefault(k, {"start": k, "minutes": 0, "active": 0, "apps": defaultdict(int), "shots": [], "tasks": set()})
+        bl["minutes"] += 1
+        bl["active"] += m["active"]
+        bl["apps"][timetrack.app_group(m["app"], m["title"])] += 1
+        if m["task_id"]:
+            bl["tasks"].add(tasks_.get(m["task_id"], f"#{m['task_id']}"))
+    for s in shots:
+        t = datetime.fromisoformat(s["taken_at"].replace("Z", "+00:00")).astimezone(CASH_TZ)
+        k = t.replace(minute=t.minute - t.minute % cfg["block_minutes"], second=0).strftime("%H:%M")
+        bl = blocks.setdefault(k, {"start": k, "minutes": 0, "active": 0, "apps": defaultdict(int), "shots": [], "tasks": set()})
+        bl["shots"].append({"id": s["id"], "at": t.strftime("%H:%M:%S"), "app": s["app"], "title": s["title"],
+                            "screens": s["screens"], "taken_at": s["taken_at"]})
+    out_blocks = []
+    for k in sorted(blocks):
+        bl = blocks[k]
+        top = sorted(bl["apps"].items(), key=lambda kv: -kv[1])
+        out_blocks.append({"start": k, "minutes": bl["minutes"], "active": bl["active"],
+                           "activity": round(bl["active"] / bl["minutes"], 2) if bl["minutes"] else None,
+                           "app": top[0][0] if top else "", "shots": bl["shots"], "tasks": sorted(bl["tasks"])})
+    apps = defaultdict(lambda: {"minutes": 0, "active": 0})
+    for m in mins:
+        g = apps[timetrack.app_group(m["app"], m["title"])]
+        g["minutes"] += 1
+        g["active"] += m["active"]
+    first = datetime.fromisoformat(mins[0]["minute"] + ":00+00:00").astimezone(CASH_TZ).strftime("%H:%M") if mins else None
+    last = datetime.fromisoformat(mins[-1]["minute"] + ":00+00:00").astimezone(CASH_TZ).strftime("%H:%M") if mins else None
+    me = request.state.user
+    return {"day": d.isoformat(), "user": user, "totals": tot, "first": first, "last": last, "blocks": out_blocks,
+            "apps": sorted(({"app": k, **v} for k, v in apps.items()), key=lambda x: -x["minutes"])[:40],
+            "can_delete_until": cfg["staff_delete_minutes"], "manage": auth.at_least(me, "time", "manage"), "mine": me["id"] == user}
+
+
+@app.get("/api/time/week")
+def api_time_week(request: Request, start: str = ""):
+    """Everyone the viewer may see: hours and activity per day for 7 days from start (business clock)."""
+    _time_db()
+    me = request.state.user
+    manage = auth.at_least(me, "time", "manage")
+    try:
+        s = date.fromisoformat(start) if start else datetime.now(CASH_TZ).date() - timedelta(days=6)
+    except ValueError:
+        raise HTTPException(400, "Pick a start day.")
+    days = [s + timedelta(days=i) for i in range(7)]
+    rows = []
+    with db._conn() as con:
+        users = [u for u in db.list_users() if manage or u["id"] == me["id"]]
+        for u in users:
+            per = [_time_totals(con, u["id"], d) for d in days]
+            if not manage or any(p["minutes"] for p in per) or u["id"] == me["id"]:
+                tm = sum(p["minutes"] for p in per)
+                ta = sum(p["active"] for p in per)
+                rows.append({"id": u["id"], "name": (u.get("name") or "").strip() or u["email"].split("@")[0], "days": per,
+                             "minutes": tm, "activity": round(ta / tm, 3) if tm else None})
+    return {"days": [d.isoformat() for d in days], "people": rows}
+
+
+@app.get("/api/time/shot/{shot_id}")
+def api_time_shot_file(shot_id: int, request: Request, thumb: int = 0):
+    _time_db()
+    with db._conn() as con:
+        s = con.execute("SELECT * FROM time_shots WHERE id = ? AND deleted_at IS NULL", (shot_id,)).fetchone()
+    if not s or not _time_can_see(request, s["user_id"]):
+        raise HTTPException(404, "Screenshot not found.")
+    folder = os.path.join(TIME_DIR, str(s["user_id"]), s["taken_at"][:10])
+    path = os.path.join(folder, f"{shot_id}_t.jpg" if thumb else f"{shot_id}.jpg")
+    if not os.path.exists(path):
+        path = os.path.join(folder, f"{shot_id}.jpg")
+    if not os.path.exists(path):
+        raise HTTPException(404, "That screenshot was deleted (kept for a limited number of days).")
+    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
+
+
+@app.delete("/api/time/shot/{shot_id}")
+def api_time_shot_delete(shot_id: int, request: Request):
+    """People may remove their own screenshot within a few minutes (something private on screen); managers any. Logged."""
+    _time_db()
+    me = request.state.user
+    with db._conn() as con:
+        s = con.execute("SELECT * FROM time_shots WHERE id = ? AND deleted_at IS NULL", (shot_id,)).fetchone()
+        if not s:
+            raise HTTPException(404, "Screenshot not found.")
+        mins = (datetime.now(timezone.utc) - datetime.fromisoformat(s["taken_at"].replace("Z", "+00:00"))).total_seconds() / 60
+        manage = auth.at_least(me, "time", "manage")
+        if not manage and (s["user_id"] != me["id"] or mins > _time_cfg()["staff_delete_minutes"]):
+            raise HTTPException(403, f"You can remove your own screenshot only within {_time_cfg()['staff_delete_minutes']} minutes.")
+        con.execute("UPDATE time_shots SET deleted_at = ?, deleted_by = ? WHERE id = ?", (timetrack.now(), me.get("email", ""), shot_id))
+    folder = os.path.join(TIME_DIR, str(s["user_id"]), s["taken_at"][:10])
+    for n in (f"{shot_id}.jpg", f"{shot_id}_t.jpg"):
+        try:
+            os.remove(os.path.join(folder, n))
+        except OSError:
+            pass
+    return {"ok": True}
+
+
+@app.get("/api/time/devices")
+def api_time_devices(request: Request):
+    _time_db()
+    if not auth.at_least(request.state.user, "time", "manage"):
+        raise HTTPException(403, "Managers only.")
+    names = {u["id"]: (u.get("name") or u["email"]) for u in db.list_users()}
+    with db._conn() as con:
+        rows = [dict(r) for r in con.execute("SELECT id, user_id, name, os, version, created_at, last_seen, revoked_at FROM time_devices ORDER BY last_seen DESC")]
+    for r in rows:
+        r["person"] = names.get(r["user_id"], "?")
+    return {"devices": rows}
+
+
+@app.post("/api/time/devices/{dev_id}/revoke")
+def api_time_revoke(dev_id: int, request: Request):
+    _time_db()
+    if not auth.at_least(request.state.user, "time", "manage"):
+        raise HTTPException(403, "Managers only.")
+    with db._conn() as con:
+        con.execute("UPDATE time_devices SET revoked_at = ? WHERE id = ?", (timetrack.now(), dev_id))
+    return {"ok": True}
+
+
+@app.put("/api/time/settings")
+def api_time_settings(payload: dict, request: Request):
+    if request.state.user.get("role", "owner") != "owner":
+        raise HTTPException(403, "Only an owner.")
+    cfg = _time_cfg()
+    for k in ("keep_days", "idle_minutes", "staff_delete_minutes"):
+        if k in payload:
+            try:
+                cfg[k] = max(1, min(int(payload[k]), 365))
+            except (TypeError, ValueError):
+                raise HTTPException(400, f"{k} must be a number.")
+    db.set_setting("time_settings", json.dumps(cfg))
+    return {"ok": True, "settings": cfg}
+
+
+async def _time_loop():
+    """Once a day: screenshots older than keep_days are deleted (minutes and hours stay)."""
+    await asyncio.sleep(600)
+    while True:
+        try:
+            _time_db()
+            cut = (datetime.now(timezone.utc) - timedelta(days=_time_cfg()["keep_days"])).isoformat(timespec="seconds")
+            with db._conn() as con:
+                old = [dict(r) for r in con.execute("SELECT id, user_id, taken_at FROM time_shots WHERE taken_at < ? AND deleted_at IS NULL", (cut,))]
+                for s in old:
+                    for n in (f"{s['id']}.jpg", f"{s['id']}_t.jpg"):
+                        try:
+                            os.remove(os.path.join(TIME_DIR, str(s["user_id"]), s["taken_at"][:10], n))
+                        except OSError:
+                            pass
+                    con.execute("UPDATE time_shots SET deleted_at = ?, deleted_by = 'kept-days' WHERE id = ?", (timetrack.now(), s["id"]))
+        except Exception as e:
+            print(f"Time clean-up failed: {e}", flush=True)
+        await asyncio.sleep(86400)
 
 
 # ---------------------------------------------------------------- Tasks desk
