@@ -413,7 +413,7 @@ $("saveSettings").onclick = async () => {
 // ------------------------------------------------ pages
 for (const b of $("pages").querySelectorAll("[data-page]")) b.onclick = () => {
   for (const x of $("pages").querySelectorAll("[data-page]")) x.classList.toggle("on", x === b);
-  for (const id of ["one", "multi", "history", "settings"]) $(`page-${id}`).hidden = b.dataset.page !== id;
+  for (const id of ["one", "multi", "history", "settings", "adcopy"]) $(`page-${id}`).hidden = b.dataset.page !== id;
   PDUrl.set({ tab: b.dataset.page === "one" ? null : b.dataset.page });
   if (b.dataset.page === "history") loadHistory().catch((e) => toast(e.message, true));
 };

@@ -62,6 +62,7 @@ import reports
 import ai_chat
 import ai_data
 import products_desk
+import adcopy
 import timetrack
 import agent
 import slack_client
@@ -5247,7 +5248,7 @@ async def api_tracking_save(payload: dict):
 
 @app.get("/importer", response_class=HTMLResponse)
 def importer_page():
-    return _page("importer.html", ("importer.js", "product-edit.js", "nav.js", "styles.css", "skin.css", "chat.js"))
+    return _page("importer.html", ("importer.js", "product-edit.js", "adcopy.js", "adcopy.css", "nav.js", "styles.css", "skin.css", "chat.js"))
 
 
 def _importer_cfg() -> dict:
@@ -13875,6 +13876,7 @@ class _Static(StaticFiles):
         return resp
 
 
+app.include_router(adcopy.router)          # Product Importer → Ad copy
 app.mount("/static", _Static(directory=STATIC_DIR), name="static")
 
 

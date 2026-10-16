@@ -8,6 +8,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;650;700&display=swap">
 <link rel="stylesheet" href="/static/styles.css">
 <link rel="stylesheet" href="/static/skin.css">
+<link rel="stylesheet" href="/static/adcopy.css">
 </head>
 <body class="scm-body">
 <div class="cash-page imp-page">
@@ -21,6 +22,7 @@
       <p>Copy products from any Shopify store into yours</p>
     </div>
     <nav class="scm-pages" id="pages">
+      <button data-page="adcopy">Ad copy</button>
       <button data-page="one" class="on">One product</button>
       <button data-page="multi">Multi products</button>
       <button data-page="history">History</button>
@@ -74,6 +76,34 @@
       <div class="imp-save"><button class="btn btn-primary" id="saveSettings">Save settings</button></div>
     </section>
 
+    <!-- ad copy from a Meta ad (adcopy.js) -->
+    <section class="panel imp-card" id="page-adcopy" hidden>
+      <div class="imp-head"><h2>Ad copy from a Meta ad</h2><p class="hint">Paste an Ad Library link, or paste / drop a screenshot of the ad. You get its primary text, headline and description, and can improve them with AI.</p></div>
+      <div class="imp-row">
+        <input id="acUrl" class="control imp-url" placeholder="https://www.facebook.com/ads/library/?id=1234567890">
+        <button class="btn btn-primary" id="acRead">Get the copy</button>
+      </div>
+      <label class="ac-drop" id="acDrop"><input type="file" accept="image/*" id="acFile" hidden>
+        <b>Or paste (Ctrl/Cmd + V) or drop a screenshot of the ad here</b><span>Works for any ad: Facebook, Instagram, Ad Library</span></label>
+      <div id="acOut" hidden>
+        <p class="hint" id="acFrom"></p>
+        <div class="ac-note"><input id="acNote" class="control" placeholder="Optional for the AI: our product / angle / audience / language, e.g. “for Australian mums, warmer tone”">
+          <button class="btn" data-improve="all">✨ Improve all 3 with AI</button></div>
+        <div class="ac-field" data-f="primary_text"><div class="ac-fhead"><b>Primary text</b><span class="ac-count"></span>
+          <button class="btn btn-sm" data-copy="primary_text">Copy</button><button class="btn btn-sm" data-improve="primary_text">✨ Improve</button></div>
+          <textarea class="control" id="ac_primary_text" rows="7"></textarea></div>
+        <div class="ac-field" data-f="headline"><div class="ac-fhead"><b>Headline</b><span class="ac-count"></span>
+          <button class="btn btn-sm" data-copy="headline">Copy</button><button class="btn btn-sm" data-improve="headline">✨ Improve</button></div>
+          <textarea class="control" id="ac_headline" rows="2"></textarea></div>
+        <div class="ac-field" data-f="description"><div class="ac-fhead"><b>Description</b><span class="ac-count"></span>
+          <button class="btn btn-sm" data-copy="description">Copy</button><button class="btn btn-sm" data-improve="description">✨ Improve</button></div>
+          <textarea class="control" id="ac_description" rows="2"></textarea></div>
+        <p class="hint" id="acNotes"></p>
+        <div class="ac-acts"><button class="btn btn-sm" id="acOriginal" hidden>Back to the original</button><button class="btn btn-sm" id="acCopyAll">Copy all 3</button></div>
+      </div>
+      <details class="ac-recent"><summary>Recently read</summary><div id="acRecent"></div></details>
+    </section>
+
     <!-- edit an imported product (product-edit.js) -->
     <section id="page-edit" hidden></section>
   </main>
@@ -82,6 +112,7 @@
 <script src="/static/nav.js"></script>
 <script src="/static/chat.js"></script>
 <script src="/static/importer.js"></script>
+<script src="/static/adcopy.js"></script>
 <script src="/static/product-edit.js"></script>
 </body>
 </html>
