@@ -45,7 +45,15 @@
   $("acRead").onclick = () => busy($("acRead"), "Reading…", async () => {
     const url = $("acUrl").value.trim();
     if (!url) throw new Error("Paste the ad's link first.");
-    show(await call("/api/importer/adcopy/read", { url }));
+    $("acHelp").hidden = true;
+    try {
+      show(await call("/api/importer/adcopy/read", { url }));
+    } catch (e) {
+      // Meta often won't share an ad's text: open the ad so it can be screenshotted and pasted here
+      $("acHelp").hidden = false;
+      $("acOpen").href = /^https?:\/\//.test(url) ? url : `https://www.facebook.com/ads/library/?id=${encodeURIComponent(url)}`;
+      throw e;
+    }
   });
   $("acUrl").onkeydown = (e) => { if (e.key === "Enter") $("acRead").click(); };
 

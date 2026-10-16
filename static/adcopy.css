@@ -18,3 +18,5 @@
 .ac-recent-row { display: flex; flex-direction: column; gap: 2px; width: 100%; text-align: left; font: inherit; color: var(--ink); background: none;
   border: 0; border-bottom: 1px solid var(--line-soft); padding: 7px 2px; cursor: pointer; }
 .ac-recent-row span { font-size: 11.5px; color: var(--faint); }
+.ac-help { margin: 10px 0 0; padding: 10px 12px; border-radius: 10px; background: #FFFBEB; border: 1px solid #FDE68A; color: #92400E; font-size: 13px; line-height: 1.7; }
+[data-theme="dark"] .ac-help { background: rgba(234, 179, 8, .1); border-color: rgba(234, 179, 8, .3); color: #FDE68A; }
