@@ -8,6 +8,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;650;700&display=swap">
 <link rel="stylesheet" href="/static/styles.css">
 <link rel="stylesheet" href="/static/skin.css">
+<link rel="stylesheet" href="/static/cogdesk.css">
 </head>
 <body>
 <div class="cash-page">
@@ -30,14 +31,14 @@
     <div id="problems" class="warnings"></div>
 
     <div class="cog-tabs" role="tablist">
-      <button class="cog-tab on" data-tab="check" role="tab">Check COG</button>
+      <button class="cog-tab on" data-tab="check" role="tab">Check orders <span id="cdBadge" class="tab-badge" hidden></span></button>
       <button class="cog-tab" data-tab="invoices" role="tab">Invoices <span id="invBadge" class="tab-badge" hidden></span></button>
       <button class="cog-tab" data-tab="products" role="tab">Products</button>
       <button class="cog-tab" data-tab="suppliers" role="tab">Suppliers <span id="supBadge" class="tab-badge" hidden></span></button>
     </div>
 
-    <section id="checkView">
-      <div class="cog-filters">
+    <section id="checkView" class="cd-view">
+      <div class="cd-bar">
         <select id="range" class="control">
           <option value="today">Today</option>
           <option value="yesterday" selected>Yesterday</option>
@@ -49,21 +50,49 @@
           <input type="date" id="to" class="control">
         </span>
         <select id="storeSelect" class="control"></select>
+        <input type="search" id="cdFind" class="control" placeholder="Find an order or product">
+        <button class="btn cd-ai" id="cdAiAll" data-write-only>✨ AI check all orders</button>
       </div>
-      <section id="cards" class="cards"></section>
-      <div id="estNote"></div>
+      <div class="cd-chips" id="cdChips">
+        <button class="cd-chip" data-f="all"><b id="cdcAll">0</b><span>All orders</span></button>
+        <button class="cd-chip" data-f="inv"><b id="cdcInv">0</b><span>✓ Invoiced: actual cost</span></button>
+        <button class="cd-chip" data-f="same"><b id="cdcSame">0</b><span>= Same as last time</span></button>
+        <button class="cd-chip" data-f="up"><b id="cdcUp">0</b><span>▲ Price changed: check</span></button>
+        <button class="cd-chip" data-f="new"><b id="cdcNew">0</b><span>★ First-time product</span></button>
+        <button class="cd-chip" data-f="est"><b id="cdcEst">0</b><span>~ No invoice yet: estimated</span></button>
+      </div>
       <section class="panel">
-        <div class="panel-head"><h2>Orders, in time order</h2><span class="hint" id="orderCount"></span></div>
-        <div class="table-wrap"><table class="table" id="orders"></table></div>
+        <div class="cd-wrap"><table class="cd" id="cdOrders">
+          <thead><tr><th>Order</th><th>What was bought</th><th>Sale</th><th>COG</th><th>COG %</th><th>Status</th><th>Note</th><th></th></tr></thead>
+          <tbody id="cdRows"><tr><td colspan="8" class="cd-empty">Loading…</td></tr></tbody>
+        </table></div>
+        <div class="cd-legend"><span>Click any <span class="cd-tag t-up">▲ Price went up</span> row to compare the invoices.</span>
+          <span>Sale and costs in USD, as the supplier bills.</span><span id="cdTotals"></span></div>
       </section>
-      <p class="hint cog-legend">
-        <span class="src invoice">Invoice</span> COG from the supplier's invoice (your sheet) ·
-        <span class="src catalog">History</span> not invoiced yet: the product's last cost ·
-        <span class="src estimate">Estimate</span> never bought before: the store's average COG %
-      </p>
     </section>
 
-    <section id="invoicesView" hidden>
+    <section id="invoicesView" class="cd-view" hidden>
+      <div class="cd-money">
+        <div class="m-credit"><span>On credit</span><b id="cdCredit">…</b><em>Invoiced, not paid yet</em></div>
+        <div class="m-est"><span>Estimated, not invoiced yet</span><b id="cdEst">…</b><em id="cdEstNote">Shipped orders the supplier hasn't billed (our estimate)</em></div>
+        <div class="m-total"><span>Total payable</span><b id="cdTotal">…</b><em>What Cash flow shows: both together</em></div>
+      </div>
+      <div class="cd-bar">
+        <select id="cdSup" class="control"><option value="">All suppliers</option></select>
+        <label class="cd-cut">Everything invoiced before <input type="date" id="cdCutoff" class="control"> counts as paid</label>
+        <label class="cd-cut"><input type="checkbox" id="cdShowEmpty" checked> Show days with no invoice</label>
+      </div>
+      <section class="panel">
+        <div class="cd-wrap"><table class="cd dates">
+          <thead><tr><th>Invoice date</th><th>Invoices</th><th>Total</th><th>Paid</th><th>Mark as</th><th>Note</th></tr></thead>
+          <tbody id="cdDays"><tr><td colspan="6" class="cd-empty">Loading…</td></tr></tbody>
+        </table></div>
+        <div class="cd-save"><span class="hint" id="cdDirty">Click a day to see its invoices. Change “Mark as”, then save.</span>
+          <button class="btn btn-primary" id="cdSave" data-manage-only disabled>Save</button></div>
+      </section>
+
+      <details class="cd-uploads" open>
+      <summary>Upload invoices, prices to decide and the archive</summary>
       <label class="drop" id="drop" data-write-only>
         <input type="file" id="invFile" accept=".pdf,.xlsx,.csv,.txt" multiple hidden>
         <strong>Drop supplier invoices here, or a whole folder of them</strong>
@@ -78,6 +107,7 @@
         <div class="arc-bar" id="invArchiveBar"></div>
         <div class="table-wrap"><table class="table" id="invList"></table></div>
       </section>
+      </details>
     </section>
 
     <section id="suppliersView" hidden>
@@ -123,9 +153,45 @@
     <div class="drawer-body" id="pdkBody"></div>
   </div>
 </div>
+<div class="cd-modal" id="cdCmp" hidden><div class="cd-box" role="dialog" aria-modal="true" aria-labelledby="cdCmpTitle">
+  <button class="btn btn-sm btn-ghost closex" data-cdclose>Close</button>
+  <h2 id="cdCmpTitle"></h2><p class="lead" id="cdCmpLead"></p>
+  <div class="cd-cmp" id="cdCmpBody"></div>
+  <div data-write-only>
+    <p class="cd-why">What is it? The app remembers your answer for next time.</p>
+    <div class="cd-answers" id="cdAnswers">
+      <button data-a="bundle"><b>It's a bundle (2+ in one order)</b><span>The supplier billed the items together, or a BOGO differently. Not a price rise.</span></button>
+      <button data-a="real"><b>Real price increase</b><span>Use the new price from now on, for this product.</span></button>
+      <button data-a="review"><b>Looks wrong: ask the supplier</b><span id="cdRevSub">Sends it to the supplier in Slack to review.</span></button>
+      <button data-a="note"><b>Something else: write a note</b><span>Explain in your words; the app learns from it.</span></button>
+    </div>
+    <div id="cdNoteBox" hidden style="margin-top:10px"><textarea id="cdNoteText" rows="2" placeholder="e.g. This store's orders include gift wrap"></textarea>
+      <button class="btn btn-sm btn-primary" id="cdNoteSave" style="margin-top:6px">Save note</button></div>
+  </div>
+  <div class="cd-learned" id="cdLearned" hidden></div>
+</div></div>
+<div class="cd-modal" id="cdOn" hidden><div class="cd-box" role="dialog" aria-modal="true" aria-labelledby="cdOnTitle" style="width:min(520px,100%)">
+  <button class="btn btn-sm btn-ghost closex" data-cdclose>Close</button>
+  <h2 id="cdOnTitle">Note</h2><p class="lead">For the team, and the AI reads it as a lesson for orders like this.</p>
+  <textarea id="cdOnText" rows="3" placeholder="e.g. Customer swapped size; supplier sent 2 parcels"></textarea>
+  <div class="cd-row-btns"><button class="btn btn-primary" id="cdOnSave" data-write-only>Save note</button></div>
+</div></div>
+<div class="cd-modal" id="cdAi" hidden><div class="cd-box" role="dialog" aria-modal="true" aria-labelledby="cdAiTitle" style="width:min(720px,100%)">
+  <button class="btn btn-sm btn-ghost closex" data-cdclose>Close</button>
+  <h2 id="cdAiTitle">AI check</h2><p class="lead" id="cdAiLead"></p>
+  <div id="cdAiBody" class="cd-aibody"></div>
+</div></div>
+<div class="cd-modal" id="cdRev" hidden><div class="cd-box" role="dialog" aria-modal="true" aria-labelledby="cdRevTitle" style="width:min(600px,100%)">
+  <button class="btn btn-sm btn-ghost closex" data-cdclose>Close</button>
+  <h2 id="cdRevTitle">Send to the supplier for review</h2><p class="lead" id="cdRevLead"></p>
+  <textarea class="cd-msg" id="cdRevMsg" rows="9"></textarea>
+  <div class="cd-row-btns"><button class="btn btn-primary" id="cdRevGo">Post in Slack</button>
+    <button class="btn btn-ghost" id="cdRevOnly">Just mark it as checking</button><button class="btn btn-ghost" data-cdclose>Not now</button></div>
+</div></div>
 <div id="toast" class="toast" hidden></div>
 <script src="/static/nav.js"></script>
 <script src="/static/chat.js"></script>
 <script src="/static/cog.js"></script>
+<script src="/static/cogdesk.js"></script>
 </body>
 </html>

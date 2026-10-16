@@ -63,67 +63,8 @@ function range() {
 
 /* ------------------------------------------------ check COG */
 
-const SOURCE = { invoice: "Invoice", catalog: "History", estimate: "Estimate", cancelled: "Cancelled" };
-
-async function loadDay() {
-  const [from, to] = range();
-  const custom = $("range").value === "custom";
-  PDUrl.set({ range: $("range").value, store: $("storeSelect").value === "all" ? null : $("storeSelect").value,
-              from: custom ? from : null, to: custom ? to : null });
-  $("dates").hidden = $("range").value !== "custom";
-  if ($("range").value !== "custom") { $("from").value = from; $("to").value = to; }
-  $("sub").textContent = (from === to ? niceDate(from) : `${niceDate(from)} – ${niceDate(to)}`) + " · loading…";
-  let d;
-  try {
-    d = await api(`/api/cog/day?start=${from}&end=${to}&store=${$("storeSelect").value}` +
-                  `&currency=${encodeURIComponent($("currencySelect").value)}`);
-  } catch (e) { toast(e.message, true); return; }
-  const cur = d.currency;
-  const s = d.summary;
-  $("sub").textContent = (from === to ? niceDate(from) : `${niceDate(from)} – ${niceDate(to)}`) +
-    ` · all figures in ${cur}` + (d.synced_at ? ` · costs updated ${new Date(d.synced_at * 1000)
-      .toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}` : "");
-
-  const card = (label, value, note = "", dot = "var(--spend)") => `<div class="card">
-      <div class="card-label"><span class="dot" style="background:${dot}"></span>${label}</div>
-      <div class="card-value">${value}</div><div class="card-note">${note}</div></div>`;
-  $("cards").innerHTML =
-    card("Sales", money(s.sales, cur, 0), `${s.orders} orders`, "var(--sales)") +
-    card("COG", money(s.cog, cur, 0), `${pct(s.cog_pct)} of sales`) +
-    card("From invoices", String(s.from_invoice), "product lines with the supplier's cost") +
-    card("Not yet invoiced", String(s.from_history + s.estimated_lines),
-         `${s.from_history} from history · <span class="est">${s.estimated_lines} estimated</span>`);
-
-  $("estNote").innerHTML = s.estimated_lines
-    ? `<div class="warn">${s.estimated_lines} product line${s.estimated_lines === 1 ? "" : "s"} had no cost history,
-        so ${money(s.estimated_cog, cur)} is estimated from each store's average COG %. Upload the supplier's
-        invoice (coming next) or add them to the orders sheet to replace the estimate.</div>` : "";
-
-  $("orderCount").textContent = `${d.orders.length} orders`;
-  const multiStore = $("storeSelect").value === "all";
-  $("orders").innerHTML = d.orders.length ? `<thead><tr><th>Time</th><th>Order</th><th>Products</th>
-      <th>Sales</th><th>COG</th><th>COG %</th></tr></thead><tbody>${d.orders.map((o) => {
-    const t = new Date(o.created);
-    const when = (from === to ? "" : t.toLocaleDateString(undefined, { day: "numeric", month: "short" }) + " ") +
-      t.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
-    const lines = o.lines.map((l) => `<div class="cog-line">
-        <span class="src ${esc(l.source)}" title="${esc(l.note || "")}">${SOURCE[l.source] || "?"}</span>
-        <span class="cog-prod">${esc(l.product)}${l.quantity > 1 ? ` <b>×${l.quantity}</b>` : ""}
-          ${l.supplier ? `<small>${esc(l.supplier)}</small>` : ""}</span>
-        <span class="cog-amt ${l.source === "estimate" ? "est" : ""}">${money(l.cog, cur)}</span></div>`).join("");
-    return `<tr class="${o.cancelled ? "cancelled" : ""}">
-        <td>${when}</td>
-        <td class="name">${esc(o.order)}${multiStore ? `<span class="sub">${esc(o.store)}</span>` : ""}
-          ${o.cancelled ? `<span class="sub">cancelled</span>` : ""}</td>
-        <td class="cog-lines">${lines}</td>
-        <td>${money(o.sales, cur)}</td>
-        <td class="${o.estimated ? "est" : ""}">${money(o.cog, cur)}${o.bundle ? `<span class="sub bundle-off"
-          title="${o.bundle.estimated ? "Estimated: single prices less this store's usual discount for this many items" : "From the supplier's invoice"}">Singles ${money(o.bundle.singles, cur)} ·
-          ${o.bundle.discount >= -0.005 ? `bundle discount ${money(o.bundle.discount, cur)}` : `<span class="est">bundle ${money(-o.bundle.discount, cur)} dearer</span>`}${o.bundle.estimated ? " (est.)" : ""}</span>` : ""}</td>
-        <td>${pct(o.cog_pct)}</td></tr>`;
-  }).join("")}</tbody>` : `<tbody><tr><td class="hint">No orders costed for this period yet.${
-    status && !status.synced_at ? " The first costing run is still going; refresh in a few minutes." : ""}</td></tr></tbody>`;
-}
+// Check orders lives in cogdesk.js (loaded after this file)
+async function loadDay() { if (window.cdLoadOrders) return window.cdLoadOrders(); }
 
 /* ------------------------------------------------ products */
 
@@ -808,7 +749,7 @@ for (const b of document.querySelectorAll(".cog-tab")) {
     $("suppliersView").hidden = b.dataset.tab !== "suppliers";
     if (b.dataset.tab === "suppliers") loadSuppliers();
     if (b.dataset.tab === "products") loadProducts();
-    if (b.dataset.tab === "invoices") loadInvoices();
+    if (b.dataset.tab === "invoices") { loadInvoices(); if (window.cdLoadDays) window.cdLoadDays(); }
   };
 }
 $("range").onchange = () => {

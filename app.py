@@ -39,6 +39,7 @@ import trackpage
 import track17
 import expenses
 import cog
+import cog_desk
 import invoices
 import invoice_ai
 import suppliers
@@ -840,6 +841,428 @@ async def api_cog_day(start: str, end: str = None, store: str = "all", currency:
     }
 
 
+# ------------------------------------------------ COG desk: Check orders + Invoices by date (cog_desk.py)
+
+_cogdesk_ready = {"ok": False}
+
+
+def _cogdesk_db():
+    """Team answers / notes per order, notes per invoice day, and paid marks on invoices."""
+    if _cogdesk_ready["ok"]:
+        return
+    _invoice_notes_db()
+    with db._conn() as con:
+        con.executescript("""
+            CREATE TABLE IF NOT EXISTS cog_order_marks (
+                store_id   INTEGER NOT NULL,
+                order_name TEXT    NOT NULL,
+                answer     TEXT,              -- bundle | real | review | note
+                note       TEXT,
+                by         TEXT,
+                at         TEXT,
+                PRIMARY KEY (store_id, order_name)
+            );
+            CREATE TABLE IF NOT EXISTS invoice_day_notes (
+                day  TEXT PRIMARY KEY,
+                note TEXT,
+                by   TEXT,
+                at   TEXT
+            );""")
+        have = {r[1] for r in con.execute("PRAGMA table_info(invoices)")}
+        for col in ("paid INTEGER", "paid_by TEXT", "paid_at TEXT"):
+            if col.split()[0] not in have:
+                con.execute(f"ALTER TABLE invoices ADD COLUMN {col}")
+    _cogdesk_ready["ok"] = True
+
+
+def _cog_cutoff() -> str:
+    return db.get_setting("invoice_paid_cutoff") or cog_desk.CUTOFF_DEFAULT
+
+
+def _cog_marks(keys=None) -> dict:
+    _cogdesk_db()
+    with db._conn() as con:
+        return {(r["store_id"], r["order_name"]): dict(r) for r in con.execute("SELECT * FROM cog_order_marks")}
+
+
+def _invoice_map() -> dict:
+    stores = {x["id"]: x["name"].strip() for x in db.list_stores()}
+    return {i["id"]: {**i, "store": stores.get(i["store_id"], "Several stores")} for i in db.list_invoices()}
+
+
+@app.get("/api/cog/orders")
+async def api_cog_orders(start: str, end: str = None, store: str = "all"):
+    """Check orders: every order in the period, its items and cost (USD), where the cost comes from, paid or not."""
+    _cogdesk_db()
+    end = end or start
+    stores = [x for x in db.list_stores() if not demo.is_demo(x) and (store == "all" or str(x["id"]) == str(store))]
+    cur = {x["id"]: x["currency"] for x in stores}
+    table = await fx.table("USD")
+    sale_usd = lambda sid, v: v * (fx.factor(table, cur.get(sid) or "USD", "USD") if table else 1.0)
+    lines = db.cog_lines(list(cur), start, end)
+    keys = {(r["store_id"], cog.order_key(r["order_name"])) for r in lines}
+    inv_by_order = defaultdict(list)
+    for l in db.invoice_lines():
+        k = (l["store_id"], cog.order_key(l["order_key"]))
+        if k in keys:
+            inv_by_order[k].append(l)
+    names = {r["order_name"] for r in lines}
+    with db._conn() as con:
+        fulfilled = {(r[0], r[1]) for r in con.execute(
+            "SELECT DISTINCT store_id, order_name FROM shipments WHERE fulfilled_at IS NOT NULL AND fulfilled_at != ''"
+            f" AND order_name IN ({','.join('?' * len(names)) or "''"})", tuple(names))} if names else set()
+    rows = cog_desk.order_rows(lines, inv_by_order, _invoice_map(), fulfilled, _cog_marks(), sale_usd, _cog_cutoff(),
+                               {x["id"]: x["name"].strip() for x in stores})
+    count = defaultdict(int)
+    for o in rows:
+        count[o["kind"]] += 1
+    return {"start": start, "end": end, "orders": rows, "counts": count, "cutoff": _cog_cutoff(),
+            "sale": round(sum(o["sale"] for o in rows), 2), "cog": round(sum(o["cog"] for o in rows), 2)}
+
+
+def _review_channel(supplier: str):
+    """The supplier's invoice channel in Slack (the Agent desk gives each channel a role and a supplier)."""
+    if not db.get_setting("slack_bot_token"):
+        return None
+    _agent_db()
+    s = agent.norm(supplier)
+    with db._conn() as con:
+        chans = [dict(r) for r in con.execute("SELECT * FROM slack_channels WHERE role = 'supplier_invoice'")]
+    for ch in chans:
+        n = agent.norm(ch.get("supplier") or "") or agent.norm(ch.get("name"))
+        if s and (s in n or n in s or s in agent.norm(ch.get("name"))):
+            return ch
+    return None
+
+
+def _usd(v) -> str:
+    return f"US${(v or 0):,.2f}"
+
+
+@app.get("/api/cog/compare")
+def api_cog_compare(store_id: int, order: str):
+    """This order's invoice next to the last invoice with the same product in the same store, plus a hint and
+    the message to send the supplier if it looks wrong."""
+    _cogdesk_db()
+    key = cog.order_key(order)
+    every = [l for l in db.invoice_lines() if l["store_id"] == store_id]
+    mine = [l for l in every if cog.order_key(l["order_key"]) == key and l["status"] not in cog_desk.DROP]
+    if not mine:
+        raise HTTPException(404, "This order isn't on an invoice yet.")
+    cmp = cog_desk.compare(mine, every)
+    with db._conn() as con:
+        items = con.execute("SELECT COALESCE(SUM(quantity), 0) FROM cog_lines WHERE store_id = ? AND order_name = ?"
+                            " AND cancelled = 0", (store_id, order)).fetchone()[0]
+    rows = len(mine)
+    units = sum(l.get("units") or 1 for l in mine)
+    changed = [l for l in mine if l["status"] == "changed"]
+    hint = ""
+    if items >= 2 and rows < items:
+        hint = f"Shopify says this order has {items} items, the invoice has {rows} line{'s' if rows > 1 else ''}. Likely a bundle."
+    elif items >= 2:
+        hint = f"{items} items in this order: suppliers often give a bundle price on 2+ items."
+    elif changed:
+        old, new = cog_desk._change(changed[0])
+        if old is not None:
+            gap = abs(new - old)
+            hint = (f"A {_usd(gap)} change on one item: usually a real supplier price change." if gap <= PRICE_GAP
+                    else f"A {_usd(gap)} gap on one item is big for a price change: check the quantity.")
+    sup = mine[0].get("supplier") or "supplier"
+    first = changed[0] if changed else mine[0]
+    last = cmp["last"]
+    text = (f"Hi {sup} team,\n\nCould you check this line on the {first.get('date') or ''} invoice #{first.get('number') or '—'}?\n"
+            f"• {order} {first.get('product') or first.get('title')}: billed {_usd(first['amount'])}"
+            + (f", last time {_usd(last['total'])} for the same item ({last['lines'][0]['order']})" if last else "")
+            + ".\n\nIs this a new price, or should it be corrected? Thank you!")
+    ch = _review_channel(sup)
+    return {**cmp, "hint": hint, "items": items, "units": units, "supplier": sup,
+            "review_text": text, "channel": ch and ch["name"],
+            "lines": [[l["invoice_id"], l["line_no"]] for l in changed]}
+
+
+def _order_lines(store_id: int, order: str) -> list:
+    key = cog.order_key(order)
+    return [l for l in db.invoice_lines() if l["store_id"] == store_id and cog.order_key(l["order_key"]) == key
+            and l["status"] not in cog_desk.DROP]
+
+
+def _set_mark(store_id: int, order: str, who: str, **cols):
+    _cogdesk_db()
+    with db._conn() as con:
+        con.execute("INSERT OR IGNORE INTO cog_order_marks (store_id, order_name) VALUES (?, ?)", (store_id, order))
+        for k, v in cols.items():
+            con.execute(f"UPDATE cog_order_marks SET {k} = ? WHERE store_id = ? AND order_name = ?", (v, store_id, order))
+        con.execute("UPDATE cog_order_marks SET by = ?, at = ? WHERE store_id = ? AND order_name = ?",
+                    (who, agent.now(), store_id, order))
+
+
+@app.post("/api/invoices/orders/answer")
+async def api_cog_order_answer(payload: dict, request: Request):
+    """What a flagged order is: bundle (billed together, not a price rise), real (new price from now on),
+    review (asked the supplier), note (explained in words), clear (undo). Every answer is kept as a lesson."""
+    store_id, order = int(payload.get("store_id") or 0), str(payload.get("order") or "")
+    answer = payload.get("answer")
+    if answer not in ("bundle", "real", "review", "note", "clear") or not store_id or not order:
+        raise HTTPException(400, "Pick an answer.")
+    who = _who(request)
+    lines = _order_lines(store_id, order)
+    changed = [[l["invoice_id"], l["line_no"]] for l in lines if l["status"] == "changed"]
+    store = next((x["name"].strip() for x in db.list_stores() if x["id"] == store_id), "?")
+    products = " + ".join(dict.fromkeys((l.get("product") or l.get("title") or "")[:60] for l in lines)) or "this product"
+    lesson = ""
+    if answer == "clear":
+        with db._conn() as con:
+            for iid, no in changed:
+                con.execute("UPDATE invoice_lines SET check_state = NULL, check_by = NULL, check_at = NULL"
+                            " WHERE invoice_id = ? AND line_no = ? AND check_state = 'bundle'", (iid, no))
+        _set_mark(store_id, order, who, answer=None)
+        _note_lesson(f"answer:{store_id}:{order}", "", who)
+        await _recost(store_id, {order})
+        return {"ok": True}
+    if answer == "bundle":
+        with db._conn() as con:
+            for iid, no in changed:
+                con.execute("UPDATE invoice_lines SET check_state = 'bundle', check_by = ?, check_at = datetime('now')"
+                            " WHERE invoice_id = ? AND line_no = ?", (who, iid, no))
+            items = con.execute("SELECT COALESCE(SUM(quantity), 0) FROM cog_lines WHERE store_id = ? AND order_name = ?"
+                                " AND cancelled = 0", (store_id, order)).fetchone()[0]
+        lesson = (f"When {store} sells “{products}” in a {items}-item order, the supplier bills it as a bundle "
+                  f"(order {order}: {_usd(sum(l['amount'] for l in lines))} for {items}). That's a bundle or BOGO, not a price rise.")
+        await _recost(store_id, {order})
+    elif answer == "real":
+        if changed:
+            await _decide_prices("use_new", changed, who)
+        lesson = f"{store}: the new price of “{products}” on order {order} is a real supplier price change (accepted)."
+    elif answer == "review":
+        if changed:
+            await _decide_prices("checking", changed, who)
+        text = str(payload.get("text") or "").strip()
+        posted = None
+        if text and payload.get("post"):
+            sup = (lines[0].get("supplier") if lines else "") or ""
+            ch = _review_channel(sup)
+            if not ch:
+                raise HTTPException(400, f"No Slack invoice channel for {sup or 'this supplier'} yet (Agent desk → Slack: "
+                                         "give the channel the role “Supplier invoices” and the supplier's name).")
+            try:
+                await slack_client.post(db.get_setting("slack_bot_token"), ch["id"], text[:3500])
+            except Exception as e:
+                raise HTTPException(400, f"Slack didn't take the message: {str(e)[:200]}")
+            posted = ch["name"]
+        _set_mark(store_id, order, who, answer="review")
+        return {"ok": True, "posted": posted}
+    note = str(payload.get("note") or "").strip()[:1500]
+    if answer == "note":
+        if not note:
+            raise HTTPException(400, "Write the note first.")
+        lesson = f"Order {order} ({store}, {products}): {note}"
+        _set_mark(store_id, order, who, answer="note", note=note)
+    else:
+        _set_mark(store_id, order, who, answer=answer)
+    _note_lesson(f"answer:{store_id}:{order}", lesson, who)
+    return {"ok": True, "lesson": lesson}
+
+
+@app.post("/api/invoices/orders/note")
+def api_cog_order_note(payload: dict, request: Request):
+    """A note on an order, for the team; the AI reads it as a lesson for orders like it."""
+    store_id, order = int(payload.get("store_id") or 0), str(payload.get("order") or "")
+    if not store_id or not order:
+        raise HTTPException(400, "Which order?")
+    note = str(payload.get("note") or "").strip()[:1500]
+    who = _who(request)
+    _set_mark(store_id, order, who, note=note or None)
+    store = next((x["name"].strip() for x in db.list_stores() if x["id"] == store_id), "?")
+    with db._conn() as con:
+        prods = [r[0] for r in con.execute("SELECT product FROM cog_lines WHERE store_id = ? AND order_name = ?", (store_id, order))]
+    _note_lesson(f"ordernote:{store_id}:{order}", f"Order {order} ({store}, {' + '.join(prods)[:200]}): {note}" if note else "", who)
+    return {"ok": True}
+
+
+AI_CHECK_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["orders"], "properties": {"orders": {
+    "type": "array", "items": {"type": "object", "additionalProperties": False,
+                               "required": ["store_id", "order", "verdict", "tone", "why", "fix"],
+                               "properties": {"store_id": {"type": "integer"}, "order": {"type": "string"},
+                                              "verdict": {"type": "string"}, "tone": {"type": "string", "enum": ["good", "warn", "bad"]},
+                                              "why": {"type": "string"},
+                                              "fix": {"type": "string", "enum": ["bundle", "real", "review", "none"]}}}}}}
+AI_CHECK_SYSTEM = """You check the cost of goods (COG) of Shopify orders for a dropshipping business. Suppliers (Dayone, Graypop …)
+bill in USD per order. For each order you get its items, what it sold for, what it cost, where the cost comes from, its invoice
+lines with the previous price for the product, and the last earlier invoice for the same product in the same store.
+Know this:
+- Suppliers give a bundle discount on orders with 2+ items, and may bill 2 items as one line, or a Buy 1 Get 1 (BOGO) as 2 rows
+  or as 1 row. A cost that went up because the order has more items is a bundle, not a price rise (fix "bundle").
+- A small rise on a 1-item order (up to about US$2.50 per item) is usually a real supplier price change; if nothing in the
+  lessons says the supplier announced it, suggest asking them (fix "review"). If the team's lessons say it's real, fix "real".
+- A big gap on one item is more likely a quantity / bundle mix-up than a price change.
+- Estimated orders (not invoiced yet): say if the estimate looks low or high against recent invoices; no fix.
+- Follow the team's lessons and notes: they are the owner's rules.
+Return one entry per order: a short verdict (max 6 words), tone (good = looks right, warn = worth a look, bad = likely wrong),
+why in 1-2 plain sentences with the numbers, and the fix to offer (none if nothing to do). Never invent figures."""
+
+
+@app.post("/api/invoices/orders/ai")
+async def api_cog_orders_ai(payload: dict, request: Request):
+    """AI check of one or more orders (Sonnet): verdict, why and a fix the team can apply. Changes nothing itself."""
+    key = db.get_setting("anthropic_api_key")
+    if not key:
+        raise HTTPException(400, "Add the AI key first (Settings → AI).")
+    want = [(int(s), str(o)) for s, o in (payload.get("orders") or [])][:40]
+    if not want:
+        raise HTTPException(400, "Which orders?")
+    days = [d for d in (payload.get("start"), payload.get("end")) if d]
+    start, end = (min(days), max(days)) if days else ("0000", "9999")
+    with db._conn() as con:
+        rows = [dict(r) for r in con.execute(
+            f"SELECT * FROM cog_lines WHERE ({' OR '.join(['(store_id = ? AND order_name = ?)'] * len(want))})",
+            tuple(x for w in want for x in w))]
+    every = db.invoice_lines()
+    stores = {x["id"]: (x["name"].strip(), x["currency"]) for x in db.list_stores()}
+    table = await fx.table("USD")
+    sale_usd = lambda sid, v: v * (fx.factor(table, stores.get(sid, ("", "USD"))[1], "USD") if table else 1.0)
+    keys = {(r["store_id"], cog.order_key(r["order_name"])) for r in rows}
+    inv_by_order = defaultdict(list)
+    for l in every:
+        k = (l["store_id"], cog.order_key(l["order_key"]))
+        if k in keys:
+            inv_by_order[k].append(l)
+    orders = cog_desk.order_rows(rows, inv_by_order, _invoice_map(), set(), _cog_marks(), sale_usd, _cog_cutoff(),
+                                 {k: v[0] for k, v in stores.items()})
+    ctx = []
+    for o in orders:
+        mine = [l for l in inv_by_order.get((o["store_id"], cog.order_key(o["order"])), []) if l["status"] not in cog_desk.DROP]
+        cmp = cog_desk.compare(mine, [l for l in every if l["store_id"] == o["store_id"]]) if mine else None
+        ctx.append({"store_id": o["store_id"], "store": o["store"], "order": o["order"], "items_in_order": o["count"],
+                    "sale_usd": o["sale"], "cog_usd": o["cog"], "cog_pct": o["cog_pct"], "where_cost_comes_from": o["kind"],
+                    "change_pct": o["pct"], "bundle_discount_usd": o["bundle_discount"], "team_note": o["note"],
+                    "items": [{"product": i["product"], "qty": i["quantity"], "cost_usd": round(i["cost"], 2),
+                               "single_price_usd": i["single"], "source": i["source"]} for i in o["items"]],
+                    "this_invoice": cmp and cmp["this"], "last_invoice_same_product": cmp and cmp["last"]})
+    try:
+        _agent_db()
+        lessons = [l["text"] for l in agent.lessons("invoices")][-80:]
+    except Exception:
+        lessons = []
+    client = anthropic.AsyncAnthropic(api_key=key, max_retries=2, timeout=180)
+    try:
+        resp = await client.messages.create(
+            model="claude-sonnet-5-5", max_tokens=6000, system=AI_CHECK_SYSTEM,
+            output_config={"effort": "medium", "format": {"type": "json_schema", "schema": AI_CHECK_SCHEMA}},
+            messages=[{"role": "user", "content": json.dumps({"team_lessons": lessons, "orders": ctx}, ensure_ascii=False, default=str)}])
+    except anthropic.APIError as e:
+        raise HTTPException(400, f"The AI couldn't answer ({type(e).__name__}). Try again in a minute.")
+    got = json.loads(next((b.text for b in resp.content if b.type == "text"), "{}") or "{}")
+    return {"orders": got.get("orders") or []}
+
+
+def _fulfilled_rows(since_day: date) -> list:
+    """suppliers.fulfilled_orders for orders fulfilled since a day (invoiced or not)."""
+    with db._conn() as con:
+        lines = [dict(r) for r in con.execute(
+            "SELECT store_id, order_name, supplier, source, cost_usd, quantity, cancelled FROM cog_lines WHERE day >= ?",
+            ((since_day - timedelta(days=45)).isoformat(),))]
+        fulfilled = {(r[0], r[1]): r[2] for r in con.execute(
+            "SELECT store_id, order_name, MIN(fulfilled_at) FROM shipments WHERE fulfilled_at IS NOT NULL"
+            " AND fulfilled_at != '' GROUP BY store_id, order_name")}
+    on_invoice = {(l["store_id"], cog.order_key(l["order_key"])) for l in db.invoice_lines()
+                  if l["status"] not in cog_desk.DROP and l.get("ai_check") != "review"}
+    for l in lines:
+        l["on_invoice"] = (l["store_id"], cog.order_key(l["order_name"])) in on_invoice
+    return suppliers.fulfilled_orders(lines, fulfilled, CASH_TZ)
+
+
+_payable_cache = {}
+
+
+def _supplier_payable(supplier: str = "", fresh: bool = False) -> dict:
+    """On credit (invoiced, not marked paid, after the cut-off) + estimated (shipped, not invoiced yet)."""
+    hit = _payable_cache.get(supplier)
+    if hit and not fresh and time.time() - hit[0] < 300:
+        return hit[1]
+    _cogdesk_db()
+    cutoff = _cog_cutoff()
+    lines_of = defaultdict(list)
+    for l in db.invoice_lines():
+        lines_of[l["invoice_id"]].append(l)
+    invs = cog_desk.by_day(list(_invoice_map().values()), lines_of, cutoff, supplier)
+    credit = round(sum(i["total"] for i in invs if not i["paid"]), 2)
+    est = cog_desk.not_invoiced(_fulfilled_rows(date.fromisoformat(cutoff)), cutoff, supplier)
+    out = {"cutoff": cutoff, "credit": credit, "estimated": est["total"], "estimated_orders": est["orders"],
+           "total": round(credit + est["total"], 2), "invoices": invs,
+           "by_supplier": est["by_supplier"]}
+    _payable_cache[supplier] = (time.time(), out)
+    return out
+
+
+@app.get("/api/suppliers/by-day")
+async def api_suppliers_by_day(supplier: str = ""):
+    """Invoices tab: every invoice by its date, paid or not, plus on credit / estimated / total payable."""
+    out = await asyncio.to_thread(_supplier_payable, supplier, True)
+    with db._conn() as con:
+        notes = {r["day"]: {"note": r["note"], "by": r["by"]} for r in con.execute("SELECT * FROM invoice_day_notes WHERE note IS NOT NULL")}
+    sups = sorted({i["supplier"] for i in out["invoices"]})
+    return {**out, "days": cog_desk.group_days(out["invoices"]), "day_notes": notes, "suppliers": sups,
+            "today": datetime.now(CASH_TZ).date().isoformat()}
+
+
+@app.post("/api/suppliers/marks")
+def api_suppliers_marks(payload: dict, request: Request):
+    """Save the Invoices tab: paid / not paid per invoice, notes per day (lessons for the AI), the cut-off date."""
+    _cogdesk_db()
+    who = _who(request)
+    cutoff = payload.get("cutoff")
+    if cutoff:
+        try:
+            date.fromisoformat(cutoff)
+        except ValueError:
+            raise HTTPException(400, "The cut-off isn't a date.")
+        db.set_setting("invoice_paid_cutoff", cutoff)
+    with db._conn() as con:
+        for iid, paid in (payload.get("paid") or {}).items():
+            con.execute("UPDATE invoices SET paid = ?, paid_by = ?, paid_at = ? WHERE id = ?",
+                        (1 if paid else 0, who, agent.now(), int(iid)))
+        for day, note in (payload.get("notes") or {}).items():
+            note = str(note or "").strip()[:1500]
+            con.execute("INSERT INTO invoice_day_notes (day, note, by, at) VALUES (?, ?, ?, ?) ON CONFLICT(day) DO UPDATE"
+                        " SET note = excluded.note, by = excluded.by, at = excluded.at", (day, note or None, who, agent.now()))
+    for day, note in (payload.get("notes") or {}).items():
+        note = str(note or "").strip()
+        _note_lesson(f"daynote:{day}", f"Supplier invoices of {day}: {note}" if note else "", who)
+    _payable_cache.clear()
+    return {"ok": True}
+
+
+@app.post("/api/suppliers/invoice-review")
+async def api_supplier_invoice_review(payload: dict, request: Request):
+    """Draft (post=false) or send (post=true) a message about a flagged invoice to the supplier's Slack invoice channel."""
+    inv = db.get_invoice(int(payload.get("id") or 0))
+    if not inv:
+        raise HTTPException(404, "That invoice no longer exists.")
+    sup = inv.get("supplier") or ""
+    ch = _review_channel(sup)
+    store = next((x["name"].strip() for x in db.list_stores() if x["id"] == inv.get("store_id")), "")
+    flag = str(payload.get("flag") or "").strip()
+    text = str(payload.get("text") or "").strip() or (
+        f"Hi {sup or 'there'} team,\n\nCould you check invoice #{inv.get('number') or '—'} ({store}{', ' if store else ''}"
+        f"{inv.get('date') or ''}, {_usd(inv.get('total'))})?\n" + (f"• {flag}\n" if flag else "")
+        + "\nPlease send a corrected invoice or let us know. We'll pay it once sorted. Thank you!")
+    if not payload.get("post"):
+        return {"text": text, "channel": ch and ch["name"]}
+    if not ch:
+        raise HTTPException(400, f"No Slack invoice channel for {sup or 'this supplier'} yet (Agent desk → Slack: give the "
+                                 "channel the role “Supplier invoices” and the supplier's name).")
+    try:
+        await slack_client.post(db.get_setting("slack_bot_token"), ch["id"], text[:3500])
+    except Exception as e:
+        raise HTTPException(400, f"Slack didn't take the message: {str(e)[:200]}")
+    with db._conn() as con:
+        con.execute("UPDATE invoice_lines SET check_state = 'checking', check_by = ?, check_at = datetime('now')"
+                    " WHERE invoice_id = ? AND status = 'changed' AND approved_at IS NULL AND check_state IS NULL",
+                    (_who(request), inv["id"]))
+    _payable_cache.clear()
+    return {"ok": True, "posted": ch["name"]}
+
+
 INVOICE_DIR = os.path.join(os.path.dirname(os.path.abspath(db.DB_PATH)), "invoice_files")
 INVOICE_TYPES = {"pdf": "application/pdf", "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                  "csv": "text/csv", "txt": "text/plain"}
@@ -1372,7 +1795,7 @@ def api_invoice_changes(view: str = ""):
     for l in db.invoice_lines():
         if l["status"] != "changed":
             continue
-        decided = bool(l["approved_at"]) or l.get("check_state") == "kept"
+        decided = bool(l["approved_at"]) or l.get("check_state") in ("kept", "bundle")
         if decided != history:
             continue
         if l.get("ai_check") == "review" and not history:
@@ -1410,7 +1833,8 @@ def api_invoice_changes(view: str = ""):
         g["invoice_date"] = next((x.get("date") for x in ls if x.get("date")), "")
         if history:
             first = ls[0] if ls else {}
-            g["decision"] = "Used the new price" if first.get("approved_at") else "Kept the old price (supplier corrected it)"
+            g["decision"] = "Used the new price" if first.get("approved_at") else \
+                "Bundle / BOGO, not a price change" if first.get("check_state") == "bundle" else "Kept the old price (supplier corrected it)"
             g["decided_by"] = first.get("approved_by") or first.get("check_by") or ""
             g["decided_at"] = first.get("approved_at") or first.get("check_at") or ""
     if history:
@@ -3892,8 +4316,18 @@ async def api_cash(currency: str = None):
     if not st["conns"]:
         return {"currency": st["base"], "connected": [], "summary": None, "problems": []}
     fx_table = st["fx_table"]
+    sup = None
+    try:                                  # what suppliers are owed (COG → Invoices): on credit + estimated
+        pay = await asyncio.to_thread(_supplier_payable)
+        k = fx.factor(fx_table, "USD", st["base"]) if fx_table else 1.0
+        sup = {"credit": pay["credit"] * k, "estimated": pay["estimated"] * k, "total": pay["total"] * k, "cutoff": pay["cutoff"]}
+        sm = st["summary"] or {}
+        sup["after"] = (sm["after_ads"] if sm.get("after_ads") is not None else sm.get("position") or 0.0) - sup["total"]
+    except Exception as e:
+        print(f"Supplier payable failed: {e}")
     return {
         "currency": st["base"],
+        "suppliers_payable": sup,
         "today": st["today"].isoformat(),
         "connected": [{"id": c["id"], "label": c["label"], "provider": c["provider"]}
                       for c in st["conns"]],

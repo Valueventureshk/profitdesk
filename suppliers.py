@@ -81,7 +81,7 @@ def invoice_check(inv: dict, lines: list, rate_of) -> dict:
             expected += l["previous"] * units
         else:
             expected += l["amount"]                      # first time: nothing to expect yet
-        if l["status"] == "changed" and not l.get("approved_at") and l.get("check_state") != "kept":
+        if l["status"] == "changed" and not l.get("approved_at") and l.get("check_state") not in ("kept", "bundle"):
             issues.append(f"{l['order_name'] or l['order_key']}: price to decide")
     missing = inv.get("missing_list") or []
     issues += [f"{m.get('order')}: fulfilled but not on this invoice" for m in missing]

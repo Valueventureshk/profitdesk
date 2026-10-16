@@ -72,7 +72,7 @@ async function load() {
 
   $("sub").textContent = `As of ${niceDate(data.today)} · all figures in ${data.currency}` +
     (data.fx ? ` · daily rate ${data.fx.date || ""}` : "");
-  renderCards(s);
+  renderCards(s, data.suppliers_payable);
   renderSchedule(s);
   renderAccounts(s);
   renderAdBills(s.ads);
@@ -84,13 +84,16 @@ function kindsNote(byKind) {
   return parts.join(" · ");
 }
 
-function renderCards(s) {
+function renderCards(s, sup) {
   const position = `<div class="card position" id="positionCard" role="button" tabindex="0"
       title="Open the statement">
       <div class="card-label"><span class="dot" style="background:var(--sales)"></span>Available + receivable</div>
       <div class="card-value">${money(s.position)}${s.ads_payable !== undefined && Math.abs(s.ads_payable) >= 0.5
         ? `<span class="ads-owed" title="Ad spend Meta and Google haven't charged yet">−${money(s.ads_payable)} ads payable</span>` : ""}</div>
       ${s.after_ads !== undefined ? `<div class="after-ads">${money(s.after_ads)} <span>after ad bills</span></div>` : ""}
+      ${sup && Math.abs(sup.total) >= 0.5 ? `<div class="after-ads">${money(sup.after)} <span>after ad bills and suppliers</span></div>
+        <div class="card-note" title="COG → Invoices: invoices not marked paid, plus shipped orders the supplier hasn't billed yet">Suppliers payable ${money(sup.total)}:
+          ${money(sup.credit)} on credit + ${money(sup.estimated)} estimated, not invoiced yet</div>` : ""}
       <div class="card-note">${money(s.available)} available now + ${money(s.receivable)} receivable
         (sales settling, reserves and PayPal holds still to be released)${s.ads
           ? ` · ad bills: Meta ${money(s.ads.meta)}, Google ${money(s.ads.google)}` : ""}</div>
