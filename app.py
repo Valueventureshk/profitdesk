@@ -921,14 +921,16 @@ async def _ingest_invoice(data: bytes, filename: str, user: str) -> dict:
     if len(data) > 15 * 1024 * 1024:
         raise HTTPException(400, "That file is too big (15 MB max).")
     ai_state = None
-    try:
+    def _read(data):
         if data[:4] == b"%PDF":
             text = invoices.pdf_text(data)
         elif data[:2] == b"PK":                        # Excel (.xlsx), e.g. Graypop's invoices
             text = invoices.xlsx_text(data, filename)
         else:
             text = data.decode("utf-8", "ignore")
-        inv = invoices.parse(text)
+        return invoices.parse(text)
+    try:
+        inv = await asyncio.to_thread(_read, data)     # big PDFs never hold up the other pages
     except invoices.InvoiceError as e:
         # the normal reader couldn't read it: the AI reads it alone, used only if it adds up
         key = db.get_setting("anthropic_api_key")
@@ -11818,7 +11820,21 @@ def _agent_review_filed_stores():
     return len(by)
 
 
+_agent_locks: dict = {}
+
+
 async def _agent_read_channel(job_id: int, ch: dict, file_invoices: bool = True):
+    """One read of a channel at a time: a second run waits for the first, then only handles what's left."""
+    lock = _agent_locks.setdefault(ch["id"], asyncio.Lock())
+    if lock.locked():
+        agent.step(job_id, "wait", f"Waiting: another run is reading #{ch['name']}", "It carries on with whatever is left when that one ends.")
+    async with lock:
+        with db._conn() as con:
+            fresh = con.execute("SELECT * FROM slack_channels WHERE id = ?", (ch["id"],)).fetchone()
+        await _agent_read_channel_now(job_id, dict(fresh) if fresh else ch, file_invoices)
+
+
+async def _agent_read_channel_now(job_id: int, ch: dict, file_invoices: bool = True):
     """Copy a channel's last 90 days (and threads) into EcomVital, then file any supplier invoices in it."""
     token = _slack_token()
     try:
@@ -12048,13 +12064,16 @@ async def api_agent_store_decision(payload: dict, request: Request):
     if not include and payload.get("remove_filed"):
         removed = await _agent_undo(d["store"], who)
     started = False
-    if include:                                  # the invoices that waited: file them now
+    if include:                                  # the invoices that waited: file them now (several answers = one run)
         with db._conn() as con:
             chans = [dict(r) for r in con.execute("SELECT * FROM slack_channels WHERE role = 'supplier_invoice'")]
 
         async def run():
             for ch in chans:
-                jid = agent.start("history", f"File the invoices that waited for “{d['store']}” (#{ch['name']})", "invoices", {"by": who})
+                lock = _agent_locks.setdefault(ch["id"], asyncio.Lock())
+                if lock.locked():                # a run is already going: it picks these up too
+                    continue
+                jid = agent.start("history", f"File the invoices that waited for an answer (#{ch['name']})", "invoices", {"by": who})
                 await _agent_read_channel(jid, ch)
         asyncio.create_task(run())
         started = True
