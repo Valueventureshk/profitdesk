@@ -83,8 +83,9 @@ def _xlsx_cells(data: bytes) -> str:
     return "\n".join(out)
 
 
-async def read(api_key: str, data: bytes, filename: str = "") -> dict:
-    """The AI's own reading of an invoice file: {supplier, number, date, total, orders, usage}."""
+async def read(api_key: str, data: bytes, filename: str = "", lessons: list = None) -> dict:
+    """The AI's own reading of an invoice file: {supplier, number, date, total, orders, usage}.
+    lessons: what the team has taught about these invoices (notes on price changes / invoices, the agent's lessons)."""
     if data[:4] == b"%PDF":
         content = [{"type": "document", "source": {"type": "base64", "media_type": "application/pdf",
                                                    "data": base64.b64encode(data).decode()}}]
@@ -94,6 +95,9 @@ async def read(api_key: str, data: bytes, filename: str = "") -> dict:
             raise AIError("The file is too big for one AI reading.")
         content = [{"type": "text", "text": (f"Excel invoice {filename}, every non-empty row (tab separated):\n\n"
                                              if data[:2] == b"PK" else f"Invoice {filename}:\n\n") + body}]
+    if lessons:
+        content.append({"type": "text", "text": "What the team has taught you about these invoices (follow it):\n- "
+                        + "\n- ".join(str(x)[:400] for x in lessons[-40:])})
     content.append({"type": "text", "text": "Read this invoice."})
     client = anthropic.AsyncAnthropic(api_key=api_key, max_retries=3, timeout=600)
     messages = [{"role": "user", "content": content}]

@@ -1492,7 +1492,21 @@ html { transition: background-color .2s ease; }
 }
 
 /* COG: price changes to decide */
-.pc-table { table-layout: fixed; width: 100%; }
+.pc-table { table-layout: fixed; width: 100%; min-width: 860px; }    /* never squashed: the box scrolls sideways instead */
+.pc-table td.pc-num { white-space: nowrap; }
+.pc-table td.pc-num .sub, .pc-table td.pc-orders .sub { white-space: normal; }
+.pc-table td.pc-orders { white-space: normal; color: var(--muted); font-size: 12.5px; }
+.pc-table td.pc-btns { white-space: normal; }
+.pc-table td.pc-btns .btn { margin: 2px 0; }
+.pc-tabs { margin-left: auto; }
+.pc-sub { font-size: 13.5px; margin: 14px 16px 4px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.pc-sub .pc-bulk { margin-left: auto; }
+.pc-note { margin-top: 6px; font-size: 12px; }
+.pc-note summary { cursor: pointer; color: var(--muted); }
+.pc-note textarea { width: 100%; margin: 6px 0; font: inherit; font-size: 12.5px; }
+.inv-note { display: flex; gap: 8px; align-items: flex-end; padding: 8px 16px 12px; }
+.inv-note label { flex: 1; display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--muted); }
+.inv-note textarea { font: inherit; font-size: 13px; }
 .pc-table td { vertical-align: middle; }
 .pc-table th:nth-child(1), .pc-table td:nth-child(1) { width: 36%; }
 .pc-table th:nth-child(2), .pc-table td:nth-child(2) { width: 10%; }

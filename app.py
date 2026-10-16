@@ -941,7 +941,7 @@ async def _ingest_invoice(data: bytes, filename: str, user: str) -> dict:
         if not key:
             raise HTTPException(400, str(e))
         try:
-            ai = await invoice_ai.read(key, data, filename)
+            ai = await invoice_ai.read(key, data, filename, _invoice_lessons())
         except invoice_ai.AIError as e2:
             raise HTTPException(400, f"{e} The AI couldn't read it either: {e2}")
         inv = invoice_ai.as_invoice(ai)
@@ -1044,7 +1044,7 @@ async def _ai_check_invoice(iid: int):
     async with _ai_reading:
         db.set_invoice_ai(iid, "pending", "Reading…")
         try:
-            ai = await invoice_ai.read(key, data, inv.get("filename") or "")
+            ai = await invoice_ai.read(key, data, inv.get("filename") or "", _invoice_lessons())
         except invoice_ai.AIError as e:
             db.set_invoice_ai(iid, "failed", str(e))
             return
@@ -1220,6 +1220,7 @@ async def api_supplier_payee(payload: dict, request: Request):
 
 @app.get("/api/invoices")
 def api_invoices():
+    _invoice_notes_db()
     stores = {x["id"]: x["name"].strip() for x in db.list_stores()}
     out = []
     for i in db.list_invoices():
@@ -1332,18 +1333,52 @@ async def api_invoice_recheck():
     return {"ok": True, **changed, "orders": sum(len(v) for v in touched.values())}
 
 
+def _invoice_notes_db():
+    """Notes on price changes (invoice_lines.check_note) and on invoices (invoices.note)."""
+    with db._conn() as con:
+        for table, col in (("invoice_lines", "check_note"), ("invoices", "note")):
+            if col not in {r[1] for r in con.execute(f"PRAGMA table_info({table})")}:
+                con.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
+
+
+def _invoice_lessons() -> list:
+    """What the team taught about invoices (notes become lessons): read by the AI before it reads an invoice."""
+    try:
+        _agent_db()
+        return [l["text"] for l in agent.lessons("invoices") if l["area"] == "invoices"]
+    except Exception:
+        return []
+
+
+def _note_lesson(source: str, text: str, who: str):
+    """Keep one lesson per note (updated when the note changes, switched off when it's cleared)."""
+    _agent_db()
+    with db._conn() as con:
+        old = con.execute("SELECT id FROM agent_lessons WHERE source = ?", (source,)).fetchone()
+        if old:
+            con.execute("UPDATE agent_lessons SET text = ?, active = ? WHERE id = ?", (text[:2000], 1 if text else 0, old["id"]))
+        elif text:
+            con.execute("INSERT INTO agent_lessons (area, text, source, created_by, created_at) VALUES ('invoices', ?, ?, ?, ?)",
+                        (text[:2000], source, who, agent.now()))
+
+
 @app.get("/api/invoices/changes")
-def api_invoice_changes():
-    """Every price change still to decide, one row per store + product + new price."""
+def api_invoice_changes(view: str = ""):
+    """Every price change still to decide (or, view=history, already decided), one row per store + product + new price."""
+    _invoice_notes_db()
+    history = view == "history"
     stores = {x["id"]: x["name"].strip() for x in db.list_stores()}
     groups = {}
     for l in db.invoice_lines():
-        if l["status"] != "changed" or l["approved_at"] or l.get("check_state") == "kept":
+        if l["status"] != "changed":
             continue
-        if l.get("ai_check") == "review":
+        decided = bool(l["approved_at"]) or l.get("check_state") == "kept"
+        if decided != history:
+            continue
+        if l.get("ai_check") == "review" and not history:
             continue
         if (l.get("tier") or 1) >= 2:               # a bundle that cost more than its items on their own
-            k = ("bundle", l["invoice_id"], l["store_id"], l["order_name"] or l["order_key"])
+            k = ("bundle", l["invoice_id"], l["store_id"], l["order_name"] or l["order_key"], decided and (l["approved_at"] and "used" or "kept"))
             g = groups.setdefault(k, {"store_id": l["store_id"], "store": stores.get(l["store_id"], "?"),
                                       "product": "", "items": [], "bundle": True, "new": 0.0, "old": 0.0,
                                       "lines": [], "orders": [l["order_name"] or l["order_key"]],
@@ -1359,7 +1394,7 @@ def api_invoice_changes():
                 g.update(state="checking", check_by=l.get("check_by"), check_at=l.get("check_at"))
             continue
         unit = round(l["amount"] / (l.get("units") or 1), 2)          # per item
-        k = (l["store_id"], l["product"], unit)
+        k = (l["store_id"], l["product"], unit, decided and (l["approved_at"] and "used" or "kept"))
         g = groups.setdefault(k, {"store_id": l["store_id"], "store": stores.get(l["store_id"], "?"), "product": l["product"],
                                   "new": unit, "old": l["previous"], "lines": [], "orders": [],
                                   "state": l.get("check_state") or "", "check_by": l.get("check_by"), "check_at": l.get("check_at")})
@@ -1367,7 +1402,21 @@ def api_invoice_changes():
         g["orders"].append(l["order_name"] or l["order_key"])
         if l.get("check_state") == "checking":
             g.update(state="checking", check_by=l.get("check_by"), check_at=l.get("check_at"))
-    out = sorted(groups.values(), key=lambda g: (g["state"] == "checking", (g["new"] or 0) < (g["old"] or 0), g["store"]))
+    by_line = {(l["invoice_id"], l["line_no"]): l for l in db.invoice_lines() if l["status"] == "changed"}
+    for g in groups.values():
+        ls = [by_line.get(tuple(x)) or {} for x in g["lines"]]
+        g["note"] = next((x.get("check_note") for x in ls if x.get("check_note")), "")
+        g["invoice"] = next((f"{x.get('supplier') or ''} #{x.get('number') or '—'}" for x in ls if x), "")
+        g["invoice_date"] = next((x.get("date") for x in ls if x.get("date")), "")
+        if history:
+            first = ls[0] if ls else {}
+            g["decision"] = "Used the new price" if first.get("approved_at") else "Kept the old price (supplier corrected it)"
+            g["decided_by"] = first.get("approved_by") or first.get("check_by") or ""
+            g["decided_at"] = first.get("approved_at") or first.get("check_at") or ""
+    if history:
+        out = sorted(groups.values(), key=lambda g: g.get("decided_at") or "", reverse=True)[:300]
+    else:
+        out = sorted(groups.values(), key=lambda g: (g["state"] == "checking", (g["new"] or 0) < (g["old"] or 0), g["store"]))
     for g in out:
         g["direction"] = "down" if g["old"] is not None and g["new"] < g["old"] else "up"
         # Owner's rule of thumb: suppliers move a price by about $1.50–2.50 per item; a bigger gap is usually a
@@ -1381,6 +1430,39 @@ def api_invoice_changes():
 
 
 PRICE_GAP = 2.5   # USD per item: above this, a "price change" is more likely a bundle / quantity mix-up
+
+
+@app.post("/api/invoices/changes/note")
+def api_invoice_change_note(payload: dict, request: Request):
+    """A note on a price change (why it's dearer, what the supplier said …): kept on its lines and as a lesson the AI follows."""
+    _invoice_notes_db()
+    lines = [(int(a), int(b)) for a, b in payload.get("lines") or []]
+    if not lines:
+        raise HTTPException(400, "Which price change?")
+    note = str(payload.get("note") or "").strip()[:1500]
+    who = (getattr(request.state, "user", None) or {}).get("email", "")
+    with db._conn() as con:
+        for iid, no in lines:
+            con.execute("UPDATE invoice_lines SET check_note = ? WHERE invoice_id = ? AND line_no = ?", (note or None, iid, no))
+    what = str(payload.get("what") or "").strip()[:300]
+    _note_lesson(f"pricenote:{lines[0][0]}:{lines[0][1]}", f"Price change, {what}: {note}" if note else "", who)
+    return {"ok": True}
+
+
+@app.post("/api/invoices/{invoice_id:int}/note")
+def api_invoice_note(invoice_id: int, payload: dict, request: Request):
+    """A note on an invoice: kept with it and as a lesson the AI follows when reading invoices."""
+    _invoice_notes_db()
+    inv = db.get_invoice(invoice_id)
+    if not inv:
+        raise HTTPException(404, "That invoice no longer exists.")
+    note = str(payload.get("note") or "").strip()[:1500]
+    who = (getattr(request.state, "user", None) or {}).get("email", "")
+    with db._conn() as con:
+        con.execute("UPDATE invoices SET note = ? WHERE id = ?", (note or None, invoice_id))
+    _note_lesson(f"invnote:{invoice_id}", f"Invoice {inv.get('supplier') or ''} #{inv.get('number') or '—'} ({inv.get('filename') or ''}): {note}"
+                 if note else "", who)
+    return {"ok": True}
 
 
 @app.post("/api/invoices/changes")

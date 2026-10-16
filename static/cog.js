@@ -344,12 +344,12 @@ function aiChip(i) {
 }
 
 async function loadInvoices() {
-  loadPriceChanges();
   let d;
-  try { d = await api("/api/invoices"); } catch (e) { toast(e.message, true); return; }
+  try { d = await api("/api/invoices"); } catch (e) { toast(e.message, true); loadPriceChanges(); return; }
   $("invBadge").hidden = !d.to_check;
   $("invBadge").textContent = d.to_check;
   invAll = d.invoices;
+  loadPriceChanges();                      // after the list, so "Invoices that need a look" has them
   const keep = (id) => $(id)?.value || "";
   const was = { from: keep("arcFrom"), to: keep("arcTo"), store: keep("arcStore"), sup: keep("arcSup") };
   const storesSeen = [...new Map(invAll.filter((i) => i.store_id).map((i) => [String(i.store_id), i.store])).entries()];
@@ -409,27 +409,30 @@ function drawArchive() {
   for (const tr of $("invList").querySelectorAll("[data-inv]")) tr.onclick = () => showInvoice(tr.dataset.inv);
 }
 
-// Price changes across all invoices, one row per store + product + new price
+// Price changes + invoices that need a look (Needs checking), and what was already decided (History).
+// Every row can carry a note: it's kept with it and becomes a lesson the AI follows when it reads invoices.
+let pcTab = "check";
+const noteBox = (key, note, what) => `<details class="pc-note"${note ? " open" : ""}><summary>${note ? "📝 Note" : "📝 Add a note"}</summary>
+  <textarea class="control" rows="2" data-note-text="${esc(key)}" placeholder="e.g. Supplier confirmed: new fabric from Oct. (The AI reads this as a lesson.)">${esc(note || "")}</textarea>
+  <button class="btn btn-sm" data-note-save="${esc(key)}" data-what="${esc(what)}">Save note</button></details>`;
+
 async function loadPriceChanges() {
-  let d;
-  try { d = await api("/api/invoices/changes"); } catch { return; }
   const box = $("priceChanges");
-  box.hidden = !d.changes.length;
-  if (!d.changes.length) return;
+  box.hidden = false;
+  let d, h = null;
+  try { d = await api("/api/invoices/changes"); } catch { return; }
+  if (pcTab === "history") { try { h = await api("/api/invoices/changes?view=history"); } catch { h = { changes: [] }; } }
   const pct = (g) => (g.old ? `${g.new < g.old ? "−" : "+"}${Math.abs(Math.round((g.new - g.old) / g.old * 100))}%` : "");
-  const when = (t) => (t ? new Date(t.replace(" ", "T") + "Z").toLocaleDateString(undefined, { day: "numeric", month: "short" }) : "");
+  const when = (t) => (t ? new Date(String(t).replace(" ", "T") + (String(t).includes("Z") || String(t).includes("+") ? "" : "Z")).toLocaleDateString(undefined, { day: "numeric", month: "short" }) : "");
   const nDown = d.changes.filter((g) => g.direction === "down" && g.state !== "checking").length;
   const nUp = d.changes.filter((g) => g.direction === "up" && g.state !== "checking").length;
-  box.innerHTML = `<div class="panel-head"><h2>Price changes to decide <span class="hint">(${d.changes.length})</span></h2>
-      <span class="pc-bulk" data-write-only>
-        ${nDown ? `<button class="btn btn-sm btn-primary" data-bulk="use_new|down">Use new price for all ${nDown} cheaper</button>` : ""}
-        ${nUp ? `<button class="btn btn-sm btn-ghost" data-bulk="checking|up">Mark all ${nUp} dearer as checking</button>` : ""}
-      </span></div>
-    <p class="hint pc-tip">Cheaper: use the new price. Dearer: check with the supplier first.</p>
-    <div class="table-wrap"><table class="table pc-table"><thead><tr><th>Product</th><th>Before</th><th>Now</th><th>Orders</th><th></th></tr></thead><tbody>
-    ${d.changes.map((g, i) => {
-      const down = g.direction === "down";
-      const btns = g.state === "checking"
+  const needInv = (typeof invAll !== "undefined" ? invAll : []).filter((i) => i.ai_check === "review" || i.problems || i.missing);
+  const lineKey = (g) => g.lines.map((x) => x.join(":")).join(",");
+  const what = (g) => `${g.product} (${g.store}) ${g.old != null ? money(g.old, "USD") : "—"} → ${money(g.new, "USD")}`;
+  const priceRow = (g, i, hist) => {
+    const down = g.direction === "down";
+    const btns = hist ? `<span class="pc-state">${esc(g.decision)}${g.decided_by ? ` · ${esc(g.decided_by.split("@")[0])}` : ""} ${when(g.decided_at)}</span>`
+      : g.state === "checking"
         ? `<span class="pc-state">Checking with supplier${g.check_by ? ` · ${esc(g.check_by.split("@")[0])}` : ""} ${when(g.check_at)}</span>
            <button class="btn btn-sm btn-primary" data-pc="${i}" data-act="use_new">Supplier confirmed: use new price</button>
            <button class="btn btn-sm btn-ghost" data-pc="${i}" data-act="keep_old">Supplier corrected it: keep old price</button>
@@ -439,15 +442,55 @@ async function loadPriceChanges() {
              <button class="btn btn-sm btn-ghost" data-pc="${i}" data-act="checking">Check with supplier</button>`
           : `<button class="btn btn-sm btn-primary pc-warn" data-pc="${i}" data-act="checking">Check with supplier</button>
              <button class="btn btn-sm btn-ghost" data-pc="${i}" data-act="use_new">Use new price</button>`;
-      return `<tr class="${g.state === "checking" ? "pc-checking" : ""}">
-        <td class="name">${esc(g.product)}<span class="sub">${esc(g.store)}</span></td>
-        <td>${g.old !== null && g.old !== undefined ? money(g.old, "USD") : "—"}</td>
-        <td><b>${money(g.new, "USD")}</b> <span class="pc-dir ${down ? "down" : "up"}">${down ? "▼" : "▲"} ${pct(g)}</span>${
-          g.likely === "quantity" ? `<span class="sub est" title="Suppliers usually move a price by up to about ${money(d.gap, "USD")} per item">${money(g.gap_each, "USD")} gap: probably a bundle or 2+ items, open the order first</span>`
-          : g.likely === "price" ? `<span class="sub">Small change: likely a real supplier price change</span>` : ""}</td>
-        <td class="hint" title="${esc(g.orders.join(", "))}">${g.orders.length} · ${esc(g.orders.slice(0, 3).join(", "))}${g.orders.length > 3 ? "…" : ""}</td>
-        <td class="pc-btns" data-write-only>${btns}</td></tr>`;
-    }).join("")}</tbody></table></div>`;
+    return `<tr class="${g.state === "checking" && !hist ? "pc-checking" : ""}">
+      <td class="name">${esc(g.product)}<span class="sub">${esc(g.store)}${g.invoice ? ` · ${esc(g.invoice)}` : ""}${g.invoice_date ? ` · ${niceDate(g.invoice_date)}` : ""}</span></td>
+      <td class="pc-num">${g.old !== null && g.old !== undefined ? money(g.old, "USD") : "—"}</td>
+      <td class="pc-num"><b>${money(g.new, "USD")}</b> <span class="pc-dir ${down ? "down" : "up"}">${down ? "▼" : "▲"} ${pct(g)}</span>${
+        !hist && g.likely === "quantity" ? `<span class="sub est" title="Suppliers usually move a price by up to about ${money(d.gap, "USD")} per item">${money(g.gap_each, "USD")} gap: probably a bundle or 2+ items, open the order first</span>`
+        : !hist && g.likely === "price" ? `<span class="sub">Small change: likely a real supplier price change</span>` : ""}</td>
+      <td class="pc-orders" title="${esc(g.orders.join(", "))}">${g.orders.length} order${g.orders.length === 1 ? "" : "s"}<span class="sub">${esc(g.orders.slice(0, 3).join(", "))}${g.orders.length > 3 ? "…" : ""}</span></td>
+      <td class="pc-btns">${hist ? btns : `<span data-write-only>${btns}</span>`}${noteBox("p" + lineKey(g), g.note, what(g))}</td></tr>`;
+  };
+  const head = `<div class="panel-head"><h2>Invoices to check</h2>
+      <nav class="scm-pages pc-tabs"><button data-pctab="check" class="${pcTab === "check" ? "on" : ""}">Needs checking (${d.changes.length + needInv.length})</button>
+        <button data-pctab="history" class="${pcTab === "history" ? "on" : ""}">History</button></nav></div>`;
+  if (pcTab === "history") {
+    box.innerHTML = head + `<p class="hint pc-tip">Price changes already decided, newest first. Notes stay with them and the AI keeps following them.</p>
+      ${h.changes.length ? `<div class="table-wrap"><table class="table pc-table"><thead><tr><th>Product</th><th>Before</th><th>Now</th><th>Orders</th><th>Decided</th></tr></thead>
+        <tbody>${h.changes.map((g, i) => priceRow(g, i, true)).join("")}</tbody></table></div>` : '<p class="empty">Nothing decided yet.</p>'}`;
+  } else {
+    box.innerHTML = head + `
+      ${needInv.length ? `<h3 class="pc-sub">Invoices that need a look (${needInv.length})</h3>
+        <div class="table-wrap"><table class="table pc-table pc-inv"><thead><tr><th>Invoice</th><th>Store</th><th>Total</th><th>Why</th><th></th></tr></thead><tbody>
+        ${needInv.map((i) => `<tr><td class="name">${esc(i.supplier || "?")} #${esc(i.number || "—")}<span class="sub">${i.date ? niceDate(i.date) : ""} · ${esc(i.filename || "")}</span></td>
+          <td>${esc(i.store)}</td><td class="pc-num">${money(i.total, "USD")}</td>
+          <td>${[i.ai_check === "review" ? '<span class="src bad">AI read it differently</span>' : "", i.problems ? `<span class="src bad">${i.problems} unmatched</span>` : "",
+            i.missing ? `<span class="src catalog">${i.missing} missing</span>` : ""].join(" ")}</td>
+          <td class="pc-btns"><button class="btn btn-sm btn-primary" data-openinv="${i.id}">Open</button>${noteBox("i" + i.id, i.note, "")}</td></tr>`).join("")}</tbody></table></div>` : ""}
+      <h3 class="pc-sub">Price changes to decide (${d.changes.length})
+        <span class="pc-bulk" data-write-only>
+          ${nDown ? `<button class="btn btn-sm btn-primary" data-bulk="use_new|down">Use new price for all ${nDown} cheaper</button>` : ""}
+          ${nUp ? `<button class="btn btn-sm btn-ghost" data-bulk="checking|up">Mark all ${nUp} dearer as checking</button>` : ""}
+        </span></h3>
+      <p class="hint pc-tip">Cheaper: use the new price. Dearer: check with the supplier first.</p>
+      ${d.changes.length ? `<div class="table-wrap"><table class="table pc-table"><thead><tr><th>Product</th><th>Before</th><th>Now</th><th>Orders</th><th></th></tr></thead><tbody>
+      ${d.changes.map((g, i) => priceRow(g, i, false)).join("")}</tbody></table></div>` : '<p class="empty">No price changes to decide.</p>'}`;
+  }
+  for (const b of box.querySelectorAll("[data-pctab]")) b.onclick = () => { pcTab = b.dataset.pctab; loadPriceChanges(); };
+  for (const b of box.querySelectorAll("[data-openinv]")) b.onclick = () => showInvoice(b.dataset.openinv);
+  for (const b of box.querySelectorAll("[data-note-save]")) b.onclick = async () => {
+    const key = b.dataset.noteSave;
+    const note = box.querySelector(`[data-note-text="${CSS.escape(key)}"]`).value.trim();
+    b.disabled = true;
+    try {
+      if (key[0] === "i") await api(`/api/invoices/${key.slice(1)}/note`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ note }) });
+      else await api("/api/invoices/changes/note", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ note, what: b.dataset.what, lines: key.slice(1).split(",").map((x) => x.split(":").map(Number)) }) });
+      toast(note ? "Note saved: the AI follows it from now on." : "Note removed.");
+      if (key[0] === "i") { const inv = invAll.find((x) => String(x.id) === key.slice(1)); if (inv) inv.note = note; }
+    } catch (e) { toast(e.message, true); }
+    b.disabled = false;
+  };
   for (const b of box.querySelectorAll("[data-bulk]")) b.onclick = async () => {
     const [action, direction] = b.dataset.bulk.split("|");
     const n = direction === "down" ? nDown : nUp;
@@ -527,9 +570,18 @@ async function showInvoice(id) {
       <span><button class="btn btn-sm btn-ghost" id="invClose">Close</button>
       <button class="btn btn-sm btn-danger" id="invDelete" data-write-only>Delete</button></span></div>
     ${review}${missing}
+    <div class="inv-note"><label>📝 Note on this invoice <span class="hint">(the AI reads it as a lesson)</span>
+      <textarea class="control" rows="2" id="invNote" placeholder="e.g. This store's invoices include shipping in the item price">${esc(i.note || "")}</textarea></label>
+      <button class="btn btn-sm" id="invNoteSave">Save note</button></div>
     <div class="table-wrap"><table class="table"><thead><tr><th>Order / product</th><th>Invoice</th><th>Before</th><th>Check</th></tr></thead>
       <tbody>${rows}</tbody></table></div>`;
   $("invClose").onclick = () => { $("invDetail").hidden = true; };
+  $("invNoteSave").onclick = async () => {
+    try {
+      await api(`/api/invoices/${i.id}/note`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ note: $("invNote").value.trim() }) });
+      toast("Note saved: the AI follows it from now on.");
+    } catch (e) { toast(e.message, true); }
+  };
   for (const b of $("invDetail").querySelectorAll("[data-review]")) b.onclick = async () => {
     const use = b.dataset.review;
     if (use === "ai" && !confirm("Replace this invoice's lines with the AI's reading? Orders are matched and costed again.")) return;
