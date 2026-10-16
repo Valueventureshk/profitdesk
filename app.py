@@ -11711,6 +11711,8 @@ async def _agent_file_invoices(job_id: int, ch: dict, items: list):
 
             r = await _ingest_invoice(data, f["name"] or "invoice", f"agent (Slack #{ch['name']})")
             invoice_id = r.get("id")
+            if invoice_id and not r.get("attached"):
+                r["supplier"] = _agent_fix_supplier(invoice_id, ch, what.get("supplier") or "", job_id) or r.get("supplier")
             if r.get("attached"):
                 outcome = f"Already in the app (invoice {r.get('number') or '?'}): kept this file with it"
                 agent.step(job_id, "skip", outcome)
@@ -11745,6 +11747,60 @@ async def _agent_file_invoices(job_id: int, ch: dict, items: list):
             con.execute("INSERT OR REPLACE INTO agent_files (file_id, channel, ts, name, job_id, invoice_id, outcome, at)"
                         " VALUES (?,?,?,?,?,?,?,?)", (f["id"], ch["id"], m["ts"], f["name"], job_id, invoice_id, outcome, agent.now()))
     return filed, skipped, failed
+
+
+def _agent_supplier_for(ch: dict, ai_supplier: str = "") -> str:
+    """The real supplier for a file in a channel: the supplier names the orders sheet uses (Dayone, Graypop …), picked
+    by the channel's supplier (dayone → Dayone, gray → Graypop) or what the AI read. '' if none fits."""
+    with db._conn() as con:
+        names = [r[0] for r in con.execute("SELECT DISTINCT supplier FROM cog_lines WHERE supplier IS NOT NULL AND supplier != ''")]
+    names += list(db.supplier_accounts().keys())
+    stores = {agent.norm(x["name"]) for x in db.list_stores()}
+    names = [n for n in dict.fromkeys(names) if agent.norm(n) and agent.norm(n) not in stores]
+    for hint in (ch.get("supplier") or "", ai_supplier or ""):
+        h = agent.norm(hint)
+        if not h:
+            continue
+        for n in names:
+            if agent.norm(n) == h or (len(h) >= 3 and agent.norm(n).startswith(h)) or (len(agent.norm(n)) >= 3 and h.startswith(agent.norm(n))):
+                return n
+    return ""
+
+
+def _agent_fix_supplier(invoice_id: int, ch: dict, ai_supplier: str = "", job_id=None) -> str:
+    """Invoices from a supplier's channel belong to that supplier, whatever name the reader picked up (DayOne's PDFs
+    carry the store's name, so the reader took it as the supplier)."""
+    inv = db.get_invoice(invoice_id)
+    real = _agent_supplier_for(ch, ai_supplier)
+    if not inv or not real or (inv.get("supplier") or "") == real:
+        return ""
+    with db._conn() as con:
+        con.execute("UPDATE invoices SET supplier = ? WHERE id = ?", (real, invoice_id))
+    if job_id:
+        agent.step(job_id, "act", f"Supplier set to {real}", f"The reader had “{inv.get('supplier') or '?'}” (the store's name on the invoice); "
+                   f"it came from #{ch['name']}, so it's {real}'s invoice.")
+    return real
+
+
+@app.post("/api/agent/fix-suppliers")
+async def api_agent_fix_suppliers(request: Request):
+    """Put the right supplier on invoices the agent already filed (one-off repair of the 15 Oct filing)."""
+    _agent_db()
+    if (request.state.user or {}).get("role", "owner") != "owner":
+        raise HTTPException(403, "Only an owner.")
+    with db._conn() as con:
+        rows = [dict(r) for r in con.execute("SELECT f.invoice_id, f.name, c.* FROM agent_files f JOIN slack_channels c ON c.id = f.channel"
+                                             " WHERE f.invoice_id IS NOT NULL")]
+    jid = agent.start("repair", "Put the right supplier on invoices filed from Slack", "invoices", {"by": _agent_who(request)})
+    changed = []
+    for r in rows:
+        inv = db.get_invoice(r["invoice_id"])
+        real = _agent_fix_supplier(r["invoice_id"], r)
+        if real:
+            changed.append((r["invoice_id"], inv.get("supplier"), real))
+    agent.step(jid, "act", f"Relabelled {len(changed)} invoice(s)", "; ".join(f"#{i}: {a} → {b}" for i, a, b in changed[:40]) or "Nothing to change.")
+    agent.finish(jid, "done", f"{len(changed)} relabelled")
+    return {"ok": True, "changed": len(changed), "detail": changed[:80]}
 
 
 def _agent_review_filed_stores():
