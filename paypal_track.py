@@ -5,7 +5,7 @@ The SCM desk already knows every parcel (`shipments`, kept by `_scm_loop` + 17TR
 ones that are moving.
 
     which parcels  SCM status in transit (setting `later` also allows ready for pickup / out for
-                   delivery). Never delivered, info received, pending, not found or no tracking yet.
+                   delivery / delivered). Never info received, pending, not found or no tracking yet.
     which orders   paid through PayPal (Shopify transaction gateway contains "paypal").
     which payment  exact ids only: Shopify's payment id is PayPal's invoice id, or Shopify's
                    authorization code is PayPal's transaction id, found in a connected PayPal
@@ -73,8 +73,8 @@ CREATE TABLE IF NOT EXISTS pp_track_orders (
 _ready = {"ok": False}
 
 MOVING = ("in_transit",)
-LATER = ("pickup", "out_for_delivery")
-NEVER = ("delivered",)    # owner, 17 Oct 2026: delivered parcels are never sent, whatever the settings say
+LATER = ("pickup", "out_for_delivery", "delivered")
+NEVER = ()                # statuses never sent whatever the settings say (owner chose to send delivered too, 17 Oct 2026)
 WINDOW_DAYS = 60          # parcels fulfilled this recently (PayPal's feed here covers 75 days)
 MAX_TRIES = 3
 MAX_SENDS = 200           # per run, so a first run with a backlog finishes in a few minutes
@@ -155,17 +155,29 @@ def _paypal_error(r: httpx.Response) -> str:
 async def add_tracker(conn: dict, tracker: dict) -> tuple:
     """(ok, note). One tracker: {transaction_id, tracking_number, carrier, carrier_name_other?}."""
     body = {"trackers": [{**tracker, "status": "SHIPPED", "notify_buyer": False}]}
-    async with httpx.AsyncClient(timeout=60) as client:
-        token = await paypal._token(client, conn["client_id"], conn["secret"])
-        try:
-            r = await client.post(f"{paypal.API}/v1/shipping/trackers-batch", json=body,
-                                  headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
-        except httpx.RequestError as e:
-            return False, f"Couldn't reach PayPal ({type(e).__name__})."
+    r = None
+    for attempt in range(3):              # PayPal is sometimes slow to answer: wait longer and ask again
+        async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=20)) as client:
+            try:
+                token = await paypal._token(client, conn["client_id"], conn["secret"])
+                r = await client.post(f"{paypal.API}/v1/shipping/trackers-batch", json=body,
+                                      headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
+            except httpx.RequestError as e:
+                if attempt == 2:
+                    return False, f"Couldn't reach PayPal ({type(e).__name__}); it'll try again next run."
+                await asyncio.sleep(5 * (attempt + 1))
+                continue
+        if r.status_code in (429, 500, 502, 503, 504) and attempt < 2:
+            await asyncio.sleep(5 * (attempt + 1))
+            continue
+        break
     if r.status_code == 401:
         paypal._tokens.pop(conn["client_id"], None)
     if r.status_code >= 400:
-        return False, _paypal_error(r)
+        err = _paypal_error(r)
+        if "already" in err.lower() or "duplicate" in err.lower():       # e.g. sent before a timeout
+            return True, "Already on PayPal"
+        return False, err
     out = r.json() if r.content else {}
     if out.get("tracker_identifiers"):
         return True, ""
