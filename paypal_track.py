@@ -77,7 +77,8 @@ LATER = ("pickup", "out_for_delivery", "delivered")
 NEVER = ()                # statuses never sent whatever the settings say (owner chose to send delivered too, 17 Oct 2026)
 WINDOW_DAYS = 60          # parcels fulfilled this recently (PayPal's feed here covers 75 days)
 MAX_TRIES = 3
-MAX_SENDS = 200           # per run, so a first run with a backlog finishes in a few minutes
+PACE = 2.0                # seconds between trackers (PayPal answers 429 "too many requests" when faster)
+MAX_SENDS = 200           # per run (at PACE that's under 7 minutes); a backlog goes over a few runs
 RECHECK_HOURS = 6         # unmatched orders: ask Shopify for their payments again after this
 
 # Shopify / 17TRACK carrier name (lower case, contains) -> PayPal carrier code. Order matters.
@@ -102,6 +103,9 @@ def ensure():
     if not _ready["ok"]:
         with db._conn() as con:
             con.executescript(SCHEMA)
+            # "too many requests" / timeouts were PayPal being busy, not a refusal: they don't use up tries
+            con.execute("UPDATE pp_track SET tries = 0, state = 'error' WHERE state IN ('error', 'failed')"
+                        " AND (error LIKE '%429%' OR error LIKE '%slow down%' OR error LIKE '%Couldn''t reach PayPal%')")
         _ready["ok"] = True
 
 
@@ -167,7 +171,10 @@ async def add_tracker(conn: dict, tracker: dict) -> tuple:
                     return False, f"Couldn't reach PayPal ({type(e).__name__}); it'll try again next run."
                 await asyncio.sleep(5 * (attempt + 1))
                 continue
-        if r.status_code in (429, 500, 502, 503, 504) and attempt < 2:
+        if r.status_code == 429 and attempt < 2:                         # PayPal: slow down
+            await asyncio.sleep(30 * (attempt + 1))
+            continue
+        if r.status_code in (500, 502, 503, 504) and attempt < 2:
             await asyncio.sleep(5 * (attempt + 1))
             continue
         break
@@ -438,7 +445,12 @@ async def run(send: bool = True, by: str = "auto", store_ids: list = None) -> di
             tracker = {"transaction_id": r["txn_id"], "tracking_number": r["number"], "carrier": r["carrier"]}
             if r["carrier"] == "OTHER":
                 tracker["carrier_name_other"] = r["carrier_other"] or "Other"
+            await asyncio.sleep(PACE)              # PayPal limits how fast trackers can be added
             ok, note = await add_tracker(conn, tracker)
+            if not ok and "429" in (note or ""):  # still rate-limited: stop here, carry on next run (not a failed try)
+                _mark(r["id"], "error", error="PayPal asked to slow down; it'll be sent in the next run.", tries=r["tries"])
+                summary["problems"].append("PayPal asked to slow down: the rest go in the next run (every 15 minutes).")
+                break
             if not ok and r["carrier"] != "OTHER" and _carrier_refused(note):
                 tracker = {**tracker, "carrier": "OTHER", "carrier_name_other": r["company"] or r["carrier"]}
                 ok, note = await add_tracker(conn, tracker)
