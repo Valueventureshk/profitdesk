@@ -103,6 +103,7 @@ function renderCards(s, sup) {
       <div class="card-label"><span class="dot" style="background:var(--up)"></span>Available now</div>
       <div class="card-value">${money(s.available)}</div>
       <div class="card-note">${s.reserved ? `Plus ${money(s.reserved)} held (payment reserves and card holds)` : "&nbsp;"}</div>
+      ${s.arrived_today && s.arrived_today.count && Math.abs(s.arrived_today.total) >= 0.5 ? `<div class="card-note arrived-note">Incl. ${s.arrived_today.total >= 0 ? "+" : ""}${money(s.arrived_today.total)} arrived today</div>` : ""}
       ${Math.abs(s.in_transit || 0) >= 0.5 ? `<div class="card-note" title="A PayPal withdrawal to your own Airwallex: still your money, counted as available until it lands">Incl. ${money(s.in_transit)} on its way from PayPal to Airwallex</div>` : ""}
     </div>`;
   const horizons = s.horizons.map((h) => `<div class="card">
@@ -122,26 +123,41 @@ let showAllDays = false;
 function renderSchedule(s) {
   $("laterNote").textContent = Math.abs(s.later) >= 0.5 ? `${money(s.later)} more after 90 days` : "";
   $("moreDays").hidden = true;
-  if (!s.schedule.length) {
+  if (!s.schedule.length && !(s.arrived_today && s.arrived_today.count)) {
     $("schedule").innerHTML = `<tbody><tr><td class="hint">Nothing pending in the next 90 days.</td></tr></tbody>`;
     return;
   }
   let running = s.available;
-  const rows = s.schedule.map((d, i) => {
+  // Today: what already arrived (now in Available now) next to what is still to come.
+  const arr = s.arrived_today && s.arrived_today.count ? s.arrived_today : null;
+  const days = s.schedule.slice();
+  if (arr && (!days.length || days[0].date !== data.today)) days.unshift({ date: data.today, total: 0, kinds: {} });
+  const rows = days.map((d, i) => {
     running += d.total;
     const kinds = Object.entries(d.kinds).filter(([, v]) => Math.abs(v) >= 0.5)
       .map(([k, v]) => `<span class="kind">${esc(k)} ${money(v)}</span>`).join("");
     const hide = i >= FIRST_DAYS && !showAllDays ? " hidden" : "";
+    if (arr && d.date === data.today) {
+      const done = Math.abs(d.total) < 0.5;
+      const at = (arr.last || "").slice(11, 16);
+      const what = Object.entries(arr.kinds).filter(([, v]) => Math.abs(v) >= 0.5)
+        .map(([k, v]) => `${esc(k)} ${money(v)}`).join(" · ");
+      return `<tr class="arrived${done ? " all" : ""}"${hide}><td class="name">${niceDate(d.date)}
+          <span class="sub arrived-note">✓ Arrived ${arr.total >= 0 ? "+" : ""}${money(arr.total)}${at ? ` (last at ${at})` : ""}, already in Available now${what ? ` · ${what}` : ""}</span>
+          ${done ? "" : `<span class="sub">Still to come today:</span>${kinds}`}</td>
+        <td>${done ? `<span class="arrived-amt">${arr.total >= 0 ? "+" : ""}${money(arr.total)}</span><span class="sub arrived-note">Arrived</span>`
+          : `${d.total >= 0 ? "+" : ""}${money(d.total)}<span class="sub">still to come</span>`}</td><td>${money(running)}</td></tr>`;
+    }
     return `<tr${hide}><td class="name">${niceDate(d.date)}<span class="sub">${kinds}</span></td>
       <td>${d.total >= 0 ? "+" : ""}${money(d.total)}</td><td>${money(running)}</td></tr>`;
   }).join("");
   $("schedule").innerHTML = `<thead><tr><th>Day</th><th>Arriving</th><th>Balance after</th></tr></thead>
     <tbody>${rows}</tbody>`;
-  const extra = s.schedule.length - FIRST_DAYS;
+  const extra = days.length - FIRST_DAYS;
   if (extra > 0) {
     $("moreDays").hidden = false;
     $("moreDays").textContent = showAllDays ? "Show first 7 days only"
-      : `Show ${extra} more day${extra === 1 ? "" : "s"} (to ${niceDate(s.schedule[s.schedule.length - 1].date)})`;
+      : `Show ${extra} more day${extra === 1 ? "" : "s"} (to ${niceDate(days[days.length - 1].date)})`;
   }
 }
 

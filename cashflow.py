@@ -143,3 +143,59 @@ def summarize(accounts: list, factor, today: date, tz, transit: list = ()) -> di
         "accounts": per_account,
         "by_type": dict(sorted(by_type.items(), key=lambda kv: -abs(kv[1]["amount"]))),
     }
+
+
+# ---------------------------------------------------------------- arrived today
+# A pending item that settles leaves the pending list and is in the available balance from then on.
+# So "arrived" = an item we saw due by tomorrow (or overdue) that is no longer pending in an account
+# that answered this time. Kept in the setting `cash_arrivals` {"seen": {...}, "arrived": {...}}.
+KEEP_DAYS = 3
+
+
+def _key(acct: dict, p: dict) -> str:
+    return f"{acct['id']}|{p.get('id') or ''}|{p['type']}|{p['currency']}|{p.get('created') or ''}"
+
+
+def track_arrivals(state: dict, accounts: list, today: date, tz, now: datetime) -> dict:
+    """Update `state` with this call's pending lists. Returns the new state."""
+    seen = dict(state.get("seen") or {})
+    arrived = dict(state.get("arrived") or {})
+    answered = {str(a["id"]) for a in accounts}
+    current = set()
+    for acct in accounts:
+        for p in acct["pending"]:
+            if p["type"] in ALREADY_IN_BALANCE:
+                continue
+            k = _key(acct, p)
+            current.add(k)
+            due = _due(p["estimated"], tz)
+            when = max(due or today, today)
+            if (when - today).days <= 1:
+                seen[k] = {"due": when.isoformat(), "net": p["net"], "currency": p["currency"],
+                           "kind": _kind(p["type"]), "account": acct["label"]}
+    for k, s in list(seen.items()):
+        if k.split("|", 1)[0] in answered and k not in current:   # settled (early ones count today too)
+            arrived[k] = {**s, "on": today.isoformat(), "at": now.isoformat(timespec="minutes")}
+            del seen[k]
+    for k in list(arrived):
+        if k in current:                   # back on the pending list: it hadn't arrived after all
+            del arrived[k]
+    cut = (today - timedelta(days=KEEP_DAYS)).isoformat()
+    seen = {k: v for k, v in seen.items() if v["due"] >= cut}
+    arrived = {k: v for k, v in arrived.items() if v["on"] >= cut}
+    return {"seen": seen, "arrived": arrived}
+
+
+def arrived_today(state: dict, factor, today: date) -> dict:
+    """{"total", "count", "kinds", "last"} of what arrived today, in the display currency."""
+    total, kinds, last, n = 0.0, {}, "", 0
+    for a in (state.get("arrived") or {}).values():
+        if a["on"] != today.isoformat():
+            continue
+        v = a["net"] * factor(a["currency"])
+        total += v
+        n += 1
+        kinds[a["kind"]] = kinds.get(a["kind"], 0.0) + v
+        last = max(last, a["at"])
+    return {"total": total, "count": n, "last": last,
+            "kinds": dict(sorted(kinds.items(), key=lambda kv: -abs(kv[1])))}

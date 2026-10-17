@@ -159,6 +159,7 @@ async def lifespan(app):
     asyncio.create_task(_assist_loop())
     asyncio.create_task(_co_loop())
     asyncio.create_task(paypal_track.loop())
+    asyncio.create_task(_arrivals_loop())
     for i in db.list_invoices():                     # AI double-checks cut off by a restart
         if i.get("ai_check") == "pending":
             asyncio.create_task(_ai_check_invoice(i["id"]))
@@ -4315,12 +4316,21 @@ async def _cash_state(currency: str = None, with_ads: bool = False) -> dict:
     fx_table = await fx.table(base) if codes - {base} else None
     factor = (lambda code: fx.factor(fx_table, code, base)) if fx_table else (lambda code: 1.0)
     today = datetime.now(CASH_TZ).date()
-    transit = []
+    transit, transit_ok = [], True
     try:
         transit = await _in_transit(conns, accounts)
     except Exception as e:
+        transit_ok = False
         problems.append(f"Money on its way between your accounts couldn't be checked: {e}")
     summary = cashflow.summarize(accounts, factor, today, CASH_TZ, transit)
+    try:                    # what was due today and has already landed (cashflow.track_arrivals)
+        arr = json.loads(db.get_setting("cash_arrivals") or "{}")
+        if transit_ok:      # otherwise paired deposits would come and go and look like arrivals
+            arr = cashflow.track_arrivals(arr, accounts, today, CASH_TZ, datetime.now(CASH_TZ))
+            db.set_setting("cash_arrivals", json.dumps(arr))
+        summary["arrived_today"] = cashflow.arrived_today(arr, factor, today)
+    except Exception as e:
+        print(f"Cash arrivals failed: {e}")
     if ad_rows is not None:
         ads = adbills.summarize(ad_rows, factor)
         summary["ads"] = ads
@@ -4423,6 +4433,20 @@ async def _take_snapshot() -> dict:
     figures = _snapshot_figures(st)
     db.save_cash_snapshot(taken.date().isoformat(), taken.isoformat(timespec="seconds"), st["base"], figures)
     return figures
+
+
+async def _arrivals_loop():
+    """Every 30 minutes, look at the pending lists so "Arrived" shows even when nobody had the page open."""
+    await asyncio.sleep(120)
+    while True:
+        try:
+            if db.list_cash_connections():
+                await _cash_state(_display_currency())
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"Cash arrivals check failed: {e}")
+        await asyncio.sleep(1800)
 
 
 async def _snapshot_loop():

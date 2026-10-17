@@ -541,6 +541,10 @@ a.section-item:hover { background: var(--line-soft); }
 #schedule .sub { line-height: 1.45; margin-top: 2px; white-space: normal; }
 #schedule .kind { display: block; }
 #schedule td.name { width: 100%; }
+#schedule tr.arrived td { background: rgba(15, 157, 116, .06); }
+#schedule tr.arrived.all td { background: rgba(15, 157, 116, .11); }
+.arrived-note, .arrived-amt { color: var(--up); font-weight: 600; }
+#schedule td .arrived-note { display: block; }
 @media (max-width: 560px) {
   #schedule th, #schedule td { padding-left: 8px; padding-right: 8px; }
   #schedule th:last-child, #schedule td:last-child { padding-right: 14px; }
