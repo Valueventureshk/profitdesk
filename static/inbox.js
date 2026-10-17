@@ -786,7 +786,7 @@ $("mailboxSelect").onchange = () => { loadList(); loadLabels(); };
 
 (async function boot() {
   try {
-    const r = await fetch("/api/mail-accounts");
+    const r = await fetch("/api/inbox/mailboxes");
     const opts = r.ok ? (await r.json()).accounts : [];
     $("mailboxSelect").innerHTML = `<option value="">All stores</option>` +
       opts.map((a) => `<option value="${a.id}">${esc(a.store || a.address)}</option>`).join("");

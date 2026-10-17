@@ -190,3 +190,26 @@
 .tk-prev-box h3 { font-size: 15px; margin-bottom: 10px; }
 .tk-prev-media audio { width: 100%; }
 .tk-prev-media video { width: 100%; max-height: 60vh; border-radius: 8px; background: #000; }
+
+/* Queue (admins) */
+.tk-qtip { margin: 0 0 12px; }
+.tk-queue { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 12px; align-items: start; }
+.tk-qcol { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
+.tk-qhead { padding: 12px 14px 10px; border-bottom: 1px solid var(--line-soft); display: grid; gap: 6px; }
+.tk-qload { display: block; height: 6px; border-radius: 3px; background: var(--line-soft); overflow: hidden; }
+.tk-qload i { display: block; height: 100%; background: var(--sales); }
+.tk-qnums { font-size: 12.5px; color: var(--muted); }
+.tk-qnums b { color: var(--ink); font-variant-numeric: tabular-nums; }
+.tk-qnums em { font-style: normal; color: var(--down); }
+.tk-qlist { list-style: none; margin: 0; padding: 6px; display: grid; gap: 6px; min-height: 48px; }
+.tk-qitem { display: grid; grid-template-columns: 24px 1fr; gap: 4px 8px; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; background: var(--panel); cursor: grab; }
+.tk-qitem.high { border-left: 3px solid var(--down); }
+.tk-qitem.dragging { opacity: .45; }
+.tk-qpos { font-weight: 650; color: var(--faint); font-variant-numeric: tabular-nums; padding-top: 1px; }
+.tk-qmain { display: grid; gap: 2px; min-width: 0; }
+.tk-qmain a { color: var(--ink); font-weight: 600; text-decoration: none; }
+.tk-qmain a:hover { text-decoration: underline; }
+.tk-qbtns { grid-column: 2; display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+.tk-qbtns .btn-sm { padding: 3px 8px; }
+.tk-qhigh { background: rgba(220, 38, 38, .1); color: var(--down); border-color: var(--down); }
+.tk-qgive { width: auto; font-size: 12px; padding: 3px 6px; }

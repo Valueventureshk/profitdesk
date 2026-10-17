@@ -25,6 +25,7 @@
     </div>
     <nav class="scm-pages" id="pages">
       <button data-page="board" class="on">Board</button>
+      <button data-page="queue" data-manage-only>Queue</button>
       <button data-page="history">History</button>
       <button data-page="day" data-manage-only>End of day</button>
     </nav>
@@ -40,6 +41,12 @@
     </div>
 
     <section id="boardPage" class="tk-board"></section>
+
+    <section id="queuePage" hidden>
+      <p class="hint tk-qtip">Each person's open tasks in the order they should do them. Use ▲ ▼ or drag a task to change the order,
+        drag it onto someone else (or use “Give to”) to move it. Only admins see this page; staff only ever see their own tasks.</p>
+      <div class="tk-queue" id="queue"></div>
+    </section>
 
     <section id="historyPage" class="panel" hidden>
       <div class="table-wrap"><table class="table tk-hist" id="hist"></table></div>

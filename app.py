@@ -2710,6 +2710,15 @@ def inbox_page():
     return _page("inbox.html", ("inbox.js", "nav.js", "styles.css", "skin.css", "chat.js"))
 
 
+@app.get("/api/inbox/mailboxes")
+def api_inbox_mailboxes():
+    """The Inbox store picker, for anyone with the Inbox desk: each mailbox's id, store and address only."""
+    stores = {x["id"]: x["name"].strip() for x in db.list_stores()}
+    with db._conn() as con:
+        rows = [dict(r) for r in con.execute("SELECT id, address, store_id FROM mail_accounts ORDER BY id")]
+    return {"accounts": [{"id": a["id"], "address": a["address"], "store": stores.get(a["store_id"], "")} for a in rows]}
+
+
 @app.get("/api/mail-accounts")
 def api_mail_accounts():
     stores = {x["id"]: x["name"].strip() for x in db.list_stores()}
@@ -13547,6 +13556,8 @@ def _tasks_db():
         return
     with db._conn() as con:
         con.executescript(tasks.SCHEMA)
+        if "queue_pos" not in {r[1] for r in con.execute("PRAGMA table_info(tasks)")}:
+            con.execute("ALTER TABLE tasks ADD COLUMN queue_pos REAL")      # admins' order in each person's queue
     _tasks_ready["ok"] = True
 
 
@@ -13893,7 +13904,8 @@ def api_tasks(request: Request, view: str = "board", assignee: int = 0, store: i
     if q.strip():
         where.append("(title LIKE ? OR brief LIKE ? OR result LIKE ?)")
         args += [f"%{q.strip()}%"] * 3
-    order = "closed_at DESC" if view == "history" else "CASE priority WHEN 'high' THEN 0 ELSE 1 END, COALESCE(due, '9999'), id"
+    order = "closed_at DESC" if view == "history" else \
+        "COALESCE(queue_pos, 1e9), CASE priority WHEN 'high' THEN 0 ELSE 1 END, COALESCE(due, '9999'), id"
     with db._conn() as con:
         rows = [dict(r) for r in con.execute(f"SELECT * FROM tasks WHERE {' AND '.join(where)} ORDER BY {order}"
                                              f"{' LIMIT 300' if view == 'history' else ''}", args)]
@@ -13909,6 +13921,42 @@ def api_tasks(request: Request, view: str = "board", assignee: int = 0, store: i
             "stores": [{"id": k, "name": v} for k, v in sorted(stores.items(), key=lambda kv: kv[1].lower())],
             "statuses": tasks.STATUS_NAMES, "ctas": tasks.CTAS, "wa_ready": whatsapp.ready(),
             "today": datetime.now(CASH_TZ).date().isoformat()}
+
+
+@app.post("/api/tasks/queue")
+async def api_tasks_queue(request: Request, payload: dict):
+    """Queue (admins): one person's open tasks in the order to do them; tasks dropped in from someone else are
+    given to this person (logged, and sent on WhatsApp like any new task). Optional priority per task."""
+    _tasks_db()
+    _need_level(request, "tasks", "manage")
+    user = _task_user(request)
+    person = int(payload.get("person") or 0) or None
+    ids = [int(x) for x in payload.get("order") or []]
+    pri = {int(k): v for k, v in (payload.get("priority") or {}).items() if v in ("normal", "high")}
+    names = {x["id"]: x["name"] for x in _task_people()}
+    if person and person not in names:
+        raise HTTPException(400, "That person can't be given tasks (no Tasks desk access).")
+    given = []
+    with db._conn() as con:
+        for pos, tid in enumerate(ids, 1):
+            old = _task_row(con, tid, user)
+            con.execute("UPDATE tasks SET queue_pos = ?, assignee_id = ?, updated_at = datetime('now') WHERE id = ?",
+                        (pos, person, tid))
+            if old["assignee_id"] != person:
+                _task_log(con, tid, user, "edit", f"Queue: given to {names.get(person, 'nobody')}")
+                if person and old["status"] not in tasks.HISTORY:
+                    given.append(tid)
+        for tid, p in pri.items():
+            old = _task_row(con, tid, user)
+            if old["priority"] != p:
+                con.execute("UPDATE tasks SET priority = ? WHERE id = ?", (p, tid))
+                _task_log(con, tid, user, "edit", f"Priority: {'High' if p == 'high' else 'Normal'}")
+    for tid in given:
+        try:
+            await _task_wa_send(tid, "task", user)
+        except Exception as e:
+            print(f"Task WhatsApp failed: {e}", flush=True)
+    return {"ok": True, "given": len(given)}
 
 
 @app.get("/api/tasks/day")

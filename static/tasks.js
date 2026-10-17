@@ -65,6 +65,7 @@ let state = { page: PDUrl.get("page") || "board", data: null, open: null, editin
 /* ------------------------------------------------ board + history */
 
 async function load() {
+  if (state.page === "queue") return loadQueue();
   const q = new URLSearchParams({ view: state.page === "history" ? "history" : "board" });
   if ($("fPerson").value) q.set("assignee", $("fPerson").value);
   if ($("fStore").value) q.set("store", $("fStore").value);
@@ -725,16 +726,114 @@ async function loadDay() {
 
 /* ------------------------------------------------ page */
 
+/* ------------------------------------------------ queue (admins): each person's open tasks, in order */
+
+const QUEUE_STATES = ["todo", "doing", "changes"];       // still with the staff member
+function renderQueue() {
+  const d = state.data, today = d.today;
+  const open = d.tasks.filter((t) => QUEUE_STATES.includes(t.status));
+  const waiting = d.tasks.filter((t) => !QUEUE_STATES.includes(t.status));
+  const people = d.people.filter((p) => !p.owner || open.some((t) => t.assignee_id === p.id));
+  const cols = [...people.map((p) => ({ id: p.id, name: p.name, p })), { id: 0, name: "Not given to anyone" }];
+  const most = Math.max(1, ...cols.map((c) => open.filter((t) => (t.assignee_id || 0) === c.id).length));
+  $("queue").innerHTML = cols.map((c) => {
+    const mine = open.filter((t) => (t.assignee_id || 0) === c.id);
+    const late = mine.filter((t) => t.due && t.due < today).length;
+    const review = waiting.filter((t) => t.assignee_id === c.id && c.id).length;
+    const doing = mine.filter((t) => t.status === "doing").length;
+    if (!c.id && !mine.length) return "";
+    return `<div class="tk-qcol" data-person="${c.id}">
+      <div class="tk-qhead"><strong>${esc(c.name)}</strong>
+        <span class="tk-qload"><i style="width:${Math.round(mine.length / most * 100)}%"></i></span>
+        <span class="tk-qnums"><b>${mine.length}</b> to do${doing ? ` · ${doing} in progress` : ""}${late ? ` · <em>${late} late</em>` : ""}${review ? ` · ${review} with admins` : ""}</span></div>
+      <ol class="tk-qlist">${mine.map((t, i) => `<li class="tk-qitem${t.priority === "high" ? " high" : ""}" draggable="true" data-task="${t.id}">
+          <span class="tk-qpos">${i + 1}</span>
+          <span class="tk-qmain"><a href="#" data-open="${t.id}">${esc(t.title)}</a>
+            <span class="tk-meta">${esc(t.store || "")}${t.store ? " · " : ""}${esc(t.status_name)}</span>${dueText(t.due, today)}</span>
+          <span class="tk-qbtns">
+            <button class="btn btn-sm btn-ghost" data-qup="${t.id}" title="Earlier"${i ? "" : " disabled"}>▲</button>
+            <button class="btn btn-sm btn-ghost" data-qdown="${t.id}" title="Later"${i < mine.length - 1 ? "" : " disabled"}>▼</button>
+            <button class="btn btn-sm ${t.priority === "high" ? "tk-qhigh" : "btn-ghost"}" data-qpri="${t.id}" title="High priority on / off">High</button>
+            <select class="control tk-qgive" data-qgive="${t.id}" title="Give to someone else"><option value="">Give to…</option>
+              ${people.filter((p) => p.id !== c.id).map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join("")}</select>
+          </span></li>`).join("") || '<li class="tk-empty">Nothing in the queue</li>'}</ol></div>`;
+  }).join("");
+}
+
+function queueOrder(person) {
+  const open = state.data.tasks.filter((t) => QUEUE_STATES.includes(t.status) && (t.assignee_id || 0) === person);
+  return open.map((t) => t.id);
+}
+async function saveQueue(person, order, priority) {
+  try {
+    const r = await api("/api/tasks/queue", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ person: person || null, order, priority }) });
+    if (r.given) toast(`Given to the new person${state.data.wa_ready ? " (sent on WhatsApp)" : ""}.`);
+  } catch (e) { toast(e.message, true); }
+  await loadQueue();
+}
+async function loadQueue() {
+  try { state.data = await api("/api/tasks?view=board"); } catch (e) { toast(e.message, true); return; }
+  fillPickers();
+  renderQueue();
+}
+async function moveTo(id, person, before) {
+  const t = state.data.tasks.find((x) => x.id === id);
+  const from = t.assignee_id || 0;
+  const order = queueOrder(person).filter((x) => x !== id);
+  const at = before ? order.indexOf(before) : -1;
+  if (at >= 0) order.splice(at, 0, id); else order.push(id);
+  if (from !== person) {
+    const who = person ? state.data.people.find((p) => p.id === person)?.name : "nobody";
+    if (!confirm(`Give “${t.title}” to ${who}?`)) { renderQueue(); return; }
+    await saveQueue(from, queueOrder(from).filter((x) => x !== id));
+  }
+  await saveQueue(person, order);
+}
+$("queue").addEventListener("click", (e) => {
+  const up = e.target.closest("[data-qup]"), down = e.target.closest("[data-qdown]"), pri = e.target.closest("[data-qpri]");
+  const b = up || down || pri;
+  if (!b) return;
+  const id = +(b.dataset.qup || b.dataset.qdown || b.dataset.qpri);
+  const t = state.data.tasks.find((x) => x.id === id);
+  const person = t.assignee_id || 0;
+  const order = queueOrder(person);
+  if (pri) { saveQueue(person, order, { [id]: t.priority === "high" ? "normal" : "high" }); return; }
+  const i = order.indexOf(id), j = up ? i - 1 : i + 1;
+  if (j < 0 || j >= order.length) return;
+  [order[i], order[j]] = [order[j], order[i]];
+  saveQueue(person, order);
+});
+$("queue").addEventListener("change", (e) => {
+  const g = e.target.closest("[data-qgive]");
+  if (g && g.value) moveTo(+g.dataset.qgive, +g.value);
+});
+let dragId = null;
+$("queue").addEventListener("dragstart", (e) => { const li = e.target.closest("[data-task]"); if (li) { dragId = +li.dataset.task; li.classList.add("dragging"); } });
+$("queue").addEventListener("dragend", (e) => { const li = e.target.closest("[data-task]"); if (li) li.classList.remove("dragging"); });
+$("queue").addEventListener("dragover", (e) => { if (dragId && e.target.closest(".tk-qcol")) e.preventDefault(); });
+$("queue").addEventListener("drop", (e) => {
+  const col = e.target.closest(".tk-qcol");
+  if (!col || !dragId) return;
+  e.preventDefault();
+  const before = e.target.closest("[data-task]");
+  const id = dragId;
+  dragId = null;
+  if (before && +before.dataset.task === id) return;
+  moveTo(id, +col.dataset.person, before ? +before.dataset.task : null);
+});
+
 function showPage(p) {
   state.page = p;
   PDUrl.set({ page: p === "board" ? null : p });
   for (const b of $("pages").querySelectorAll("button")) b.classList.toggle("on", b.dataset.page === p);
+  $("queuePage").hidden = p !== "queue";
   $("boardPage").hidden = p !== "board";
   $("historyPage").hidden = p !== "history";
   $("dayPage").hidden = p !== "day";
-  $("bar").hidden = p === "day";
+  $("bar").hidden = p === "day" || p === "queue";
   selBar();
-  if (p === "day") loadDay(); else load();
+  if (p === "day") loadDay(); else if (p === "queue") loadQueue(); else load();
 }
 
 document.addEventListener("click", (e) => {
