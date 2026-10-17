@@ -267,18 +267,23 @@ def not_invoiced(orders: list, cutoff: str, supplier: str = "", billed: dict = N
     orders: suppliers.fulfilled_orders rows."""
     total, n, per = 0.0, 0, defaultdict(float)
     gap_n, gap_cost = 0, 0.0
+    placed_n, placed_cost = 0, 0.0
     for o in orders:
         if o["invoiced"] or o["day"] < cutoff or (supplier and o["supplier"] != supplier):
             continue
-        if covered_by(billed or {}, o["store_id"], o["supplier"], o["order"]):
+        if o.get("shipped", True) and covered_by(billed or {}, o["store_id"], o["supplier"], o["order"]):
             gap_n += 1
             gap_cost += o["cost"]
             continue
         total += o["cost"]
         n += 1
         per[o["supplier"]] += o["cost"]
+        if not o.get("shipped", True):
+            placed_n += 1
+            placed_cost += o["cost"]
     return {"total": round(total, 2), "orders": n, "by_supplier": {k: round(v, 2) for k, v in per.items()},
-            "billed_no_file": gap_n, "billed_no_file_cost": round(gap_cost, 2)}
+            "billed_no_file": gap_n, "billed_no_file_cost": round(gap_cost, 2),
+            "not_shipped": placed_n, "not_shipped_cost": round(placed_cost, 2)}
 
 
 def group_days(invs: list) -> list:

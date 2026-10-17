@@ -1182,22 +1182,36 @@ def _usual_suppliers() -> dict:
     return v
 
 
+PLACED_DAYS = 30      # orders not shipped yet count as owed from the day they're placed, for this long
+
+
 def _fulfilled_rows(since_day: date) -> list:
-    """suppliers.fulfilled_orders for orders fulfilled since a day (invoiced or not)."""
+    """suppliers.fulfilled_orders for orders since a day (invoiced or not): shipped ones from their fulfilment day, and
+    (owner, 17 Oct 2026) orders placed in the last PLACED_DAYS but not shipped yet from the day they were placed, so a
+    new order's COG shows in suppliers payable straight away. Rows carry "shipped"."""
     with db._conn() as con:
         lines = [dict(r) for r in con.execute(
-            "SELECT store_id, order_name, supplier, source, cost_usd, quantity, cancelled FROM cog_lines WHERE day >= ?",
+            "SELECT store_id, order_name, supplier, source, cost_usd, quantity, cancelled, created FROM cog_lines WHERE day >= ?",
             ((since_day - timedelta(days=45)).isoformat(),))]
         fulfilled = {(r[0], r[1]): r[2] for r in con.execute(
             "SELECT store_id, order_name, MIN(fulfilled_at) FROM shipments WHERE fulfilled_at IS NOT NULL"
             " AND fulfilled_at != '' GROUP BY store_id, order_name")}
+    shipped = set(fulfilled)
+    recent = (datetime.now(timezone.utc) - timedelta(days=PLACED_DAYS)).isoformat()
+    for l in lines:
+        k = (l["store_id"], l["order_name"])
+        if k not in fulfilled and not l["cancelled"] and (l.get("created") or "") >= recent[:10]:
+            fulfilled[k] = l["created"]
     inv_lines = db.invoice_lines()
     on_invoice = {(l["store_id"], cog.order_key(l["order_key"])) for l in inv_lines
                   if l["status"] not in cog_desk.DROP and l.get("ai_check") != "review"}
     for l in lines:
         l["on_invoice"] = (l["store_id"], cog.order_key(l["order_name"])) in on_invoice
     cog_desk.set_suppliers(lines, inv_lines, cog_desk.supplier_shares(inv_lines))     # cross-fulfilled orders
-    return suppliers.fulfilled_orders(lines, fulfilled, CASH_TZ)
+    rows = suppliers.fulfilled_orders(lines, fulfilled, CASH_TZ)
+    for o in rows:
+        o["shipped"] = (o["store_id"], o["order"]) in shipped
+    return rows
 
 
 _payable_cache = {}
@@ -1206,7 +1220,7 @@ _payable_cache = {}
 def _supplier_payable(supplier: str = "", fresh: bool = False) -> dict:
     """On credit (invoiced, not marked paid, after the cut-off) + estimated (shipped, not invoiced yet)."""
     hit = _payable_cache.get(supplier)
-    if hit and not fresh and time.time() - hit[0] < 300:
+    if hit and not fresh and time.time() - hit[0] < 60:
         return hit[1]
     _cogdesk_db()
     cutoff = _cog_cutoff()
@@ -1220,6 +1234,7 @@ def _supplier_payable(supplier: str = "", fresh: bool = False) -> dict:
                                 cog_desk.billed_up_to(imap, lines_of))
     out = {"cutoff": cutoff, "credit": credit, "estimated": est["total"], "estimated_orders": est["orders"],
            "billed_no_file": est["billed_no_file"], "billed_no_file_cost": est["billed_no_file_cost"],
+           "not_shipped": est["not_shipped"], "not_shipped_cost": est["not_shipped_cost"],
            "total": round(credit + est["total"], 2), "invoices": invs,
            "by_supplier": est["by_supplier"]}
     _payable_cache[supplier] = (time.time(), out)
@@ -8746,7 +8761,7 @@ async def _assist_tool(name: str, args: dict, user: dict):
                 "orders": len({(r["store_id"], r["order_name"]) for r in rows if not r["cancelled"]}),
                 "rows": [_round({**a, "orders": len(a["orders"])}) for a in out[:lim]],
                 "note": "Sales are the order lines' value after discounts, in each store's currency; cost is COG in USD. "
-                        "Covers orders already costed (synced every 20 minutes)."}
+                        "Covers orders already costed (synced every 10 minutes)."}
     if name == "get_disputes":
         _need(user, "disputes")
         want = (args.get("state") or "open").lower()
@@ -11183,21 +11198,22 @@ async def _order_fee_rows(store, orders: list, fee_map: dict) -> list:
 
 
 async def _cog_loop():
-    """Keep COG current: recent days every 20 minutes, the whole window every 6 hours."""
+    """Keep COG current: recent days every 10 minutes, the whole window every 6 hours."""
     await asyncio.sleep(60)
     n = 0
     while True:
         try:
             if db.get_setting("cog_sheet_id"):
-                if n % 18 == 0:
+                if n % 36 == 0:
                     await _cog_rows(force=True)
                     await _cog_sync()
                 else:
                     await _cog_sync(days_back=2)
+                _payable_cache.clear()                   # new orders' COG straight into suppliers payable
         except Exception as e:
             print(f"COG sync failed: {e}", flush=True)
         n += 1
-        await asyncio.sleep(20 * 60)
+        await asyncio.sleep(10 * 60)
 
 
 def _order_items() -> dict:

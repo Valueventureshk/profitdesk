@@ -254,7 +254,8 @@
     $("cdCutoff").value = d.cutoff;
     $("cdCredit").textContent = usd(d.credit);
     $("cdEst").textContent = usd(d.estimated);
-    $("cdEstNote").textContent = `${d.estimated_orders} shipped order${d.estimated_orders === 1 ? "" : "s"} newer than the supplier's latest invoice (our estimate)` +
+    $("cdEstNote").textContent = `${d.estimated_orders} order${d.estimated_orders === 1 ? "" : "s"} not invoiced yet (our estimate)` +
+      (d.not_shipped ? `, incl. ${d.not_shipped} placed but not shipped yet (${usd(d.not_shipped_cost)})` : "") +
       (d.billed_no_file ? `. Not counted: ${d.billed_no_file} older orders (${usd(d.billed_no_file_cost)}) already billed on invoices that never reached the app.` : "");
     $("cdTotal").textContent = usd(d.total);
     drawDays();
