@@ -5,7 +5,7 @@ The SCM desk already knows every parcel (`shipments`, kept by `_scm_loop` + 17TR
 ones that are moving.
 
     which parcels  SCM status in transit (setting `later` also allows ready for pickup / out for
-                   delivery / delivered). Never info received, pending, not found or no tracking yet.
+                   delivery). Never delivered, info received, pending, not found or no tracking yet.
     which orders   paid through PayPal (Shopify transaction gateway contains "paypal").
     which payment  exact ids only: Shopify's payment id is PayPal's invoice id, or Shopify's
                    authorization code is PayPal's transaction id, found in a connected PayPal
@@ -73,7 +73,8 @@ CREATE TABLE IF NOT EXISTS pp_track_orders (
 _ready = {"ok": False}
 
 MOVING = ("in_transit",)
-LATER = ("pickup", "out_for_delivery", "delivered")
+LATER = ("pickup", "out_for_delivery")
+NEVER = ("delivered",)    # owner, 17 Oct 2026: delivered parcels are never sent, whatever the settings say
 WINDOW_DAYS = 60          # parcels fulfilled this recently (PayPal's feed here covers 75 days)
 MAX_TRIES = 3
 MAX_SENDS = 200           # per run, so a first run with a backlog finishes in a few minutes
@@ -91,7 +92,7 @@ CARRIERS = (
     ("hong kong post", "HK_POST"),
 )
 
-STATE_NAME = {"waiting": "Waiting for in transit", "unmatched": "Not matched", "ready": "Ready to send",
+STATE_NAME = {"delivered": "Delivered: not sent", "waiting": "Waiting for in transit", "unmatched": "Not matched", "ready": "Ready to send",
               "sent": "Sent to PayPal", "error": "Error (will retry)", "failed": "Error (gave up)"}
 
 _lock = asyncio.Lock()
@@ -365,8 +366,10 @@ async def run(send: bool = True, by: str = "auto", store_ids: list = None) -> di
                 hit, how = _match(plist, by_invoice, by_txn)
                 if not hit and key in known and (conns.get(known[key][0]["conn_id"]) or {}).get("unread"):
                     hit, how = known[key]         # PayPal couldn't be read this time: keep the earlier match
-                moving = p["status"] in allowed
-                if prev in ("error", "failed") and hit:
+                moving = p["status"] in allowed and p["status"] not in NEVER
+                if p["status"] in NEVER:
+                    state = "delivered"           # never sent (an earlier error on it is dropped)
+                elif prev in ("error", "failed") and hit:
                     state = prev                  # keeps its tries; retried below
                 elif not moving:
                     state = "waiting"
@@ -409,6 +412,11 @@ async def run(send: bool = True, by: str = "auto", store_ids: list = None) -> di
                 and r["store_id"] in on_stores]
         sent_txn = _sent_pairs()
         for r in rows[:MAX_SENDS]:
+            if not config()["on"]:                 # switched off while running: stop at once
+                summary["problems"].append("Stopped: the app was switched off during this run.")
+                break
+            if r.get("scm_status") in NEVER:
+                continue
             if (r["txn_id"], r["number"]) in sent_txn:
                 _mark(r["id"], "sent", note="Already sent on another row", by=by)
                 continue
