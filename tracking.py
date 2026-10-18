@@ -265,8 +265,8 @@ ORDERS_QUERY = """query O($q: String!) { orders(first: 100, query: $q, sortKey: 
   id legacyResourceId name createdAt email phone test
   totalPriceSet { shopMoney { amount currencyCode } }
   customAttributes { key value }
-  customerJourneySummary { lastVisit { landingPage utmParameters { source medium campaign content term } }
-                           firstVisit { landingPage utmParameters { source medium campaign content term } } } } } }"""
+  customerJourneySummary { lastVisit { landingPage source referrerUrl utmParameters { source medium campaign content term } }
+                           firstVisit { landingPage source referrerUrl utmParameters { source medium campaign content term } } } } } }"""
 ORDER_ATTRS = """mutation A($input: OrderInput!) { orderUpdate(input: $input) { order { id } userErrors { field message } } }"""
 
 # what EcomVital writes on the Shopify order (Additional details), next to any other app's lines
@@ -285,6 +285,11 @@ def _credit_from(d: dict) -> dict:
     return out
 
 
+# where a visit came from when its link had no campaign tags (Shopify's visit source / referrer)
+AD_SOURCES = {"facebook": "Facebook", "instagram": "Instagram", "google": "Google", "tiktok": "TikTok",
+              "bing": "Microsoft", "pinterest": "Pinterest", "snapchat": "Snapchat", "youtube": "YouTube"}
+
+
 def _visit_credit(visit: dict) -> dict:
     if not visit:
         return {}
@@ -292,7 +297,14 @@ def _visit_credit(visit: dict) -> dict:
     d = {"utm_" + k: u.get(k) for k in ("source", "medium", "campaign", "content", "term") if u.get(k)}
     if not d:
         d = touch_of(visit.get("landingPage") or "")
-    return _credit_from(d) if d else {}
+    if d:
+        return _credit_from(d)
+    where = f"{visit.get('source') or ''} {visit.get('referrerUrl') or ''}".lower()
+    name = next((v for k, v in AD_SOURCES.items() if k in where), None)
+    if name:          # e.g. "1st session from facebook.com": the platform is known, the campaign isn't
+        return {"a_source": name.lower(), "a_campaign": f"{name} (no campaign in the link)", "a_medium": None,
+                "a_content": None, "a_term": None, "a_id": None, "a_click": None}
+    return {}
 
 
 def _order_credit(o: dict, attrs: dict) -> tuple:
@@ -332,7 +344,17 @@ def add_orders(store_id: int, orders: list) -> list:
                 out.append((o, mine, "pixel"))
                 continue
             if mine:                                   # added earlier from the order: keep what it was credited to
-                out.append((o, dict(mine), mine["ua"] or ""))
+                mine = dict(mine)
+                if not (mine["a_campaign"] or mine["a_source"] or mine["a_click"]):
+                    alt, how = _order_credit(o, attrs)
+                    if alt:
+                        con.execute("UPDATE px_events SET a_source = ?, a_medium = ?, a_campaign = ?, a_content = ?,"
+                                    " a_term = ?, a_id = ?, a_click = ?, ua = ? WHERE id = ?",
+                                    (alt.get("a_source"), alt.get("a_medium"), alt.get("a_campaign"), alt.get("a_content"),
+                                     alt.get("a_term"), alt.get("a_id"), alt.get("a_click"), how, mine["id"]))
+                        out.append((o, alt, how))
+                        continue
+                out.append((o, mine, mine["ua"] or ""))
                 continue
             at = o["createdAt"].replace("Z", "+00:00")
             at_s = datetime.fromisoformat(at).astimezone(timezone.utc).isoformat(timespec="seconds")
@@ -372,8 +394,12 @@ def order_lines(o: dict, credit: dict, how: str) -> list:
     """The order's custom attributes with EcomVital's lines added (Shopify replaces the whole list, so the
     other apps' lines are kept as they are). None when there's nothing to add or it's already there."""
     have = [{"key": a["key"], "value": a["value"]} for a in o.get("customAttributes") or []]
-    if any(a["key"] == "EcomVital campaign" or a["key"] == "EcomVital" for a in have):
+    if any(a["key"] == "EcomVital campaign" for a in have):
         return None
+    if any(a["key"] == "EcomVital" for a in have):
+        if not (credit.get("a_campaign") or credit.get("a_source") or credit.get("a_click")):
+            return None
+        have = [a for a in have if a["key"] != "EcomVital"]          # found a click since: replace the "no ad" line
     mine = [{"key": k, "value": str(credit[f])[:250]} for k, f in LABELS if credit.get(f)]
     if credit.get("a_click"):
         mine.append({"key": "EcomVital click", "value": CLICK_NAMES.get(credit["a_click"], credit["a_click"])})
