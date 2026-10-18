@@ -6735,12 +6735,13 @@ async def api_sizechart_import(payload: dict, request: Request):
         raise HTTPException(400, "No size charts found in that file.")
     # Panda's export has no product links: each chart is named after its product, so match by title
     # (exact, then letters-and-digits only); every product with that title gets the chart.
-    exact, loose = defaultdict(list), defaultdict(list)
+    exact, loose, by_id = defaultdict(list), defaultdict(list), {}
     store = next((x for x in db.list_stores() if x["id"] == store_id), None)
     if store:
         for p in await _all_products(store):
             exact[sizecharts.norm_title(p["title"])].append(p)
             loose[sizecharts.loose_title(p["title"])].append(p)
+            by_id[p["id"].rsplit("/", 1)[-1]] = p
     with db._conn() as con:              # importing again updates the same charts instead of adding copies
         known = {}
         for r in con.execute("SELECT c.id, c.name FROM size_charts c WHERE c.source IN ('panda', 'kiwi', 'import')"
@@ -6752,7 +6753,9 @@ async def api_sizechart_import(payload: dict, request: Request):
     imported = linked = updated = 0
     unmatched, products = [], 0
     for c in charts:
-        ps = exact.get(sizecharts.norm_title(c["name"])) or loose.get(sizecharts.loose_title(c["name"])) or []
+        # exports that carry the product ids they were assigned to (still in the store) win over title matching
+        ps = [by_id[i] for i in dict.fromkeys(c.get("product_ids") or []) if i in by_id] or \
+            exact.get(sizecharts.norm_title(c["name"])) or loose.get(sizecharts.loose_title(c["name"])) or []
         if not ps:
             unmatched.append(c["name"])
         products += len(ps)

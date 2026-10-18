@@ -179,9 +179,10 @@ def _table_html(b: dict, inches: bool) -> str:
     header, rows = b.get("header") or [], b.get("rows") or []
     sideways = bool(rows) and sum(_is_measure(r[0]) for r in rows if r) >= max(1, len(rows) // 2)
     col_ok = [_is_measure(h) for h in header]
-    head = "".join(f"<th>{_html.escape(c)}</th>" for c in header)
+    unit_in = (lambda c: re.sub(r"\bcm\b", "in", c, flags=re.I)) if conv else (lambda c: c)   # "Chest (cm)" -> "Chest (in)"
+    head = "".join(f"<th>{_html.escape(unit_in(c))}</th>" for c in header)
     body = "".join("<tr>" + "".join(
-        (f"<th>{_html.escape(c)}</th>" if i == 0 else
+        (f"<th>{_html.escape(unit_in(c) if sideways else c)}</th>" if i == 0 else
          f"<td>{_html.escape(_convert(c, conv and (_is_measure(r[0]) if sideways else (i < len(col_ok) and col_ok[i]))))}</td>")
         for i, c in enumerate(r)) + "</tr>" for r in rows)
     label = f'<div class="pdsc-label">{_html.escape(b["label"])}</div>' if b.get("label") else ""
@@ -337,6 +338,30 @@ def from_panda(chart: dict) -> dict:
     return {"name": _txt(chart.get("title")) or "Size chart", "blocks": normalise(blocks)}
 
 
+_CM_CELL = re.compile(r"^\s*(\d+(?:[.,]\d+)?(?:\s*[-–/]\s*\d+(?:[.,]\d+)?)?)\s*cm\s*$", re.I)
+
+
+def from_conditions(chart: dict) -> dict:
+    """One chart from an export with {title, values: [[header], [row]...], descriptionTop/Bottom, conditions:
+    [{type: product, id, title}]} (Taylor Maria's app). Keeps the exact product ids it was assigned to."""
+    values = [[_txt(c) for c in r] for r in chart.get("values") or [] if isinstance(r, list)]
+    values = [r for r in values if any(r)]
+    blocks = []
+    if _txt(chart.get("descriptionTop")):
+        blocks += html_to_blocks(chart["descriptionTop"])
+    if len(values) >= 2:
+        header, rows = values[0], values[1:]
+        unit = guess_unit(header)
+        if unit == "cm" or all(_CM_CELL.match(c) for r in rows for c in r[1:] if c):
+            unit = "cm"
+            rows = [[r[0]] + [(_CM_CELL.match(c).group(1) if _CM_CELL.match(c) else c) for c in r[1:]] for r in rows]
+        blocks.append({"type": "table", "label": "", "unit": unit, "header": header, "rows": rows})
+    if _txt(chart.get("descriptionBottom")):
+        blocks += html_to_blocks(chart["descriptionBottom"])
+    ids = [str(c.get("id")) for c in chart.get("conditions") or [] if c.get("type") == "product" and c.get("id")]
+    return {"name": _txt(chart.get("title")) or "Size chart", "blocks": normalise(blocks), "product_ids": ids}
+
+
 def parse_export(data) -> list:
     """Panda's export (a list of charts). Kiwi exports are recognised by shape as best we can."""
     if isinstance(data, dict):
@@ -347,6 +372,8 @@ def parse_export(data) -> list:
             continue
         if "data" in c and isinstance(c.get("data"), list) and any(isinstance(f, dict) and "fieldType" in f for f in c["data"]):
             out.append(from_panda(c))
+        elif isinstance(c.get("values"), list) and ("conditions" in c or "descriptionTop" in c):
+            out.append(from_conditions(c))
         else:   # generic: {name/title, header, rows} or {name, html}
             name = _txt(c.get("name") or c.get("title")) or "Size chart"
             blocks = []
