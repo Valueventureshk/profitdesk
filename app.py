@@ -333,7 +333,7 @@ async def _require_login(request: Request, call_next):
             return RedirectResponse(f"{BASE_URL}{path}", status_code=302)
     user = auth.user_for(request.cookies.get(auth.SESSION_COOKIE))
     request.state.user = user
-    if path in _OPEN or path.startswith(("/static/", "/proxy/", "/apps/", "/w/", "/t/", "/pay/", "/api/time/client/", "/mcp")) or path == "/proxy":
+    if path in _OPEN or path.startswith(("/static/", "/proxy/", "/apps/", "/w/", "/t/", "/pay/", "/api/time/client/", "/mcp", "/kit/theme.zip")) or path == "/proxy":
         return await call_next(request)
     launched = _shopify_launch(request)
     if launched:
@@ -14674,6 +14674,63 @@ async def api_store_kit_upload(request: Request):
     db.set_setting("store_kit_theme", json.dumps({"name": f.filename, "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                                                   "by": (_task_user(request) or {}).get("email")}))
     return {"ok": True, "kit": _store_kit_info()}
+
+
+# ---- store building (owner only): Shopify Admin GraphQL on a connected store, and the Store kit theme as a
+# short-lived signed download Shopify can fetch (themeCreate takes a public URL).
+
+def _kit_sig(exp: int) -> str:
+    import hmac
+    key = (db.get_setting("kit_link_key") or "")
+    if not key:
+        key = secrets.token_hex(32)
+        db.set_setting("kit_link_key", key)
+    return hmac.new(key.encode(), f"theme:{exp}".encode(), "sha256").hexdigest()[:40]
+
+
+@app.get("/kit/theme.zip")
+def kit_theme_download(exp: int = 0, sig: str = ""):
+    """The Store kit theme for Shopify to install (link valid 2 hours, made by /api/storebuild/theme-link)."""
+    import hmac
+    if exp < time.time() or not hmac.compare_digest(sig, _kit_sig(exp)):
+        raise HTTPException(403, "This link has expired.")
+    path = os.path.join(STORE_KIT, "theme.zip")
+    if not os.path.exists(path):
+        raise HTTPException(404, "No theme in the Store kit.")
+    return FileResponse(path, media_type="application/zip", filename="theme.zip")
+
+
+def _owner_only(request: Request):
+    if (getattr(request.state, "user", None) or {}).get("role") != "owner":
+        raise HTTPException(403, "Only the owner can do this.")
+
+
+@app.post("/api/storebuild/theme-link")
+def api_storebuild_theme_link(request: Request):
+    _owner_only(request)
+    exp = int(time.time()) + 7200
+    return {"url": f"{BASE_URL}/kit/theme.zip?exp={exp}&sig={_kit_sig(exp)}"}
+
+
+@app.post("/api/storebuild/{store_id}/gql")
+async def api_storebuild_gql(store_id: int, payload: dict, request: Request):
+    """Owner only: run one Admin GraphQL query / mutation on a connected store (store setup: theme, markets,
+    shipping, pages, menus, collections, discounts). Logged."""
+    _owner_only(request)
+    st = next((x for x in db.list_stores() if x["id"] == store_id), None)
+    if not st:
+        raise HTTPException(404, "Store not found.")
+    q = str(payload.get("query") or "")
+    if not q.strip():
+        raise HTTPException(400, "No query.")
+    client = ShopifyClient(st["shop_domain"], st["access_token"])
+    try:
+        data = await client.gql(q, payload.get("variables") or {})
+    except Exception as e:
+        raise HTTPException(400, f"Shopify: {str(e)[:1500]}")
+    if q.lstrip().startswith("mutation"):
+        print(f"storebuild {store_id} by {(request.state.user or {}).get('email')}: {q[:120]!r}", flush=True)
+    return {"data": data}
 
 
 async def _store_task_remind_loop():

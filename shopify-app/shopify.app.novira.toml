@@ -1,0 +1,24 @@
+# EcomVital app for Novira Dallas (made 19 Oct 2026). Deploy: npx shopify app deploy --config novira --force
+client_id = "2c6612591b471aadbbc12b0a699099e6"
+name = "EcomVital x Novira Dallas"
+application_url = "https://hq.ecomvital.com"
+embedded = true
+
+[webhooks]
+api_version = "2026-10"
+
+[auth]
+redirect_urls = [
+  "https://hq.ecomvital.com/auth/shopify/callback",
+  "https://profitdesk-production.up.railway.app/auth/shopify/callback"
+]
+
+[app_proxy]
+url = "https://hq.ecomvital.com/proxy/track"
+subpath = "track"
+prefix = "apps"
+
+[access_scopes]
+scopes = "read_orders,read_all_orders,write_orders,write_fulfillments,write_merchant_managed_fulfillment_orders,write_third_party_fulfillment_orders,write_assigned_fulfillment_orders,write_products,write_inventory,read_locations,write_publications,write_online_store_pages,write_online_store_navigation,write_content,write_themes,write_files,write_metaobjects,write_metaobject_definitions,write_discounts,write_pixels,read_customer_events,write_script_tags,read_customers,write_marketing_events,write_translations,read_analytics,read_shipping,write_shipping,write_markets,write_legal_policies,write_locales"
+optional_scopes = [ ]
+use_legacy_install_flow = false
