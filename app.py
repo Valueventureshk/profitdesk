@@ -10112,6 +10112,12 @@ PRODUCT_INFO = """query P($q: String!) { products(first: 1, query: $q) { nodes {
   id title tags productType vendor collections(first: 100) { nodes { id } } } } }"""
 
 
+def _sc_handle(handle) -> str:
+    """A product handle from the storefront, safe for a Shopify search. Keeps letters from any language and
+    symbols such as ™ (73 ZAVA products have one in their address); drops quotes, backslashes and spaces."""
+    return re.sub(r"[\s'\"\\\x00-\x1f]", "", str(handle or ""))[:255]
+
+
 async def _sc_product(store, handle: str):
     key = (store["id"], handle)
     hit = _sc_cache.get(key)
@@ -10158,7 +10164,7 @@ async def _sizechart_for(store, handle: str, country: str):
     if not cfg["enabled"] or not handle:
         return JSONResponse({"chart": None})
     try:
-        p = await _sc_product(store, re.sub(r"[^a-zA-Z0-9\-_.%]", "", handle)[:255])
+        p = await _sc_product(store, _sc_handle(handle))
     except Exception:
         return JSONResponse({"chart": None})
     hit = _sc_match(store["id"], p, country) if p else None
@@ -10193,7 +10199,7 @@ async def proxy_sizechart_advise(request: Request):
         body = await request.json()
     except Exception:
         body = {}
-    p = await _sc_product(store, re.sub(r"[^a-zA-Z0-9\-_.%]", "", str(body.get("handle") or ""))[:255])
+    p = await _sc_product(store, _sc_handle(body.get("handle")))
     hit = _sc_match(store["id"], p, str(body.get("country") or "")) if p else None
     key = db.get_setting("anthropic_api_key")
     if not hit or not key:
