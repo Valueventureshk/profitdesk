@@ -8990,6 +8990,8 @@ async def _assist_tool(name: str, args: dict, user: dict):
                         "amount": d.get("amount"), "currency": d.get("currency"), "reason": d.get("reason"),
                         "stage": d.get("stage"), "customer": d.get("customer"), "outcome": d.get("outcome")})
         return {"count": len(out), "disputes": out[:80], "link": f"{BASE_URL}/disputes"}
+    if name.startswith("task"):
+        return await _task_tool(name, args, user)
     if name in ("request_change", "list_change_requests"):
         with db._conn() as con:
             con.execute("CREATE TABLE IF NOT EXISTS change_requests (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER,"
@@ -14592,6 +14594,119 @@ def api_task(request: Request, task_id: int):
     p = people.get(t["assignee_id"])
     out["wa"] = {"ready": whatsapp.ready(), "number": bool(p and p.get("wa"))}
     return out
+
+
+class _AsUser:
+    """A stand-in request for calling the Tasks desk's own routes as a person (chat / Claude connector)."""
+    def __init__(self, user: dict):
+        self.state = type("S", (), {"user": user})()
+
+
+def _task_id(v) -> int:
+    m = re.search(r"\d+", str(v or ""))
+    if not m:
+        raise HTTPException(400, "Which task? Give its id, e.g. T-12.")
+    return int(m.group())
+
+
+async def _task_tool(name: str, args: dict, user: dict) -> dict:
+    """The Tasks desk for the assistant and the Claude connector: the same routes and rules as the desk's buttons."""
+    if not auth.level(user or {}, "tasks") and (user or {}).get("role") != "owner":
+        return {"error": "No access to the Tasks desk."}
+    _tasks_db()
+    req = _AsUser(user)
+    if name == "tasks_list":
+        st = (args.get("status") or "open").lower()
+        got = api_tasks(req, view="history" if st == "history" else "board")
+        rows = got["tasks"]
+        if st not in ("open", "history", "all"):
+            rows = [t for t in rows if t["status"] == st]
+        if args.get("assignee"):
+            who = args["assignee"].lower()
+            rows = [t for t in rows if who in (t.get("assignee") or "").lower()]
+        return {"count": len(rows), "tasks": [{"id": f"T-{t['id']}", "title": t["title"], "kind": t["kind"], "store": t["store"],
+                                                "assignee": t["assignee"], "status": t["status_name"], "priority": t["priority"],
+                                                "due": t["due"]} for t in rows[:100]],
+                "link": f"{BASE_URL}/tasks"}
+    if name == "task_create":
+        people = _task_people()
+        who = (args.get("assignee") or "").strip().lower()
+        p = next((x for x in people if who and (who == (x.get("email") or "").lower() or who in (x.get("name") or "").lower())), None)
+        if who and not p:
+            return {"error": f"No one called “{args['assignee']}” can be given tasks. People: "
+                             + ", ".join(x["name"] for x in people)}
+        sv = str(args.get("store") or "").strip().lower()
+        st_ = next((x for x in db.list_stores() if sv and (sv == str(x["id"]) or sv in x["name"].lower())), None)
+        brief = {k: args.get(k) for k in ("todo", "description", "competitor_ads", "competitor_landing", "competitor_products")
+                 if args.get(k)}
+        got = await api_task_create(req, {"kind": args.get("kind") or "custom", "title": args.get("title"),
+                                          "assignee_id": p["id"] if p else None, "store_id": st_["id"] if st_ else None,
+                                          "due": args.get("due"), "priority": args.get("priority") or "normal",
+                                          "special_notes": args.get("special_notes") or "", "brief": brief})
+        return {"created": f"T-{got['id']}", "given_to": p["name"] if p else None, "whatsapp": got.get("whatsapp"),
+                "link": f"{BASE_URL}/tasks"}
+    tid = _task_id(args.get("task"))
+    if name == "task_get":
+        t = api_task(req, tid)
+        brief, result = t.get("brief") or {}, t.get("result") or {}
+        with db._conn() as con:
+            n_cr = con.execute("SELECT COUNT(*) FROM task_files WHERE task_id = ? AND side = 'staff' AND kind = 'creative'",
+                               (tid,)).fetchone()[0]
+        todo = [{"item": k, "label": tasks.todo_label(k), "hand_back": list(tasks.TODO_NEEDS.get(k, ()))
+                 or (["creatives uploaded on the desk"] if k == "creatives" else ["custom answer"])}
+                for k in brief.get("todo") or []]
+        return {"id": f"T-{tid}", "title": t["title"], "kind": t["kind"], "store": t.get("store"), "assignee": t.get("assignee"),
+                "status": t.get("status_name") or t["status"], "due": t.get("due"), "priority": t.get("priority"),
+                "special_instructions_first": t.get("special_notes") or "", "brief": brief, "todo": todo,
+                "handed_back_so_far": result,
+                "still_missing_to_submit": tasks.missing(t["kind"], brief, result, n_cr),
+                "comments_and_steps": [{"who": l.get("who"), "at": l["at"], "what": l["action"], "text": l.get("text")}
+                                       for l in (t.get("log") or [])][-30:],
+                "files": [{"name": f["name"], "from": "admin" if f["side"] == "admin" else "staff", "kind": f["kind"],
+                           "open": f"{BASE_URL}/api/tasks/file/{f['id']}"} for f in t.get("files") or []],
+                "note": "Voice notes / screen recordings are files: the person opens them in the browser and can tell you what they say.",
+                "link": f"{BASE_URL}/tasks?task={tid}"}
+    if name == "task_start":
+        with db._conn() as con:
+            cur = _task_row(con, tid, user)["status"]
+        if cur == "doing":
+            return {"ok": True, "status": "already in progress"}
+        api_task_status(req, tid, {"status": "doing"})
+        return {"ok": True, "task": f"T-{tid}", "status": "In progress"}
+    if name == "task_save":
+        with db._conn() as con:
+            old = tasks.loads(_task_row(con, tid, user)["result"])
+        new = dict(old)
+        for k, v in (args.get("result") or {}).items():
+            if k in ("custom", "cant") and isinstance(v, dict):
+                new[k] = {**(old.get(k) or {}), **v}
+            elif k == "product_urls" and isinstance(v, list):
+                new[k] = "\n".join(str(x) for x in v)
+            else:
+                new[k] = v
+        api_task_result(req, tid, {"result": new, "submit": False})          # the work is kept even if submitting fails
+        if args.get("submit"):
+            try:
+                api_task_result(req, tid, {"result": new, "submit": True})
+            except HTTPException as e:
+                return {"saved": True, "submitted": False,
+                        "error": str(e.detail).split(" If you can't")[0].rstrip(".") + ". The work is saved. For an item that can't be "
+                                 "done, save cant {item: reason} so the admin knows why."}
+        return {"ok": True, "task": f"T-{tid}", "submitted": bool(args.get("submit")),
+                "note": "Handed to the admin for review." if args.get("submit") else "Saved (not submitted yet)."}
+    if name == "task_comment":
+        api_task_comment(req, tid, {"text": args.get("text")})
+        return {"ok": True}
+    if name == "task_review":
+        if not _task_manager(user):
+            return {"error": "Only admins (Manage level on the Tasks desk) can review tasks."}
+        to = {"approve": "approved", "changes": "changes", "done": "done", "launched": "launched",
+              "cancel": "cancelled"}.get(args.get("decision"))
+        if not to:
+            return {"error": "Decision must be approve, changes, done, launched or cancel."}
+        api_task_status(req, tid, {"status": to, "comment": args.get("comment") or ""})
+        return {"ok": True, "task": f"T-{tid}", "status": tasks.STATUS_NAMES.get(to, to)}
+    return {"error": f"Unknown task tool {name}"}
 
 
 def _task_fields(payload: dict) -> dict:

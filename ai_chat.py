@@ -164,6 +164,45 @@ TOOLS += [
           "newest first, with status (new, planned, done, declined) and the owner's note.",
           {"status": {"type": ["string", "null"], "description": "new, planned, done, declined or all (default: open = new + planned)"}},
           ["status"]),
+    _tool("tasks_list", "Tasks desk: the person's tasks (admins see everyone's), each with its id (T-12), title, store, who it's "
+          "given to, status (todo, doing, submitted, changes = sent back with changes needed, approved, launched, done) and due date.",
+          {"status": {"type": ["string", "null"], "description": "open (default), history, or one status"},
+           "assignee": {"type": ["string", "null"], "description": "admins: a person's name or email"}},
+          ["status", "assignee"]),
+    _tool("task_get", "One task in full by its id (T-12 or 12): the admin's special instructions (always follow them first), "
+          "the brief (to-do items and what each must hand back, competitor links, description), what's been handed back so "
+          "far, what is still missing before it can be submitted, the comments / change requests from the admin, and files.",
+          {"task": {"type": "string"}}, ["task"]),
+    _tool("task_start", "Mark a task as started (In progress). For the person it's given to: from To do, Changes needed, or "
+          "to take a submitted task back to edit.", {"task": {"type": "string"}}, ["task"]),
+    _tool("task_save", "Save work on a task (merged with what's already saved). result fields: landing_url (the main page the "
+          "ads go to; required to submit a listing task), collection_url, product_urls (list), advertorial_url, branded_url, "
+          "primary_text, headline, ad_description, cta, other_links, notes, custom {to-do item: answer} for custom to-do lines, "
+          "cant {to-do item: why it can't be done}. submit=true also hands it to the admin for review (EcomVital refuses "
+          "while something required is missing). Creatives (images/videos) are uploaded on the Tasks desk itself.",
+          {"task": {"type": "string"}, "result": {"type": "object"}, "submit": {"type": "boolean"}},
+          ["task", "result", "submit"]),
+    _tool("task_comment", "Add a comment to a task's history (questions for the admin, progress notes).",
+          {"task": {"type": "string"}, "text": {"type": "string"}}, ["task", "text"]),
+    _tool("task_review", "Admins only: approve a submitted task, send it back with the changes needed (comment required), "
+          "mark it done / launched (set up by hand), or cancel it.",
+          {"task": {"type": "string"}, "decision": {"type": "string", "enum": ["approve", "changes", "done", "launched", "cancel"]},
+           "comment": {"type": ["string", "null"]}}, ["task", "decision", "comment"]),
+    _tool("task_create", "Admins only: create a task and give it to someone (they get it on the Tasks desk and WhatsApp). "
+          "kind listing = product / store listing with ads (to-do picks: advertorial, collection, product_pages, branded_page, "
+          "creatives, ad_copy, plus any custom lines); custom = anything else. Returns its id (T-…).",
+          {"title": {"type": "string"}, "kind": {"type": "string", "enum": ["listing", "custom"]},
+           "assignee": {"type": ["string", "null"], "description": "name or email"},
+           "store": {"type": ["string", "null"], "description": "store name or id"},
+           "due": {"type": ["string", "null"], "description": "YYYY-MM-DD"},
+           "priority": {"type": ["string", "null"], "enum": ["normal", "high", None]},
+           "special_notes": {"type": ["string", "null"], "description": "instructions staff must read first"},
+           "todo": {"type": ["array", "null"], "items": {"type": "string"}},
+           "description": {"type": ["string", "null"]},
+           "competitor_ads": {"type": ["string", "null"]}, "competitor_landing": {"type": ["string", "null"]},
+           "competitor_products": {"type": ["string", "null"]}},
+          ["title", "kind", "assignee", "store", "due", "priority", "special_notes", "todo", "description",
+           "competitor_ads", "competitor_landing", "competitor_products"]),
     _tool("data_schema", "Owner only: the business tables you can read with data_query (orders and product costs, parcels, "
           "disputes, tickets, pixel events, Google uploads, invoices, payments, saved daily totals…), with their columns and "
           "what they mean. Call this before writing a data_query.", {}, []),
@@ -177,7 +216,7 @@ TOOLS += [
 # Anthropic allows at most 20 strict tools: the simple ones (few or no inputs) don't need it.
 _LOOSE = {"propose_google_change", "list_stores", "get_cash", "get_inbox", "list_schedules_alerts", "delete_schedule_alert",
           "store_health", "tracking_live", "google_campaigns", "google_product_issues", "find_shopify_products",
-          "remember", "forget", "product_sales", "get_disputes", "find_parcels", "data_schema", "data_query", "request_change", "list_change_requests"}
+          "remember", "forget", "product_sales", "get_disputes", "find_parcels", "data_schema", "data_query", "request_change", "list_change_requests", "tasks_list", "task_get", "task_start", "task_save", "task_comment", "task_review", "task_create"}
 for _t in TOOLS:
     if _t["name"] in _LOOSE:
         _t.pop("strict", None)
@@ -215,6 +254,7 @@ If a tool says the person has no access, tell them which desk they'd need.
 For "check everything / store health / are things working" use store_health. For live events ("adds to cart in the last hour") use tracking_live.
 Scheduled reports and alerts: create them with create_schedule / create_alert and confirm the time, days and threshold in one line.
 When the owner gives a rule, preference, definition or correction meant to last, save it with remember and say "Noted." Follow the saved notes below; if a note conflicts with what you're asked now, follow the request and ask whether to update the note.
+Tasks: people refer to tasks by id (T-12). Before working on one, read it with task_get and follow its special instructions first, then the to-do items; keep the person informed of what's still missing; save progress with task_save and submit only when they say it's ready. Admins review with task_review (send back with clear change notes).
 When someone wants the app to do something new or differently (a fix, a better desk, a new desk or tool), save it with request_change after making sure you understand it; tell them the owner reviews requests. For product-level sales use product_sales; for disputes use get_disputes; for "where is order …" use find_parcels.
 You can propose changes with the propose_ tools (owners only). They never change anything themselves: the person sees the action with a Confirm button. Before proposing, check the list (e.g. get_price_changes) and say what will change. Never claim something was done until they confirm."""
 

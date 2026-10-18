@@ -103,7 +103,7 @@ function card(t) {
     ${pick ? `<label class="tk-sel" title="Pick to launch together"><input type="checkbox" data-sel="${t.id}"${state.sel.has(t.id) ? " checked" : ""}> Launch</label>` : ""}
     <div class="tk-card-top"><span class="tk-kindtag ${t.kind}">${t.kind === "listing" ? "Listing + ads" : "Custom"}</span>
       ${t.priority === "high" ? '<span class="tk-high">High</span>' : ""}${t.special_notes ? '<span class="tk-noteflag" title="Has special notes">Notes</span>' : ""}</div>
-    <strong>${esc(t.title)}</strong>
+    <strong><span class="tk-id">T-${t.id}</span> ${esc(t.title)}</strong>
     ${t.store ? `<span class="tk-meta">${esc(t.store)}</span>` : ""}
     ${pages ? `<div class="tk-tags">${pages}</div>` : ""}
     <div class="tk-card-foot"><span class="tk-who">${t.assignee ? esc(t.assignee) : "<em>Not given to anyone</em>"}</span>
@@ -134,7 +134,7 @@ function renderHistory() {
   const rows = state.data.tasks;
   $("hist").innerHTML = rows.length ? `<thead><tr><th>Task</th><th>Store</th><th>Who</th><th>Result</th><th>Closed</th></tr></thead>
     <tbody>${rows.map((t) => `<tr data-open="${t.id}" class="tk-hist-row">
-      <td><span class="name">${esc(t.title)}</span><span class="sub">${t.kind === "listing" ? "Listing + ads" : "Custom"}</span></td>
+      <td><span class="name"><span class="tk-id">T-${t.id}</span> ${esc(t.title)}</span><span class="sub">${t.kind === "listing" ? "Listing + ads" : "Custom"}</span></td>
       <td>${esc(t.store)}</td><td>${esc(t.assignee)}</td>
       <td><span class="tk-st tk-st-${t.status}">${esc(t.status_name)}</span></td><td>${when(t.closed_at)}</td></tr>`).join("")}</tbody>`
     : '<tbody><tr><td class="empty">No finished tasks yet. Launched, done and cancelled tasks land here.</td></tr></tbody>';
@@ -197,7 +197,7 @@ function renderTask() {
   const me = state.data && state.data.me ? state.data.me.email : "";
   const canRm = (f) => !closed && (manage || (f.by === me && t.status !== "approved"));
   const dis = canWork ? "" : " disabled";
-  $("dTitle").textContent = t.title;
+  $("dTitle").textContent = `T-${t.id} · ${t.title}`;
 
   const links = (v) => lines(v).map(linkify).join("<br>");
   const todo = b.todo || null;                 // null = a task from before the to-do picks
