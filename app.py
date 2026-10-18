@@ -156,6 +156,7 @@ async def lifespan(app):
     asyncio.create_task(_time_loop())
     asyncio.create_task(_up_loop())
     asyncio.create_task(_gconv_loop())
+    asyncio.create_task(_px_order_loop())
     asyncio.create_task(_assist_loop())
     asyncio.create_task(_co_loop())
     asyncio.create_task(paypal_track.loop())
@@ -6845,6 +6846,68 @@ def _px_store_for(key: str):
                 m[k] = x["id"]
         _px_keys.update(at=time.time(), map=m)
     return _px_keys["map"].get(key)
+
+
+_px_order_state: dict = {}      # store id -> {last_run, added, written, error}
+
+
+async def _px_orders(st: dict) -> dict:
+    """One store: read its orders of the last 2 days (10+ minutes old, so the pixel has had its chance), add the
+    ones the pixel missed as purchases, and write EcomVital's ad lines on each Shopify order (setting
+    px_orders:<id> {"write": false} turns the writing off)."""
+    since = (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    ripe = datetime.now(timezone.utc) - timedelta(minutes=10)
+    client = ShopifyClient(st["shop_domain"], st["access_token"])
+    got = await client.gql(tracking.ORDERS_QUERY, {"q": f"created_at:>='{since}'"})
+    orders = [o for o in got["orders"]["nodes"]
+              if datetime.fromisoformat(o["createdAt"].replace("Z", "+00:00")) <= ripe]
+    with db._conn() as con:
+        before = con.execute("SELECT COUNT(*) FROM px_events WHERE store_id = ? AND id LIKE 'order:%'", (st["id"],)).fetchone()[0]
+    done = await asyncio.to_thread(tracking.add_orders, st["id"], orders)
+    with db._conn() as con:
+        after = con.execute("SELECT COUNT(*) FROM px_events WHERE store_id = ? AND id LIKE 'order:%'", (st["id"],)).fetchone()[0]
+    cfg = json.loads(db.get_setting(f"px_orders:{st['id']}") or "{}")
+    written, errors = 0, []
+    if cfg.get("write", True):
+        for o, credit, how in done:
+            lines = tracking.order_lines(o, credit, how)
+            if lines is None:
+                continue
+            try:
+                r = (await client.gql(tracking.ORDER_ATTRS, {"input": {"id": o["id"], "customAttributes": lines}}))["orderUpdate"]
+                if r.get("userErrors"):
+                    errors.append(f"{o['name']}: " + "; ".join(e["message"] for e in r["userErrors"]))
+                else:
+                    written += 1
+            except Exception as e:
+                errors.append(f"{o['name']}: {str(e)[:150]}")
+    return {"orders": len(orders), "added": after - before, "written": written, "errors": errors[:5],
+            "last_run": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+
+
+async def _px_order_loop():
+    """Every 3 minutes, for every store with the EcomVital pixel: purchases from Shopify's orders (see _px_orders)."""
+    await asyncio.sleep(120)
+    while True:
+        for st in [x for x in db.list_stores() if not demo.is_demo(x) and x.get("access_token")
+                   and db.get_setting(f"px_key:{x['id']}")]:
+            try:
+                _px_order_state[st["id"]] = await _px_orders(st)
+            except Exception as e:
+                _px_order_state[st["id"]] = {**_px_order_state.get(st["id"], {}), "error": str(e)[:200],
+                                             "last_run": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+        await asyncio.sleep(180)
+
+
+@app.get("/api/tracking/orders-sync")
+async def api_tracking_orders_sync(store: int = 0, run: int = 0):
+    """Owner check: what the order reader did per store; run=1 runs it now for that store."""
+    if run and store:
+        st = next((x for x in db.list_stores() if x["id"] == store), None)
+        if not st:
+            raise HTTPException(404, "Store not found.")
+        _px_order_state[store] = await _px_orders(st)
+    return {"stores": _px_order_state}
 
 
 @app.options("/t/e")

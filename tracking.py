@@ -89,6 +89,9 @@ def record(store_id: int, ev: dict, ip: str) -> bool:
             last = json.loads(v["last_touch"]) if v and v.get("last_touch") else {}
             touch_at = datetime.fromisoformat(v["touch_at"]) if v and v.get("touch_at") else None
         credit = last if last and touch_at and at - touch_at <= WINDOW else {}
+        if name == "checkout_completed" and _gid_num(d.get("order_id")):
+            # the browser saw the purchase after all: its copy (with the shopper's own click) replaces the order's
+            con.execute("DELETE FROM px_events WHERE id = ?", ("order:" + _gid_num(d.get("order_id")),))
         try:
             value = float(d.get("value")) if d.get("value") is not None else None
         except (TypeError, ValueError):
@@ -248,3 +251,134 @@ def in_currency(rep: dict, factor: float) -> dict:
             if r.get(k) is not None:
                 r[k] = r[k] * factor
     return rep
+
+
+# ---------------------------------------------------------------- purchases from Shopify's orders
+
+# Every order counts, even when the browser never fired the purchase event (cookie banner declined, tracker
+# blocked, thank-you page closed): orders are read from Shopify a few minutes after they're placed and any
+# order without a pixel purchase is added here (event id "order:<id>"). Its ad click comes from, in order:
+#   1. the same shopper's earlier visit (pixel events with the same hashed email in the last 7 days)
+#   2. the ad details on the order itself (custom attributes utm_* / fbclid / gclid, e.g. written by a theme script)
+#   3. the visit Shopify recorded (customerJourneySummary: the last visit's UTMs, else its landing page link)
+ORDERS_QUERY = """query O($q: String!) { orders(first: 100, query: $q, sortKey: CREATED_AT, reverse: true) { nodes {
+  id legacyResourceId name createdAt email phone test
+  totalPriceSet { shopMoney { amount currencyCode } }
+  customAttributes { key value }
+  customerJourneySummary { lastVisit { landingPage utmParameters { source medium campaign content term } }
+                           firstVisit { landingPage utmParameters { source medium campaign content term } } } } } }"""
+ORDER_ATTRS = """mutation A($input: OrderInput!) { orderUpdate(input: $input) { order { id } userErrors { field message } } }"""
+
+# what EcomVital writes on the Shopify order (Additional details), next to any other app's lines
+LABELS = (("EcomVital campaign", "a_campaign"), ("EcomVital ad set", "a_term"), ("EcomVital ad", "a_content"),
+          ("EcomVital source", "a_source"), ("EcomVital medium", "a_medium"), ("EcomVital campaign id", "a_id"))
+CLICK_NAMES = {"fbclid": "Meta ad click", "gclid": "Google ad click", "gbraid": "Google ad click", "wbraid": "Google ad click",
+               "ttclid": "TikTok ad click", "msclkid": "Microsoft ad click"}
+HOW = {"pixel": "EcomVital pixel (this shopper's ad click)", "email": "EcomVital pixel (same shopper's earlier visit)",
+       "order": "Ad details on the order", "shopify": "Shopify's record of the visit"}
+
+
+def _credit_from(d: dict) -> dict:
+    """utm_* / click ids (dict of strings) -> a_* fields."""
+    out = {"a_" + k[4:]: (d.get(k) or "")[:300] or None for k in UTM_KEYS}
+    out["a_click"] = next((k for k in CLICK_KEYS if d.get(k)), None)
+    return out
+
+
+def _visit_credit(visit: dict) -> dict:
+    if not visit:
+        return {}
+    u = visit.get("utmParameters") or {}
+    d = {"utm_" + k: u.get(k) for k in ("source", "medium", "campaign", "content", "term") if u.get(k)}
+    if not d:
+        d = touch_of(visit.get("landingPage") or "")
+    return _credit_from(d) if d else {}
+
+
+def _order_credit(o: dict, attrs: dict) -> tuple:
+    """(credit, how) from the order's own ad details, else Shopify's record of the visit; ({}, '') if none."""
+    d = {k: attrs.get(k) for k in UTM_KEYS + CLICK_KEYS if attrs.get(k)}
+    if d.get("utm_campaign") or d.get("utm_source") or any(d.get(k) for k in CLICK_KEYS):
+        return _credit_from(d), "order"
+    j = o.get("customerJourneySummary") or {}
+    credit = _visit_credit(j.get("lastVisit")) or _visit_credit(j.get("firstVisit"))
+    return (credit, "shopify") if credit else ({}, "")
+
+
+def add_orders(store_id: int, orders: list) -> list:
+    """Orders from Shopify -> purchases. Returns [(order, credit, how)] for every order, with the click it was
+    credited to (the pixel's own for orders the pixel saw) so it can be written on the Shopify order."""
+    out = []
+    with db._conn() as con:
+        for o in orders:
+            if o.get("test"):
+                continue
+            oid = str(o["legacyResourceId"])
+            mine = con.execute("SELECT * FROM px_events WHERE store_id = ? AND name = 'checkout_completed' AND order_id = ?"
+                               " ORDER BY id LIKE 'order:%', at LIMIT 1", (store_id, oid)).fetchone()
+            attrs = {a["key"]: a["value"] for a in o.get("customAttributes") or []}
+            if mine and not str(mine["id"]).startswith("order:"):
+                mine = dict(mine)
+                if not (mine["a_campaign"] or mine["a_source"] or mine["a_click"]):
+                    # the pixel saw the purchase but no ad click: the order's own record may still have one
+                    alt, how = _order_credit(o, attrs)
+                    if alt:
+                        con.execute("UPDATE px_events SET a_source = ?, a_medium = ?, a_campaign = ?, a_content = ?,"
+                                    " a_term = ?, a_id = ?, a_click = ? WHERE id = ?",
+                                    (alt.get("a_source"), alt.get("a_medium"), alt.get("a_campaign"), alt.get("a_content"),
+                                     alt.get("a_term"), alt.get("a_id"), alt.get("a_click"), mine["id"]))
+                        out.append((o, alt, how))
+                        continue
+                out.append((o, mine, "pixel"))
+                continue
+            if mine:                                   # added earlier from the order: keep what it was credited to
+                out.append((o, dict(mine), mine["ua"] or ""))
+                continue
+            at = o["createdAt"].replace("Z", "+00:00")
+            at_s = datetime.fromisoformat(at).astimezone(timezone.utc).isoformat(timespec="seconds")
+            em, ph = _hash(o.get("email")), _hash(o.get("phone"), True)
+            credit, how, cid = {}, "", "order:" + oid
+            if em:
+                since = (datetime.fromisoformat(at_s) - WINDOW).isoformat(timespec="seconds")
+                hit = con.execute(
+                    "SELECT client_id, a_source, a_medium, a_campaign, a_content, a_term, a_id, a_click, fbp, fbc FROM px_events"
+                    " WHERE store_id = ? AND em_hash = ? AND at >= ? AND at <= ? ORDER BY (a_campaign IS NULL), at DESC LIMIT 1",
+                    (store_id, em, since, at_s)).fetchone()
+                if hit:
+                    cid = hit["client_id"]
+                    if hit["a_campaign"] or hit["a_source"] or hit["a_click"]:
+                        credit, how = {k: hit[k] for k in ("a_source", "a_medium", "a_campaign", "a_content", "a_term",
+                                                           "a_id", "a_click")}, "email"
+            if not credit:
+                credit, how = _order_credit(o, attrs)
+            money = (o.get("totalPriceSet") or {}).get("shopMoney") or {}
+            try:
+                value = float(money.get("amount"))
+            except (TypeError, ValueError):
+                value = None
+            con.execute(
+                "INSERT OR IGNORE INTO px_events (id, store_id, client_id, name, at, url, ref, value, currency, order_id,"
+                " em_hash, ph_hash, fbp, fbc, ip, ua, a_source, a_medium, a_campaign, a_content, a_term, a_id, a_click)"
+                " VALUES (?,?,?,'checkout_completed',?,'','',?,?,?,?,?,?,'','',?,?,?,?,?,?,?,?)",
+                ("order:" + oid, store_id, cid, at_s, value, money.get("currencyCode"), oid, em, ph,
+                 attrs.get("fbp") or "", how,                    # ua holds how it was credited, for these rows
+                 credit.get("a_source"), credit.get("a_medium"), credit.get("a_campaign"), credit.get("a_content"),
+                 credit.get("a_term"), credit.get("a_id"), credit.get("a_click")))
+            out.append((o, credit, how))
+    return out
+
+
+def order_lines(o: dict, credit: dict, how: str) -> list:
+    """The order's custom attributes with EcomVital's lines added (Shopify replaces the whole list, so the
+    other apps' lines are kept as they are). None when there's nothing to add or it's already there."""
+    have = [{"key": a["key"], "value": a["value"]} for a in o.get("customAttributes") or []]
+    if any(a["key"] == "EcomVital campaign" or a["key"] == "EcomVital" for a in have):
+        return None
+    mine = [{"key": k, "value": str(credit[f])[:250]} for k, f in LABELS if credit.get(f)]
+    if credit.get("a_click"):
+        mine.append({"key": "EcomVital click", "value": CLICK_NAMES.get(credit["a_click"], credit["a_click"])})
+    if not mine:
+        mine = [{"key": "EcomVital", "value": "No ad click found (direct, organic or older than 7 days)"}]
+    else:
+        mine.append({"key": "EcomVital matched by", "value": HOW.get(how, how or "EcomVital pixel")})
+    return have + mine
