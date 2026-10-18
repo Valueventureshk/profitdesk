@@ -85,7 +85,7 @@ async function loadStrategy() {
       <div><span class="ma-pill ${s.on ? "on" : "off"}">${s.on ? "AUTOPILOT ON" : "Off"}</span>
         <b>${esc(s.name)}</b>
         <p class="hint">Every purchase your pixel credits to a Meta campaign raises that campaign's daily budget by
-          <b>${s.currency} ${num(s.step, 0)}</b>, ${s.cap ? `up to <b>${s.currency} ${num(s.cap, 0)}</b> a day per campaign` : "<b>with no cap</b>"}.
+          <b>${s.currency} ${num(s.step, 0)}</b>, ${s.cap ? `up to <b>${s.currency} ${num(s.cap, 0)}</b> a day per campaign` : "<b>with no cap</b>"}${Object.keys(s.caps || {}).length ? ` (own cap: ${Object.values(s.caps).map((c) => `${esc(c.name)} ${c.cap ? s.currency + " " + num(c.cap, 0) : "no cap"}`).join(", ")})` : ""}.
           ${s.on ? `Running since ${when(s.started_at)}: ${s.purchases} purchase${s.purchases === 1 ? "" : "s"}, ${s.raises} raise${s.raises === 1 ? "" : "s"} (+${s.currency} ${num(s.added, 0)}).`
             : s.stopped_at ? `Switched off ${when(s.stopped_at)}.` : "Counts purchases from the moment it's switched on."}</p></div>
       ${manage ? `<div class="ma-strat-acts">
@@ -93,7 +93,14 @@ async function loadStrategy() {
         <details><summary>Settings</summary><div class="ma-rule-fields">
           <label>Raise by (${s.currency})<input class="control" id="stratStep" value="${s.step}"></label>
           <label>Cap per campaign (${s.currency}/day, 0 = no cap)<input class="control" id="stratCap" value="${s.cap}"></label>
-          <div class="row-actions"><button class="btn btn-sm" id="stratSave">Save</button></div></div></details></div>` : ""}
+          <div class="row-actions"><button class="btn btn-sm" id="stratSave">Save</button></div>
+          <div class="ma-caps"><b>Own cap for one campaign</b>
+            ${Object.entries(s.caps || {}).map(([id, c]) => `<div class="ma-cap-row"><span>${esc(c.name || id)}</span>
+              <b>${s.currency} ${c.cap ? num(c.cap, 0) : "no cap"}</b><button class="btn btn-sm btn-ghost" data-capdel="${esc(id)}">Remove</button></div>`).join("")
+              || '<p class="hint">None: every campaign uses the cap above.</p>'}
+            <div class="ma-cap-add"><select class="control" id="capCamp"><option value="">Loading campaigns…</option></select>
+              <input class="control" id="capVal" placeholder="Cap (${s.currency}/day)"><button class="btn btn-sm" id="capAdd">Set cap</button></div></div>
+          </div></details></div>` : ""}
     </div>
     ${feed ? `<ul class="ma-feed">${feed}</ul>` : ""}`;
   if (!manage) return;
@@ -106,6 +113,20 @@ async function loadStrategy() {
       loadStrategy();
     } catch (e) { toast(e.message, true); }
   };
+  const setCap = async (body, msg) => {
+    try { await api(`/api/metaads/strategy/${state.store}`, { method: "PUT", json: { campaign_cap: body } }); toast(msg); loadStrategy(); }
+    catch (e) { toast(e.message, true); }
+  };
+  for (const b of box.querySelectorAll("[data-capdel]")) b.onclick = () => setCap({ id: b.dataset.capdel, cap: null }, "Back to the general cap.");
+  $("capAdd").onclick = () => {
+    const o = $("capCamp").selectedOptions[0];
+    if (!o || !o.value) { toast("Pick the campaign.", true); return; }
+    setCap({ id: o.value, name: o.textContent, cap: $("capVal").value }, `Cap saved for ${o.textContent}.`);
+  };
+  api(`/api/metaads/overview?store=${state.store}&level=campaign&days=7`).then((d) => {
+    const rows = (d.rows || d.items || []).filter((r) => r.id);
+    $("capCamp").innerHTML = '<option value="">Pick a campaign</option>' + rows.map((r) => `<option value="${esc(r.id)}">${esc(r.name)}</option>`).join("");
+  }).catch(() => { $("capCamp").innerHTML = '<option value="">Couldn\'t load campaigns</option>'; });
   $("stratSave").onclick = async () => {
     try {
       await api(`/api/metaads/strategy/${state.store}`, { method: "PUT", json: { step: $("stratStep").value, cap: $("stratCap").value } });

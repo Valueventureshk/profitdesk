@@ -96,3 +96,9 @@
 .ma-dates .control { width: auto; }
 .ma-auto { white-space: nowrap; }
 .ma-auto .sub { display: block; font-size: 11px; color: var(--muted); }
+
+.ma-caps { display: grid; gap: 6px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line-soft); font-size: 13px; }
+.ma-cap-row { display: flex; gap: 8px; align-items: center; }
+.ma-cap-row span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ma-cap-add { display: flex; gap: 6px; flex-wrap: wrap; }
+.ma-cap-add .control { width: auto; min-width: 0; flex: 1; }

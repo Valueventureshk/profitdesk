@@ -11952,7 +11952,7 @@ async def _mads_rows(st, conn, level: str, days: int, fresh=False, window=None) 
 # order (mads_boosts), never above `cap`. Each raise is a logged change with Undo, like any other.
 
 UP_DEFAULTS = {"on": False, "name": "$10 up every purchase", "step": 10.0, "cap": 500.0, "started_at": None,
-               "stopped_at": None, "by": ""}
+               "stopped_at": None, "by": "", "caps": {}}     # caps: {campaign id: {"cap", "name"}} own cap per campaign
 _up_lock: dict = {}
 
 
@@ -12013,10 +12013,11 @@ async def _up_run(st, conn) -> list:
                 try:
                     now_ = await meta_manage.read(conn["access_token"], c["id"])
                     budget = meta_manage._money(now_.get("daily_budget"), cur)
+                    cap = float(((cfg.get("caps") or {}).get(c["id"]) or {}).get("cap", cfg["cap"]) or 0)   # this campaign's own cap, else the strategy's
                     if not budget:
                         outcome = f"{c['name']}: its budget is on the ad sets (or lifetime), so it wasn't raised."
-                    elif cfg["cap"] and budget + cfg["step"] > cfg["cap"] + 0.009:
-                        outcome = f"{c['name']}: already at {budget:.2f}; +{cfg['step']:g} would pass the cap {cfg['cap']:g}."
+                    elif cap and budget + cfg["step"] > cap + 0.009:
+                        outcome = f"{c['name']}: already at {budget:.2f}; +{cfg['step']:g} would pass the cap {cap:g}."
                     else:
                         batch = _mads_batch("up")
                         with db._conn() as con:
@@ -12026,7 +12027,7 @@ async def _up_run(st, conn) -> list:
                                 "reason": f"{cfg['name']}: purchase {('#' + str(b['order_id'])) if b['order_id'] else ''} "
                                           f"({(b['value'] or 0):.2f}) from this campaign"})
                             action = con.execute("SELECT max(id) FROM mads_actions WHERE batch = ?", (batch,)).fetchone()[0]
-                        done = await _mads_run_batch(st, conn, batch, f"{cfg['name']} (autopilot)", cap=cfg["cap"] or 0)
+                        done = await _mads_run_batch(st, conn, batch, f"{cfg['name']} (autopilot)", cap=cap)
                         outcome = done[0] if done else "Raised"
                 except (meta.MetaAdsError, HTTPException) as e:
                     outcome = f"Meta refused: {str(getattr(e, 'detail', None) or e)[:300]}"
@@ -12079,6 +12080,20 @@ def api_up_set(store_id: int, payload: dict, request: Request):
             cfg.update(on=True, started_at=now_, stopped_at=None, by=who)
         elif not on and cfg["on"]:
             cfg.update(on=False, stopped_at=now_, by=who)
+    if "campaign_cap" in payload:                 # {id, name, cap}: one campaign's own cap; cap null/"" = back to the general cap
+        cc = payload["campaign_cap"] or {}
+        cid = str(cc.get("id") or "").strip()
+        if not cid.isdigit():
+            raise HTTPException(400, "Pick the campaign.")
+        caps = dict(cfg.get("caps") or {})
+        if cc.get("cap") in (None, ""):
+            caps.pop(cid, None)
+        else:
+            try:
+                caps[cid] = {"cap": max(0.0, float(cc["cap"])), "name": str(cc.get("name") or "")[:200]}
+            except (TypeError, ValueError):
+                raise HTTPException(400, "The cap must be a number.")
+        cfg["caps"] = caps
     for k in ("step", "cap"):
         if k in payload:
             try:                                  # cap 0 (or empty) = no cap
