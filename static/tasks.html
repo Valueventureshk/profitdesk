@@ -37,6 +37,7 @@
       <select id="fPerson" class="control" data-manage-only><option value="">Everyone</option></select>
       <select id="fStore" class="control"><option value="">All stores</option></select>
       <button class="btn tk-launchsel" id="launchSel" hidden>Launch selected (0)</button>
+      <button class="btn" id="storeKit" data-manage-only>Store kit</button>
       <button class="btn btn-primary" id="newTask" data-manage-only>+ New task</button>
     </div>
 
@@ -79,6 +80,7 @@
     <div class="drawer-body">
       <div class="scm-pages tk-kind" id="eKind">
         <button data-kind="listing" class="on">Listing + ads</button>
+        <button data-kind="store">Create new store</button>
         <button data-kind="custom">Custom task</button>
       </div>
       <label class="field"><span>Title</span><input id="eName" class="control" maxlength="200" placeholder="e.g. Autumn knitwear: collection + ads"></label>
@@ -102,6 +104,29 @@
         <div class="tk-addtodo"><input id="eTodoNew" class="control" placeholder="Add another to-do, e.g. “Translate the advertorial to German”"><button type="button" class="btn btn-sm" id="eTodoAdd">Add</button></div>
         <p class="hint">Staff hand back the result of each ticked item, or a note saying why they couldn't. Every task also hands back one main landing page link: that's where the ads go.</p>
       </div>
+      <div data-store-only hidden>
+        <h4 class="tk-formhead">The store</h4>
+        <div class="tk-row">
+          <label class="field"><span>Brand domain <em class="tk-opt">(the shop's web address)</em></span><input id="sBrand" class="control" placeholder="perthboutique.shop"></label>
+          <label class="field"><span>Shopify domain</span><input id="sShopify" class="control" placeholder="abc123-xy.myshopify.com"></label>
+        </div>
+        <div class="tk-row">
+          <label class="field"><span>Country / market</span><input id="sCountry" class="control" list="sCountries" placeholder="Australia"></label>
+          <label class="field"><span>Language</span><input id="sLang" class="control" list="sLangs" placeholder="English (Australia)"></label>
+          <label class="field"><span>Currency</span><input id="sCur" class="control" list="sCurs" placeholder="AUD"></label>
+        </div>
+        <datalist id="sCountries"><option>Australia</option><option>New Zealand</option><option>United Kingdom</option><option>Ireland</option><option>United States</option><option>Canada</option><option>Germany</option><option>France</option><option>Netherlands</option><option>Belgium</option><option>Spain</option><option>Italy</option><option>Austria</option><option>Switzerland</option><option>Sweden</option><option>Denmark</option><option>Norway</option></datalist>
+        <datalist id="sLangs"><option>English (Australia)</option><option>English (UK)</option><option>English (US)</option><option>English (Canada)</option><option>French</option><option>German</option><option>Dutch</option><option>Spanish</option><option>Italian</option><option>Swedish</option><option>Danish</option><option>Norwegian</option></datalist>
+        <datalist id="sCurs"><option>AUD</option><option>NZD</option><option>GBP</option><option>EUR</option><option>USD</option><option>CAD</option><option>CHF</option><option>SEK</option><option>DKK</option><option>NOK</option></datalist>
+        <div class="tk-row">
+          <label class="field"><span>Ads mainly on</span><select id="sAds" class="control"><option value="meta">Meta</option><option value="google">Google</option><option value="both">Meta + Google</option></select></label>
+          <label class="field"><span>Competitor store <em class="tk-opt">(products are imported from it)</em></span><input id="sComp" class="control" placeholder="https://competitor.com"></label>
+        </div>
+        <label class="field"><span>Real customer reviews <em class="tk-opt">(paste them: name, stars, text; one per line or block)</em></span><textarea id="sReviews" class="control" rows="4"></textarea></label>
+        <h4 class="tk-formhead">Done by you? <em class="tk-opt">(“No” = a daily reminder until it's ticked)</em></h4>
+        <div class="tk-checks tk-storechecks" id="sChecks"></div>
+        <label class="field"><span>Support email <em class="tk-opt">(if set up)</em></span><input id="sEmail" class="control" placeholder="support@brand.com"></label>
+      </div>
       <label class="field" data-custom-only><span>What needs doing</span><textarea id="eDesc" class="control" rows="6"></textarea></label>
 
       <h4 class="tk-formhead">Special instructions <em class="tk-opt">(staff always see these first)</em></h4>
@@ -113,6 +138,23 @@
       </div>
       <div class="tk-recs" id="eRecs"></div>
       <div class="row-actions"><button class="btn btn-primary" id="eSave">Create task</button></div>
+    </div>
+  </div>
+</div>
+
+<!-- the store kit: playbook every new store follows + the theme it gets -->
+<div class="drawer tk-drawer" id="kit" hidden>
+  <div class="drawer-scrim" data-close></div>
+  <div class="drawer-panel">
+    <div class="drawer-head"><h2>Store kit</h2><button class="btn btn-sm btn-ghost" data-close>Close</button></div>
+    <div class="drawer-body">
+      <h4 class="tk-formhead">Theme every new store gets</h4>
+      <p class="hint" id="kitTheme">No theme uploaded yet.</p>
+      <label class="btn btn-sm">⬆ Upload the theme .zip<input type="file" id="kitFile" accept=".zip" hidden></label>
+      <p class="hint">In Shopify: Online Store → Themes → … next to the theme → Download theme file. Use Perth Boutique's.</p>
+      <h4 class="tk-formhead">Store Playbook <em class="tk-opt">(Claude reads this before building every new store)</em></h4>
+      <textarea id="kitPlaybook" class="control tk-playbook" rows="22"></textarea>
+      <div class="row-actions"><span class="hint" id="kitAt"></span><button class="btn btn-primary" id="kitSave">Save playbook</button></div>
     </div>
   </div>
 </div>

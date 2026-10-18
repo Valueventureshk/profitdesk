@@ -48,7 +48,10 @@ const dueText = (d, today) => {
 const TODO_DEFAULT = { advertorial: "Create advertorial", collection: "Create collection", product_pages: "Create product pages",
   branded_page: "Create branded page", creatives: "Create creatives", ad_copy: "Ad copy, headline and description" };
 const todoNames = () => (state.data && state.data.todo) || (state.task && state.task.todo) || TODO_DEFAULT;
-const todoLabel = (k) => todoNames()[k] || k;
+const storeTodo = () => (state.data && state.data.store_todo) || (state.task && state.task.store_todo) || {};
+const storeChecks = () => (state.data && state.data.store_checks) || (state.task && state.task.store_checks) || {};
+const todoLabel = (k) => todoNames()[k] || storeTodo()[k] || k;
+const KIND_NAME = { listing: "Listing + ads", custom: "Custom", store: "New store" };
 const AUDIO = /\.(m4a|mp3|wav|ogg|oga|aac)$|^voice-note/i;
 const COLUMNS = [
   ["todo", "To do"], ["doing", "In progress"], ["changes", "Changes asked"],
@@ -101,7 +104,7 @@ function card(t) {
   const pick = state.data.manage && state.data.launch_ready && t.status === "approved" && t.kind === "listing";
   return `<div class="tk-card${t.priority === "high" ? " high" : ""}${state.sel.has(t.id) ? " picked" : ""}" data-open="${t.id}" role="button" tabindex="0">
     ${pick ? `<label class="tk-sel" title="Pick to launch together"><input type="checkbox" data-sel="${t.id}"${state.sel.has(t.id) ? " checked" : ""}> Launch</label>` : ""}
-    <div class="tk-card-top"><span class="tk-kindtag ${t.kind}">${t.kind === "listing" ? "Listing + ads" : "Custom"}</span>
+    <div class="tk-card-top"><span class="tk-kindtag ${t.kind}">${KIND_NAME[t.kind] || t.kind}</span>
       ${t.priority === "high" ? '<span class="tk-high">High</span>' : ""}${t.special_notes ? '<span class="tk-noteflag" title="Has special notes">Notes</span>' : ""}</div>
     <strong><span class="tk-id">T-${t.id}</span> ${esc(t.title)}</strong>
     ${t.store ? `<span class="tk-meta">${esc(t.store)}</span>` : ""}
@@ -134,7 +137,7 @@ function renderHistory() {
   const rows = state.data.tasks;
   $("hist").innerHTML = rows.length ? `<thead><tr><th>Task</th><th>Store</th><th>Who</th><th>Result</th><th>Closed</th></tr></thead>
     <tbody>${rows.map((t) => `<tr data-open="${t.id}" class="tk-hist-row">
-      <td><span class="name"><span class="tk-id">T-${t.id}</span> ${esc(t.title)}</span><span class="sub">${t.kind === "listing" ? "Listing + ads" : "Custom"}</span></td>
+      <td><span class="name"><span class="tk-id">T-${t.id}</span> ${esc(t.title)}</span><span class="sub">${KIND_NAME[t.kind] || t.kind}</span></td>
       <td>${esc(t.store)}</td><td>${esc(t.assignee)}</td>
       <td><span class="tk-st tk-st-${t.status}">${esc(t.status_name)}</span></td><td>${when(t.closed_at)}</td></tr>`).join("")}</tbody>`
     : '<tbody><tr><td class="empty">No finished tasks yet. Launched, done and cancelled tasks land here.</td></tr></tbody>';
@@ -204,12 +207,22 @@ function renderTask() {
   const briefRows = [
     ["Competitor ads", links(b.competitor_ads)], ["Their landing page", links(b.competitor_landing)],
     ["Their products", links(b.competitor_products)],
-    ["To do", (todo || []).map((k) => `<span class="tk-tag">${esc(todoLabel(k))}</span>`).join(" ")],
+    ["To do", t.kind === "store" ? "" : (todo || []).map((k) => `<span class="tk-tag">${esc(todoLabel(k))}</span>`).join(" ")],
     ["Collection", b.collection && esc(b.collection)], ["Products", links(b.products)],
     ["Build", (b.pages || []).map((p) => `<span class="tk-tag">${esc(p)}</span>`).join(" ")],
     ["Ad angle", b.angle && esc(b.angle).replace(/\n/g, "<br>")], ["Headline ideas", lines(b.headlines).map(esc).join("<br>")],
     ["Daily budget", b.budget && esc(b.budget)], ["Countries", b.countries && esc(b.countries)],
     ["Details", b.description && esc(b.description).replace(/\n/g, "<br>")],
+    ...(t.kind === "store" ? [
+      ["Brand domain", b.brand_domain && linkify(/^https?:/.test(b.brand_domain) ? b.brand_domain : "https://" + b.brand_domain)],
+      ["Shopify domain", b.shopify_domain && esc(b.shopify_domain)],
+      ["Market", [b.country, b.language, b.currency].filter(Boolean).map(esc).join(" · ")],
+      ["Ads on", b.ads_platform && esc({ meta: "Meta", google: "Google", both: "Meta + Google" }[b.ads_platform] || b.ads_platform)],
+      ["Competitor", b.competitor_url && linkify(b.competitor_url)],
+      ["Customer reviews", b.reviews && `<details><summary>${lines(b.reviews).length} line(s)</summary>${esc(b.reviews).replace(/\n/g, "<br>")}</details>`],
+      ["Support email", b.support_email && b.support_email !== "no" && b.support_email !== "yes" ? esc(b.support_email) : ""],
+      ["Store steps", (b.todo || []).map((k) => `<span class="tk-tag">${esc(todoLabel(k))}</span>`).join(" ")],
+    ] : []),
   ].filter(([, v]) => v);
 
   const f = (k, label, ph = "", rows = 0) => rows
@@ -243,7 +256,13 @@ function renderTask() {
         <textarea class="control" data-cant="${esc(k)}" rows="2" placeholder="e.g. The supplier has no photos of the blue one"${dis}>${esc(cant[k] || "")}</textarea></details></div>`;
   };
 
-  const handBack = t.kind !== "listing" ? `${f("other_links", "Links (one per line)", "", 3)}
+  const handBack = t.kind === "store" ? `<div class="tk-main">${f("landing_url", "Store link · the live store", "https://brand.com")}</div>
+      ${(todo || []).map(item).join("")}
+      ${f("other_links", "Other links (one per line)", "", 2)}
+      <h4>Files</h4>
+      <div class="tk-files">${creatives.concat(otherFiles).map((x) => fileTile(x, canRm(x))).join("") || '<p class="tk-empty">None</p>'}</div>
+      ${canWork ? uploader("staff", "file", "+ Upload files") : ""}`
+    : t.kind !== "listing" ? `${f("other_links", "Links (one per line)", "", 3)}
       <h4>Files</h4>
       <div class="tk-files">${creatives.concat(otherFiles).map((x) => fileTile(x, canRm(x))).join("") || '<p class="tk-empty">None</p>'}</div>
       ${canWork ? uploader("staff", "file", "+ Upload files") : ""}`
@@ -267,7 +286,7 @@ function renderTask() {
     if (manage && t.status === "submitted") acts.push(`<button class="btn btn-primary" data-move="approved">Approve</button><button class="btn" data-changes>Send back for changes</button>`);
     if (manage && t.status === "approved" && t.kind === "listing") acts.push(`${t.launch_ready ? "<button class=\"btn btn-primary\" data-launch>Launch ads on Meta…</button>"
       : "<button class=\"btn\" disabled title=\"The launch strategies are being set up\">Launch ads on Meta · coming soon</button>"}<button class="btn" data-move="launched" data-confirm="Mark as launched without creating the ads here?">Mark launched (set up by hand)</button>`);
-    if (manage && t.status === "approved" && t.kind === "custom") acts.push(`<button class="btn btn-primary" data-move="done">Mark done</button>`);
+    if (manage && t.status === "approved" && t.kind !== "listing") acts.push(`<button class="btn btn-primary" data-move="done">${t.kind === "store" ? "Store is live: mark done" : "Mark done"}</button>`);
     if (manage && t.status === "approved") acts.push(`<button class="btn" data-changes>Send back for changes</button>`);
     if (canWork && t.status === "approved" && manage) acts.push(`<button class="btn" data-save>Save edits</button>`);
   } else if (manage) {
@@ -289,7 +308,7 @@ function renderTask() {
   $("dBody").innerHTML = `
     <div class="tk-head">
       <span class="tk-st tk-st-${t.status}">${esc(t.status_name)}</span>
-      <span>${t.kind === "listing" ? "Listing + ads" : "Custom task"}</span>
+      <span>${t.kind === "custom" ? "Custom task" : KIND_NAME[t.kind] || t.kind}</span>
       ${t.store ? `<span>· ${esc(t.store)}</span>` : ""}
       <span>· ${t.assignee ? esc(t.assignee) : "Not given to anyone"}</span>
       ${t.due ? `<span>· ${dueText(t.due, state.data && state.data.today)}</span>` : ""}
@@ -303,12 +322,14 @@ function renderTask() {
         <label class="btn btn-sm">⬆ Upload a recording<input type="file" accept="audio/*,video/*" data-recfile multiple hidden></label></div>` : ""}
     </div>` : ""}
     ${launchInfo}
+    ${t.kind === "store" && (t.store_pending || []).length ? `<div class="warn tk-pending"><b>Still to do by the admin</b> (reminded daily):
+      ${t.store_pending.map((x) => `<br>• ${esc(x)}`).join("")}${manage ? `<br><button class="btn btn-sm" data-edit>Tick them in the brief</button>` : ""}</div>` : ""}
     <section class="tk-sec"><h3>The brief <em class="tk-opt">from ${esc((t.created_by || "").split("@")[0])}</em></h3>
       ${briefRows.length ? `<dl class="tk-dl">${briefRows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>` : '<p class="tk-empty">No details given</p>'}
       ${adminFiles.length ? `<div class="tk-files">${adminFiles.map((x) => fileTile(x, manage && !closed)).join("")}</div>` : ""}
       ${manage && !closed ? uploader("admin", "file", "+ Add reference files to the brief") : ""}
     </section>
-    <section class="tk-sec tk-work"><h3>${t.kind === "listing" ? "What was made" : "The work"}</h3>
+    <section class="tk-sec tk-work"><h3>${t.kind === "listing" ? "What was made" : t.kind === "store" ? "Building the store" : "The work"}</h3>
       ${handBack}
       ${f("notes", "Notes for the admin", "", 2)}
     </section>
@@ -617,6 +638,16 @@ function setKind(kind) {
   for (const b of $("eKind").querySelectorAll("button")) b.classList.toggle("on", b.dataset.kind === kind);
   for (const el of $("editor").querySelectorAll("[data-listing]")) el.hidden = kind !== "listing";
   for (const el of $("editor").querySelectorAll("[data-custom-only]")) el.hidden = kind !== "custom";
+  for (const el of $("editor").querySelectorAll("[data-store-only]")) el.hidden = kind !== "store";
+  $("eName").placeholder = kind === "store" ? "e.g. New store: Bella Rosa UK (left empty = from the domain)" : "e.g. Autumn knitwear: collection + ads";
+}
+
+function renderStoreChecks(b) {
+  $("sChecks").innerHTML = Object.entries(storeChecks()).map(([k, label]) => {
+    const v = String(b[k] || "no").toLowerCase() === "no" ? "no" : "yes";
+    return `<label class="tk-yn"><span>${esc(label)}</span><select class="control" data-check="${k}">
+      <option value="yes"${v === "yes" ? " selected" : ""}>Yes</option><option value="no"${v === "no" ? " selected" : ""}>No (remind me)</option></select></label>`;
+  }).join("");
 }
 
 function renderTodo() {
@@ -648,6 +679,12 @@ function openEditor(t = null) {
   $("eDesc").value = b.description || "";
   state.todo = t ? (b.todo || []) : Object.keys(todoNames());
   renderTodo();
+  $("sBrand").value = b.brand_domain || ""; $("sShopify").value = b.shopify_domain || "";
+  $("sCountry").value = b.country || ""; $("sLang").value = b.language || ""; $("sCur").value = b.currency || "";
+  $("sAds").value = b.ads_platform || "meta"; $("sComp").value = b.competitor_url || "";
+  $("sReviews").value = b.reviews || "";
+  $("sEmail").value = b.support_email && !["yes", "no"].includes(b.support_email) ? b.support_email : "";
+  renderStoreChecks(b);
   state.recs = [];
   renderRecs();
   setKind(t ? t.kind : "listing");
@@ -670,8 +707,17 @@ function waHint() {
 async function saveEditor() {
   const listing = state.kind === "listing";
   // older tasks keep the brief fields this form no longer shows
+  const checks = {};
+  for (const el of $("sChecks").querySelectorAll("[data-check]")) checks[el.dataset.check] = el.value;
+  if (checks.support_email === "yes" && $("sEmail").value.trim()) checks.support_email = $("sEmail").value.trim();
   const brief = listing ? { ...state.editBrief, competitor_ads: $("eCompetitor").value, competitor_landing: $("eCompLanding").value,
-    competitor_products: $("eCompProducts").value, todo: readTodo() } : { ...state.editBrief, description: $("eDesc").value };
+    competitor_products: $("eCompProducts").value, todo: readTodo() }
+    : state.kind === "store" ? { ...state.editBrief, brand_domain: $("sBrand").value, shopify_domain: $("sShopify").value,
+      country: $("sCountry").value, language: $("sLang").value, currency: $("sCur").value, ads_platform: $("sAds").value,
+      competitor_url: $("sComp").value, reviews: $("sReviews").value, ...checks,
+      todo: (state.editBrief.todo && state.editBrief.todo.length) ? state.editBrief.todo : Object.keys(storeTodo()) }
+    : { ...state.editBrief, description: $("eDesc").value };
+  if (state.kind === "store" && !brief.brand_domain && !brief.shopify_domain) { toast("Fill in the brand domain or the Shopify domain.", true); return; }
   const body = { kind: state.kind, title: $("eName").value, store_id: $("eStore").value, assignee_id: $("eWho").value,
     due: $("eDue").value, priority: $("ePrio").value, special_notes: $("eNotes").value, brief };
   if (listing && !brief.todo.length && !confirm("Nothing is ticked under To do. Create it anyway?")) return;
@@ -934,3 +980,34 @@ $("day").onchange = $("dayPerson").onchange = loadDay;
   if (t) openTask(+t);
   setInterval(() => { if (document.visibilityState === "visible" && state.page !== "day" && $("editor").hidden) load(); }, 60000);
 })();
+
+
+/* ------------------------------------------------ store kit (playbook + theme) */
+
+async function openKit() {
+  $("kit").hidden = false;
+  $("kitPlaybook").value = "Loading…";
+  try {
+    const d = await api("/api/tasks/kit/playbook");
+    $("kitPlaybook").value = d.playbook || "";
+    $("kitAt").textContent = d.updated ? `Saved ${when(d.updated)}` : "Not saved yet";
+    const th = d.kit && d.kit.theme;
+    $("kitTheme").textContent = th ? `${th.name} · ${(th.size / 1048576).toFixed(1)} MB · uploaded ${when(th.at)}` : "No theme uploaded yet.";
+  } catch (e) { toast(e.message, true); }
+}
+$("storeKit").onclick = openKit;
+for (const el of $("kit").querySelectorAll("[data-close]")) el.onclick = () => { $("kit").hidden = true; };
+$("kitSave").onclick = async () => {
+  try { await api("/api/tasks/kit/playbook", { method: "PUT", json: { playbook: $("kitPlaybook").value } }); toast("Playbook saved"); openKit(); }
+  catch (e) { toast(e.message, true); }
+};
+$("kitFile").onchange = async (e) => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const fd = new FormData();
+  fd.append("file", f);
+  $("kitTheme").textContent = "Uploading…";
+  try { await api("/api/tasks/kit/theme", { method: "POST", body: fd }); toast("Theme saved in the store kit"); openKit(); }
+  catch (err) { toast(err.message, true); openKit(); }
+  e.target.value = "";
+};

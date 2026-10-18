@@ -14,10 +14,13 @@ import re
 
 STATUSES = ("todo", "doing", "submitted", "changes", "approved", "launched", "done", "cancelled")
 HISTORY = ("launched", "done", "cancelled")
-KINDS = ("listing", "custom")
+KINDS = ("listing", "custom", "store")
 
 # what the admin fills in (brief) and what staff hand back (result), per kind
 BRIEF_FIELDS = ("competitor_ads", "competitor_landing", "competitor_products", "todo", "description",
+                # new store: what the admin fills in (see STORE_*)
+                "shopify_domain", "brand_domain", "country", "language", "currency", "ads_platform", "competitor_url",
+                "reviews", "payments", "support_email", "ad_account", "app_connected",
                 # older listing tasks (before the to-do picks) — still shown, no longer asked for
                 "collection", "products", "pages", "angle", "headlines", "budget", "countries")
 RESULT_FIELDS = ("landing_url", "collection_url", "product_urls", "advertorial_url", "branded_url", "primary_text",
@@ -33,6 +36,26 @@ TODO = {
     "creatives": "Create creatives",
     "ad_copy": "Ad copy, headline and description",
 }
+# "Create new store" tasks: the steps Claude / staff work through, in order (following the Store Playbook,
+# setting store_playbook). Each is answered with a link or a short note (result.custom) or "can't do" with why.
+STORE_TODO = {
+    "s_theme": "Install the Perth theme (from the store kit)",
+    "s_pages": "Pages: about us, contact, track order, FAQ, shipping / returns / privacy / terms",
+    "s_products": "Import ~1,000 products from the competitor (market price rules)",
+    "s_collections": "Collections + collection template",
+    "s_menus": "Menus: header, footer",
+    "s_story": "Sale story + discount, consistent across the store",
+    "s_product_template": "Product page like Perth (reviews, trust badges, size chart)",
+    "s_reviews": "Place the real customer reviews",
+    "s_payments": "Payment gateways checked (Airwallex, PayPal)",
+    "s_tracking": "EcomVital app, pixel and tracking page live",
+    "s_meta": "Meta ad account linked to Shopify and EcomVital",
+    "s_launch": "Final check: test the order path, ready to launch",
+}
+# the admin's yes/no checks on a store task; "no" = a daily reminder until it's done
+STORE_CHECKS = {"payments": "Payment gateways connected (Airwallex, PayPal)", "support_email": "Support email set up",
+                "ad_account": "Meta ad account created", "app_connected": "Store connected to EcomVital (Shopify app)"}
+
 TODO_NEEDS = {"advertorial": ("advertorial_url",), "collection": ("collection_url",), "product_pages": ("product_urls",),
               "branded_page": ("branded_url",), "ad_copy": ("primary_text", "headline")}
 
@@ -186,15 +209,20 @@ def clean_result(d: dict) -> dict:
 
 
 def todo_label(key: str) -> str:
-    return TODO.get(key, key)
+    return TODO.get(key) or STORE_TODO.get(key) or key
+
+
+def store_pending(brief: dict) -> list:
+    """The admin's store checks still answered "no" (or not answered)."""
+    return [label for k, label in STORE_CHECKS.items() if str(brief.get(k) or "no").strip().lower() in ("no", "", "false")]
 
 
 def missing(kind: str, brief: dict, result: dict, creatives: int) -> list:
     """What still stops a listing task being submitted: the main landing page link, and every to-do item
     that has neither its output nor a "couldn't do it" note for the admin."""
-    if kind != "listing":
+    if kind not in ("listing", "store"):
         return []
-    out = [] if result.get("landing_url") else ["the main landing page link"]
+    out = [] if result.get("landing_url") else ["the main landing page link" if kind == "listing" else "the store link"]
     cant = result.get("cant") or {}
     for key in brief.get("todo") or []:
         if cant.get(key):

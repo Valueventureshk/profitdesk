@@ -158,6 +158,7 @@ async def lifespan(app):
     asyncio.create_task(_up_loop())
     asyncio.create_task(_gconv_loop())
     asyncio.create_task(_px_order_loop())
+    asyncio.create_task(_store_task_remind_loop())
     asyncio.create_task(_assist_loop())
     asyncio.create_task(_co_loop())
     asyncio.create_task(paypal_track.loop())
@@ -14241,7 +14242,9 @@ def api_tasks(request: Request, view: str = "board", assignee: int = 0, store: i
         x = _task_out(t, people, stores)
         x["files_staff"], x["files_all"] = counts.get(t["id"], (0, 0))
         out.append(x)
-    return {"todo": tasks.TODO, "launch_ready": tasks.LAUNCH_READY, "tasks": out, "manage": manage, "me": {"id": user.get("id"), "email": user.get("email")},
+    return {"todo": tasks.TODO, "store_todo": tasks.STORE_TODO, "store_checks": tasks.STORE_CHECKS,
+            "playbook_set": bool(db.get_setting("store_playbook")), "kit": _store_kit_info(),
+            "launch_ready": tasks.LAUNCH_READY, "tasks": out, "manage": manage, "me": {"id": user.get("id"), "email": user.get("email")},
             "people": list(people.values()) if manage else [],
             "stores": [{"id": k, "name": v} for k, v in sorted(stores.items(), key=lambda kv: kv[1].lower())],
             "statuses": tasks.STATUS_NAMES, "ctas": tasks.CTAS, "wa_ready": whatsapp.ready(),
@@ -14588,12 +14591,93 @@ def api_task(request: Request, task_id: int):
     out = _task_out(t, people, stores, files, full=True)
     out["log"] = log
     out["todo"] = tasks.TODO
+    out["store_todo"] = tasks.STORE_TODO
+    out["store_checks"] = tasks.STORE_CHECKS
+    if t["kind"] == "store":
+        out["store_pending"] = tasks.store_pending(out.get("brief") or {})
     out["launch_ready"] = tasks.LAUNCH_READY
     out["manage"] = _task_manager(user)
     out["mine"] = t["assignee_id"] == user.get("id")
     p = people.get(t["assignee_id"])
     out["wa"] = {"ready": whatsapp.ready(), "number": bool(p and p.get("wa"))}
     return out
+
+
+# ---- "Create new store" tasks: the Store Playbook (how Perth Boutique is built, setting store_playbook) and the
+# store kit (Perth's theme export, <DB dir>/store_kit/), plus a daily reminder for the admin's checks answered "no".
+
+STORE_KIT = os.path.join(os.path.dirname(os.path.abspath(db.DB_PATH)), "store_kit")
+
+
+def _store_kit_info() -> dict:
+    path = os.path.join(STORE_KIT, "theme.zip")
+    if not os.path.exists(path):
+        return {"theme": None}
+    meta = json.loads(db.get_setting("store_kit_theme") or "{}")
+    return {"theme": {"name": meta.get("name") or "theme.zip", "size": os.path.getsize(path), "at": meta.get("at"),
+                      "by": meta.get("by")}}
+
+
+@app.get("/api/tasks/kit/playbook")
+def api_store_playbook():
+    return {"playbook": db.get_setting("store_playbook") or "", "updated": db.get_setting("store_playbook_at"),
+            "kit": _store_kit_info()}
+
+
+@app.put("/api/tasks/kit/playbook")
+def api_store_playbook_save(request: Request, payload: dict):
+    _need_level(request, "tasks", "manage")
+    text = str(payload.get("playbook") or "")[:100000]
+    db.set_setting("store_playbook", text)
+    db.set_setting("store_playbook_at", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+    return {"ok": True}
+
+
+@app.post("/api/tasks/kit/theme")
+async def api_store_kit_upload(request: Request):
+    """The theme every new store gets (a Shopify theme export .zip, e.g. Perth Boutique's)."""
+    _need_level(request, "tasks", "manage")
+    form = await request.form()
+    f = form.get("file")
+    if not hasattr(f, "read"):
+        raise HTTPException(400, "Choose the theme .zip file.")
+    data = await f.read()
+    if not data.startswith(b"PK"):
+        raise HTTPException(400, "That isn't a .zip file. In Shopify: Online Store → Themes → … → Download theme file.")
+    if len(data) > 60 * 1024 * 1024:
+        raise HTTPException(400, "That file is over 60 MB.")
+    os.makedirs(STORE_KIT, exist_ok=True)
+    with open(os.path.join(STORE_KIT, "theme.zip"), "wb") as fh:
+        fh.write(data)
+    db.set_setting("store_kit_theme", json.dumps({"name": f.filename, "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                                                  "by": (_task_user(request) or {}).get("email")}))
+    return {"ok": True, "kit": _store_kit_info()}
+
+
+async def _store_task_remind_loop():
+    """Once a day from 10:00 Hong Kong: remind whoever made an open store task of the checks still answered "no"."""
+    await asyncio.sleep(300)
+    while True:
+        try:
+            now = datetime.now(CASH_TZ)
+            if now.hour >= 10:
+                _tasks_db()
+                with db._conn() as con:
+                    rows = [dict(r) for r in con.execute(
+                        "SELECT id, title, brief, created_by FROM tasks WHERE kind = 'store' AND status NOT IN (?, ?, ?)",
+                        tasks.HISTORY)]
+                for t in rows:
+                    left = tasks.store_pending(tasks.loads(t["brief"]))
+                    key = f"store_remind:{t['id']}"
+                    if not left or not t["created_by"] or db.get_setting(key) == now.date().isoformat():
+                        continue
+                    _assist_deliver(t["created_by"], f"T-{t['id']} {t['title']}: still to do by you",
+                                    "Before this store can launch:\n" + "\n".join(f"• {x}" for x in left)
+                                    + f"\n\nTick them on the task when done: {BASE_URL}/tasks?task={t['id']}", "tasks")
+                    db.set_setting(key, now.date().isoformat())
+        except Exception as e:
+            print(f"Store task reminders: {e}", flush=True)
+        await asyncio.sleep(1800)
 
 
 class _AsUser:
@@ -14664,6 +14748,9 @@ async def _task_tool(name: str, args: dict, user: dict) -> dict:
                                        for l in (t.get("log") or [])][-30:],
                 "files": [{"name": f["name"], "from": "admin" if f["side"] == "admin" else "staff", "kind": f["kind"],
                            "open": f"{BASE_URL}/api/tasks/file/{f['id']}"} for f in t.get("files") or []],
+                **({"store_playbook_follow_this": db.get_setting("store_playbook") or "(no playbook saved yet: ask the owner)",
+                    "admin_checks_still_no": tasks.store_pending(brief), "store_kit": _store_kit_info()}
+                   if t["kind"] == "store" else {}),
                 "note": "Voice notes / screen recordings are files: the person opens them in the browser and can tell you what they say.",
                 "link": f"{BASE_URL}/tasks?task={tid}"}
     if name == "task_start":
@@ -14715,6 +14802,9 @@ def _task_fields(payload: dict) -> dict:
     brief = tasks.clean_brief(payload.get("brief") or {})
     if not title:
         title = (f"List {brief['collection']}" if brief.get("collection") else "")
+    if not title and kind == "store":
+        title = "New store: " + (brief.get("brand_domain") or brief.get("shopify_domain") or "")
+        title = "" if title == "New store: " else title
     if not title:
         raise HTTPException(400, "Give the task a title.")
     due = str(payload.get("due") or "").strip() or None
