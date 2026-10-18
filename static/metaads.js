@@ -85,14 +85,14 @@ async function loadStrategy() {
       <div><span class="ma-pill ${s.on ? "on" : "off"}">${s.on ? "AUTOPILOT ON" : "Off"}</span>
         <b>${esc(s.name)}</b>
         <p class="hint">Every purchase your pixel credits to a Meta campaign raises that campaign's daily budget by
-          <b>${s.currency} ${num(s.step, 0)}</b>, up to <b>${s.currency} ${num(s.cap, 0)}</b> a day per campaign.
+          <b>${s.currency} ${num(s.step, 0)}</b>, ${s.cap ? `up to <b>${s.currency} ${num(s.cap, 0)}</b> a day per campaign` : "<b>with no cap</b>"}.
           ${s.on ? `Running since ${when(s.started_at)}: ${s.purchases} purchase${s.purchases === 1 ? "" : "s"}, ${s.raises} raise${s.raises === 1 ? "" : "s"} (+${s.currency} ${num(s.added, 0)}).`
             : s.stopped_at ? `Switched off ${when(s.stopped_at)}.` : "Counts purchases from the moment it's switched on."}</p></div>
       ${manage ? `<div class="ma-strat-acts">
         <button class="btn ${s.on ? "btn-danger ma-off" : "btn-primary"}" id="stratToggle">${s.on ? "Turn off autopilot" : "Turn on"}</button>
         <details><summary>Settings</summary><div class="ma-rule-fields">
           <label>Raise by (${s.currency})<input class="control" id="stratStep" value="${s.step}"></label>
-          <label>Cap per campaign (${s.currency}/day)<input class="control" id="stratCap" value="${s.cap}"></label>
+          <label>Cap per campaign (${s.currency}/day, 0 = no cap)<input class="control" id="stratCap" value="${s.cap}"></label>
           <div class="row-actions"><button class="btn btn-sm" id="stratSave">Save</button></div></div></details></div>` : ""}
     </div>
     ${feed ? `<ul class="ma-feed">${feed}</ul>` : ""}`;

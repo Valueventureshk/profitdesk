@@ -11843,7 +11843,7 @@ async def _up_run(st, conn) -> list:
                     budget = meta_manage._money(now_.get("daily_budget"), cur)
                     if not budget:
                         outcome = f"{c['name']}: its budget is on the ad sets (or lifetime), so it wasn't raised."
-                    elif budget + cfg["step"] > cfg["cap"] + 0.009:
+                    elif cfg["cap"] and budget + cfg["step"] > cfg["cap"] + 0.009:
                         outcome = f"{c['name']}: already at {budget:.2f}; +{cfg['step']:g} would pass the cap {cfg['cap']:g}."
                     else:
                         batch = _mads_batch("up")
@@ -11854,7 +11854,7 @@ async def _up_run(st, conn) -> list:
                                 "reason": f"{cfg['name']}: purchase {('#' + str(b['order_id'])) if b['order_id'] else ''} "
                                           f"({(b['value'] or 0):.2f}) from this campaign"})
                             action = con.execute("SELECT max(id) FROM mads_actions WHERE batch = ?", (batch,)).fetchone()[0]
-                        done = await _mads_run_batch(st, conn, batch, f"{cfg['name']} (autopilot)", cap=cfg["cap"])
+                        done = await _mads_run_batch(st, conn, batch, f"{cfg['name']} (autopilot)", cap=cfg["cap"] or 0)
                         outcome = done[0] if done else "Raised"
                 except (meta.MetaAdsError, HTTPException) as e:
                     outcome = f"Meta refused: {str(getattr(e, 'detail', None) or e)[:300]}"
@@ -11909,8 +11909,9 @@ def api_up_set(store_id: int, payload: dict, request: Request):
             cfg.update(on=False, stopped_at=now_, by=who)
     for k in ("step", "cap"):
         if k in payload:
-            try:
-                cfg[k] = max(1.0, float(payload[k]))
+            try:                                  # cap 0 (or empty) = no cap
+                v = float(payload[k] or 0) if k == "cap" else float(payload[k])
+                cfg[k] = max(0.0, v) if k == "cap" else max(1.0, v)
             except (TypeError, ValueError):
                 raise HTTPException(400, f"{k} must be a number.")
     db.set_setting(f"meta_up:{st['id']}", json.dumps({k: cfg[k] for k in UP_DEFAULTS}))
