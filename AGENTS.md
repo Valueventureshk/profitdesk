@@ -181,6 +181,7 @@ file and have it work.
   `size_chart_rules` (product > collection > tag > type > vendor > all, per store, optional countries).
   Turning a store on in Display settings installs the ScriptTag; the widget asks the app proxy
   (`/proxy/track/sizechart`, so stores need the App proxy). cm→in converts measurement columns only.
+  Panda import (`/api/sizecharts/import`): Panda's export has no product links, so each chart is linked to every product with its title (exact, then `sizecharts.loose_title`); `dry` previews; importing again updates charts by name. ZAVA: 723 charts imported 18 Oct 2026, 693 linked to 719 products, 30 drafts (templates like "Code 96", renamed products). Storefront handles keep ™ etc. (`_sc_handle`). ZAVA's app can't add script tags: the size chart is the app embed, switched on in the theme editor.
   Product Importer setting `size_chart_mode`: none / chart (assign one) / ai (read the source's
   size-chart image, one chart per source product shared by all target stores).
 - Disputes desk (desk `disputes`, `/disputes`): reads each PayPal / Airwallex connection's disputes
