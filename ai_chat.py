@@ -149,6 +149,21 @@ TOOLS += [
     _tool("find_parcels", "Where an order's parcels are (the SCM desk / 17TRACK): status, carrier, tracking number and link, "
           "last event and when. Search by order number (e.g. #AS13184) or the customer's email.",
           {"query": {"type": "string"}}, ["query"]),
+    _tool("request_change", "Save a request to change EcomVital: a fix, an improvement to a desk, or a new desk / tool. Use it when "
+          "someone asks for something the app can't do yet or wants it to work differently. Write it so a developer can build "
+          "it: what they want, why (the business reason), where (desk), and an example. Ask one short question first if the "
+          "request is unclear. The owner reviews requests and has them built with Claude Code; nothing changes in the app now.",
+          {"title": {"type": "string", "description": "short name, e.g. 'SCM: filter parcels stuck 20+ days'"},
+           "details": {"type": "string", "description": "what, why, where, an example; the person's own words where useful"},
+           "desk": {"type": ["string", "null"], "description": "desk it's about (dashboard, cash, cog, inbox, scm, disputes, "
+                                                                  "expenses, reports, tracking, googleads, metaads, importer, sizecharts, tasks, new desk…)"},
+           "kind": {"type": "string", "enum": ["fix", "improvement", "new_desk", "new_tool"]},
+           "priority": {"type": "string", "enum": ["low", "normal", "urgent"]}},
+          ["title", "details", "desk", "kind", "priority"]),
+    _tool("list_change_requests", "Change requests saved with request_change: the person's own (the owner sees everyone's), "
+          "newest first, with status (new, planned, done, declined) and the owner's note.",
+          {"status": {"type": ["string", "null"], "description": "new, planned, done, declined or all (default: open = new + planned)"}},
+          ["status"]),
     _tool("data_schema", "Owner only: the business tables you can read with data_query (orders and product costs, parcels, "
           "disputes, tickets, pixel events, Google uploads, invoices, payments, saved daily totals…), with their columns and "
           "what they mean. Call this before writing a data_query.", {}, []),
@@ -162,7 +177,7 @@ TOOLS += [
 # Anthropic allows at most 20 strict tools: the simple ones (few or no inputs) don't need it.
 _LOOSE = {"propose_google_change", "list_stores", "get_cash", "get_inbox", "list_schedules_alerts", "delete_schedule_alert",
           "store_health", "tracking_live", "google_campaigns", "google_product_issues", "find_shopify_products",
-          "remember", "forget", "product_sales", "get_disputes", "find_parcels", "data_schema", "data_query"}
+          "remember", "forget", "product_sales", "get_disputes", "find_parcels", "data_schema", "data_query", "request_change", "list_change_requests"}
 for _t in TOOLS:
     if _t["name"] in _LOOSE:
         _t.pop("strict", None)
@@ -200,7 +215,7 @@ If a tool says the person has no access, tell them which desk they'd need.
 For "check everything / store health / are things working" use store_health. For live events ("adds to cart in the last hour") use tracking_live.
 Scheduled reports and alerts: create them with create_schedule / create_alert and confirm the time, days and threshold in one line.
 When the owner gives a rule, preference, definition or correction meant to last, save it with remember and say "Noted." Follow the saved notes below; if a note conflicts with what you're asked now, follow the request and ask whether to update the note.
-For product-level sales use product_sales; for disputes use get_disputes; for "where is order …" use find_parcels.
+When someone wants the app to do something new or differently (a fix, a better desk, a new desk or tool), save it with request_change after making sure you understand it; tell them the owner reviews requests. For product-level sales use product_sales; for disputes use get_disputes; for "where is order …" use find_parcels.
 You can propose changes with the propose_ tools (owners only). They never change anything themselves: the person sees the action with a Confirm button. Before proposing, check the list (e.g. get_price_changes) and say what will change. Never claim something was done until they confirm."""
 
 

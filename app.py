@@ -8990,6 +8990,38 @@ async def _assist_tool(name: str, args: dict, user: dict):
                         "amount": d.get("amount"), "currency": d.get("currency"), "reason": d.get("reason"),
                         "stage": d.get("stage"), "customer": d.get("customer"), "outcome": d.get("outcome")})
         return {"count": len(out), "disputes": out[:80], "link": f"{BASE_URL}/disputes"}
+    if name in ("request_change", "list_change_requests"):
+        with db._conn() as con:
+            con.execute("CREATE TABLE IF NOT EXISTS change_requests (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER,"
+                        " who TEXT, title TEXT NOT NULL, details TEXT, desk TEXT, kind TEXT, priority TEXT,"
+                        " status TEXT NOT NULL DEFAULT 'new', owner_note TEXT, created_at TEXT NOT NULL, updated_at TEXT)")
+            if name == "request_change":
+                title = str(args.get("title") or "").strip()[:200]
+                if not title:
+                    return {"error": "Give the request a short title."}
+                now_ = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                rid = con.execute(
+                    "INSERT INTO change_requests (user_id, who, title, details, desk, kind, priority, created_at, updated_at)"
+                    " VALUES (?,?,?,?,?,?,?,?,?)",
+                    ((user or {}).get("id"), (user or {}).get("name") or (user or {}).get("email"), title,
+                     str(args.get("details") or "")[:6000], (args.get("desk") or "")[:40], args.get("kind") or "improvement",
+                     args.get("priority") or "normal", now_, now_)).lastrowid
+                return {"saved": rid, "title": title,
+                        "note": "Saved for the owner to review. Nothing in the app changes until it's built."}
+            want = (args.get("status") or "open").lower()
+            q, prm = "SELECT * FROM change_requests", []
+            conds = []
+            if want == "open":
+                conds.append("status IN ('new', 'planned')")
+            elif want != "all":
+                conds.append("status = ?")
+                prm.append(want)
+            if (user or {}).get("role") != "owner":
+                conds.append("user_id = ?")
+                prm.append((user or {}).get("id"))
+            rows = [dict(r) for r in con.execute(q + (" WHERE " + " AND ".join(conds) if conds else "")
+                                                 + " ORDER BY id DESC LIMIT 100", prm)]
+        return {"count": len(rows), "requests": rows}
     if name in ("data_schema", "data_query"):
         if (user or {}).get("role") != "owner":
             return {"error": "Only the owner can look at the raw tables. Use the desk tools instead."}

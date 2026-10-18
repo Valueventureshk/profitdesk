@@ -53,6 +53,8 @@ TABLES = {
     "size_charts": "Size charts.",
     "gads_tags": "Google desk product tags.",
     "gads_tag_products": "Products per Google desk tag.",
+    "change_requests": "Requests to change EcomVital (request_change tool): who, title, details, desk, kind, priority, status "
+                       "(new / planned / done / declined), owner_note, created_at.",
     "rec_sessions": "Session recordings per store.",
 }
 _SECRET = re.compile(r"token|secret|password|hash|api_key|consent_id|method_id|^html$|^fbp$|^client_id$", re.I)
