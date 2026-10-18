@@ -415,8 +415,19 @@ $("impGo").onclick = async () => {
   try { data = JSON.parse(await f.text()); } catch { toast("That file isn't valid JSON.", true); return; }
   $("impGo").disabled = true; $("impGo").textContent = "Importing… (a minute for big files)";
   try {
-    const r = await send("/api/sizecharts/import", { data, store_id: $("impStore").value, source: /panda/i.test(f.name) ? "panda" : /kiwi/i.test(f.name) ? "kiwi" : "import" });
-    $("impNote").textContent = `Imported ${r.imported} charts. ${r.linked} linked to their product (Active)${r.unlinked ? `, ${r.unlinked} not matched (Draft, assign them yourself)` : ""}.`;
+    const body = { data, store_id: $("impStore").value, source: /panda/i.test(f.name) ? "panda" : /kiwi/i.test(f.name) ? "kiwi" : "import" };
+    if (body.store_id) {          // check the product matches first, then save
+      const pre = await send("/api/sizecharts/import", { ...body, dry: true });
+      if (!confirm(`${pre.imported} charts found. ${pre.linked} match a product in this store (${pre.products} products)` +
+          `${pre.unlinked ? `, ${pre.unlinked} match no product and are saved as Draft` : ""}` +
+          `${pre.updated ? `. ${pre.updated} were imported before and will be updated, not copied` : ""}.\n\nImport them?`)) {
+        $("impNote").textContent = pre.unmatched.length ? `Not matched: ${pre.unmatched.slice(0, 30).join(" · ")}${pre.unmatched.length > 30 ? " …" : ""}` : "";
+        return;
+      }
+    }
+    const r = await send("/api/sizecharts/import", body);
+    $("impNote").textContent = `Imported ${r.imported} charts${r.updated ? ` (${r.updated} updated)` : ""}. ${r.linked} linked to ${r.products} products (Active)` +
+      `${r.unlinked ? `, ${r.unlinked} not matched (Draft, assign them yourself): ${r.unmatched.slice(0, 20).join(" · ")}${r.unmatched.length > 20 ? " …" : ""}` : ""}.`;
     toast("Imported.");
     loadList();
   } catch (e) { toast(e.message, true); }

@@ -6733,20 +6733,39 @@ async def api_sizechart_import(payload: dict, request: Request):
     charts = sizecharts.parse_export(data)
     if not charts:
         raise HTTPException(400, "No size charts found in that file.")
-    by_title = {}
+    # Panda's export has no product links: each chart is named after its product, so match by title
+    # (exact, then letters-and-digits only); every product with that title gets the chart.
+    exact, loose = defaultdict(list), defaultdict(list)
     store = next((x for x in db.list_stores() if x["id"] == store_id), None)
     if store:
         for p in await _all_products(store):
-            by_title.setdefault(sizecharts.norm_title(p["title"]), p)
-    imported = linked = 0
+            exact[sizecharts.norm_title(p["title"])].append(p)
+            loose[sizecharts.loose_title(p["title"])].append(p)
+    with db._conn() as con:              # importing again updates the same charts instead of adding copies
+        known = {}
+        for r in con.execute("SELECT c.id, c.name FROM size_charts c WHERE c.source IN ('panda', 'kiwi', 'import')"
+                             " AND (EXISTS (SELECT 1 FROM size_chart_rules r WHERE r.chart_id = c.id AND r.store_id = ?)"
+                             "      OR NOT EXISTS (SELECT 1 FROM size_chart_rules r WHERE r.chart_id = c.id))"
+                             " ORDER BY c.id", (store_id,)):
+            known.setdefault(r["name"], r["id"])
+    dry = bool(payload.get("dry"))
+    imported = linked = updated = 0
+    unmatched, products = [], 0
     for c in charts:
-        p = by_title.get(sizecharts.norm_title(c["name"]))
-        rules = [{"store_id": store_id, "kind": "product", "value": p["id"], "label": p["title"]}] if p else []
-        _sc_save({"name": c["name"], "status": "active" if p else "draft", "blocks": c["blocks"],
-                  "rules": rules, "source": payload.get("source") or "panda"}, None, user)
+        ps = exact.get(sizecharts.norm_title(c["name"])) or loose.get(sizecharts.loose_title(c["name"])) or []
+        if not ps:
+            unmatched.append(c["name"])
+        products += len(ps)
+        rules = [{"store_id": store_id, "kind": "product", "value": p["id"], "label": p["title"]} for p in ps]
+        cid = known.pop(c["name"], None)
+        if not dry:
+            _sc_save({"name": c["name"], "status": "active" if ps else "draft", "blocks": c["blocks"],
+                      "rules": rules, "source": payload.get("source") or "panda"}, cid, user)
         imported += 1
-        linked += bool(p)
-    return {"imported": imported, "linked": linked, "unlinked": imported - linked}
+        linked += bool(ps)
+        updated += bool(cid)
+    return {"imported": imported, "linked": linked, "unlinked": imported - linked, "updated": updated,
+            "products": products, "unmatched": unmatched[:200], "dry": dry}
 
 
 @app.post("/api/sizecharts/from-image")

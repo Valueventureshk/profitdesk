@@ -358,6 +358,11 @@ def parse_export(data) -> list:
     return [c for c in out if c["blocks"]]
 
 
+def loose_title(s: str) -> str:
+    """Letters and digits only: "ALESSIA™ | Silk Dress" and "Alessia - Silk Dress" match."""
+    return re.sub(r"[^a-z0-9]", "", _html.unescape(s or "").lower())
+
+
 def norm_title(s: str) -> str:
     s = _html.unescape(s or "").lower()
     s = re.sub(r"[\s ]+", " ", s)
