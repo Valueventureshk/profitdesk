@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EcomVital · Connect Claude</title>
+<script>try{var t=localStorage.getItem("pdTheme")||(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");document.documentElement.dataset.theme=t;if((localStorage.getItem("pdSkin")||"new")==="new")document.documentElement.classList.add("skin-new");}catch(e){}</script>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;650;700&display=swap">
+<link rel="stylesheet" href="/static/styles.css">
+<link rel="stylesheet" href="/static/skin.css">
+<style>
+  .cc-steps { margin: 6px 0 0 18px; line-height: 1.8; }
+  .cc-new { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 10px 0; }
+  .cc-new .control { width: auto; min-width: 220px; }
+  .cc-link { display: none; border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin: 10px 0; background: var(--line-soft); }
+  .cc-link.on { display: block; }
+  .cc-link code { display: block; word-break: break-all; font-size: 12.5px; margin: 6px 0 8px; }
+  .cc-warn { color: #B45309; font-size: 13px; }
+  .cc-list .table td, .cc-list .table th { text-align: left; }
+</style>
+</head>
+<body>
+<div class="cash-page">
+  <header class="cash-top">
+    <div class="brand" data-section-menu title="Switch section">
+      <span class="brand-mark"><img src="/static/brand/ecomvital-120.png" alt=""></span>
+      <span class="brand-name">EcomVital</span>
+    </div>
+    <div class="crumb">
+      <h1>Connect Claude</h1>
+      <p>Use EcomVital from the Claude app (desktop, web, phone) or Claude Code</p>
+    </div>
+  </header>
+  <main class="content">
+    <section class="panel">
+      <div class="panel-head"><h2>1. Make your connector link</h2></div>
+      <p class="hint">The link is yours: Claude can only see and do what your EcomVital access allows, and everything it changes
+        is logged under your name. Anything that changes something (prices, Google Ads…) is proposed first and only happens
+        after you say yes in the chat.</p>
+      <div class="cc-new">
+        <input class="control" id="label" placeholder="Name, e.g. Claude on my Mac" value="Claude">
+        <button class="btn btn-primary" id="make">Make a connector link</button>
+      </div>
+      <div class="cc-link" id="out">
+        <b>Your connector link</b> <span class="hint">(shown only now, copy it)</span>
+        <code id="url"></code>
+        <button class="btn btn-sm" id="copy">Copy link</button>
+        <p class="cc-warn">Treat it like a password: anyone with this link can use EcomVital as you. Don't paste it in chats
+          or emails. Lost or shared it? Remove it below and make a new one.</p>
+      </div>
+    </section>
+    <section class="panel">
+      <div class="panel-head"><h2>2. Add it to Claude</h2></div>
+      <p><b>Claude app</b> (claude.ai, desktop or phone):</p>
+      <ol class="cc-steps">
+        <li>Open <b>Settings → Connectors</b> (or Customize → Connectors).</li>
+        <li>Click <b>Add custom connector</b>.</li>
+        <li>Name: <b>EcomVital</b> · URL: paste your connector link · <b>Add</b>.</li>
+        <li>In a new chat, click the <b>+ / tools</b> button and make sure <b>EcomVital</b> is switched on.</li>
+        <li>Try: <i>“Using EcomVital, how did all stores do yesterday?”</i></li>
+      </ol>
+      <p style="margin-top:12px"><b>Claude Code</b>: tell it “add the EcomVital connector with this link” and paste the link there.</p>
+    </section>
+    <section class="panel cc-list">
+      <div class="panel-head"><h2>Your connector links</h2></div>
+      <div class="table-wrap"><table class="table" id="list"></table></div>
+    </section>
+  </main>
+</div>
+<div id="toast" class="toast" hidden></div>
+<script src="/static/nav.js"></script>
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const when = (t) => (t ? new Date(t).toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "never");
+  function toast(m, bad) { const el = $("toast"); el.textContent = m; el.className = "toast" + (bad ? " bad" : ""); el.hidden = false; setTimeout(() => { el.hidden = true; }, 4000); }
+  async function api(path, body) {
+    const r = await fetch(path, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {});
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || j.detail || `Request failed (${r.status})`);
+    return j;
+  }
+  async function load() {
+    const d = await api("/api/mcp/tokens");
+    $("list").innerHTML = `<thead><tr><th>Name</th><th>Ends in</th><th>Made</th><th>Last used</th><th>Uses</th><th></th></tr></thead><tbody>${
+      d.tokens.map((t) => `<tr><td>${esc(t.label)}</td><td>…${esc(t.hint)}</td><td>${when(t.created_at)}</td><td>${when(t.last_used)}</td>
+        <td>${t.calls}</td><td><button class="btn btn-sm btn-ghost" data-rm="${t.id}">Remove</button></td></tr>`).join("")
+      || `<tr><td colspan="6" class="hint">No links yet.</td></tr>`}</tbody>`;
+  }
+  $("make").onclick = async () => {
+    try {
+      const d = await api("/api/mcp/tokens", { label: $("label").value });
+      $("url").textContent = d.url;
+      $("out").classList.add("on");
+      load();
+    } catch (e) { toast(e.message, true); }
+  };
+  $("copy").onclick = async () => { try { await navigator.clipboard.writeText($("url").textContent); toast("Copied."); } catch { toast("Select the link and copy it.", true); } };
+  $("list").onclick = async (e) => {
+    const b = e.target.closest("[data-rm]");
+    if (!b || !confirm("Remove this link? Claude stops working with it straight away.")) return;
+    try { await api("/api/mcp/tokens", { revoke: +b.dataset.rm }); toast("Removed."); load(); } catch (err) { toast(err.message, true); }
+  };
+  load().catch((e) => toast(e.message, true));
+})();
+</script>
+</body>
+</html>

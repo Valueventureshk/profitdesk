@@ -62,6 +62,7 @@ import ai_coach
 import reports
 import ai_chat
 import ai_data
+import mcp_server
 import products_desk
 import adcopy
 import paypal_track
@@ -243,7 +244,7 @@ _DESK_HOME = {"profit": "/", "cash": "/cash", "cog": "/cog", "inbox": "/inbox", 
              "tracking": "/tracking", "checkout": "/checkout", "tasks": "/tasks", "metaads": "/metaads", "agent": "/agent", "time": "/time",
              "paypaltrack": "/paypal-tracking"}
 # Shared by every desk's pages: the user's own details and the dropdown lists.
-_EVERYONE = {"/api/me", "/api/me/password", "/api/logout", "/change-password",
+_EVERYONE = {"/api/me", "/api/me/password", "/api/logout", "/change-password", "/connect-claude", "/api/mcp/tokens",
              "/api/setup", "/api/chat", "/api/assistant/inbox", "/api/assistant/inbox/read"}
 # What "read & write" people may change (owners may change anything).
 _WRITE_OK = ("/api/googleads/tags", "/api/cog/pdesk", "/api/invoices", "/api/suppliers/payee", "/api/disputes", "/api/cog/sync", "/api/inbox", "/api/expenses", "/api/scm", "/api/importer", "/api/sizecharts", "/api/tasks", "/api/agent/advice", "/api/agent/questions")
@@ -331,7 +332,7 @@ async def _require_login(request: Request, call_next):
             return RedirectResponse(f"{BASE_URL}{path}", status_code=302)
     user = auth.user_for(request.cookies.get(auth.SESSION_COOKIE))
     request.state.user = user
-    if path in _OPEN or path.startswith(("/static/", "/proxy/", "/apps/", "/w/", "/t/", "/pay/", "/api/time/client/")) or path == "/proxy":
+    if path in _OPEN or path.startswith(("/static/", "/proxy/", "/apps/", "/w/", "/t/", "/pay/", "/api/time/client/", "/mcp")) or path == "/proxy":
         return await call_next(request)
     launched = _shopify_launch(request)
     if launched:
@@ -2024,6 +2025,95 @@ async def api_cog_products(store: int):
     return {"products": items}
 
 
+# ---------------------------------------------------------------- Claude connector (mcp_server.py)
+
+def _mcp_instructions(user: dict) -> str:
+    today = max((_store_today(x) for x in db.list_stores() if not demo.is_demo(x)), default=datetime.now(CASH_TZ).date())
+    notes = _ai_notes()
+    base = ai_chat.SYSTEM.format(today=today.isoformat(), currency=_display_currency())
+    if notes:
+        base += "\n\nSaved notes from the owner (follow these):\n" + "\n".join(f"[{n['id']}] {n['note']}" for n in notes)
+    who = f"{user.get('name') or user.get('email')} ({user.get('email')}, {'owner' if user.get('role') == 'owner' else 'staff'})"
+    return base + mcp_server.EXTRA + f"\nConnected person: {who}."
+
+
+async def _mcp(request: Request, token: str):
+    t, user = mcp_server.user_for(token)
+    if not user:
+        return JSONResponse({"jsonrpc": "2.0", "id": None, "error": {"code": -32001, "message":
+                             "This EcomVital connector link isn't valid any more. Make a new one at /connect-claude."}},
+                            status_code=401)
+    if user.get("must_change"):
+        return JSONResponse({"jsonrpc": "2.0", "id": None, "error": {"code": -32001, "message":
+                             "Log in to EcomVital once and choose your own password first."}}, status_code=403)
+    try:
+        body = await request.json()
+    except ValueError:
+        return JSONResponse({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Not JSON"}}, status_code=400)
+
+    async def run(name, args):
+        try:
+            out = await (_confirm_action(str(args.get("id") or ""), bool(args.get("confirm")), user)
+                         if name == "confirm_action" else _chat_tool(name, args, user))
+            mcp_server.log(t["id"], user["id"], name, args, True)
+            return out
+        except Exception:
+            mcp_server.log(t["id"], user["id"], name, args, False)
+            raise
+    msgs = body if isinstance(body, list) else [body]
+    out = [r for r in [await mcp_server.handle(m, ai_chat.TOOLS, run, _mcp_instructions(user)) for m in msgs] if r]
+    if not out:
+        return Response(status_code=202)
+    return JSONResponse(out if isinstance(body, list) else out[0])
+
+
+@app.post("/mcp/{token}")
+async def mcp_endpoint(token: str, request: Request):
+    return await _mcp(request, token)
+
+
+@app.post("/mcp")
+async def mcp_endpoint_bearer(request: Request):
+    auth_ = request.headers.get("authorization") or ""
+    return await _mcp(request, auth_[7:].strip() if auth_.lower().startswith("bearer ") else "")
+
+
+@app.get("/mcp/{token}")
+@app.get("/mcp")
+def mcp_get():
+    return Response(status_code=405, headers={"Allow": "POST"})       # no server-to-client stream
+
+
+@app.delete("/mcp/{token}")
+@app.delete("/mcp")
+def mcp_delete():
+    return Response(status_code=204)
+
+
+@app.get("/connect-claude", response_class=HTMLResponse)
+def connect_claude_page():
+    return _page("connect-claude.html", ("nav.js", "styles.css", "skin.css"))
+
+
+@app.get("/api/mcp/tokens")
+def api_mcp_tokens(request: Request):
+    return {"tokens": mcp_server.tokens_of(request.state.user["id"]), "base": BASE_URL}
+
+
+@app.post("/api/mcp/tokens")
+def api_mcp_tokens_change(payload: dict, request: Request):
+    """{label} makes a new connector link (shown once); {revoke: id} removes one of yours."""
+    user = request.state.user
+    if payload.get("revoke"):
+        if not mcp_server.revoke(user["id"], int(payload["revoke"]), any_user=user.get("role") == "owner"):
+            raise HTTPException(404, "That link isn't there any more.")
+        return {"ok": True}
+    if len(mcp_server.tokens_of(user["id"])) >= 5:
+        raise HTTPException(400, "You already have 5 connector links. Remove one you don't use first.")
+    token = mcp_server.new_token(user["id"], payload.get("label") or "Claude")
+    return {"url": f"{BASE_URL}/mcp/{token}", "token": token, "base": BASE_URL}
+
+
 # ---------------------------------------------------------------- COG → Products (products_desk.py)
 
 PD_PRODUCTS = """query($ids: [ID!]!) { nodes(ids: $ids) { ... on Product { legacyResourceId title handle status createdAt
@@ -3655,7 +3745,12 @@ def _propose(user: dict, kind: str, title: str, detail: str, payload: dict) -> d
 
 @app.post("/api/chat/actions/{action_id}")
 async def api_chat_action(action_id: str, payload: dict, request: Request):
-    user = getattr(request.state, "user", None) or {}
+    return await _confirm_action(action_id, payload.get("confirm") is True, getattr(request.state, "user", None) or {})
+
+
+async def _confirm_action(action_id: str, confirm: bool, user: dict) -> dict:
+    """Carry out or cancel a proposed change (Ask chat Confirm button, WhatsApp YES, Claude connector)."""
+    payload = {"confirm": confirm}
     a = _chat_actions.get(action_id)
     if not a or a["user"] != user.get("email"):
         raise HTTPException(404, "That action has expired. Ask again.")
