@@ -612,7 +612,7 @@ a.section-item:hover { background: var(--line-soft); }
 .pdk-head { display: flex; gap: 14px; align-items: flex-start; line-height: 1.7; }
 .pdk-head img { width: 84px; height: 84px; border-radius: 8px; object-fit: cover; }
 .pdk-mini { margin-top: 8px; font-size: 12.5px; }
-.pdk-mini td.num { text-align: right; font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; }
+.pdk-mini td.num { text-align: right; font-family: inherit; font-variant-numeric: tabular-nums; }
 .pdk-add { display: grid; gap: 6px; margin: 8px 0 12px; }
 .pdk-add button { justify-self: start; }
 .pdk-note { padding: 8px 0; border-top: 1px solid var(--line-soft); font-size: 13px; }
@@ -1566,10 +1566,10 @@ tr.pc-checking td { background: rgba(245,158,11,.05); }
 /* COG: supplier accounts */
 .sup-intro { margin: 0 0 14px; max-width: 760px; }
 .sup-owed { text-align: right; }
-.sup-owed b { display: block; font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; font-size: 24px; }
+.sup-owed b { display: block; font-family: inherit; font-variant-numeric: tabular-nums; font-size: 24px; }
 .sup-eq { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin: 4px 0 12px; }
 .sup-eq > div { display: flex; flex-direction: column; }
-.sup-eq b { font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; font-size: 17px; }
+.sup-eq b { font-family: inherit; font-variant-numeric: tabular-nums; font-size: 17px; }
 .sup-eq i { font-style: normal; color: var(--revenue); font-size: 18px; }
 .sup-eq .sub { font-size: 11px; color: var(--revenue); }
 .sup-open { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin: 10px 0; }
