@@ -14733,6 +14733,22 @@ async def api_storebuild_gql(store_id: int, payload: dict, request: Request):
     return {"data": data}
 
 
+@app.post("/api/storebuild/{store_id}/refresh")
+async def api_storebuild_refresh(store_id: int, request: Request):
+    """Owner only: re-read the store's name, currency and time zone from Shopify (after changing them in Shopify)."""
+    _owner_only(request)
+    st = next((x for x in db.list_stores() if x["id"] == store_id), None)
+    if not st:
+        raise HTTPException(404, "Store not found.")
+    info = await ShopifyClient(st["shop_domain"], st["access_token"]).shop_info()
+    with db._conn() as con:
+        con.execute("UPDATE stores SET name = ?, currency = ?, timezone = ? WHERE id = ?",
+                    (info.get("name") or st["name"], info.get("currencyCode") or st["currency"],
+                     info.get("ianaTimezone") or st.get("timezone"), store_id))
+    _cache.clear()
+    return {"name": info.get("name"), "currency": info.get("currencyCode"), "timezone": info.get("ianaTimezone")}
+
+
 async def _store_task_remind_loop():
     """Once a day from 10:00 Hong Kong: remind whoever made an open store task of the checks still answered "no"."""
     await asyncio.sleep(300)
