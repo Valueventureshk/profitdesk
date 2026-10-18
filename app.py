@@ -12031,6 +12031,13 @@ async def _up_run(st, conn) -> list:
                         outcome = done[0] if done else "Raised"
                 except (meta.MetaAdsError, HTTPException) as e:
                     outcome = f"Meta refused: {str(getattr(e, 'detail', None) or e)[:300]}"
+                    if re.search(r"#613|#17\b|#4\b|rate limit|too many calls|request limit", outcome, re.I):
+                        # Meta's "slow down": not this purchase's fault, so it isn't marked done and is tried again next minute
+                        with db._conn() as con:
+                            if action:
+                                con.execute("UPDATE mads_actions SET status = 'failed' WHERE id = ? AND status != 'done'", (action,))
+                        out.append(outcome + " (will retry)")
+                        break
             with db._conn() as con:
                 con.execute("INSERT OR IGNORE INTO mads_boosts (store_id, order_key, at, value, campaign, campaign_id, action_id, outcome,"
                             " raised) VALUES (?,?,?,?,?,?,?,?,?)",
