@@ -121,7 +121,13 @@ async function loadOverview(fresh = false) {
   if (!state.store) return;
   $("table").innerHTML = '<tbody><tr><td class="empty">Reading Meta…</td></tr></tbody>';
   try {
-    state.data = await api(`/api/metaads/overview?store=${state.store}&level=${state.level}&days=${$("days").value}${fresh ? "&fresh=1" : ""}`);
+    const p = $("days").value;
+    if (p === "custom" && !($("dFrom").value && $("dTo").value)) {
+      $("table").innerHTML = '<tbody><tr><td class="empty">Pick the two dates, then Show.</td></tr></tbody>';
+      return;
+    }
+    const dates = p === "custom" ? `&start=${$("dFrom").value}&end=${$("dTo").value}` : "";
+    state.data = await api(`/api/metaads/overview?store=${state.store}&level=${state.level}&period=${p}${dates}${fresh ? "&fresh=1" : ""}`);
   } catch (e) { $("table").innerHTML = `<tbody><tr><td class="empty">${esc(e.message)}</td></tr></tbody>`; return; }
   state.cur = state.data.currency;
   renderOverview();
@@ -139,6 +145,7 @@ function renderOverview() {
   $("tiles").innerHTML = [
     ["Spend", money(t.spend)], ["Meta purchases", num(t.purchases)], ["Meta ROAS", roasTxt(t.roas)],
     ["Pixel purchases", num(t.px_purchases)], ["Pixel ROAS", roasTxt(t.px_roas)],
+    ["Autopilot raised", t.auto_raises ? `+${money(t.auto_added)}<small>${num(t.auto_raises)} raise${t.auto_raises === 1 ? "" : "s"}</small>` : "–"],
   ].map(([k, v]) => `<div class="ma-tile"><span>${k}</span><b>${v}</b></div>`).join("")
     + `<div class="ma-tile ma-when"><span>${esc(d.since)} → ${esc(d.until)}</span></div>`;
   const q = $("q").value.trim().toLowerCase();
@@ -153,7 +160,8 @@ function renderOverview() {
   };
   $("table").innerHTML = `<thead><tr><th>${LEVEL[state.level]}</th><th>Status</th><th>Daily budget</th><th>Spend</th><th>Impr.</th>
       <th>Link clicks</th><th>CTR</th><th>CPC</th><th>Add to cart</th><th>Purchases</th><th>Value</th><th>ROAS</th>
-      <th class="ma-px">Pixel purch.</th><th class="ma-px">Pixel value</th><th class="ma-px">Pixel ROAS</th></tr></thead>
+      <th class="ma-px">Pixel purch.</th><th class="ma-px">Pixel value</th><th class="ma-px">Pixel ROAS</th>
+      ${state.level === "campaign" ? `<th class="ma-auto" title="What the “$10 up” autopilot added to the daily budget in these days (Undo-ed raises not counted)">Autopilot +</th>` : ""}</tr></thead>
     <tbody>${rows.map((r) => `<tr>
       <td class="ma-name">${r.thumb ? `<img src="${esc(r.thumb)}" alt="" loading="lazy">` : ""}<span><span class="name">${esc(r.name)}</span>
         ${parent(r) ? `<span class="sub">${parent(r)}</span>` : ""}</span></td>
@@ -161,8 +169,9 @@ function renderOverview() {
       <td>${budget(r)}</td><td>${money(r.spend)}</td><td>${num(r.impressions)}</td><td>${num(r.clicks)}</td>
       <td>${pct(r.ctr)}</td><td>${r.cpc === null ? "–" : money(r.cpc)}</td><td>${num(r.atc)}</td><td>${num(r.purchases)}</td>
       <td>${money(r.value)}</td><td><b>${roasTxt(r.roas)}</b></td>
-      <td class="ma-px">${num(r.px_purchases)}</td><td class="ma-px">${money(r.px_value)}</td><td class="ma-px"><b>${roasTxt(r.px_roas)}</b></td></tr>`).join("")
-    || `<tr><td class="empty" colspan="15">Nothing ${$("activeOnly").checked ? "running or spending " : ""}in this window.</td></tr>`}</tbody>`;
+      <td class="ma-px">${num(r.px_purchases)}</td><td class="ma-px">${money(r.px_value)}</td><td class="ma-px"><b>${roasTxt(r.px_roas)}</b></td>
+      ${state.level === "campaign" ? `<td class="ma-auto">${r.auto_raises ? `<b>+${money(r.auto_added)}</b><span class="sub">${num(r.auto_raises)}×</span>` : "–"}</td>` : ""}</tr>`).join("")
+    || `<tr><td class="empty" colspan="16">Nothing ${$("activeOnly").checked ? "running or spending " : ""}in this window.</td></tr>`}</tbody>`;
 }
 
 async function quick(change, id, to) {
@@ -278,7 +287,23 @@ $("levels").onclick = (e) => {
   loadOverview();
 };
 $("store").onchange = () => { state.store = +$("store").value; storeInfo(); loadStrategy(); showPage(state.page); };
-$("days").onchange = () => loadOverview();
+$("days").onchange = () => {
+  const custom = $("days").value === "custom";
+  $("customDates").hidden = !custom;
+  if (custom && state.data && !$("dFrom").value) { $("dFrom").value = state.data.since; $("dTo").value = state.data.until; }
+  PDUrl.set({ period: $("days").value, from: custom ? $("dFrom").value : null, to: custom ? $("dTo").value : null });
+  if (!custom) loadOverview();
+};
+// back to the picked period after a refresh
+if (PDUrl.get("period") && [...$("days").options].some((o) => o.value === PDUrl.get("period"))) {
+  $("days").value = PDUrl.get("period");
+  if ($("days").value === "custom") {
+    $("customDates").hidden = false;
+    $("dFrom").value = PDUrl.get("from") || "";
+    $("dTo").value = PDUrl.get("to") || "";
+  }
+}
+$("dGo").onclick = () => { PDUrl.set({ period: "custom", from: $("dFrom").value, to: $("dTo").value }); loadOverview(); };
 $("refresh").onclick = () => loadOverview(true);
 $("activeOnly").onchange = $("q").oninput = () => state.data && renderOverview();
 $("enabled").onchange = async () => {

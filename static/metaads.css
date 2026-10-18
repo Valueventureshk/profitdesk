@@ -9,7 +9,7 @@
 .ma-check { display: flex; gap: 6px; align-items: center; font-size: 13px; color: var(--muted); }
 .ma-check input { width: auto; margin: 0; }
 
-.ma-tiles { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
+.ma-tiles { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
 .ma-tile { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; box-shadow: var(--shadow); }
 .ma-tile span { display: block; font-size: 12px; color: var(--muted); }
 .ma-tile b { display: block; font-size: 19px; font-weight: 650; margin-top: 4px; font-variant-numeric: tabular-nums; }
@@ -90,3 +90,9 @@
 .ma-feed li { display: flex; gap: 10px; padding: 5px 0; border-bottom: 1px solid var(--line-soft); color: var(--muted); }
 .ma-feed li.up { color: var(--ink); }
 .ma-feed time { flex: none; width: 110px; color: var(--faint); font-variant-numeric: tabular-nums; }
+
+.ma-tile b small { display: block; font-size: 11.5px; font-weight: 500; color: var(--muted); margin-top: 2px; }
+.ma-dates { display: inline-flex; align-items: center; gap: 6px; }
+.ma-dates .control { width: auto; }
+.ma-auto { white-space: nowrap; }
+.ma-auto .sub { display: block; font-size: 11px; color: var(--muted); }

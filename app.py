@@ -11731,10 +11731,11 @@ async def _mads_cached(key, fresh, make):
     return data
 
 
-async def _mads_rows(st, conn, level: str, days: int, fresh=False) -> dict:
-    """One level's objects with Meta's figures and EcomVital's pixel figures over the last N days, account currency."""
+async def _mads_rows(st, conn, level: str, days: int, fresh=False, window=None) -> dict:
+    """One level's objects with Meta's figures and EcomVital's pixel figures over the last N days (or the picked
+    window), account currency, plus what the "$10 up" autopilot added to each campaign's budget in that window."""
     level = level if level in meta_manage.LEVELS else "campaign"
-    since, until, days = _mads_window(st, days)
+    since, until, days = window or _mads_window(st, days)
     cur = st.get("meta_currency") or st["currency"]
     token, act = conn["access_token"], st["meta_account_id"]
     try:
@@ -11767,8 +11768,14 @@ async def _mads_rows(st, conn, level: str, days: int, fresh=False) -> dict:
         r["px_roas"] = r["px_value"] / spend if spend else None
         r["cpa"] = spend / r["purchases"] if spend and r["purchases"] else None
         rows.append(r)
+    auto = await asyncio.to_thread(_mads_autopilot, st, since, until)
+    for r in rows:
+        x = auto.get(str(r["id"])) if level == "campaign" else None
+        r["auto_added"], r["auto_raises"] = (x["added"], x["raises"]) if x else (0.0, 0)
     rows.sort(key=lambda r: (r["effective"] != "ACTIVE", -r["spend"], r["name"].lower()))
     tot = {k: sum(r[k] for r in rows) for k in ("spend", "impressions", "clicks", "purchases", "value", "atc", "px_purchases", "px_value")}
+    tot["auto_added"] = sum(x["added"] for x in auto.values())         # every campaign, shown or not
+    tot["auto_raises"] = sum(x["raises"] for x in auto.values())
     tot["roas"] = tot["value"] / tot["spend"] if tot["spend"] else None
     tot["px_roas"] = tot["px_value"] / tot["spend"] if tot["spend"] else None
     return {"rows": rows, "total": tot, "since": since, "until": until, "days": days, "currency": cur,
@@ -11935,10 +11942,60 @@ def api_mads_stores():
 
 
 @app.get("/api/metaads/overview")
-async def api_mads_overview(store: int, level: str = "campaign", days: int = 7, fresh: int = 0):
+async def api_mads_overview(store: int, level: str = "campaign", days: int = 7, fresh: int = 0, period: str = "",
+                            start: str = "", end: str = ""):
+    """period: today | yesterday | 3 | 7 | 14 | 30 | month | lastmonth | custom (start, end: store days)."""
     _mads_db()
     st, conn = _mads_store(store)
-    return await _mads_rows(st, conn, level, days, bool(fresh))
+    return await _mads_rows(st, conn, level, days, bool(fresh), _mads_period(st, period, start, end))
+
+
+def _mads_period(st, period: str, start: str, end: str):
+    """(since, until, days) on the store's clock for the picked period, or None for the old `days` window."""
+    today = _store_today(st)
+    if period == "today":
+        a = b = today
+    elif period == "yesterday":
+        a = b = today - timedelta(days=1)
+    elif period in ("3", "7", "14", "30", "90"):
+        a, b = today - timedelta(days=int(period) - 1), today
+    elif period == "month":
+        a, b = today.replace(day=1), today
+    elif period == "lastmonth":
+        b = today.replace(day=1) - timedelta(days=1)
+        a = b.replace(day=1)
+    elif period == "custom":
+        try:
+            a, b = date.fromisoformat(start), min(date.fromisoformat(end), today)
+        except ValueError:
+            raise HTTPException(400, "Pick both dates.")
+        if a > b:
+            raise HTTPException(400, "The start date has to be on or before the end date.")
+        if (b - a).days > 400:
+            raise HTTPException(400, "Pick up to about a year at a time.")
+    else:
+        return None
+    return a.isoformat(), b.isoformat(), (b - a).days + 1
+
+
+def _mads_autopilot(st, since: str, until: str) -> dict:
+    """What the "$10 up" autopilot added to each campaign's daily budget in these store days (raises still in place;
+    undone ones left out): {campaign id: {added, raises}}."""
+    tz = _zone(st)
+    a = datetime.combine(date.fromisoformat(since), clock.min, tz).astimezone(timezone.utc).isoformat(timespec="seconds")
+    b = datetime.combine(date.fromisoformat(until) + timedelta(days=1), clock.min, tz).astimezone(timezone.utc).isoformat(timespec="seconds")
+    out = {}
+    with db._conn() as con:
+        for r in con.execute("SELECT obj_id, to_value, before FROM mads_actions WHERE store_id = ? AND source = 'strategy:up'"
+                             " AND status = 'done' AND done_at >= ? AND done_at < ?", (st["id"], a, b)):
+            try:
+                added = float(r["to_value"]) - float(json.loads(r["before"] or "{}").get("daily_budget") or 0)
+            except (TypeError, ValueError):
+                continue
+            x = out.setdefault(str(r["obj_id"]), {"added": 0.0, "raises": 0})
+            x["added"] += max(0.0, added)
+            x["raises"] += 1
+    return out
 
 
 def _mads_log(con, store_id, batch, source, step: dict, status="proposed"):
