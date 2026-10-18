@@ -122,6 +122,12 @@
       <div class="cog-filters">
         <select id="productStore" class="control"></select>
         <input id="search" class="control" type="search" placeholder="Search products">
+        <select id="pdkRange" class="control" title="Products sold in this period (Bought shows that period's units)">
+          <option value="all" selected>All time</option><option value="today">Today</option><option value="yesterday">Yesterday</option>
+          <option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="custom">Pick dates…</option>
+        </select>
+        <span id="pdkDates" hidden><input type="date" id="pdkFrom" class="control"> <span class="hint">to</span> <input type="date" id="pdkTo" class="control"></span>
+        <span class="hint" id="pdkFresh"></span>
       </div>
       <section class="panel">
         <div class="panel-head"><h2>Products</h2>

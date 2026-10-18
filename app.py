@@ -2136,9 +2136,10 @@ def _pd_tickets(lines: list) -> dict:
 
 
 @app.get("/api/cog/pdesk")
-async def api_pdesk(store: str = "all"):
+async def api_pdesk(store: str = "all", start: str = "", end: str = ""):
     """COG → Products: one row per product (variants together) with sales, latest confirmed cost, size chart,
-    CS tickets, QC photos, material and notes."""
+    CS tickets, QC photos, material and notes. start/end (store days): only products sold then, with that
+    period's units and orders (cost, tickets and the rest stay all-time)."""
     _pd_db()
     stores = [x for x in db.list_stores() if not demo.is_demo(x) and x.get("access_token")
               and (store in ("", "all") or str(x["id"]) == str(store))]
@@ -2146,6 +2147,11 @@ async def api_pdesk(store: str = "all"):
         raise HTTPException(404, "Store not found.")
     lines = await asyncio.to_thread(_pd_lines, [x["id"] for x in stores])
     groups = _pd_groups(lines)
+    if start or end:                       # the period's sales only; products with none are left out
+        lo, hi = start or "0000", end or start or "9999"
+        sold = _pd_groups([l for l in lines if lo <= (l["day"] or "") <= hi])
+        groups = {k: {**groups[k], "units": v["units"], "orders": v["orders"]}
+                  for k, v in sold.items() if v["units"] and k in groups}
     tick = await asyncio.to_thread(_pd_tickets, lines)
     catalog = await _catalog()
     infos = await asyncio.gather(*(_pd_info(x, sorted({p for (sid, p) in groups if sid == x["id"] and p.isdigit()}))
@@ -2195,7 +2201,8 @@ async def api_pdesk(store: str = "all"):
             "qc_photos": qc.get((sid, pid), 0), "notes": notes.get((sid, pid)) or {"complaints": 0, "notes": 0, "last": None},
         })
     out.sort(key=lambda r: -r["units"])
-    return {"products": out, "stores": [{"id": x["id"], "name": names[x["id"]]} for x in stores]}
+    return {"products": out, "stores": [{"id": x["id"], "name": names[x["id"]]} for x in stores],
+            "start": start, "end": end, "costed_at": (_cog.get("synced") or (None,))[0]}
 
 
 @app.get("/api/cog/pdesk/item")
@@ -8848,7 +8855,7 @@ async def _assist_tool(name: str, args: dict, user: dict):
                 "orders": len({(r["store_id"], r["order_name"]) for r in rows if not r["cancelled"]}),
                 "rows": [_round({**a, "orders": len(a["orders"])}) for a in out[:lim]],
                 "note": "Sales are the order lines' value after discounts, in each store's currency; cost is COG in USD. "
-                        "Covers orders already costed (synced every 10 minutes)."}
+                        "Covers orders already costed (synced every 5 minutes)."}
     if name == "get_disputes":
         _need(user, "disputes")
         want = (args.get("state") or "open").lower()
@@ -11285,13 +11292,13 @@ async def _order_fee_rows(store, orders: list, fee_map: dict) -> list:
 
 
 async def _cog_loop():
-    """Keep COG current: recent days every 10 minutes, the whole window every 6 hours."""
+    """Keep COG current: recent days every 5 minutes, the whole window every 6 hours."""
     await asyncio.sleep(60)
     n = 0
     while True:
         try:
             if db.get_setting("cog_sheet_id"):
-                if n % 36 == 0:
+                if n % 72 == 0:
                     await _cog_rows(force=True)
                     await _cog_sync()
                 else:
@@ -11300,7 +11307,7 @@ async def _cog_loop():
         except Exception as e:
             print(f"COG sync failed: {e}", flush=True)
         n += 1
-        await asyncio.sleep(10 * 60)
+        await asyncio.sleep(5 * 60)
 
 
 def _order_items() -> dict:

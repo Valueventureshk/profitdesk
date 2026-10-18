@@ -101,18 +101,45 @@ async function loadProducts() {
 let pdk = { store: null, rows: [], busy: false };
 const shortDate = (iso) => (iso ? new Date(iso.slice(0, 10) + "T12:00:00").toLocaleDateString(undefined, { day: "numeric", month: "short", year: "2-digit" }) : "—");
 
-async function loadPdk(force) {
+// Products sold in a period (store days); "all" = all time
+function pdkPeriod() {
+  const v = $("pdkRange").value;
+  $("pdkDates").hidden = v !== "custom";
+  if (v === "all") return ["", ""];
+  const today = new Date((status?.today || iso(new Date())) + "T12:00:00");
+  const back = (n) => { const d = new Date(today); d.setDate(d.getDate() - n); return iso(d); };
+  if (v === "today") return [iso(today), iso(today)];
+  if (v === "yesterday") return [back(1), back(1)];
+  if (v === "7") return [back(6), iso(today)];
+  if (v === "30") return [back(29), iso(today)];
+  return [$("pdkFrom").value, $("pdkTo").value || $("pdkFrom").value];
+}
+
+async function loadPdk(force, quiet) {
   const sid = $("productStore").value;
   if (!sid) return;
-  if (force || pdk.store !== sid) {
-    pdk = { store: sid, rows: [], busy: true };
-    $("pdk").innerHTML = `<tbody><tr><td class="hint">Loading products… (the first time can take a minute: images and listed dates come from Shopify)</td></tr></tbody>`;
-    try { pdk.rows = (await api(`/api/cog/pdesk?store=${encodeURIComponent(sid)}`)).products; }
-    catch (e) { $("pdk").innerHTML = `<tbody><tr><td class="hint">${esc(e.message)}</td></tr></tbody>`; return; }
+  const [from, to] = pdkPeriod();
+  if ($("pdkRange").value === "custom" && !from) return;
+  const key = `${sid}|${from}|${to}`;
+  if (force || pdk.store !== key) {
+    if (!quiet) {
+      pdk = { store: key, rows: [], busy: true };
+      $("pdk").innerHTML = `<tbody><tr><td class="hint">Loading products… (the first time can take a minute: images and listed dates come from Shopify)</td></tr></tbody>`;
+    }
+    pdk.busy = true;
+    try {
+      const d = await api(`/api/cog/pdesk?store=${encodeURIComponent(sid)}&start=${from}&end=${to}`);
+      pdk = { store: key, rows: d.products, busy: false };
+      $("pdkFresh").textContent = `updated ${new Date().toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}`;
+    } catch (e) { if (!quiet) $("pdk").innerHTML = `<tbody><tr><td class="hint">${esc(e.message)}</td></tr></tbody>`; return; }
     finally { pdk.busy = false; }
   }
   drawPdk();
 }
+// Keep the open Products table current (new orders are costed every 5 minutes)
+setInterval(() => {
+  if (!$("productsView").hidden && !pdk.busy && !document.hidden && !document.querySelector(".drawer:not([hidden])")) loadPdk(true, true);
+}, 60000);
 
 function drawPdk() {
   const q = $("search").value.trim().toLowerCase();
@@ -123,8 +150,8 @@ function drawPdk() {
   const key = { units: (r) => r.units, tickets: (r) => r.tickets, complaints: (r) => r.notes.complaints,
     recent: (r) => r.last_order || "", listed: (r) => r.listed || "", cost: (r) => r.cost || 0 }[sort];
   rows = rows.slice().sort((a, b) => (key(a) < key(b) ? 1 : key(a) > key(b) ? -1 : b.units - a.units));
-  $("pdkCount").textContent = `${rows.length} products`;
-  $("pdk").innerHTML = `<thead><tr><th></th><th>Product</th><th>Supplier</th><th class="num">Selling price</th><th class="num">Latest cost</th><th class="num">Bought</th>
+  $("pdkCount").textContent = `${rows.length} products${$("pdkRange").value === "all" ? "" : " sold in this period"}`;
+  $("pdk").innerHTML = `<thead><tr><th></th><th>Product</th><th>Supplier</th><th class="num">Selling price</th><th class="num">Latest cost</th><th class="num">${$("pdkRange").value === "all" ? "Bought" : "Bought in period"}</th>
       <th>Size chart</th><th>Quality check</th><th>Material</th><th class="num">CS tickets</th><th>Listed</th><th>Last order</th><th>Notes</th></tr></thead>
     <tbody>${rows.slice(0, 500).map((r) => {
       const i = pdk.rows.indexOf(r);
@@ -759,6 +786,8 @@ $("range").onchange = () => {
 $("from").onchange = $("to").onchange = () => { if ($("range").value === "custom") loadDay(); };
 $("storeSelect").onchange = loadDay;
 $("productStore").onchange = loadProducts;
+$("pdkRange").onchange = () => { PDUrl.set({ prange: $("pdkRange").value === "all" ? null : $("pdkRange").value }); loadPdk(); };
+$("pdkFrom").onchange = $("pdkTo").onchange = () => loadPdk();
 $("search").oninput = () => { PDUrl.set({ q: $("search").value.trim() }); drawPdk(); if ($("productStore").value !== "all") loadProducts(); };
 $("currencySelect").onchange = loadDay;
 $("refresh").onclick = async () => {
@@ -793,6 +822,7 @@ $("refresh").onclick = async () => {
   if ($("range").value === "custom") { $("from").value = PDUrl.get("from") || ""; $("to").value = PDUrl.get("to") || ""; }
   if (has($("storeSelect"), PDUrl.get("store"))) $("storeSelect").value = PDUrl.get("store");
   if (has($("productStore"), PDUrl.get("pstore"))) $("productStore").value = PDUrl.get("pstore");
+  if (has($("pdkRange"), PDUrl.get("prange")) && PDUrl.get("prange") !== "custom") $("pdkRange").value = PDUrl.get("prange");
   if (PDUrl.get("q")) $("search").value = PDUrl.get("q");
   const tab = document.querySelector(`.cog-tab[data-tab="${PDUrl.get("tab")}"]`);
   loadDay();
