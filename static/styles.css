@@ -593,7 +593,7 @@ a.section-item:hover { background: var(--line-soft); }
 .pdk-table th, .pdk-table td { text-align: left; vertical-align: top; padding: 10px 10px; }
 .pdk-table th.num, .pdk-table td.num { text-align: right; }
 .pdk-table td.pdk-name, .pdk-table td.pdk-notes { white-space: normal; }
-.pdk-table td.num { text-align: right; font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pdk-table td.num { text-align: right; font-family: inherit; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .pdk-table .sub { display: block; }
 .pdk-img img, .pdk-noimg { width: 44px; height: 44px; border-radius: 6px; object-fit: cover; display: block; background: var(--line-soft); }
 .pdk-name { min-width: 220px; max-width: 340px; }
