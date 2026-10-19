@@ -11648,8 +11648,48 @@ def _store_cog_pct(store_id: int, rate: float):
     return (r["c"] * rate / r["s"]) if r and r["s"] else None
 
 
+_pp_limit_cache: dict = {}
+
+
+async def _paypal_limit_holds() -> tuple:
+    """PayPal's actual monthly-limit holds (T2101) per Hong Kong day, in AUD, from every
+    connected PayPal account's feed (last 75 days), and the first day the feed covers.
+    Kept 10 minutes; on a failed read the last good copy (or nothing) is used."""
+    hit = _pp_limit_cache.get("v")
+    if hit and time.time() - hit[0] < 600:
+        return hit[1]
+    conns = [c for c in db.list_cash_connections() if c["provider"] == "paypal"]
+    if not conns:
+        return {}, None
+    got = await asyncio.gather(*[paypal.transactions(c["client_id"], c["secret"]) for c in conns],
+                               return_exceptions=True)
+    if any(isinstance(g, Exception) for g in got):
+        return hit[1] if hit else ({}, None)
+    table = await fx.table("AUD")
+    held, first = defaultdict(float), None
+    for rows in got:
+        for t in rows:
+            try:
+                when = datetime.fromisoformat(t["transaction_initiation_date"].replace("Z", "+00:00")
+                                              .replace("+0000", "+00:00")).astimezone(CASH_TZ).date().isoformat()
+            except (KeyError, ValueError):
+                continue
+            first = min(first or when, when)
+            if t.get("transaction_event_code") != "T2101" or t.get("transaction_status") in ("D", "V"):
+                continue
+            amt = t.get("transaction_amount") or {}
+            f = fx.factor(table, amt.get("currency_code"), "AUD") if table else 1.0
+            held[when] += abs(float(amt.get("value") or 0)) * f
+    out = (dict(held), first)
+    _pp_limit_cache["v"] = (time.time(), out)
+    return out
+
+
 async def _paypal_over_limit(start: str, end: str) -> dict:
-    """{day: share of that day's PayPal sales above PayPal's monthly limit}.
+    """{day: share of that day's PayPal sales held by PayPal's monthly limit}.
+    Real holds: what PayPal actually held that day (T2101 in its feed) over that day's PayPal
+    sales, so a raised or lowered limit shows by itself. Days older than the feed (75 days)
+    are worked out from the limit at the time (metrics.PAYPAL_MONTHLY_LIMIT_AUD).
     The month's PayPal sales come from every store's saved daily totals (one
     PayPal account takes them all), converted to AUD."""
     first = date.fromisoformat(start).replace(day=1).isoformat()
@@ -11661,11 +11701,15 @@ async def _paypal_over_limit(start: str, end: str) -> dict:
         f = fx.factor(table, x["currency"], "AUD") if table else 1.0
         for d, v in db.saved_shopify_days(x["id"], first, end).items():
             per_day[d] += metrics.paypal_sales(v["payments"]) * f
+    held, feed_from = await _paypal_limit_holds()
     out, month, before = {}, None, 0.0
     for d in sorted(per_day):
         if d[:7] != month:
             month, before = d[:7], 0.0
-        out[d] = metrics.over_limit_share(per_day[d], before)
+        if feed_from and d > feed_from:          # the feed's first day may be partial
+            out[d] = min(1.0, held.get(d, 0.0) / per_day[d]) if per_day[d] > 0 else 0.0
+        else:
+            out[d] = metrics.over_limit_share(per_day[d], before)
         before += per_day[d]
     return out
 

@@ -125,9 +125,11 @@ def processing_fees(payments: dict, rates: dict, plan: str, currency: str,
 RESERVE_PCT = {"paypal": 21.0, "airwallex_card": 10.0, "airwallex_afterpay": 10.0}
 
 
-# PayPal also holds, for 21 days, everything above this much in PayPal sales per
-# calendar month (all stores share one PayPal account). Set on the account by
-# PayPal; "request an increase" in PayPal raises it.
+# PayPal also holds, for 21 days, everything above its monthly limit in PayPal sales per
+# calendar month (all stores share one PayPal account). PayPal's API doesn't give the
+# limit, so the dashboard uses PayPal's actual holds (T2101) from its feed for the last
+# 75 days (app._paypal_over_limit); this figure (the limit until Oct 2026, when PayPal
+# raised it) is only used for days older than the feed.
 PAYPAL_MONTHLY_LIMIT_AUD = 35160.0
 
 

@@ -220,6 +220,10 @@ file and have it work.
 
 Cash flow rules learned the hard way:
 
+- Dashboard "Net available" (19 Oct 2026): PayPal's monthly-limit hold uses PayPal's **actual** T2101 holds per
+  HK day from its feed (`_paypal_limit_holds`, 10-min cache, last 75 days) ÷ that day's PayPal sales, so a limit
+  change (PayPal raised it in Oct 2026; its API doesn't give the limit) shows by itself. Older days use
+  `metrics.PAYPAL_MONTHLY_LIMIT_AUD` (35,160, the old limit). Owner read-out: `/api/debug/paypal-holds`.
 - Arrived today (18 Oct 2026, `cashflow.track_arrivals`, setting `cash_arrivals`): pending items due by tomorrow are
   remembered; once one leaves the pending list of an account that answered (and the transit check worked), it has
   settled into the available balance → "Arrived" (green) on today's row and "Incl. … arrived today" on Available now.
