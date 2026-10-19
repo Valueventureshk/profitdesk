@@ -509,7 +509,19 @@ async function openTicket(id) {
         ${t.status === "closed" ? `<p class="hint">Closed ${full(t.closed_at)} by ${esc(t.closed_by || "")}${t.close_note ? ` · ${esc(t.close_note)}` : ""}</p>` : ""}
         <div data-write-only>
           ${t.status === "open"
-            ? `<button class="btn btn-primary btn-block" data-act="close">Close ticket</button>`
+            ? `<button class="btn btn-primary btn-block" data-act="close">Close ticket</button>
+               ${snoozed
+                 ? `<p class="hint tk-snoozed">☾ Snoozed until ${full(t.snoozed_until)}</p><button class="btn btn-ghost btn-block tk-snooze-btn" data-act="wake">Wake now</button>`
+                 : `<button class="btn btn-ghost btn-block tk-snooze-btn" data-act="snooze_open">☾ Snooze</button>
+                    <div class="tk-snooze-pick" id="tkSnoozePick" hidden>
+                      <span class="hint">Hide it until, then back in the list:</span>
+                      <div class="tk-snooze-quick">
+                        <button class="btn btn-sm btn-ghost" data-snooze="1">Tomorrow</button>
+                        <button class="btn btn-sm btn-ghost" data-snooze="3">3 days</button>
+                        <button class="btn btn-sm btn-ghost" data-snooze="7">1 week</button>
+                      </div>
+                      <div class="tk-snooze"><input type="date" id="tkSnooze" class="control"><button class="btn btn-sm btn-ghost" data-act="snooze">Snooze</button></div>
+                    </div>`}`
             : `<button class="btn btn-ghost btn-block" data-act="reopen">Reopen</button>`}
           <div class="tk-side-label">Handling</div>
           <div class="tk-handler-box">${t.handler
@@ -529,9 +541,6 @@ async function openTicket(id) {
             `<option value="${k}"${k === t.kind ? " selected" : ""}>${v}</option>`).join("")}</select>
           <div class="tk-side-label">Follow-up</div>
           <label class="tk-check"><input type="checkbox" id="tkEsc" ${t.escalated ? "checked" : ""}> Escalated · needs owner</label>
-          ${snoozed
-            ? `<p class="hint">Snoozed until ${full(t.snoozed_until)}</p><button class="btn btn-sm btn-ghost" data-act="wake">Wake now</button>`
-            : `<div class="tk-snooze"><input type="date" id="tkSnooze" class="control"><button class="btn btn-sm btn-ghost" data-act="snooze">Snooze</button></div>`}
           <button class="btn btn-sm btn-ghost tk-notcust" data-act="not_customer">Not a customer email</button>
         </div>
         ${t.gmail_link ? `<div class="tk-side-label">Email thread</div><a href="${esc(t.gmail_link)}" target="_blank" rel="noopener">Open in Gmail ↗</a>` : ""}
@@ -561,6 +570,7 @@ async function openTicket(id) {
         return act({ action: "claim" }, "You're handling this ticket.");
       }
       if (a === "release") return act({ action: "release" }, "Handed back. Anyone can pick it up.");
+      if (a === "snooze_open") { $("tkSnoozePick").hidden = !$("tkSnoozePick").hidden; return; }
       if (a === "snooze") {
         if (!$("tkSnooze").value) return toast("Pick a date first.", true);
         return act({ action: "snooze", until: $("tkSnooze").value }, "Snoozed.");
@@ -571,6 +581,12 @@ async function openTicket(id) {
           .then(() => { toast("Removed."); current = null; PDUrl.set({ ticket: null, mail: null }); $("read").innerHTML = ""; refresh(); })
           .catch((e) => toast(e.message, true));
       }
+    };
+  }
+  for (const b of $("read").querySelectorAll("[data-snooze]")) {
+    b.onclick = () => {     // dates on the Hong Kong clock: the ticket comes back at midnight HK that day
+      const d = new Date(Date.now() + 8 * 3600e3 + Number(b.dataset.snooze) * 86400e3).toISOString().slice(0, 10);
+      act({ action: "snooze", until: d }, `Snoozed until ${b.textContent.toLowerCase()}.`);
     };
   }
   for (const c of $("read").querySelectorAll("[data-label]")) {

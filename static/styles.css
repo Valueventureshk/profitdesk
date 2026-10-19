@@ -778,6 +778,10 @@ body.not-manager [data-manage-only] { display: none !important; }
 .tk-side-label:first-child { margin-top: 0; }
 .tk-check { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
 .tk-side .btn-block { margin-top: 10px; }
+.tk-side .tk-snooze-btn { margin-top: 6px; color: var(--muted); background: var(--line-soft); border-color: var(--line); }
+.tk-snooze-pick { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.tk-snooze-quick { display: flex; flex-wrap: wrap; gap: 6px; }
+.tk-snoozed { margin: 8px 0 0; }
 .tk-toggles { display: grid; gap: 4px; margin-bottom: 6px; }
 .tk-toggles label { display: flex; gap: 8px; align-items: center; }
 .tk-snooze { display: flex; gap: 6px; }
