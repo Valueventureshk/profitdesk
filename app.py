@@ -3118,6 +3118,50 @@ def api_inbox_tickets(view: str = "scm", account: int = None, label: str = ""):
     return {"tickets": rows}
 
 
+@app.get("/api/inbox/search")
+def api_inbox_search(q: str = "", account: int = None):
+    """Search every ticket (open, snoozed and closed) and the emails with no ticket: order number,
+    customer name or email, subject, AI summary or any word in the emails. Every word must match."""
+    words = [w.lstrip("#") for w in q.split() if w.lstrip("#")][:6]
+    if not words:
+        return {"tickets": [], "messages": []}
+    hay_t = ("COALESCE(t.customer_name,'') || ' ' || COALESCE(t.customer_email,'') || ' ' || COALESCE(t.subject,'')"
+             " || ' ' || COALESCE(t.summary,'') || ' ' || COALESCE(t.orders,'')")
+    hay_m = ("COALESCE(m.from_name,'') || ' ' || COALESCE(m.from_addr,'') || ' ' || COALESCE(m.subject,'')"
+             " || ' ' || COALESCE(m.text,'')")
+    like = [f"%{w}%" for w in words]
+    t_where = " AND ".join(f"({hay_t} LIKE ? OR EXISTS (SELECT 1 FROM mail_messages m WHERE m.ticket_id = t.id"
+                           f" AND {hay_m} LIKE ?))" for _ in words)
+    t_args = [x for w in like for x in (w, w)]
+    m_where = " AND ".join(f"{hay_m} LIKE ?" for _ in words)
+    if account:
+        t_where += " AND t.account_id = ?"
+        t_args.append(account)
+    stores = _store_names()
+    colors = _tag_colors()
+    with db._conn() as con:
+        tickets = [dict(r) for r in con.execute(
+            f"SELECT t.*, (SELECT COUNT(*) FROM mail_messages m WHERE m.ticket_id = t.id) emails,"
+            f" (SELECT group_concat(DISTINCT g.name) FROM mail_message_tags g JOIN mail_messages m ON m.id = g.message_id"
+            f"  WHERE m.ticket_id = t.id) tags"
+            f" FROM tickets t WHERE {t_where} ORDER BY (t.status = 'open') DESC, t.last_message_at DESC LIMIT 100", t_args)]
+        msgs = [dict(r) for r in con.execute(
+            f"SELECT m.id, m.account_id, m.from_name, m.from_addr, m.subject, m.date, substr(m.text, 1, 160) snippet,"
+            f" m.attachments, m.category, m.labels, m.ticket_id, a.address, a.store_id"
+            f" FROM mail_messages m JOIN mail_accounts a ON a.id = m.account_id"
+            f" WHERE m.direction = 'in' AND m.ticket_id IS NULL AND {m_where}"
+            f"{' AND m.account_id = ?' if account else ''} ORDER BY m.date DESC LIMIT 100",
+            like + ([account] if account else []))]
+    for r in tickets:
+        r["store"] = stores.get(r["store_id"], "")
+        r["tags"] = [{"name": n, "color": _tag_color(n, colors)} for n in sorted((r["tags"] or "").split(","), key=str.lower) if n]
+    for r in msgs:
+        r["store"] = stores.get(r["store_id"], "")
+        r["attachments"] = len(json.loads(r["attachments"] or "[]"))
+        r["tags"] = []
+    return {"tickets": tickets, "messages": msgs}
+
+
 def _gmail_link(address: str, message_id: str) -> str:
     from urllib.parse import quote
     mid = (message_id or "").strip("<>")

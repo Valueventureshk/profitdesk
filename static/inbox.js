@@ -343,10 +343,20 @@ const ticketRow = (t) => `
 
 async function loadList() {
   const acct = $("mailboxSelect").value;
-  PDUrl.set({ view: view === "scm" ? null : view, box: acct });
+  PDUrl.set({ view: view === "scm" || view === "search" ? null : view, box: acct });
   const q = acct ? `&account=${acct}` : "";
   const empty = `<p class="hint inbox-empty">Nothing here.</p>`;
-  if (view.startsWith("label:")) {
+  if (view === "search") {
+    const words = $("inboxSearch").value.trim();
+    if (!words) { $("list").innerHTML = `<p class="hint inbox-empty">Type an order number, a name or any word.</p>`; return; }
+    let d;
+    try { d = await api(`/api/inbox/search?q=${encodeURIComponent(words)}${q}`); } catch (e) { $("list").innerHTML = esc(e.message); return; }
+    if ($("inboxSearch").value.trim() !== words) return;      // a newer search is on its way
+    $("list").innerHTML = (`<div class="list-sep">${d.tickets.length}${d.tickets.length === 100 ? "+" : ""} ticket${d.tickets.length === 1 ? "" : "s"} (open first, then solved)</div>`
+      + d.tickets.map(ticketRow).join("")
+      + (d.messages.length ? `<div class="list-sep">Emails (no ticket)</div>` + d.messages.map(mailRow).join("") : ""))
+      || empty;
+  } else if (view.startsWith("label:")) {
     const label = encodeURIComponent(view.slice(6));
     let tk, ms;
     try {
@@ -797,6 +807,27 @@ $("nav").addEventListener("click", (e) => {
   if (view === "training") { current = null; PDUrl.set({ view: "training" }); loadTraining(); return; }
   loadList();
 });
+// Search box: searches every ticket (open and solved) and emails with no ticket, as you type.
+let searchTimer, beforeSearch = "scm";
+$("inboxSearch").oninput = () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    const on = !!$("inboxSearch").value.trim();
+    if (on && view !== "search") {
+      beforeSearch = view;
+      view = "search";
+      for (const x of $("nav").querySelectorAll("[data-view]")) x.classList.remove("on");
+    }
+    if (!on && view === "search") {           // cleared: back to the list from before
+      const b = $("nav").querySelector(`[data-view="${beforeSearch}"]`);
+      if (b) return b.click();
+      view = beforeSearch;
+    }
+    loadList();
+  }, 300);
+};
+$("inboxSearch").onkeydown = (e) => { if (e.key === "Escape") { $("inboxSearch").value = ""; $("inboxSearch").oninput(); } };
+$("nav").addEventListener("click", (e) => { if (e.target.closest("[data-view]") && $("inboxSearch").value) $("inboxSearch").value = ""; }, true);
 $("refresh").onclick = refresh;
 $("mailboxSelect").onchange = () => { loadList(); loadLabels(); };
 
