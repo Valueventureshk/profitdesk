@@ -25,62 +25,129 @@ TEMPLATE = "advetorial"              # Perth's page template (spelt like this in
 ACCENT = "#1d7f8c"
 
 CSS = """
+@import url('https://fonts.googleapis.com/css2?family=Caveat:wght@500;700&display=swap');
 #shopify-section-header,#shopify-section-footer,#shopify-section-footer-promotions,#shopify-section-newsletter-popup,
 #shopify-section-announcement-bar,.shopify-section-group-header-group,.shopify-section-group-footer-group,
 .announcement-bar,.announcement-slider,.page-content .section-header,.main-page-title,.breadcrumb,.breadcrumbs{display:none !important;}
 .page-width--narrow{max-width:none !important;}
-.mb-lp{font-family:Georgia,'Times New Roman',serif;font-size:19px;line-height:1.75;color:#2d2a26;max-width:700px;margin:0 auto;padding:28px 20px 70px;}
+.mb-lp{--ac:ACCENT;font-family:Georgia,'Times New Roman',serif;font-size:19px;line-height:1.75;color:#2d2a26;max-width:700px;margin:0 auto;padding:28px 20px 70px;}
+.mb-lp *{box-sizing:border-box;}
 .mb-lp p{margin:0 0 22px;}
+.mb-lp mark{background:linear-gradient(transparent 55%,#f7e08a 55%);color:inherit;padding:0 2px;}
 .mb-lp .lp-label{font-family:Helvetica,Arial,sans-serif;font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:#8a8178;margin:0 0 14px;}
-.mb-lp h1{font-size:35px;line-height:1.24;margin:0 0 22px;font-weight:700;color:#221f1c;}
-.mb-lp h2{font-size:26px;line-height:1.3;margin:44px 0 18px;font-weight:700;color:#221f1c;}
+.mb-lp h1{font-family:Georgia,'Times New Roman',serif;font-size:35px;line-height:1.24;margin:0 0 22px;font-weight:700;color:#221f1c;}
+.mb-lp h2{font-family:Georgia,'Times New Roman',serif;font-size:26px;line-height:1.3;margin:44px 0 18px;font-weight:700;color:#221f1c;}
+.mb-lp .lp-stand{font-size:21px;line-height:1.55;color:#4a443d;font-style:italic;}
 .mb-lp .lp-byline{display:flex;align-items:center;gap:14px;border-top:1px solid #e5ded4;border-bottom:1px solid #e5ded4;padding:14px 0;margin:0 0 34px;}
 .mb-lp .lp-byline img{width:58px;height:58px;border-radius:50%;object-fit:cover;flex:none;}
 .mb-lp .lp-byline span{font-family:Helvetica,Arial,sans-serif;font-size:15px;color:#6b635a;line-height:1.45;}
 .mb-lp figure{margin:30px 0;}
 .mb-lp figure img{width:100%;height:auto;display:block;border-radius:4px;}
 .mb-lp figcaption{font-family:Helvetica,Arial,sans-serif;font-size:14px;color:#8a8178;margin-top:9px;font-style:italic;}
-.mb-lp .lp-pull{font-size:23px;line-height:1.5;font-style:italic;color:ACCENT;border-left:3px solid ACCENT;padding-left:20px;margin:30px 0;}
+.mb-lp figure.lp-framed{border:1px solid #e0d8cc;padding:10px;background:#fff;box-shadow:0 2px 0 #efe8dc;}
+.mb-lp figure.lp-polaroid{background:#fff;padding:12px 12px 16px;box-shadow:0 6px 18px rgba(40,30,20,.14);transform:rotate(-1.2deg);max-width:560px;margin:34px auto;position:relative;}
+.mb-lp figure.lp-polaroid:nth-of-type(even){transform:rotate(1.3deg);}
+.mb-lp figure.lp-polaroid img{border-radius:0;}
+.mb-lp figure.lp-polaroid figcaption{font-family:'Caveat',cursive;font-style:normal;font-size:22px;color:#4a443d;text-align:center;margin-top:10px;}
+.mb-lp figure.lp-polaroid:before{content:"";position:absolute;top:-12px;left:50%;width:110px;height:26px;margin-left:-55px;background:rgba(240,226,180,.75);transform:rotate(-3deg);}
+.mb-lp .lp-pull{font-size:23px;line-height:1.5;font-style:italic;color:var(--ac);border-left:3px solid var(--ac);padding-left:20px;margin:30px 0;}
 .mb-lp .lp-cta{text-align:center;margin:38px 0;}
-.mb-lp .lp-cta a{display:inline-block;background:ACCENT;color:#fff !important;font-family:Helvetica,Arial,sans-serif;font-size:18px;font-weight:700;text-decoration:none;padding:17px 34px;border-radius:40px;line-height:1.3;}
-.mb-lp .lp-card{background:#faf6ef;border-radius:8px;padding:28px;margin:44px 0;text-align:center;}
+.mb-lp .lp-cta a{display:inline-block;background:var(--ac);color:#fff !important;font-family:Helvetica,Arial,sans-serif;font-size:18px;font-weight:700;text-decoration:none;padding:17px 34px;border-radius:40px;line-height:1.3;box-shadow:0 3px 0 rgba(0,0,0,.12);}
+.mb-lp .lp-box{border:2px solid var(--ac);border-radius:10px;padding:22px 24px 6px;margin:34px 0;background:#fffdf8;position:relative;}
+.mb-lp .lp-box h4{font-family:Helvetica,Arial,sans-serif;font-size:13px;letter-spacing:.14em;text-transform:uppercase;color:var(--ac);margin:0 0 10px;}
+.mb-lp .lp-review{background:#faf6ef;border-radius:10px;padding:22px 24px;margin:30px 0;border:1px solid #ece3d4;}
+.mb-lp .lp-review .lp-rs{color:#e2a522;font-size:18px;letter-spacing:2px;margin:0 0 6px;font-family:Helvetica,Arial,sans-serif;}
+.mb-lp .lp-review p{margin:0 0 10px;font-style:italic;}
+.mb-lp .lp-review .lp-who{font-family:Helvetica,Arial,sans-serif;font-style:normal;font-size:14px;color:#8a8178;margin:0;}
+.mb-lp .lp-review .lp-who b{color:#4a443d;}
+.mb-lp .lp-review .lp-ok{color:#2e7d4f;font-weight:700;}
+.mb-lp .lp-step{display:flex;align-items:center;gap:14px;margin:44px 0 16px;}
+.mb-lp .lp-step span{flex:none;width:42px;height:42px;border-radius:50%;background:var(--ac);color:#fff;font-family:Helvetica,Arial,sans-serif;font-weight:700;font-size:19px;display:flex;align-items:center;justify-content:center;}
+.mb-lp .lp-step h2{margin:0;}
+.mb-lp .lp-div{text-align:center;color:#c9bfb1;letter-spacing:.6em;margin:34px 0;font-size:18px;}
+.mb-lp ul.lp-check{list-style:none;padding:0;margin:0 0 24px;}
+.mb-lp ul.lp-check li{padding-left:34px;position:relative;margin:0 0 10px;}
+.mb-lp ul.lp-check li:before{content:"✓";position:absolute;left:0;top:1px;width:24px;height:24px;border-radius:50%;background:var(--ac);color:#fff;font-size:14px;line-height:24px;text-align:center;font-family:Helvetica,Arial,sans-serif;}
+.mb-lp .lp-note{background:#fff7c2;padding:16px 20px;margin:30px 8px;font-family:'Caveat',cursive;font-size:25px;line-height:1.3;color:#3d3a32;transform:rotate(-1deg);box-shadow:0 4px 10px rgba(40,30,20,.12);}
+.mb-lp .lp-sign{font-family:'Caveat',cursive;font-size:36px;color:#2d2a26;margin:6px 0 30px;}
+.mb-lp .lp-card{background:#faf6ef;border-radius:12px;padding:30px 28px;margin:44px 0;text-align:center;border:2px solid #efe5d3;position:relative;}
+.mb-lp .lp-badge{position:absolute;top:-14px;left:50%;transform:translateX(-50%);background:#b3402a;color:#fff;font-family:Helvetica,Arial,sans-serif;font-size:13px;font-weight:700;letter-spacing:.08em;padding:6px 14px;border-radius:20px;white-space:nowrap;}
 .mb-lp .lp-card img{width:100%;max-width:340px;height:auto;border-radius:6px;margin:0 auto 18px;display:block;}
-.mb-lp .lp-card h3{font-size:23px;margin:0 0 8px;}
+.mb-lp .lp-card h3{font-family:Georgia,'Times New Roman',serif;font-size:23px;margin:0 0 8px;}
 .mb-lp .lp-stars{font-family:Helvetica,Arial,sans-serif;font-size:16px;color:#6b635a;margin:0 0 14px;}
 .mb-lp .lp-price{font-size:27px;margin:0 0 18px;}
 .mb-lp .lp-price s{color:#9b938a;font-size:20px;margin-right:9px;}
-.mb-lp .lp-price b{color:ACCENT;}
+.mb-lp .lp-price b{color:var(--ac);}
 .mb-lp .lp-card ul{text-align:left;max-width:420px;margin:0 auto 22px;padding-left:22px;font-size:17px;line-height:1.65;}
-.mb-lp .lp-note{font-family:Helvetica,Arial,sans-serif;font-size:15px;color:#8a8178;margin-top:14px;}
+.mb-lp .lp-cnote{font-family:Helvetica,Arial,sans-serif;font-size:15px;color:#8a8178;margin-top:14px;}
 .mb-lp .lp-foot{border-top:1px solid #e5ded4;margin-top:44px;padding-top:22px;font-family:Helvetica,Arial,sans-serif;font-size:15px;color:#6b635a;line-height:1.6;}
 .mb-lp .lp-foot p{margin:0 0 10px;}
 .mb-lp .lp-disc{font-size:12px;color:#a39a90;letter-spacing:.02em;}
-@media(max-width:600px){.mb-lp{font-size:18px;padding:20px 17px 56px;}.mb-lp h1{font-size:28px;}.mb-lp h2{font-size:22px;}.mb-lp .lp-pull{font-size:20px;}.mb-lp .lp-cta a{font-size:17px;padding:16px 26px;}}
+/* journal: a letter on cream writing paper */
+.mb-lp.th-journal{background:#fdfaf2;border:1px solid #e8dfcc;box-shadow:0 10px 30px rgba(60,45,20,.08);border-radius:4px;margin:24px auto;padding:44px 40px 60px;
+  outline:1px solid #eadfc8;outline-offset:-12px;}
+.mb-lp.th-journal .lp-label:before{content:"✉  ";color:var(--ac);}
+.mb-lp.th-journal .lp-byline{border-color:#e3d7c0;}
+.mb-lp.th-journal h2{border-bottom:2px dotted #d9ccb3;padding-bottom:8px;}
+/* editorial: a magazine feature */
+.mb-lp.th-editorial{border-top:6px double #221f1c;padding-top:22px;}
+.mb-lp.th-editorial .lp-label{color:#b3402a;font-weight:700;border-bottom:1px solid #221f1c;padding-bottom:10px;}
+.mb-lp.th-editorial h1{font-size:40px;letter-spacing:-.01em;}
+.mb-lp.th-editorial .lp-first:first-letter{float:left;font-size:74px;line-height:.82;padding:6px 10px 0 0;color:var(--ac);font-weight:700;}
+.mb-lp.th-editorial h2{border-top:1px solid #221f1c;padding-top:16px;text-transform:none;}
+.mb-lp.th-editorial .lp-step h2{border-top:0;padding-top:0;}
+.mb-lp.th-editorial .lp-step{border-top:1px solid #221f1c;padding-top:16px;}
+.mb-lp.th-editorial .lp-pull{border:0;border-top:2px solid var(--ac);border-bottom:2px solid var(--ac);padding:18px 6px;text-align:center;font-size:25px;}
+.mb-lp.th-editorial .lp-pull:before{content:"“";display:block;font-size:60px;line-height:.6;color:var(--ac);}
+.mb-lp.th-editorial figure img{border-radius:0;}
+.mb-lp.th-editorial figcaption{font-style:normal;text-transform:uppercase;letter-spacing:.08em;font-size:12px;}
+/* scrapbook: photos taped in, notes in the margin */
+.mb-lp.th-scrapbook h2{display:inline-block;background:linear-gradient(transparent 60%,#f6dca0 60%);padding:0 4px;}
+.mb-lp.th-scrapbook .lp-box{border-style:dashed;border-radius:4px;background:#fffef9;}
+.mb-lp.th-scrapbook .lp-review{border:2px dashed #e0c98f;background:#fffdf3;}
+.mb-lp.th-scrapbook .lp-pull{font-family:'Caveat',cursive;font-style:normal;font-size:31px;border-left:0;padding-left:0;text-align:center;}
+@media(max-width:600px){.mb-lp{font-size:18px;padding:20px 17px 56px;}.mb-lp h1{font-size:28px;}.mb-lp.th-editorial h1{font-size:31px;}
+  .mb-lp h2{font-size:22px;}.mb-lp .lp-pull{font-size:20px;}.mb-lp .lp-cta a{font-size:17px;padding:16px 26px;}
+  .mb-lp.th-journal{padding:30px 20px 46px;margin:10px 6px;}.mb-lp .lp-note{font-size:22px;margin:26px 2px;}
+  .mb-lp.th-editorial .lp-first:first-letter{font-size:60px;}}
 """
+THEMES = ("letter", "journal", "editorial", "scrapbook")
+ACCENTS = {"teal": "#1d7f8c", "terracotta": "#b5532f", "forest": "#2f6b4f", "navy": "#2b4a7a", "plum": "#7a3e65",
+           "caramel": "#a8642a"}
 
-PLAYBOOK = """ADVERTORIAL PLAYBOOK v1 (EcomVital, from the owner's 8 examples, 18-19 Oct 2026)
+PLAYBOOK = """ADVERTORIAL PLAYBOOK v2 (EcomVital, from the owner's 8 examples, 18-19 Oct 2026)
 
 WHAT YOU DELIVER for an "Advertorial + ad creative" task
-1. The advertorial page (sent to EcomVital with advertorial_save; EcomVital builds it in the store as a hidden page).
-2. One image ad (square, 1:1).
+1. The advertorial page (saved with advertorial_save; EcomVital builds it in the store as a hidden page).
+2. One image ad (square, 1:1), made with your image tool from the product (the image_prompts in task_get).
 3. Primary text, headline and description for that ad.
+Never stop at a plan or a draft in the chat: the task is done only when advertorial_save (or task_save with
+result.page) has returned the preview link, and the ad image is on the task.
+
+THE INPUTS (task_get)
+- product: the product the whole advertorial and ad are about (product_facts from its link, or the product photo +
+  description staff uploaded). Every claim comes from here.
+- landing page (send_to): where every button and link in the advertorial sends readers (often the collection).
+- competitor advertorial (optional): replicate it. Admins tweak afterwards.
+- reviews: the rating, count and review texts staff collected. Use these and only these.
 
 TWO WAYS TO WORK
-- Competitor advertorial given (brief.competitor_advertorial; its text is in competitor_page): COPYCAT. Keep their story,
-  structure, section order, angle and length; swap in our store, our product, our country's spelling and places,
-  our prices and our real reviews. Change names, friends, towns and small details so it is not word for word.
-- No competitor advertorial: write our own in exactly the style below, from the product facts.
+- Competitor advertorial given (competitor_page): COPYCAT. Keep their story, structure, section order, angle and length;
+  swap in our store, our product, our country's spelling and places, our prices and our reviews. Change names,
+  friends, towns and small details so it is not word for word.
+- None given: write our own in exactly the style below, from the product.
 
 THE VOICE (every example)
 - A woman of about 65-70 writing plainly, warmly and a little drily, in the store's country (British spelling for UK,
-  Australian for AU: "till", "high street"/"shops", "mum"). No marketing words, no exclamation marks, no emojis.
+  Australian for AU: "till", "shops", "mum"). No marketing words, no exclamation marks, no emojis.
 - Short sentences. Small concrete moments (the checkout queue, a 70th birthday lunch, walking the labrador, a coach
-  trip, the caravan site). A friend or sister with a backhanded compliment ("Ann told me I looked like I had made an
-  effort for once, which I have decided to take as a compliment").
+  trip, the caravan site, the bowls club). A friend or sister with a backhanded compliment ("Ann told me I looked like I
+  had made an effort for once, which I have decided to take as a compliment").
 - The product is named with one vivid physical detail (colour, stitching, print, the bit you touch).
 - Store described as: "<Store>, a small <British/Australian> boutique that has been quietly dressing women our age for
   a few years now" (homeware/accessories: "quietly making the ordinary things a bit lovelier").
-- Signed with a first name (Maggie, Pat, Patricia...).
+- Signed with a first name (Maggie, Pat, Patricia...). Use a different narrator, town and event from the store's
+  other advertorials for the same product.
 
 STORY FRAMES (pick the one that suits the product, or the competitor's)
 A. "I almost did not post this." (dresses, outfits, bags)
@@ -95,75 +162,75 @@ B. "I saw a woman with it / asked her plainly." (accessories, shoes, jewellery, 
    could put it up for other women to read" -> "The short version." six benefits in one paragraph -> what happened since
    -> reviews -> sale -> "If your <thing> is <problem>, my full letter is below, with the six things laid out plainly."
 
-PRIMARY TEXT (the ad): 330-450 words, frame A or B, plain paragraphs, signed "— Name". Uses the real review rating,
-count and one real quote from the brief. Ends pointing to the letter / the store.
+PRIMARY TEXT (the ad): 330-450 words, frame A or B, plain paragraphs, signed "— Name". Uses the real review count
+(and rating / one real quote when given). Ends pointing to the letter / the store.
 HEADLINE: under 60 characters. Patterns: "The <product> four women asked me about", "The <product> she wore to the
 <event>", "Six things this <product> gets right", "The one <product> she won't stop carrying".
 DESCRIPTION: under 45 characters. Patterns: "What I told them at the table", "So I asked her where it was from",
 "Read Pat's letter in full".
 
-THE PAGE (advertorial_save -> page). 1,100-1,700 words, the long version of the same story:
-- label: "A letter from a reader"
-- headline: one long specific sentence with age + a moment, e.g. "At 67, my sister watched me tip my whole handbag out
-  on the kitchen table, just to find my glasses".
-- author: first name, "<City> · <Month Year>", photo = an older woman's portrait (use a file made for the task, or
-  leave it out).
-- blocks in this order (types: p, pull, h2, image, cta, list):
-  1. 3-5 p: writing this at the kitchen table, why (people kept asking), the moment it started; one "pull" quote (what
-     the friend said).
-  2. image of the product as it arrived (caption in her voice).
-  3. h2 "How it happens": why women end up with the wrong <thing> (the shops give you two choices...).
-  4. h2 "What I had wrong": the real problem was never X, it was Y.  Then a cta.
-  5. h2 "The <thing> is called the <Name>": store + product details from the product facts; image with caption.
-  6. h2 "What happened at <event>": the outing, the compliments, the friend; one or two images with captions.
-  7. h2 "Three things I have learned since": a "list" block, items {lead: "One. ...", text: "..."}.
-  8. h2 "About the price": "The <Name> is <price>. It was <compare-at price>." (from the product facts), why no catch
-     (small boutique selling directly, sale on to make room for the new season), the reviews (rating, count, one real
-     quote, "Not the suspiciously perfect five you see on some websites, which made me trust it rather more"). Then a cta.
-  9. h2 "What I would tell you if we were friends": who it is for, "Not because a <thing> will change your life...",
-     two practical things (sale on, which colour/size goes first), a closing "pull" line, then her name as a p.
-- card: product name (as on the store, e.g. "ALINA | Exclusive Design Bag"), its best image, 5-7 bullet benefits from
-  the product facts (plus the store's delivery line), button text "Shop The <Collection/Product>", note "<Sale> on now.
-  The <colour> is selling first."  EcomVital adds the stars line (from the brief's reviews) and the prices.
+THE PAGE (page JSON). 1,100-1,700 words, the long version of the same story.
+- theme: pick one and vary it between tasks: "letter" (clean, like Perth's first page), "journal" (a letter on cream
+  writing paper with a framed border: warm, personal), "editorial" (magazine feature: double rule, drop cap, boxed quotes),
+  "scrapbook" (taped-in polaroid photos, sticky notes, dashed boxes: playful). accent: teal, terracotta, forest, navy,
+  plum, caramel (or a #hex) that suits the product's colours.
+- label: "A letter from a reader"; headline: one long specific sentence with age + a moment.
+- standfirst (optional): one italic line under the headline ("Six things the <Name> gets right that everyday <things>
+  get wrong, from a woman who does not review <things>").
+- author: first name, "<City> · <Month Year>", photo = an older woman's portrait image (or leave it out).
+- blocks (use the styled ones; a page with only p and h2 looks flat):
+  p {text} (**bold**, ==highlight==) · pull {text} quote in her voice · h2 {text} · step {n, title} numbered heading
+  (for the "six things": n 1-6) · image {src, caption, alt, style: plain | framed | polaroid} · cta {text} button ·
+  list {items:[{lead, text}]} · checklist {items:[text]} ticked list · box {title, text, items?} bordered callout
+  ("What I wish I had known", "The short version") · review {text, name, place, stars, verified} a real review card
+  (only reviews from the brief) · note {text} handwritten sticky note · divider · signature {name} handwritten sign-off.
+- Order for frame A: 3-5 p and a pull (why she is writing) -> image (as it arrived) -> h2 "How it happens" -> h2 "What I
+  had wrong" -> cta -> h2 "The <thing> is called the <Name>" (product details) + image -> h2 "What happened at <event>" +
+  images -> h2 "Three things I have learned since" (list or checklist) -> h2 "About the price" ("The <Name> is <price>.
+  It was <compare-at price>.", no catch, reviews: count, rating, a review card) -> cta -> h2 "What I would tell you if we
+  were friends" -> closing pull -> signature.
+- Order for frame B: standfirst, "Let me be plain about who is talking", where she first saw it, image, then six step
+  sections (n 1-6) each with 2-3 p (images between some), a "The short version" box, about the price, a review card,
+  cta, close, signature.
+- 2-3 cta buttons ("See The <Collection>"); they all go to the landing page. 3-5 images.
+- card: product name as on the store, its best image, 5-7 bullet benefits from the product (plus the delivery line),
+  button "Shop The <Collection/Product>", note "<Sale> on now. The <colour> is selling first." EcomVital adds the sale
+  badge, the stars line (from the reviews) and the prices.
 - footer: about = "<Full name> is <age> and lives in <city> with <a detail>. She is not a fashion writer.";
   store_line = "<Store> · <delivery line> · <returns line>". EcomVital adds "This page is an advertisement for <Store>."
-- cta buttons: "See The <Collection>" (they all go to the brief's product / collection link).
-- Frame B page (the "six things" letter): label + long headline ("Fifty years of handbags and I never once wrote to a
-  shop about one. This is the exception"), a one-line standfirst p ("Six things the <Name> gets right that everyday
-  <things> get wrong, from a woman who does not review <things>"), "Let me be plain about who is talking" intro, where she
-  first saw it, then six h2 sections ("One. ..." to "Six. ...") each with 2-3 p and an image, then price, reviews, close.
 
-REVIEWS: use only the rating, count and quotes the staff put in the brief (review_rating, review_count, reviews).
-If none were given, leave reviews out of the copy and say so in task notes.
+REVIEWS: use only the rating, count and review texts in the brief. A line that isn't a customer review (no name,
+reads like story text) is not used: say so in the task notes.
 PRICES: from the product facts (price, compare-at price), in the store's currency.
 
-IMAGES
-- Ad image: square phone-camera photo, no text, no logo, natural light, a little lived-in. Two scenes that work:
-  (a) "just arrived": the product laid on a made bed (beige / cream linen), torn grey mailer bag and tissue paper beside
-  it, a brown swing tag still on; (b) "out and about": the product on a weathered park bench with autumn leaves, a
-  bistro table on a cobbled street with a cup of tea, a sunny windowsill. The product must look exactly like the real
-  one (use the product photo as the reference: same colour, shape, print, hardware).
-- Page images (3-4): the same product in home scenes matching the story (bed the morning it arrived, side table,
-  armchair by the door, kitchen table), plus an older woman's portrait for the byline.
-- Making them: ChatGPT makes them with its image tool from the product photo. Then add each one to the task with
-  task_add_image (image_url), or ask the person to download it and drop it on the task; each file gets an id you use as
-  "file:<id>" in the page. Product photos from the product facts can be used as they are (their https link).
+IMAGES (image_prompts in task_get are ready to use)
+- Ad image: square phone-camera photo, no text, no logo, natural light, a little lived-in. Scenes that work: (a) "just
+  arrived": the product on a made bed (beige / cream linen), torn grey mailer bag and tissue paper beside it, a brown
+  swing tag still on; (b) "out and about": on a weathered park bench with autumn leaves, a bistro table on a cobbled
+  street with a cup of tea, a sunny windowsill. The product must look exactly like the real one (same colour, shape,
+  stitching, hardware): attach / look at the product photo first.
+- Page images (3-4): the same product in home scenes matching the story, plus the narrator's portrait.
+- ChatGPT: make each image with your image tool, then add it with task_add_image if you have a link to it; otherwise
+  ask the person to download it and drop it on the task (Ad image / page pictures), then read the task again
+  (task_get lists every file as file:<id>) and save the page with those ids. Product photos from product_facts can be
+  used as they are (their https link).
 
-FINISH: advertorial_save with page + primary_text + headline + description (+ submit=true when the ad image is on the
-task). Then tell the person the preview link so they can check it before the admin approves.
+FINISH: advertorial_save (or task_save with result.page) with page + primary_text + headline + description, submit=true
+once the ad image is on the task. Then give the person the preview link.
 """
 
 
 # ---------------------------------------------------------------- page HTML from the AI's content
 
 def _inline(text: str) -> str:
-    """Plain text -> safe HTML, with **bold** kept."""
+    """Plain text -> safe HTML, with **bold** and ==highlight== kept."""
     t = html.escape(str(text or "").strip())
-    return re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", t)
+    t = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", t)
+    return re.sub(r"==(.+?)==", r"<mark>\1</mark>", t)
 
 
 def _img(src: str, alt: str = "") -> str:
-    return f'<img src="{html.escape(src, quote=True)}" alt="{html.escape(alt or "", quote=True)}">'
+    return f'<img src="{html.escape(src, quote=True)}" alt="{html.escape(alt or "", quote=True)}" loading="lazy">'
 
 
 def money(v, currency: str) -> str:
@@ -180,19 +247,36 @@ def stars(rating) -> str:
         r = float(rating)
     except (TypeError, ValueError):
         return ""
-    full = int(round(r))
+    full = max(0, min(5, int(round(r))))
     return "★" * full + "☆" * (5 - full)
 
 
+def _num(s) -> float:
+    try:
+        return float(re.sub(r"[^\d.]", "", str(s or "")) or 0)
+    except ValueError:
+        return 0.0
+
+
+def accent_of(v) -> str:
+    v = str(v or "").strip().lower()
+    if re.fullmatch(r"#[0-9a-f]{6}", v):
+        return v
+    return ACCENTS.get(v, ACCENT)
+
+
 def render(page: dict, *, store: str, link: str, images: dict, price: str = "", was: str = "",
-           rating: str = "", count: str = "", accent: str = ACCENT) -> str:
+           rating: str = "", count: str = "", accent: str = None) -> str:
     """The page body for Shopify (style + content). images maps each image reference to its final https link."""
     def src(ref):
         ref = str(ref or "").strip()
         return images.get(ref) or (ref if ref.startswith("https://") else "")
 
+    theme = page.get("theme") if page.get("theme") in THEMES else "letter"
     out = [f'<p class="lp-label">{_inline(page.get("label") or "A letter from a reader")}</p>',
            f'<h1>{_inline(page.get("headline"))}</h1>']
+    if page.get("standfirst"):
+        out.append(f'<p class="lp-stand">{_inline(page["standfirst"])}</p>')
     a = page.get("author") or {}
     if a.get("name"):
         photo = src(a.get("photo"))
@@ -200,40 +284,71 @@ def render(page: dict, *, store: str, link: str, images: dict, price: str = "", 
                    f'<span>{_inline(a["name"])}<br>{_inline(a.get("line"))}</span></div>')
     cta = lambda text: (f'<div class="lp-cta"><a href="{html.escape(link, quote=True)}">'
                         f'{_inline(text or "See The Collection")}</a></div>')
+    first_p = True
     for b in page.get("blocks") or []:
         kind = b.get("type")
         if kind == "p":
-            out.append(f"<p>{_inline(b.get('text'))}</p>")
+            cls = ' class="lp-first"' if first_p else ""
+            out.append(f"<p{cls}>{_inline(b.get('text'))}</p>")
+            first_p = False
         elif kind == "pull":
             out.append(f'<p class="lp-pull">{_inline(b.get("text"))}</p>')
         elif kind == "h2":
             out.append(f"<h2>{_inline(b.get('text'))}</h2>")
+        elif kind == "step":
+            out.append(f'<div class="lp-step"><span>{html.escape(str(b.get("n") or ""))[:3]}</span>'
+                       f"<h2>{_inline(b.get('title') or b.get('text'))}</h2></div>")
         elif kind == "image":
             s = src(b.get("src"))
             if s:
+                style = b.get("style") if b.get("style") in ("framed", "polaroid") else ""
                 cap = f"<figcaption>{_inline(b['caption'])}</figcaption>" if b.get("caption") else ""
-                out.append(f"<figure>{_img(s, b.get('alt') or b.get('caption') or '')}{cap}</figure>")
+                cls = f' class="lp-{style}"' if style else ""
+                out.append(f"<figure{cls}>{_img(s, b.get('alt') or b.get('caption') or '')}{cap}</figure>")
         elif kind == "cta":
             out.append(cta(b.get("text")))
         elif kind == "list":
             for it in b.get("items") or []:
                 lead = f"<strong>{_inline(it.get('lead'))}</strong> " if it.get("lead") else ""
                 out.append(f"<p>{lead}{_inline(it.get('text'))}</p>")
+        elif kind == "checklist":
+            out.append('<ul class="lp-check">' + "".join(f"<li>{_inline(x)}</li>" for x in b.get("items") or []) + "</ul>")
+        elif kind == "box":
+            inner = (f"<h4>{_inline(b['title'])}</h4>" if b.get("title") else "") + (f"<p>{_inline(b['text'])}</p>" if b.get("text") else "")
+            if b.get("items"):
+                inner += '<ul class="lp-check">' + "".join(f"<li>{_inline(x)}</li>" for x in b["items"]) + "</ul>"
+            out.append(f'<div class="lp-box">{inner}</div>')
+        elif kind == "review":
+            st = stars(b.get("stars")) if b.get("stars") else ""
+            who = " · ".join(x for x in (f"<b>{_inline(b['name'])}</b>" if b.get("name") else "", _inline(b.get("place"))) if x)
+            ok = ' · <span class="lp-ok">✓ Verified buyer</span>' if b.get("verified") else ""
+            rs = f'<p class="lp-rs">{st}</p>' if st else ""
+            out.append(f'<div class="lp-review">{rs}<p>“{_inline(b.get("text"))}”</p>'
+                       f'<p class="lp-who">{who}{ok}</p></div>')
+        elif kind == "note":
+            out.append(f'<div class="lp-note">{_inline(b.get("text"))}</div>')
+        elif kind == "divider":
+            out.append('<div class="lp-div">• • •</div>')
+        elif kind == "signature":
+            out.append(f'<p class="lp-sign">{_inline(b.get("name") or b.get("text"))}</p>')
     c = page.get("card") or {}
     if c.get("title"):
         s = src(c.get("image"))
-        line = f"{stars(rating)} {rating} out of 5 from {count} reviews" if rating and count else ""
-        out.append('<div class="lp-card">' + (_img(s, c["title"]) if s else "") + f"<h3>{_inline(c['title'])}</h3>"
+        line = f"{stars(rating)} {rating} out of 5 from {count} reviews" if rating and count else (f"From {count} reviews" if count else "")
+        off = round(100 * (1 - _num(price) / _num(was))) if _num(was) > _num(price) > 0 else 0
+        badge = f'<span class="lp-badge">SALE · SAVE {off}%</span>' if off >= 10 else ""
+        out.append('<div class="lp-card">' + badge + (_img(s, c["title"]) if s else "") + f"<h3>{_inline(c['title'])}</h3>"
                    + (f'<p class="lp-stars">{html.escape(line)}</p>' if line else "")
                    + (f'<p class="lp-price">{f"<s>{html.escape(was)}</s> " if was else ""}<b>{html.escape(price)}</b></p>' if price else "")
                    + ("<ul>" + "".join(f"<li>{_inline(x)}</li>" for x in c.get("bullets") or []) + "</ul>" if c.get("bullets") else "")
                    + cta(c.get("button") or "Shop Now").replace('class="lp-cta"', 'class="lp-cta" style="margin:0;"')
-                   + (f'<p class="lp-note">{_inline(c["note"])}</p>' if c.get("note") else "") + "</div>")
+                   + (f'<p class="lp-cnote">{_inline(c["note"])}</p>' if c.get("note") else "") + "</div>")
     f = page.get("footer") or {}
     out.append('<div class="lp-foot">' + (f"<p>{_inline(f['about'])}</p>" if f.get("about") else "")
                + (f"<p>{_inline(f['store_line'])}</p>" if f.get("store_line") else "")
-               + f'<p class="lp-disc">This page is an advertisement for {html.escape(store)}.</p></div>')
-    return f"<style>{CSS.replace('ACCENT', accent)}</style>\n<div class=\"mb-lp\">\n" + "\n".join(out) + "\n</div>"
+               + f'<p class="lp-disc">This page is an advertisement for {html.escape(store.strip())}.</p></div>')
+    ac = accent or accent_of(page.get("accent"))
+    return (f"<style>{CSS.replace('ACCENT', ac)}</style>\n<div class=\"mb-lp th-{theme}\">\n" + "\n".join(out) + "\n</div>")
 
 
 def image_refs(page: dict) -> list:
@@ -259,6 +374,77 @@ def check(page: dict) -> list:
 def handle_of(title: str) -> str:
     h = re.sub(r"[^a-z0-9]+", "-", (title or "").lower()).strip("-")[:70]
     return h or "a-letter-from-a-reader"
+
+
+def send_to(brief: dict) -> str:
+    """Where the advertorial's buttons go: the landing page given, else the collection in the product link, else the
+    product link itself."""
+    if str(brief.get("send_to_url") or "").startswith("http"):
+        return brief["send_to_url"].strip()
+    u = str(brief.get("product_url") or "").strip()
+    m = re.match(r"(https?://[^/]+/collections/[^/?#]+)/products/", u)
+    return m.group(1) if m else u
+
+
+# ---------------------------------------------------------------- ready-made prompts (task box + task_get)
+
+def _product_line(fx: dict, brief: dict) -> tuple:
+    """(name, short physical description, photo link) of the task's product."""
+    p = (fx or {}).get("product")
+    if not p and (fx or {}).get("collection"):
+        prods = fx["collection"].get("products") or []
+        p = prods[0] if prods else None
+    kind, handle = link_handle(brief.get("product_url"))
+    name = (p or {}).get("title") or (handle.replace("-", " ").title() if kind == "product" and handle else "") \
+        or (brief.get("product_description") or "").split(",")[0].split(".")[0][:60] or "the product"
+    colours = ", ".join(next(iter((p or {}).get("options", {}).values()), [])[:4]) if p else ""
+    desc = (brief.get("product_description") or (p or {}).get("description") or "")[:500]
+    photo = ((p or {}).get("images") or [""])[0]
+    return name, (f"{desc} Colours: {colours}." if colours else desc), photo
+
+
+def prompts(task: dict, brief: dict, fx: dict, store: str, country: str = "", base_url: str = "") -> dict:
+    """What a person pastes into ChatGPT (with or without the EcomVital connector), and the image prompts."""
+    tid = task["id"]
+    name, desc, photo = _product_line(fx, brief)
+    plain = re.sub(r"\s*\|.*$", "", name).strip().title() or "the product"
+    where = country or "the store's country"
+    look = (f"The product is {name}: {desc} It must look exactly like the real product in the attached product photo "
+            f"({photo or 'drag the product photo into the chat'}): same colour, shape, stitching, hardware and size. ")
+    base = ("Realistic phone-camera photo, natural daylight, slightly imperfect framing, a little lived-in, no text, no "
+            "logos, no watermark, no people's faces unless asked. ")
+    return {
+        "do_the_task_with_connector": (
+            f"Use EcomVital: do task T-{tid}. Read it with task_get and follow its advertorial playbook and ai_steps exactly. "
+            f"Write the primary text, headline, description and the full advertorial page, make the square ad image and 3 page "
+            f"images with your image tool from the product photo, add them to the task, save everything with advertorial_save "
+            f"(or task_save with result.page) and submit it. Don't stop until you can give me the preview link."),
+        "write_without_connector": (
+            f"You are writing a Facebook advertorial in the voice of a woman of about 67 in {where}, for {store}, a small "
+            f"boutique. Product: {name}. {desc} Readers who click go to {send_to(brief)}. Write: 1) primary text, 330-450 "
+            f"words, plain warm voice, short sentences, small everyday moments, a friend's backhanded compliment, signed with "
+            f"a first name; 2) a headline under 60 characters like 'The {plain.lower()} four women asked me about'; 3) a "
+            f"description under 45 characters like 'What I told them at the table'; 4) a 1,200-1,600 word 'letter from a "
+            f"reader' page telling the long version with section headings. Use only these reviews: "
+            f"{brief.get('review_rating') or '-'} stars, {brief.get('review_count') or '-'} reviews, {brief.get('reviews') or 'no quotes'}."),
+        "ad_image": (f"Square 1:1 photo. {look}{base}Scene: the {plain.lower()} has just arrived, laid on a made bed with "
+                     "beige linen, a torn grey mailer bag and white tissue paper beside it, a brown swing tag still attached, "
+                     "soft window light from the left."),
+        "ad_image_alternative": (f"Square 1:1 photo. {look}{base}Scene: the {plain.lower()} on a weathered wooden park "
+                                 "bench with a few autumn leaves, green hedge behind, overcast soft light."),
+        "page_images": [
+            f"Landscape 4:3 photo. {look}{base}Scene: on a kitchen table beside a mug of tea, an older woman's hands "
+            f"(about 65, a plain ring, cardigan sleeve) using it.",
+            f"Landscape 4:3 photo. {look}{base}Scene: on an armchair by the front door at home, a folded blanket beside it.",
+            f"Landscape 4:3 photo. {look}{base}Scene: out on the day the story is about (a café table, the shops, a "
+            f"garden), the {plain.lower()} in use, nobody's face in frame.",
+            f"Square portrait photo of a friendly woman of about 67 from {where}, natural selfie at home, warm light, "
+            f"no make-up look, casual top. For the letter's byline.",
+        ],
+        "after_making_images": ("Add each image to the task (task_add_image with its link, or download it and drop it on "
+                                f"the task: {base_url}/tasks?task={tid}), then save the page using the file:<id> "
+                                "of each image."),
+    }
 
 
 # ---------------------------------------------------------------- Shopify: product facts, the page, images

@@ -194,9 +194,10 @@ function renderTask() {
   const manage = t.manage, closed = ["launched", "done", "cancelled"].includes(t.status);
   const canWork = (t.mine || manage) && !closed && (manage || !["submitted", "approved"].includes(t.status));
   const recs = t.files.filter((f) => f.side === "admin" && f.kind === "instruction");
-  const adminFiles = t.files.filter((f) => f.side === "admin" && f.kind !== "instruction");
+  const adminFiles = t.files.filter((f) => f.side === "admin" && f.kind !== "instruction" && f.kind !== "product");
+  const productPhotos = t.files.filter((f) => f.kind === "product");
   const creatives = t.files.filter((f) => f.side === "staff" && f.kind === "creative");
-  const otherFiles = t.files.filter((f) => f.side === "staff" && f.kind !== "creative");
+  const otherFiles = t.files.filter((f) => f.side === "staff" && f.kind !== "creative" && f.kind !== "product");
   const me = state.data && state.data.me ? state.data.me.email : "";
   const canRm = (f) => !closed && (manage || (f.by === me && t.status !== "approved"));
   const dis = canWork ? "" : " disabled";
@@ -214,7 +215,10 @@ function renderTask() {
     ["Daily budget", b.budget && esc(b.budget)], ["Countries", b.countries && esc(b.countries)],
     ["Details", b.description && esc(b.description).replace(/\n/g, "<br>")],
     ...(t.kind === "advertorial" ? [
-      ["Our page", b.product_url && linkify(b.product_url)],
+      ["Product", b.product_url && linkify(b.product_url)],
+      ["About the product", b.product_description && esc(b.product_description).replace(/\n/g, "<br>")],
+      ["Product photos", productPhotos.length ? `<div class="tk-files">${productPhotos.map((x) => fileTile(x, manage && !closed)).join("")}</div>` : ""],
+      ["Landing page", linkify(b.send_to_url || (b.product_url || "").replace(/(\/collections\/[^/?#]+)\/products\/.*$/, "$1"))],
       ["Competitor advertorial", b.competitor_advertorial ? linkify(b.competitor_advertorial) : "None: we write our own"],
       ["Reviews", [b.review_rating && `${esc(b.review_rating)} ★`, b.review_count && `${esc(b.review_count)} reviews`].filter(Boolean).join(" · ")],
       ["Review texts", b.reviews && `<details><summary>${lines(b.reviews).length} line(s)</summary>${esc(b.reviews).replace(/\n/g, "<br>")}</details>`],
@@ -348,6 +352,8 @@ function renderTask() {
       ${adminFiles.length ? `<div class="tk-files">${adminFiles.map((x) => fileTile(x, manage && !closed)).join("")}</div>` : ""}
       ${manage && !closed ? uploader("admin", "file", "+ Add reference files to the brief") : ""}
     </section>
+    ${t.kind === "advertorial" ? `<section class="tk-sec tk-prompts"><h3>Prompts <em class="tk-opt">for ChatGPT / Claude, or by hand</em></h3>
+      <div id="tkPrompts"><p class="tk-empty">Loading…</p></div></section>` : ""}
     <section class="tk-sec tk-work"><h3>${t.kind === "listing" || t.kind === "advertorial" ? "What was made" : t.kind === "store" ? "Building the store" : "The work"}</h3>
       ${handBack}
       ${f("notes", "Notes for the admin", "", 2)}
@@ -361,6 +367,41 @@ function renderTask() {
         <button class="btn btn-sm" data-comment>Post</button></div>` : ""}
     </section>`;
   $("dBody").querySelectorAll(".tk-rec audio, .tk-rec video").forEach(fixLength);
+  if (t.kind === "advertorial") loadPrompts(t.id);
+}
+
+const PROMPT_NAMES = {
+  do_the_task_with_connector: ["Do the whole task", "Paste into ChatGPT or Claude with the EcomVital connector switched on."],
+  write_without_connector: ["Write the copy only", "For a chat without the connector: paste, then copy the results into this task by hand."],
+  ad_image: ["Ad image", "Attach the product photo, then paste this into ChatGPT's image maker."],
+  ad_image_alternative: ["Ad image, second scene", "Another scene to test."],
+  page_images: ["Page pictures", "One prompt per picture, product photo attached each time."],
+  after_making_images: ["After making the images", ""],
+};
+
+async function loadPrompts(id) {
+  const box = $("tkPrompts");
+  let d;
+  try { d = await api(`/api/tasks/${id}/prompts`); } catch (e) { if (box) box.innerHTML = `<p class="tk-empty">${esc(e.message)}</p>`; return; }
+  if (!$("tkPrompts") || !state.task || state.task.id !== id) return;
+  const one = (text, i) => `<div class="tk-prompt"><pre>${esc(text)}</pre><button class="btn btn-sm" data-copy="${i}">Copy</button></div>`;
+  const all = [];
+  let html = d.facts_error ? `<p class="warn">${esc(d.facts_error)}</p>` : "";
+  for (const [k, [name, hint]] of Object.entries(PROMPT_NAMES)) {
+    const v = (d.prompts || {})[k];
+    if (!v) continue;
+    const list = Array.isArray(v) ? v : [v];
+    html += `<div class="tk-pgroup"><b>${esc(name)}</b>${hint ? ` <span class="hint">${esc(hint)}</span>` : ""}
+      ${list.map((x) => { all.push(x); return one(x, all.length - 1); }).join("")}</div>`;
+  }
+  html += `<details class="tk-steps"><summary>The steps the AI follows</summary><ol>${(d.steps || []).map((x) => `<li>${esc(x.replace(/^\d+\.\s*/, ""))}</li>`).join("")}</ol></details>`;
+  $("tkPrompts").innerHTML = html;
+  $("tkPrompts").onclick = async (e) => {
+    const b = e.target.closest("[data-copy]");
+    if (!b) return;
+    try { await navigator.clipboard.writeText(all[+b.dataset.copy]); b.textContent = "Copied"; setTimeout(() => { b.textContent = "Copy"; }, 1500); }
+    catch { toast("Couldn't copy: select the text and copy it.", true); }
+  };
 }
 
 function readResult() {
@@ -705,6 +746,7 @@ function openEditor(t = null) {
   $("sAds").value = b.ads_platform || "meta"; $("sComp").value = b.competitor_url || "";
   $("sReviews").value = b.reviews || "";
   $("aLink").value = b.product_url || ""; $("aComp").value = b.competitor_advertorial || "";
+  $("aDesc").value = b.product_description || ""; $("aSend").value = b.send_to_url || ""; $("aPhoto").value = "";
   $("aRating").value = b.review_rating || ""; $("aCount").value = b.review_count || ""; $("aReviews").value = b.reviews || "";
   const admin = !!(state.data && state.data.manage);
   for (const btn of $("eKind").querySelectorAll("button")) btn.hidden = !admin && btn.dataset.kind !== "advertorial";
@@ -742,10 +784,11 @@ async function saveEditor() {
       competitor_url: $("sComp").value, reviews: $("sReviews").value, ...checks,
       todo: (state.editBrief.todo && state.editBrief.todo.length) ? state.editBrief.todo : Object.keys(storeTodo()) }
     : state.kind === "advertorial" ? { ...state.editBrief, product_url: $("aLink").value.trim(), competitor_advertorial: $("aComp").value.trim(),
+      product_description: $("aDesc").value.trim(), send_to_url: $("aSend").value.trim(),
       review_rating: $("aRating").value.trim(), review_count: $("aCount").value.trim(), reviews: $("aReviews").value }
     : { ...state.editBrief, description: $("eDesc").value };
   if (state.kind === "advertorial" && !$("eName").value.trim()) {
-    const m = brief.product_url.match(/\/(?:products|collections)\/([^/?#]+)/);
+    const m = (brief.product_url || brief.send_to_url).match(/\/(?:products|collections)\/([^/?#]+)/);
     if (m) $("eName").value = "Advertorial: " + decodeURIComponent(m[1]).replace(/-/g, " ");
   }
   if (state.kind === "store" && !brief.brand_domain && !brief.shopify_domain) { toast("Fill in the brand domain or the Shopify domain.", true); return; }
@@ -757,6 +800,11 @@ async function saveEditor() {
   try {
     const r = state.editing ? await api(`/api/tasks/${state.editing}`, { method: "PUT", json: body }) : await api("/api/tasks", { json: body });
     const id = state.editing || r.id;
+    const photos = state.kind === "advertorial" ? [...$("aPhoto").files] : [];
+    if (photos.length) {
+      btn.textContent = "Uploading the product photo…";
+      try { await sendFiles(id, "admin", "product", photos); } catch (e) { toast(`Task saved, but the photo didn't upload: ${e.message}`, true); }
+    }
     if (state.recs.length) {
       btn.textContent = "Uploading recordings…";
       try { await sendFiles(id, "admin", "instruction", state.recs); } catch (e) { toast(`Task saved, but the recording didn't upload: ${e.message}`, true); }

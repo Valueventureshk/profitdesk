@@ -222,3 +222,11 @@
 .tk-yn .control { width: auto; min-width: 150px; }
 .tk-playbook { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12.5px; line-height: 1.5; }
 .tk-pending { margin: 10px 0; }
+
+/* advertorial tasks: ready-made prompts */
+.tk-prompts .tk-pgroup { margin: 0 0 14px; }
+.tk-prompt { display: flex; gap: 8px; align-items: flex-start; margin: 6px 0; }
+.tk-prompt pre { flex: 1; margin: 0; white-space: pre-wrap; font: 13px/1.5 var(--mono, ui-monospace, monospace); background: var(--panel-2, #f6f4ef);
+  border: 1px solid var(--rule, #D6D3CB); border-radius: 6px; padding: 8px 10px; max-height: 160px; overflow: auto; }
+.tk-steps { margin-top: 6px; }
+.tk-steps ol { margin: 6px 0 0 18px; }

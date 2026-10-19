@@ -106,16 +106,21 @@
         <p class="hint">Staff hand back the result of each ticked item, or a note saying why they couldn't. Every task also hands back one main landing page link: that's where the ads go.</p>
       </div>
       <div data-adv-only hidden>
-        <h4 class="tk-formhead">The advertorial</h4>
-        <label class="field"><span>Our collection or product page link <em class="tk-opt">(the page's buttons go here)</em></span><input id="aLink" class="control" placeholder="https://perthboutique.shop/collections/women-leather-bag"></label>
-        <label class="field"><span>Competitor advertorial link <em class="tk-opt">(if there is one: it's copied and tweaked; empty = we write our own)</em></span><input id="aComp" class="control" placeholder="https://competitor.com/pages/a-letter-from-a-reader"></label>
-        <h4 class="tk-formhead">Real reviews <em class="tk-opt">(from the collection / product page)</em></h4>
+        <h4 class="tk-formhead">1 · The product <em class="tk-opt">(the advertorial and the ad are all about it)</em></h4>
+        <label class="field"><span>Product page link</span><input id="aLink" class="control" placeholder="https://perthboutique.shop/products/…"></label>
+        <label class="field"><span>…or describe it <em class="tk-opt">(if there's no product page yet; add its photo below)</em></span><textarea id="aDesc" class="control" rows="3" placeholder="Caramel crossbody bag, zipped front pocket, adjustable strap, vegan leather, 23 × 21 × 10 cm"></textarea></label>
+        <label class="field"><span>Product photo <em class="tk-opt">(optional with a product link)</em></span><input id="aPhoto" type="file" accept="image/*" multiple class="control"></label>
+        <h4 class="tk-formhead">2 · Landing page <em class="tk-opt">(where the advertorial's buttons send readers)</em></h4>
+        <label class="field"><span>Landing page link</span><input id="aSend" class="control" placeholder="https://perthboutique.shop/collections/women-leather-bag"></label>
+        <h4 class="tk-formhead">3 · Competitor advertorial <em class="tk-opt">(optional: the AI replicates it, we tweak it after)</em></h4>
+        <label class="field"><span>Competitor advertorial link</span><input id="aComp" class="control" placeholder="https://competitor.com/pages/a-letter-from-a-reader"></label>
+        <h4 class="tk-formhead">4 · Real reviews <em class="tk-opt">(from the product / collection page)</em></h4>
         <div class="tk-row">
           <label class="field"><span>Rating</span><input id="aRating" class="control" inputmode="decimal" placeholder="4.2"></label>
           <label class="field"><span>Number of reviews</span><input id="aCount" class="control" placeholder="300+"></label>
         </div>
-        <label class="field"><span>The reviews <em class="tk-opt">(paste a few: name, place, stars, text; one per line or block)</em></span><textarea id="aReviews" class="control" rows="4"></textarea></label>
-        <p class="hint">Then open the task in ChatGPT or Claude (EcomVital connector) and say “do task T-…”: it writes the advertorial and the ad, makes the page in the store (hidden until approved) and hands it back here.</p>
+        <label class="field"><span>The reviews <em class="tk-opt">(a few real ones: name, place, stars, text; one per line)</em></span><textarea id="aReviews" class="control" rows="4" placeholder="Sue, Sydney ★★★★★ I have stopped losing my keys."></textarea></label>
+        <p class="hint">Once it's made, the task shows ready-made prompts: paste the first one into ChatGPT or Claude (with the EcomVital connector) and it does the whole task, or use them by hand.</p>
       </div>
       <div data-store-only hidden>
         <h4 class="tk-formhead">The store</h4>

@@ -214,11 +214,13 @@ TOOLS += [
            "competitor_ads", "competitor_landing", "competitor_products"]),
     _tool("advertorial_save", "Advertorial + ad creative tasks: send the advertorial page and the ad copy. EcomVital builds the "
           "page in the store's design and creates it in Shopify as a HIDDEN page (published only when an admin approves the "
-          "task); calling it again updates the same page. page = {title (Shopify page title, e.g. 'A Letter From a Reader'), "
-          "label, headline, author {name, line ('Sydney · September 2026'), photo}, blocks [ {type:'p', text} | {type:'pull', "
-          "text} | {type:'h2', text} | {type:'image', src, caption, alt} | {type:'cta', text} | {type:'list', items:[{lead, "
-          "text}]} ], card {title, product_handle (for a collection: which product), image, bullets[], button, note}, footer "
-          "{about, store_line}}. Text may use **bold**. Image src/photo/image = file:<id> (a file on the task) or an https "
+          "task); calling it again updates the same page. page = {title (Shopify page title), theme (letter | journal | "
+          "editorial | scrapbook), accent (teal, terracotta, forest, navy, plum, caramel or #hex), label, headline, standfirst, "
+          "author {name, line ('Sydney · September 2026'), photo}, blocks [ p {text} | pull {text} | h2 {text} | step {n, title} | "
+          "image {src, caption, alt, style: plain|framed|polaroid} | cta {text} | list {items:[{lead, text}]} | checklist "
+          "{items[]} | box {title, text, items?} | review {text, name, place, stars, verified} | note {text} | divider | "
+          "signature {name} ] (each block has its type), card {title, product_handle (for a collection: which product), image, "
+          "bullets[], button, note}, footer {about, store_line}}. Text may use **bold** and ==highlight==. Image src/photo/image = file:<id> (a file on the task) or an https "
           "image link (copied into the store's Files). Prices, stars and the 'advertisement' line are added by EcomVital. "
           "primary_text / headline / description = the ad copy. submit=true also sends the task for review (needs the ad "
           "image on the task). Returns the preview link.",

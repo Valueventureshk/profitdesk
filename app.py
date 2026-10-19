@@ -14857,6 +14857,20 @@ def task_advertorial_preview(request: Request, task_id: int):
                         f'initial-scale=1"><title>Advertorial preview</title></head><body style="margin:0;background:#fff">{bar}{body}</body></html>')
 
 
+@app.get("/api/tasks/{task_id}/prompts")
+async def api_task_prompts(request: Request, task_id: int):
+    """Advertorial tasks: the ready-made prompts (whole task, writing only, images) and the steps an AI follows."""
+    _tasks_db()
+    user = _task_user(request)
+    with db._conn() as con:
+        t = _task_row(con, task_id, user)
+    if t["kind"] != "advertorial":
+        raise HTTPException(400, "Only advertorial tasks have prompts.")
+    ctx = await _adv_context(t, tasks.loads(t["brief"]), tasks.loads(t["result"]))
+    return {"prompts": ctx.get("prompts"), "steps": ctx.get("ai_steps"), "landing": ctx.get("landing_page_every_button_goes_to"),
+            "facts_error": (ctx.get("product_facts") or {}).get("error")}
+
+
 @app.get("/api/tasks/kit/advertorial")
 def api_adv_playbook():
     return {"playbook": advertorial.playbook(), "custom": bool(db.get_setting("advertorial_playbook")),
@@ -15051,11 +15065,35 @@ async def _adv_context(t: dict, brief: dict, result: dict) -> dict:
                              "(and page images) from the product photos; add each with task_add_image (image_url), or ask the "
                              "person to drop it on the task, then use file:<id> in the page. 3) advertorial_save with page + "
                              "copy (submit=true once the ad image is on the task). 4) Give the person the preview link.")}
-    if st and brief.get("product_url"):
+    src = brief.get("product_url") or advertorial.send_to(brief)
+    if st and advertorial.link_handle(src)[0]:
         try:
-            out["product_facts"] = await advertorial.facts(st, brief["product_url"])
+            out["product_facts"] = await advertorial.facts(st, src)
         except Exception as e:
             out["product_facts"] = {"error": f"Couldn't read the product from Shopify: {e}"}
+    out["product"] = {"link": brief.get("product_url") or None, "description_from_staff": brief.get("product_description") or None}
+    with db._conn() as con:
+        out["product"]["photos_on_task"] = [f"file:{r[0]} ({r[1]})" for r in con.execute(
+            "SELECT id, name FROM task_files WHERE task_id = ? AND kind = 'product' ORDER BY id", (t["id"],))]
+    out["landing_page_every_button_goes_to"] = advertorial.send_to(brief)
+    fx_ = out.get("product_facts") or {}
+    out["prompts"] = advertorial.prompts(t, brief, fx_, (fx_.get("store") or {}).get("name") or (st or {}).get("name", ""),
+                                         "Australia" if "perth" in ((st or {}).get("name", "").lower()) else
+                                         (fx_.get("store") or {}).get("country", ""), BASE_URL)
+    out["ai_steps"] = [
+        "1. Read everything here first: special instructions, the playbook, product, landing page, reviews, competitor page.",
+        "2. Write the primary text, headline and description (playbook).",
+        "3. Write the whole page as page JSON (theme, accent, label, headline, author, blocks, card, footer) in the playbook's "
+        "voice and structure, using the styled blocks.",
+        "4. Make the square ad image with your image tool from prompts.ad_image (look at the product photo first), and 3 page "
+        "images + the portrait from prompts.page_images.",
+        "5. Put the images on the task: task_add_image with each image's link; if you have no link, ask the person to "
+        "download them and drop them on the task, then call task_get again to get their file:<id>.",
+        "6. Save: advertorial_save (or task_save with result.page, result.primary_text, result.headline, "
+        "result.ad_description) with submit=true once the ad image is on the task. Images in the page: file:<id> or "
+        "product photo links.",
+        "7. Reply with the preview link and what's left for a person to check. Don't stop before step 6 is done.",
+    ]
     if brief.get("competitor_advertorial"):
         state = _adv_state(t["id"])
         comp = state.get("competitor") if (state.get("competitor") or {}).get("url") == brief["competitor_advertorial"] else None
@@ -15149,7 +15187,7 @@ async def _adv_save(tid: int, args: dict, user: dict) -> dict:
         return {"error": "The task has no store connected to EcomVital."}
     brief, res = tasks.loads(t["brief"]), tasks.loads(t["result"])
     try:
-        fx_ = await advertorial.facts(st, brief.get("product_url"))
+        fx_ = await advertorial.facts(st, brief.get("product_url") or advertorial.send_to(brief))
     except Exception as e:
         return {"error": f"Couldn't read the product from Shopify: {e}"}
     cur = fx_["store"]["currency"]
@@ -15168,7 +15206,7 @@ async def _adv_save(tid: int, args: dict, user: dict) -> dict:
     if prod and not (page.get("card") or {}).get("image") and prod["images"]:
         page.setdefault("card", {})["image"] = prod["images"][0]
         images[prod["images"][0]] = prod["images"][0]
-    body = advertorial.render(page, store=fx_["store"]["name"], link=brief["product_url"], images=images,
+    body = advertorial.render(page, store=fx_["store"]["name"], link=advertorial.send_to(brief), images=images,
                               price=prod["price"] if prod else "", was=prod["compare_at_price"] if prod else "",
                               rating=str(brief.get("review_rating") or ""), count=str(brief.get("review_count") or ""))
     title = str(page.get("title") or "A Letter From a Reader")[:120]
@@ -15369,8 +15407,12 @@ async def api_task_create(request: Request, payload: dict):
         b = json.loads(f["brief"])
         if not f["store_id"]:
             raise HTTPException(400, "Pick the store the advertorial is for.")
-        if advertorial.link_handle(b.get("product_url"))[0] is None:
-            raise HTTPException(400, "Paste our collection or product page link (…/collections/… or …/products/…).")
+        if b.get("product_url") and advertorial.link_handle(b["product_url"])[0] is None:
+            raise HTTPException(400, "The product link should be our product page (…/products/…) or a collection (…/collections/…).")
+        if not b.get("product_url") and not b.get("product_description"):
+            raise HTTPException(400, "Give the product: its page link, or a description (and add its photo on the task).")
+        if advertorial.link_handle(advertorial.send_to(b))[0] is None and not str(b.get("send_to_url") or "").startswith("http"):
+            raise HTTPException(400, "Paste the landing page link: where the advertorial's buttons send readers (e.g. the collection).")
     with db._conn() as con:
         tid = con.execute("INSERT INTO tasks (kind, title, store_id, assignee_id, priority, due, special_notes, brief,"
                           " created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -15529,11 +15571,13 @@ async def api_task_files(request: Request, task_id: int):
     user = _task_user(request)
     form = await request.form()
     side = "admin" if form.get("side") == "admin" else "staff"
-    kind = form.get("kind") if form.get("kind") in ("file", "instruction") else "creative"
+    kind = form.get("kind") if form.get("kind") in ("file", "instruction", "product") else "creative"
     if kind == "instruction":
         side = "admin"
     with db._conn() as con:
         t = _task_row(con, task_id, user)
+    if kind == "product" and not _task_manager(user):
+        side = "staff"                          # staff add the product photo to the advertorial task they picked
     if side == "admin" and not _task_manager(user):
         raise HTTPException(403, "Only an admin can add files to the brief.")
     if t["status"] in tasks.HISTORY:
