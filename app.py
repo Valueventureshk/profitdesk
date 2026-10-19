@@ -190,6 +190,42 @@ def api_debug_google_usage(days: int = 7):
             "note": "Breakdown recorded from 14 Oct 2026; earlier days have the total only."}
 
 
+@app.get("/api/debug/paypal-holds")
+async def api_debug_paypal_holds(days: int = 60):
+    """Owner: per PayPal account and Hong Kong day, sales received vs held by PayPal's monthly
+    limit (T2101 / released T2102) and the rolling reserve (T2103 / released T2104)."""
+    out = []
+    for c in db.list_cash_connections():
+        if c["provider"] != "paypal":
+            continue
+        snap, rows = await asyncio.gather(paypal.snapshot(c["client_id"], c["secret"]),
+                                          paypal.transactions(c["client_id"], c["secret"], days=min(days, 180)))
+        by_day = {}
+        for t in rows:
+            code = t.get("transaction_event_code") or ""
+            if t.get("transaction_status") in ("D", "V"):
+                continue
+            try:
+                when = datetime.fromisoformat(t["transaction_initiation_date"].replace("Z", "+00:00").replace("+0000", "+00:00"))
+            except (KeyError, ValueError):
+                continue
+            amt = t.get("transaction_amount") or {}
+            cur, v = amt.get("currency_code"), float(amt.get("value") or 0)
+            col = ("sales" if code.startswith("T00") and v > 0 else
+                   {"T2101": "limit_held", "T2102": "limit_released", "T2103": "reserve_held",
+                    "T2104": "reserve_released"}.get(code))
+            if not col:
+                continue
+            d = by_day.setdefault((when.astimezone(CASH_TZ).date().isoformat(), cur), {"day": None, "currency": cur})
+            d["day"] = when.astimezone(CASH_TZ).date().isoformat()
+            d[col] = round(d.get(col, 0.0) + abs(v), 2)
+        out.append({"account": c["label"],
+                    "withheld_now": [{"currency": b["currency"], "withheld": b["reserved"], "available": b["available"]}
+                                     for b in snap["balances"]],
+                    "days": [by_day[k] for k in sorted(by_day)]})
+    return {"accounts": out}
+
+
 @app.get("/api/debug/stalls")
 def api_debug_stalls():
     """Owner: the last times the server was stuck on one job, how long, and where."""
