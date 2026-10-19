@@ -1152,7 +1152,8 @@ def save_mail(account_id: int, messages: list, direction: str = "in"):
               m["text"], m["html"], json.dumps(m["attachments"]), direction) for m in messages])
 
 
-def mail_list(account_ids: list = None, limit: int = 200, category: str = None) -> list:
+def mail_list(account_ids: list = None, limit: int = 200, category: str = None, where: tuple = None) -> list:
+    """where: (extra SQL condition on m, its args), e.g. the All mail exclusions."""
     with _conn() as con:
         q = ("SELECT m.id, m.account_id, m.from_name, m.from_addr, m.subject, m.date,"
              " substr(m.text, 1, 160) snippet, m.attachments, m.category, m.labels, m.ticket_id,"
@@ -1166,6 +1167,9 @@ def mail_list(account_ids: list = None, limit: int = 200, category: str = None) 
             cats = category.split(",")
             q += f" AND m.category IN ({','.join('?' * len(cats))})"
             args += cats
+        if where:
+            q += f" AND ({where[0]})"
+            args += list(where[1])
         q += " ORDER BY m.date DESC LIMIT ?"
         return [dict(r) for r in con.execute(q, (*args, limit))]
 

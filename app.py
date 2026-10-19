@@ -2918,14 +2918,77 @@ def _store_names() -> dict:
     return {x["id"]: x["name"].strip() for x in db.list_stores()}
 
 
+# All mail exclusions (19 Oct 2026): emails the team doesn't need to read (order confirmations, PayPal
+# payment notices...) are hidden from All mail and shown under "Excluded" instead. Rules in setting
+# `mail_exclude` [{kind: sender | domain | subject, value, by, at}]. Tickets and the Customer list are untouched.
+_FREE_MAIL = {"gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com", "yahoo.com", "icloud.com",
+              "me.com", "aol.com", "msn.com", "gmx.com", "gmx.de", "web.de", "proton.me", "protonmail.com",
+              "hotmail.fr", "orange.fr", "free.fr", "yahoo.fr", "bigpond.com", "optusnet.com.au"}
+
+
+def _mail_rules() -> list:
+    try:
+        return json.loads(db.get_setting("mail_exclude") or "[]")
+    except ValueError:
+        return []
+
+
+def _rule_sql(r: dict) -> tuple:
+    v = (r.get("value") or "").strip().lower()
+    if r.get("kind") == "sender":
+        return "lower(COALESCE(m.from_addr,'')) = ?", [v]
+    if r.get("kind") == "domain":
+        return "lower(COALESCE(m.from_addr,'')) LIKE ?", ["%@" + v.lstrip("@")]
+    return "lower(COALESCE(m.subject,'')) LIKE ?", [f"%{v}%"]
+
+
+def _excl_match(rules: list = None) -> tuple:
+    """(SQL that is true for an excluded email, args)."""
+    parts = [_rule_sql(r) for r in (_mail_rules() if rules is None else rules) if (r.get("value") or "").strip()]
+    if not parts:
+        return "0", []
+    return " OR ".join(f"({q})" for q, _ in parts), [a for _, args in parts for a in args]
+
+
+@app.get("/api/inbox/exclude")
+def api_inbox_exclude_list():
+    rules = _mail_rules()
+    with db._conn() as con:
+        for r in rules:
+            q, args = _rule_sql(r)
+            r["count"] = con.execute(f"SELECT COUNT(*) FROM mail_messages m WHERE m.direction = 'in' AND {q}", args).fetchone()[0]
+    return {"rules": rules}
+
+
+@app.post("/api/inbox/exclude")
+async def api_inbox_exclude(request: Request):
+    """{action: add | remove, kind: sender | domain | subject, value}"""
+    p = await request.json()
+    kind, value = p.get("kind"), (p.get("value") or "").strip().lower()
+    if kind not in ("sender", "domain", "subject") or not value:
+        raise HTTPException(400, "Pick what to hide: a sender, a domain or words in the subject.")
+    if kind == "subject" and len(value) < 4:
+        raise HTTPException(400, "Use at least 4 letters of the subject, so customer emails aren't hidden by mistake.")
+    if kind == "domain" and value.lstrip("@") in _FREE_MAIL:
+        raise HTTPException(400, f"{value} is where customers write from. Hide this one sender instead.")
+    rules = [r for r in _mail_rules() if not (r.get("kind") == kind and (r.get("value") or "").lower() == value)]
+    if p.get("action") == "add":
+        rules.append({"kind": kind, "value": value, "by": (getattr(request.state, "user", None) or {}).get("email", ""),
+                      "at": datetime.now(timezone.utc).isoformat(timespec="seconds")})
+    db.set_setting("mail_exclude", json.dumps(rules))
+    return {"rules": rules}
+
+
 @app.get("/api/inbox/counts")
 def api_inbox_counts():
     now = datetime.now(timezone.utc).isoformat()
+    xq, xa = _excl_match()
     with db._conn() as con:
         one = lambda q, *a: con.execute(q, a).fetchone()[0]
         awake = "(snoozed_until IS NULL OR snoozed_until <= ?)"
         return {
-            "all": one("SELECT COUNT(*) FROM mail_messages WHERE direction = 'in'"),
+            "all": one(f"SELECT COUNT(*) FROM mail_messages m WHERE direction = 'in' AND NOT ({xq})", *xa),
+            "excluded": one(f"SELECT COUNT(*) FROM mail_messages m WHERE direction = 'in' AND ({xq})", *xa),
             "customer": one("SELECT COUNT(*) FROM mail_messages WHERE direction = 'in' AND category = 'customer'"),
             "inquiry": one(f"SELECT COUNT(*) FROM tickets WHERE kind IN ('inquiry','legal') AND status = 'open' AND {awake}", now),
             "inquiry_done": one("SELECT COUNT(*) FROM tickets WHERE kind IN ('inquiry','legal') AND status = 'closed'"),
@@ -2945,7 +3008,9 @@ def api_inbox_counts():
 def api_inbox_messages(account: int = None, view: str = "all", label: str = ""):
     stores = _store_names()
     cat = {"customer": "customer", "all": None}.get(view)
-    rows = db.mail_list([account] if account else None, category=cat)
+    xq, xa = _excl_match()
+    where = (f"NOT ({xq})", xa) if view == "all" else (xq, xa) if view == "excluded" else None
+    rows = db.mail_list([account] if account else None, category=cat, where=where)
     if view == "label":
         with db._conn() as con:
             ids = {r[0] for r in con.execute(
@@ -2980,7 +3045,17 @@ def api_inbox_message(message_id: int):
     m["mailbox"] = (acct or {}).get("address", "")
     m["reply_lang"] = LANG_NAME.get(db.get_setting(f"track_lang:{m['store_id']}") or "en", "English")
     m.update(_label_info(m["account_id"], [m["id"]], [m]))
+    m["excluded_by"] = next((r for r in _mail_rules() if _rule_hit(r, m)), None)
     return m
+
+
+def _rule_hit(r: dict, m: dict) -> bool:
+    v, frm = (r.get("value") or "").lower(), (m.get("from_addr") or "").lower()
+    if r.get("kind") == "sender":
+        return frm == v
+    if r.get("kind") == "domain":
+        return frm.endswith("@" + v.lstrip("@"))
+    return bool(v) and v in (m.get("subject") or "").lower()
 
 
 def _label_info(account_id: int, message_ids: list, msgs: list) -> dict:

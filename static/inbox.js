@@ -2,7 +2,7 @@
    This file draws things; sorting and every status come from the server. */
 
 const $ = (id) => document.getElementById(id);
-const MAIL_VIEWS = new Set(["all", "customer"]);
+const MAIL_VIEWS = new Set(["all", "customer", "excluded"]);
 let view = "scm";
 let current = null;          // {type: "ticket"|"mail", id}
 
@@ -366,8 +366,20 @@ async function loadList() {
       (ms.messages.length ? `<div class="list-sep">Emails (no ticket)</div>` + ms.messages.map(mailRow).join("") : "")) || empty;
   } else if (MAIL_VIEWS.has(view)) {
     let d;
-    try { d = await api(`/api/inbox/messages?view=${view}${q}`); } catch (e) { $("list").innerHTML = esc(e.message); return; }
-    $("list").innerHTML = d.messages.map(mailRow).join("") || empty;
+    let rules = null;
+    try {
+      [d, rules] = await Promise.all([api(`/api/inbox/messages?view=${view}${q}`),
+        view === "excluded" ? api("/api/inbox/exclude") : null]);
+    } catch (e) { $("list").innerHTML = esc(e.message); return; }
+    $("list").innerHTML = (rules ? exclRulesHtml(rules.rules) : "") + (d.messages.map(mailRow).join("") || empty);
+    for (const b of $("list").querySelectorAll("[data-unexcl]")) {
+      b.onclick = async (e) => {
+        e.stopPropagation();
+        const r = rules.rules[+b.dataset.unexcl];
+        try { await post("/api/inbox/exclude", { action: "remove", kind: r.kind, value: r.value }); toast("Back in All mail."); refresh(); }
+        catch (err) { toast(err.message, true); }
+      };
+    }
   } else {
     let d;
     try { d = await api(`/api/inbox/tickets?view=${view}${q}`); } catch (e) { $("list").innerHTML = esc(e.message); return; }
@@ -439,6 +451,18 @@ function mark() {
   }
 }
 
+const EXCL_KIND = { sender: "From", domain: "From anyone at", subject: "Subject contains" };
+function exclRulesHtml(rules) {
+  if (!rules.length) return `<div class="excl-rules"><p class="hint">Nothing hidden yet. Open an email in All mail and use “Hide emails like this”.</p></div>`;
+  return `<div class="excl-rules"><div class="excl-head">Hidden from All mail</div>${rules.map((r, i) => `
+    <div class="excl-rule"><span><span class="hint">${EXCL_KIND[r.kind] || r.kind}</span> <b>${esc(r.value)}</b>
+      <span class="hint">· ${r.count} email${r.count === 1 ? "" : "s"}</span></span>
+      <button class="btn btn-sm btn-ghost" data-unexcl="${i}" data-write-only>Show again</button></div>`).join("")}</div>`;
+}
+
+// The words in a subject before the first number: "[CUTEHOME] Order #16272CH placed by Ann" → "[cutehome] order"
+const subjectStem = (s) => (s || "").split(/[#0-9]/)[0].replace(/[\s:–-]+$/, "").trim().toLowerCase();
+
 async function openMail(id) {
   current = { type: "mail", id };
   PDUrl.set({ mail: id, ticket: null });
@@ -458,6 +482,13 @@ async function openMail(id) {
       <button class="btn btn-sm btn-ghost" data-make="inquiry">Inquiry</button>
       <button class="btn btn-sm btn-ghost" data-make="legal">Legal</button>
     </div>
+    ${m.excluded_by
+      ? `<div class="mail-actions excl-bar"><span class="hint">⊘ Hidden from All mail: ${EXCL_KIND[m.excluded_by.kind] || ""} <b>${esc(m.excluded_by.value)}</b></span>
+           <button class="btn btn-sm btn-ghost" data-excl-off data-write-only>Show these again</button></div>`
+      : `<div class="mail-actions excl-bar" data-write-only><span class="hint">⊘ Hide emails like this from All mail:</span>
+           <button class="btn btn-sm btn-ghost" data-excl="sender">From ${esc(m.from_addr)}</button>
+           ${(m.from_addr || "").includes("@") ? `<button class="btn btn-sm btn-ghost" data-excl="domain">From anyone at ${esc(m.from_addr.split("@")[1])}</button>` : ""}
+           <button class="btn btn-sm btn-ghost" data-excl="subject">Subject like this…</button></div>`}
     <div class="tg-box tg-inline" id="tgBox"></div>
     ${trBar()}
     ${attGrid(m)}
@@ -468,6 +499,28 @@ async function openMail(id) {
   tagCtx = { target: { message_id: m.id }, tags: m.tags || [], suggest: m.tag_suggest || [], all: m.all_tags || [] };
   renderTagBox();
   wireTranslate();
+  for (const b of $("read").querySelectorAll("[data-excl]")) {
+    b.onclick = async () => {
+      const kind = b.dataset.excl;
+      let value = kind === "sender" ? m.from_addr : kind === "domain" ? m.from_addr.split("@")[1] : null;
+      if (kind === "subject") {
+        value = prompt("Hide every email whose subject contains:", subjectStem(m.subject) || m.subject);
+        if (!value || !value.trim()) return;
+      }
+      try {
+        await post("/api/inbox/exclude", { action: "add", kind, value: value.trim() });
+        toast("Hidden from All mail. They're under Excluded.");
+        refresh();
+        openMail(id);
+      } catch (e) { toast(e.message, true); }
+    };
+  }
+  const off = $("read").querySelector("[data-excl-off]");
+  if (off) off.onclick = async () => {
+    try { await post("/api/inbox/exclude", { action: "remove", kind: m.excluded_by.kind, value: m.excluded_by.value });
+      toast("Back in All mail."); refresh(); openMail(id); }
+    catch (e) { toast(e.message, true); }
+  };
   for (const b of $("read").querySelectorAll("[data-make]")) {
     b.onclick = async () => {
       try {
