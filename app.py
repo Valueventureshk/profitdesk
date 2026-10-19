@@ -63,6 +63,7 @@ import reports
 import ai_chat
 import ai_data
 import mcp_server
+import advertorial
 import products_desk
 import adcopy
 import paypal_track
@@ -9146,7 +9147,7 @@ async def _assist_tool(name: str, args: dict, user: dict):
                         "amount": d.get("amount"), "currency": d.get("currency"), "reason": d.get("reason"),
                         "stage": d.get("stage"), "customer": d.get("customer"), "outcome": d.get("outcome")})
         return {"count": len(out), "disputes": out[:80], "link": f"{BASE_URL}/disputes"}
-    if name.startswith("task"):
+    if name.startswith("task") or name == "advertorial_save":
         return await _task_tool(name, args, user)
     if name in ("request_change", "list_change_requests"):
         with db._conn() as con:
@@ -14839,6 +14840,38 @@ def _store_kit_info() -> dict:
                       "by": meta.get("by")}}
 
 
+@app.get("/tasks/{task_id}/advertorial", response_class=HTMLResponse)
+def task_advertorial_preview(request: Request, task_id: int):
+    """The advertorial page as EcomVital sent it to Shopify, to check before approving (the Shopify page stays hidden)."""
+    _tasks_db()
+    with db._conn() as con:
+        t = _task_row(con, task_id, _task_user(request))
+    try:
+        with open(os.path.join(TASK_DIR, str(task_id), "advertorial.html")) as fh:
+            body = fh.read()
+    except OSError:
+        body = '<p style="font-family:sans-serif;padding:40px">No advertorial page made yet for this task.</p>'
+    bar = (f'<div style="font:14px Helvetica,Arial,sans-serif;background:#14181F;color:#fff;padding:10px 16px">Preview of '
+           f'T-{task_id} · {html.escape(t["title"])} · <a style="color:#9fd" href="/tasks?task={task_id}">back to the task</a></div>')
+    return HTMLResponse(f'<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,'
+                        f'initial-scale=1"><title>Advertorial preview</title></head><body style="margin:0;background:#fff">{bar}{body}</body></html>')
+
+
+@app.get("/api/tasks/kit/advertorial")
+def api_adv_playbook():
+    return {"playbook": advertorial.playbook(), "custom": bool(db.get_setting("advertorial_playbook")),
+            "updated": db.get_setting("advertorial_playbook_at")}
+
+
+@app.put("/api/tasks/kit/advertorial")
+def api_adv_playbook_save(request: Request, payload: dict):
+    _need_level(request, "tasks", "manage")
+    text = str(payload.get("playbook") or "").strip()
+    db.set_setting("advertorial_playbook", text)                # empty = back to EcomVital's first version
+    db.set_setting("advertorial_playbook_at", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+    return {"ok": True}
+
+
 @app.get("/api/tasks/kit/playbook")
 def api_store_playbook():
     return {"playbook": db.get_setting("store_playbook") or "", "updated": db.get_setting("store_playbook_at"),
@@ -14987,6 +15020,191 @@ def _task_id(v) -> int:
     return int(m.group())
 
 
+# ---- "Advertorial + ad creative" tasks (advertorial.py): the AI writes, EcomVital builds the hidden page in Shopify
+
+def _adv_dir(tid: int) -> str:
+    d = os.path.join(TASK_DIR, str(tid))
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _adv_state(tid: int) -> dict:
+    try:
+        with open(os.path.join(_adv_dir(tid), "advertorial.json")) as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return {}
+
+
+def _adv_keep(tid: int, state: dict):
+    with open(os.path.join(_adv_dir(tid), "advertorial.json"), "w") as fh:
+        json.dump(state, fh)
+
+
+async def _adv_context(t: dict, brief: dict, result: dict) -> dict:
+    """What the AI needs for an advertorial task: the playbook, the real product, the competitor's page, the reviews."""
+    st = next((x for x in db.list_stores() if x["id"] == t.get("store_id")), None)
+    out = {"advertorial_playbook_follow_this": advertorial.playbook(),
+           "reviews_from_staff": {"rating": brief.get("review_rating"), "count": brief.get("review_count"),
+                                  "reviews": brief.get("reviews")},
+           "how_to_finish": ("1) Write the primary text, headline, description and the page (playbook). 2) Make the ad image "
+                             "(and page images) from the product photos; add each with task_add_image (image_url), or ask the "
+                             "person to drop it on the task, then use file:<id> in the page. 3) advertorial_save with page + "
+                             "copy (submit=true once the ad image is on the task). 4) Give the person the preview link.")}
+    if st and brief.get("product_url"):
+        try:
+            out["product_facts"] = await advertorial.facts(st, brief["product_url"])
+        except Exception as e:
+            out["product_facts"] = {"error": f"Couldn't read the product from Shopify: {e}"}
+    if brief.get("competitor_advertorial"):
+        state = _adv_state(t["id"])
+        comp = state.get("competitor") if (state.get("competitor") or {}).get("url") == brief["competitor_advertorial"] else None
+        if not comp:
+            try:
+                comp = await advertorial.read_page(brief["competitor_advertorial"])
+            except Exception as e:
+                comp = {"error": f"Couldn't read it ({e}). Open it yourself if you can browse."}
+            if not comp.get("error"):
+                _adv_keep(t["id"], {**state, "competitor": comp})
+        out["competitor_page"] = comp
+    out["mode"] = "copycat: follow the competitor's advertorial" if brief.get("competitor_advertorial") else "write our own"
+    if result.get("page_id"):
+        out["page_so_far"] = {"preview": f"{BASE_URL}/tasks/{t['id']}/advertorial", "shopify_admin": result.get("page_admin"),
+                              "live_link_after_approval": result.get("advertorial_url"),
+                              "content": _adv_state(t["id"]).get("page")}
+    return out
+
+
+async def _adv_add_image(tid: int, args: dict, user: dict) -> dict:
+    """An image the AI made (a link to it) saved on the task: the ad image ("ad") or a picture for the page ("page")."""
+    with db._conn() as con:
+        t = _task_row(con, tid, user)
+    if t["status"] in tasks.HISTORY:
+        return {"error": "This task is closed."}
+    try:
+        data, mime = await advertorial.fetch_image(str(args.get("image_url") or ""))
+    except Exception as e:
+        return {"error": f"{e} Ask the person to download the image and drop it on the task: {BASE_URL}/tasks?task={tid}"}
+    ext = {"image/png": ".png", "image/webp": ".webp", "image/gif": ".gif"}.get(mime, ".jpg")
+    use = "ad" if args.get("use") != "page" else "page"
+    name = tasks.safe_name(str(args.get("name") or ("ad-image" if use == "ad" else "page-image")))[:60].rsplit(".", 1)[0] + ext
+    with db._conn() as con:
+        fid = con.execute("INSERT INTO task_files (task_id, side, kind, name, mime, size, by) VALUES (?, 'staff', ?, ?, ?, ?, ?)",
+                          (tid, "creative" if use == "ad" else "file", name, mime, len(data), user.get("email", ""))).lastrowid
+    _adv_dir(tid)
+    path = _task_file_path({"id": fid, "task_id": tid, "name": name})
+    with open(path, "wb") as fh:
+        fh.write(data)
+    await asyncio.to_thread(_att_image, path, path + "_t.jpg", 480)
+    with db._conn() as con:
+        _task_log(con, tid, user, "file", f"Added {'the ad image' if use == 'ad' else 'a page image'}: {name}")
+    return {"ok": True, "file": f"file:{fid}", "use": use,
+            "note": "Use this as an image src in the page (file:<id>)." if use == "page" else "Saved as the ad image (creative)."}
+
+
+async def _adv_image_link(st: dict, tid: int, ref: str, cache: dict) -> str:
+    """file:<id> / an outside image link -> a link in the store's own Files (outside links can expire)."""
+    if ref in cache:
+        return cache[ref]
+    if ref.startswith("https://cdn.shopify.com/"):
+        return ref
+    if ref.startswith("file:"):
+        with db._conn() as con:
+            f = con.execute("SELECT * FROM task_files WHERE id = ? AND task_id = ?", (_task_id(ref), tid)).fetchone()
+        if not f:
+            raise ValueError(f"{ref} isn't a file on this task.")
+        f = dict(f)
+        with open(_task_file_path(f), "rb") as fh:
+            data = fh.read()
+        mime = f.get("mime") if (f.get("mime") or "").startswith("image/") else "image/jpeg"
+        name = f["name"]
+    elif ref.startswith("https://"):
+        data, mime = await advertorial.fetch_image(ref)
+        name = f"advertorial-{tid}-{len(cache) + 1}.jpg"
+    else:
+        raise ValueError(f"Image “{ref[:80]}” isn't a file:<id> or an https link.")
+    cache[ref] = await advertorial.upload_image(st, data, name, mime)
+    return cache[ref]
+
+
+async def _adv_save(tid: int, args: dict, user: dict) -> dict:
+    """The AI's advertorial (page content + ad copy) -> the hidden Shopify page + the task's hand-back."""
+    with db._conn() as con:
+        t = _task_row(con, tid, user)
+    if t["kind"] != "advertorial":
+        return {"error": "This isn't an advertorial task."}
+    if t["status"] in tasks.HISTORY or (t["status"] in ("submitted", "approved") and not _task_manager(user)):
+        return {"error": "This task is with the admins now (or closed). Use task_start to take it back first."}
+    page = args.get("page") or {}
+    if isinstance(page, str):
+        try:
+            page = json.loads(page)
+        except ValueError:
+            return {"error": "page must be the page content as an object (see the tool's description)."}
+    lacking = advertorial.check(page)
+    if lacking:
+        return {"error": "The page still needs: " + ", ".join(lacking) + "."}
+    st = next((x for x in db.list_stores() if x["id"] == t["store_id"]), None)
+    if not st:
+        return {"error": "The task has no store connected to EcomVital."}
+    brief, res = tasks.loads(t["brief"]), tasks.loads(t["result"])
+    try:
+        fx_ = await advertorial.facts(st, brief.get("product_url"))
+    except Exception as e:
+        return {"error": f"Couldn't read the product from Shopify: {e}"}
+    cur = fx_["store"]["currency"]
+    prods = [fx_["product"]] if fx_.get("product") else (fx_.get("collection") or {}).get("products") or []
+    want = str((page.get("card") or {}).get("product_handle") or "").strip()
+    prod = next((p for p in prods if p["handle"] == want), prods[0] if prods else None)
+    state = _adv_state(tid)
+    cache = state.get("images") or {}
+    images = {}
+    try:
+        for ref in advertorial.image_refs(page):
+            images[ref] = await _adv_image_link(st, tid, ref, cache)
+    except Exception as e:
+        _adv_keep(tid, {**state, "images": cache})
+        return {"error": f"Image problem: {e}"}
+    if prod and not (page.get("card") or {}).get("image") and prod["images"]:
+        page.setdefault("card", {})["image"] = prod["images"][0]
+        images[prod["images"][0]] = prod["images"][0]
+    body = advertorial.render(page, store=fx_["store"]["name"], link=brief["product_url"], images=images,
+                              price=prod["price"] if prod else "", was=prod["compare_at_price"] if prod else "",
+                              rating=str(brief.get("review_rating") or ""), count=str(brief.get("review_count") or ""))
+    title = str(page.get("title") or "A Letter From a Reader")[:120]
+    handle = res.get("page_handle") or advertorial.handle_of(page.get("handle") or f"letter-{(prod or {}).get('handle') or tid}")
+    try:
+        saved = await advertorial.save_page(st, res.get("page_id"), title, handle, body)
+    except Exception as e:
+        return {"error": f"Shopify didn't take the page: {e}"}
+    with open(os.path.join(_adv_dir(tid), "advertorial.html"), "w") as fh:
+        fh.write(body)
+    _adv_keep(tid, {**state, "images": cache, "page": page, "saved_at": datetime.now(timezone.utc).isoformat(timespec="seconds")})
+    domain = (fx_["store"].get("domain") or f"https://{st['shop_domain']}").rstrip("/")
+    new = {**res, "page_id": saved["id"], "page_handle": saved["handle"],
+           "page_admin": f"https://admin.shopify.com/store/{st['shop_domain'].split('.')[0]}/pages/{saved['id'].rsplit('/', 1)[-1]}",
+           "advertorial_url": f"{domain}/pages/{saved['handle']}"}
+    for k_in, k_out in (("primary_text", "primary_text"), ("headline", "headline"), ("description", "ad_description")):
+        if args.get(k_in):
+            new[k_out] = str(args[k_in])
+    req = _AsUser(user)
+    api_task_result(req, tid, {"result": new, "submit": False})
+    with db._conn() as con:
+        _task_log(con, tid, user, "edit", ("Advertorial page updated in Shopify" if res.get("page_id") else
+                                           "Advertorial page made in Shopify (hidden until approved)")
+                  + (" · it's live, so the change shows at once" if res.get("page_published") else ""))
+    out = {"ok": True, "preview_in_ecomvital": f"{BASE_URL}/tasks/{tid}/advertorial", "shopify_admin": new["page_admin"],
+           "live_link_after_approval": new["advertorial_url"], "task": f"{BASE_URL}/tasks?task={tid}"}
+    if args.get("submit"):
+        try:
+            api_task_result(req, tid, {"result": new, "submit": True})
+            out["submitted"] = True
+        except HTTPException as e:
+            out["submitted"] = False
+            out["not_submitted_because"] = str(e.detail).split(" If you can't")[0]
+    return out
+
+
 async def _task_tool(name: str, args: dict, user: dict) -> dict:
     """The Tasks desk for the assistant and the Claude connector: the same routes and rules as the desk's buttons."""
     if not auth.level(user or {}, "tasks") and (user or {}).get("role") != "owner":
@@ -15015,7 +15233,8 @@ async def _task_tool(name: str, args: dict, user: dict) -> dict:
                              + ", ".join(x["name"] for x in people)}
         sv = str(args.get("store") or "").strip().lower()
         st_ = next((x for x in db.list_stores() if sv and (sv == str(x["id"]) or sv in x["name"].lower())), None)
-        brief = {k: args.get(k) for k in ("todo", "description", "competitor_ads", "competitor_landing", "competitor_products")
+        brief = {k: args.get(k) for k in ("todo", "description", "competitor_ads", "competitor_landing", "competitor_products",
+                                          "product_url", "competitor_advertorial", "review_rating", "review_count", "reviews")
                  if args.get(k)}
         got = await api_task_create(req, {"kind": args.get("kind") or "custom", "title": args.get("title"),
                                           "assignee_id": p["id"] if p else None, "store_id": st_["id"] if st_ else None,
@@ -15045,8 +15264,13 @@ async def _task_tool(name: str, args: dict, user: dict) -> dict:
                 **({"store_playbook_follow_this": db.get_setting("store_playbook") or "(no playbook saved yet: ask the owner)",
                     "admin_checks_still_no": tasks.store_pending(brief), "store_kit": _store_kit_info()}
                    if t["kind"] == "store" else {}),
+                **(await _adv_context(t, brief, result) if t["kind"] == "advertorial" else {}),
                 "note": "Voice notes / screen recordings are files: the person opens them in the browser and can tell you what they say.",
                 "link": f"{BASE_URL}/tasks?task={tid}"}
+    if name == "advertorial_save":
+        return await _adv_save(tid, args, user)
+    if name == "task_add_image":
+        return await _adv_add_image(tid, args, user)
     if name == "task_start":
         with db._conn() as con:
             cur = _task_row(con, tid, user)["status"]
@@ -15119,9 +15343,19 @@ def _task_fields(payload: dict) -> dict:
 @app.post("/api/tasks")
 async def api_task_create(request: Request, payload: dict):
     _tasks_db()
-    _need_level(request, "tasks", "manage")
     user = _task_user(request)
+    if not _task_manager(user):
+        # staff may pick an "Advertorial + ad creative" task for themselves; every other kind is given by an admin
+        if payload.get("kind") != "advertorial":
+            _need_level(request, "tasks", "manage")
+        payload = {**payload, "assignee_id": user.get("id")}
     f = _task_fields(payload)
+    if f["kind"] == "advertorial":
+        b = json.loads(f["brief"])
+        if not f["store_id"]:
+            raise HTTPException(400, "Pick the store the advertorial is for.")
+        if advertorial.link_handle(b.get("product_url"))[0] is None:
+            raise HTTPException(400, "Paste our collection or product page link (…/collections/… or …/products/…).")
     with db._conn() as con:
         tid = con.execute("INSERT INTO tasks (kind, title, store_id, assignee_id, priority, due, special_notes, brief,"
                           " created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -15135,8 +15369,13 @@ async def api_task_create(request: Request, payload: dict):
 @app.put("/api/tasks/{task_id}")
 async def api_task_edit(request: Request, task_id: int, payload: dict):
     _tasks_db()
-    _need_level(request, "tasks", "manage")
     user = _task_user(request)
+    if not _task_manager(user):                 # staff: only the advertorial tasks they picked themselves
+        with db._conn() as con:
+            mine = _task_row(con, task_id, user)
+        if mine["kind"] != "advertorial" or mine["created_by"] != user.get("email") or payload.get("kind") != "advertorial":
+            _need_level(request, "tasks", "manage")
+        payload = {**payload, "assignee_id": user.get("id")}
     f = _task_fields(payload)
     with db._conn() as con:
         old = _task_row(con, task_id, user)
@@ -15179,6 +15418,12 @@ def api_task_result(request: Request, task_id: int, payload: dict):
         if t["status"] in tasks.HISTORY or (t["status"] in ("submitted", "approved") and not _task_manager(user)):
             raise HTTPException(400, "This task is with the admins now. Press “Take back to edit” first (or ask an "
                                      "admin, once it's approved).")
+        old_result = tasks.loads(t["result"])
+        for k in tasks.PAGE_KEYS:                       # the Shopify page EcomVital made isn't on the form
+            if k in old_result and k not in result:
+                result[k] = old_result[k]
+        if t["kind"] == "advertorial" and result.get("advertorial_url"):
+            result["landing_url"] = result["advertorial_url"]          # the ad goes to the advertorial
         con.execute("UPDATE tasks SET result = ? WHERE id = ?", (json.dumps(result), task_id))
         if payload.get("submit"):
             n_cr = con.execute("SELECT COUNT(*) FROM task_files WHERE task_id = ? AND side = 'staff' AND kind = 'creative'",
@@ -15218,6 +15463,16 @@ def api_task_status(request: Request, task_id: int, payload: dict):
             raise HTTPException(403, "Only an admin can do that.")
         if to == "changes" and not comment:
             raise HTTPException(400, "Say what needs changing.")
+        res = tasks.loads(t["result"])
+        if to == "approved" and t["kind"] == "advertorial" and res.get("page_id") and not res.get("page_published"):
+            st = next((x for x in db.list_stores() if x["id"] == t["store_id"]), None)
+            try:
+                advertorial.publish_sync(st, res["page_id"])
+            except Exception as e:
+                raise HTTPException(400, f"Couldn't publish the advertorial page in Shopify ({e}). Nothing was approved; try again.")
+            res["page_published"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            con.execute("UPDATE tasks SET result = ? WHERE id = ?", (json.dumps(res), task_id))
+            _task_log(con, task_id, user, "edit", f"Advertorial page published: {res.get('advertorial_url')}")
         sets = ["status = ?"]
         if to == "approved":
             sets += ["approved_by = ?", "approved_at = datetime('now')"]

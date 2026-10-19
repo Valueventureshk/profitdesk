@@ -14,17 +14,23 @@ import re
 
 STATUSES = ("todo", "doing", "submitted", "changes", "approved", "launched", "done", "cancelled")
 HISTORY = ("launched", "done", "cancelled")
-KINDS = ("listing", "custom", "store")
+KINDS = ("listing", "custom", "store", "advertorial")
 
 # what the admin fills in (brief) and what staff hand back (result), per kind
 BRIEF_FIELDS = ("competitor_ads", "competitor_landing", "competitor_products", "todo", "description",
                 # new store: what the admin fills in (see STORE_*)
                 "shopify_domain", "brand_domain", "country", "language", "currency", "ads_platform", "competitor_url",
                 "reviews", "payments", "support_email", "ad_account", "app_connected",
+                # advertorial + ad creative (advertorial.py): our product / collection link, the competitor's advertorial
+                # (optional: copy it), and the real reviews staff collected (rating, count, the reviews themselves)
+                "product_url", "competitor_advertorial", "review_rating", "review_count",
                 # older listing tasks (before the to-do picks) — still shown, no longer asked for
                 "collection", "products", "pages", "angle", "headlines", "budget", "countries")
 RESULT_FIELDS = ("landing_url", "collection_url", "product_urls", "advertorial_url", "branded_url", "primary_text",
-                 "headline", "ad_description", "cta", "other_links", "notes")
+                 "headline", "ad_description", "cta", "other_links", "notes",
+                 # advertorial tasks: the Shopify page EcomVital made (kept when staff save the form)
+                 "page_id", "page_handle", "page_admin", "page_published")
+PAGE_KEYS = ("page_id", "page_handle", "page_admin", "page_published")
 
 # What an admin can tick on a listing task, and what each one asks staff to hand back.
 # Anything else typed in the to-do list is a custom item: staff answer it with a link or a note.
@@ -220,6 +226,11 @@ def store_pending(brief: dict) -> list:
 def missing(kind: str, brief: dict, result: dict, creatives: int) -> list:
     """What still stops a listing task being submitted: the main landing page link, and every to-do item
     that has neither its output nor a "couldn't do it" note for the admin."""
+    if kind == "advertorial":
+        need = [("the advertorial page (made with the connector)", result.get("advertorial_url")),
+                ("the primary text", result.get("primary_text")), ("the headline", result.get("headline")),
+                ("the description", result.get("ad_description")), ("the ad image (uploaded to the task)", creatives > 0)]
+        return [label for label, ok in need if not ok]
     if kind not in ("listing", "store"):
         return []
     out = [] if result.get("landing_url") else ["the main landing page link" if kind == "listing" else "the store link"]

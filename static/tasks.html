@@ -38,7 +38,7 @@
       <select id="fStore" class="control"><option value="">All stores</option></select>
       <button class="btn tk-launchsel" id="launchSel" hidden>Launch selected (0)</button>
       <button class="btn" id="storeKit" data-manage-only>Store kit</button>
-      <button class="btn btn-primary" id="newTask" data-manage-only>+ New task</button>
+      <button class="btn btn-primary" id="newTask" data-write-only>+ New task</button>
     </div>
 
     <section id="boardPage" class="tk-board"></section>
@@ -80,13 +80,14 @@
     <div class="drawer-body">
       <div class="scm-pages tk-kind" id="eKind">
         <button data-kind="listing" class="on">Listing + ads</button>
+        <button data-kind="advertorial">Advertorial + ad creative</button>
         <button data-kind="store">Create new store</button>
         <button data-kind="custom">Custom task</button>
       </div>
       <label class="field"><span>Title</span><input id="eName" class="control" maxlength="200" placeholder="e.g. Autumn knitwear: collection + ads"></label>
       <div class="tk-row">
         <label class="field"><span>Store</span><select id="eStore" class="control"><option value="">No store</option></select></label>
-        <label class="field"><span>Give it to</span><select id="eWho" class="control"><option value="">Nobody yet</option></select></label>
+        <label class="field" data-manage-only><span>Give it to</span><select id="eWho" class="control"><option value="">Nobody yet</option></select></label>
       </div>
       <div class="tk-row">
         <label class="field"><span>Due</span><input type="date" id="eDue" class="control"></label>
@@ -103,6 +104,18 @@
         <div class="tk-checks tk-todo" id="eTodo"></div>
         <div class="tk-addtodo"><input id="eTodoNew" class="control" placeholder="Add another to-do, e.g. “Translate the advertorial to German”"><button type="button" class="btn btn-sm" id="eTodoAdd">Add</button></div>
         <p class="hint">Staff hand back the result of each ticked item, or a note saying why they couldn't. Every task also hands back one main landing page link: that's where the ads go.</p>
+      </div>
+      <div data-adv-only hidden>
+        <h4 class="tk-formhead">The advertorial</h4>
+        <label class="field"><span>Our collection or product page link <em class="tk-opt">(the page's buttons go here)</em></span><input id="aLink" class="control" placeholder="https://perthboutique.shop/collections/women-leather-bag"></label>
+        <label class="field"><span>Competitor advertorial link <em class="tk-opt">(if there is one: it's copied and tweaked; empty = we write our own)</em></span><input id="aComp" class="control" placeholder="https://competitor.com/pages/a-letter-from-a-reader"></label>
+        <h4 class="tk-formhead">Real reviews <em class="tk-opt">(from the collection / product page)</em></h4>
+        <div class="tk-row">
+          <label class="field"><span>Rating</span><input id="aRating" class="control" inputmode="decimal" placeholder="4.2"></label>
+          <label class="field"><span>Number of reviews</span><input id="aCount" class="control" placeholder="300+"></label>
+        </div>
+        <label class="field"><span>The reviews <em class="tk-opt">(paste a few: name, place, stars, text; one per line or block)</em></span><textarea id="aReviews" class="control" rows="4"></textarea></label>
+        <p class="hint">Then open the task in ChatGPT or Claude (EcomVital connector) and say “do task T-…”: it writes the advertorial and the ad, makes the page in the store (hidden until approved) and hands it back here.</p>
       </div>
       <div data-store-only hidden>
         <h4 class="tk-formhead">The store</h4>
@@ -152,6 +165,9 @@
       <p class="hint" id="kitTheme">No theme uploaded yet.</p>
       <label class="btn btn-sm">⬆ Upload the theme .zip<input type="file" id="kitFile" accept=".zip" hidden></label>
       <p class="hint">In Shopify: Online Store → Themes → … next to the theme → Download theme file. Use Perth Boutique's.</p>
+      <h4 class="tk-formhead">Advertorial Playbook <em class="tk-opt">(ChatGPT / Claude read this for every “Advertorial + ad creative” task)</em></h4>
+      <textarea id="kitAdv" class="control tk-playbook" rows="16"></textarea>
+      <div class="row-actions"><span class="hint" id="kitAdvAt"></span><button class="btn" id="kitAdvReset">Back to EcomVital's version</button><button class="btn btn-primary" id="kitAdvSave">Save advertorial playbook</button></div>
       <h4 class="tk-formhead">Store Playbook <em class="tk-opt">(Claude reads this before building every new store)</em></h4>
       <textarea id="kitPlaybook" class="control tk-playbook" rows="22"></textarea>
       <div class="row-actions"><span class="hint" id="kitAt"></span><button class="btn btn-primary" id="kitSave">Save playbook</button></div>

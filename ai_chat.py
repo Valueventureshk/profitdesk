@@ -188,10 +188,13 @@ TOOLS += [
           "mark it done / launched (set up by hand), or cancel it.",
           {"task": {"type": "string"}, "decision": {"type": "string", "enum": ["approve", "changes", "done", "launched", "cancel"]},
            "comment": {"type": ["string", "null"]}}, ["task", "decision", "comment"]),
-    _tool("task_create", "Admins only: create a task and give it to someone (they get it on the Tasks desk and WhatsApp). "
-          "kind listing = product / store listing with ads (to-do picks: advertorial, collection, product_pages, branded_page, "
-          "creatives, ad_copy, plus any custom lines); custom = anything else. Returns its id (T-…).",
-          {"title": {"type": "string"}, "kind": {"type": "string", "enum": ["listing", "custom"]},
+    _tool("task_create", "Create a task and give it to someone (they get it on the Tasks desk and WhatsApp). Admins: any kind. "
+          "Staff: only kind advertorial, for themselves. kind listing = product / store listing with ads (to-do picks: "
+          "advertorial, collection, product_pages, branded_page, creatives, ad_copy, plus any custom lines); advertorial = "
+          "an advertorial page + one image ad with its copy (needs store, product_url = our collection or product link, "
+          "optional competitor_advertorial link, and the real reviews: review_rating, review_count, reviews); custom = anything "
+          "else. Returns its id (T-…).",
+          {"title": {"type": "string"}, "kind": {"type": "string", "enum": ["listing", "custom", "advertorial"]},
            "assignee": {"type": ["string", "null"], "description": "name or email"},
            "store": {"type": ["string", "null"], "description": "store name or id"},
            "due": {"type": ["string", "null"], "description": "YYYY-MM-DD"},
@@ -200,9 +203,32 @@ TOOLS += [
            "todo": {"type": ["array", "null"], "items": {"type": "string"}},
            "description": {"type": ["string", "null"]},
            "competitor_ads": {"type": ["string", "null"]}, "competitor_landing": {"type": ["string", "null"]},
-           "competitor_products": {"type": ["string", "null"]}},
+           "competitor_products": {"type": ["string", "null"]},
+           "product_url": {"type": ["string", "null"], "description": "advertorial: our collection or product page link"},
+           "competitor_advertorial": {"type": ["string", "null"], "description": "advertorial: the competitor's advertorial to copy"},
+           "review_rating": {"type": ["string", "null"], "description": "advertorial: e.g. 4.2"},
+           "review_count": {"type": ["string", "null"], "description": "advertorial: e.g. 300+"},
+           "reviews": {"type": ["string", "null"], "description": "advertorial: real customer reviews, one per line"}},
           ["title", "kind", "assignee", "store", "due", "priority", "special_notes", "todo", "description",
            "competitor_ads", "competitor_landing", "competitor_products"]),
+    _tool("advertorial_save", "Advertorial + ad creative tasks: send the advertorial page and the ad copy. EcomVital builds the "
+          "page in the store's design and creates it in Shopify as a HIDDEN page (published only when an admin approves the "
+          "task); calling it again updates the same page. page = {title (Shopify page title, e.g. 'A Letter From a Reader'), "
+          "label, headline, author {name, line ('Sydney · September 2026'), photo}, blocks [ {type:'p', text} | {type:'pull', "
+          "text} | {type:'h2', text} | {type:'image', src, caption, alt} | {type:'cta', text} | {type:'list', items:[{lead, "
+          "text}]} ], card {title, product_handle (for a collection: which product), image, bullets[], button, note}, footer "
+          "{about, store_line}}. Text may use **bold**. Image src/photo/image = file:<id> (a file on the task) or an https "
+          "image link (copied into the store's Files). Prices, stars and the 'advertisement' line are added by EcomVital. "
+          "primary_text / headline / description = the ad copy. submit=true also sends the task for review (needs the ad "
+          "image on the task). Returns the preview link.",
+          {"task": {"type": "string"}, "page": {"type": "object"}, "primary_text": {"type": ["string", "null"]},
+           "headline": {"type": ["string", "null"]}, "description": {"type": ["string", "null"]},
+           "submit": {"type": ["boolean", "null"]}}, ["task", "page"]),
+    _tool("task_add_image", "Save an image you made or found on a task, from its https link: use 'ad' = the ad image (the "
+          "creative), 'page' = a picture for the advertorial page. Returns file:<id> to use in advertorial_save. If the link "
+          "can't be read, ask the person to download the image and drop it on the task.",
+          {"task": {"type": "string"}, "image_url": {"type": "string"}, "use": {"type": "string", "enum": ["ad", "page"]},
+           "name": {"type": ["string", "null"]}}, ["task", "image_url", "use"]),
     _tool("data_schema", "Owner only: the business tables you can read with data_query (orders and product costs, parcels, "
           "disputes, tickets, pixel events, Google uploads, invoices, payments, saved daily totals…), with their columns and "
           "what they mean. Call this before writing a data_query.", {}, []),
@@ -216,7 +242,7 @@ TOOLS += [
 # Anthropic allows at most 20 strict tools: the simple ones (few or no inputs) don't need it.
 _LOOSE = {"propose_google_change", "list_stores", "get_cash", "get_inbox", "list_schedules_alerts", "delete_schedule_alert",
           "store_health", "tracking_live", "google_campaigns", "google_product_issues", "find_shopify_products",
-          "remember", "forget", "product_sales", "get_disputes", "find_parcels", "data_schema", "data_query", "request_change", "list_change_requests", "tasks_list", "task_get", "task_start", "task_save", "task_comment", "task_review", "task_create"}
+          "remember", "forget", "product_sales", "get_disputes", "find_parcels", "data_schema", "data_query", "request_change", "list_change_requests", "tasks_list", "task_get", "task_start", "task_save", "task_comment", "task_review", "task_create", "advertorial_save", "task_add_image"}
 for _t in TOOLS:
     if _t["name"] in _LOOSE:
         _t.pop("strict", None)
@@ -254,6 +280,7 @@ If a tool says the person has no access, tell them which desk they'd need.
 For "check everything / store health / are things working" use store_health. For live events ("adds to cart in the last hour") use tracking_live.
 Scheduled reports and alerts: create them with create_schedule / create_alert and confirm the time, days and threshold in one line.
 When the owner gives a rule, preference, definition or correction meant to last, save it with remember and say "Noted." Follow the saved notes below; if a note conflicts with what you're asked now, follow the request and ask whether to update the note.
+Advertorial tasks (kind advertorial, "Advertorial + ad creative"): task_get gives the Advertorial Playbook, the real product facts, the competitor's advertorial text (copy it when given) and the staff's real reviews; write the page and the ad copy in that playbook's voice, add images with task_add_image (or ask the person to drop them on the task), finish with advertorial_save, then give the preview link.
 Tasks: people refer to tasks by id (T-12). Before working on one, read it with task_get and follow its special instructions first, then the to-do items; keep the person informed of what's still missing; save progress with task_save and submit only when they say it's ready. Admins review with task_review (send back with clear change notes).
 When someone wants the app to do something new or differently (a fix, a better desk, a new desk or tool), save it with request_change after making sure you understand it; tell them the owner reviews requests. For product-level sales use product_sales; for disputes use get_disputes; for "where is order …" use find_parcels.
 You can propose changes with the propose_ tools (owners only). They never change anything themselves: the person sees the action with a Confirm button. Before proposing, check the list (e.g. get_price_changes) and say what will change. Never claim something was done until they confirm."""

@@ -51,7 +51,7 @@ const todoNames = () => (state.data && state.data.todo) || (state.task && state.
 const storeTodo = () => (state.data && state.data.store_todo) || (state.task && state.task.store_todo) || {};
 const storeChecks = () => (state.data && state.data.store_checks) || (state.task && state.task.store_checks) || {};
 const todoLabel = (k) => todoNames()[k] || storeTodo()[k] || k;
-const KIND_NAME = { listing: "Listing + ads", custom: "Custom", store: "New store" };
+const KIND_NAME = { listing: "Listing + ads", custom: "Custom", store: "New store", advertorial: "Advertorial + ad creative" };
 const AUDIO = /\.(m4a|mp3|wav|ogg|oga|aac)$|^voice-note/i;
 const COLUMNS = [
   ["todo", "To do"], ["doing", "In progress"], ["changes", "Changes asked"],
@@ -213,6 +213,12 @@ function renderTask() {
     ["Ad angle", b.angle && esc(b.angle).replace(/\n/g, "<br>")], ["Headline ideas", lines(b.headlines).map(esc).join("<br>")],
     ["Daily budget", b.budget && esc(b.budget)], ["Countries", b.countries && esc(b.countries)],
     ["Details", b.description && esc(b.description).replace(/\n/g, "<br>")],
+    ...(t.kind === "advertorial" ? [
+      ["Our page", b.product_url && linkify(b.product_url)],
+      ["Competitor advertorial", b.competitor_advertorial ? linkify(b.competitor_advertorial) : "None: we write our own"],
+      ["Reviews", [b.review_rating && `${esc(b.review_rating)} ★`, b.review_count && `${esc(b.review_count)} reviews`].filter(Boolean).join(" · ")],
+      ["Review texts", b.reviews && `<details><summary>${lines(b.reviews).length} line(s)</summary>${esc(b.reviews).replace(/\n/g, "<br>")}</details>`],
+    ] : []),
     ...(t.kind === "store" ? [
       ["Brand domain", b.brand_domain && linkify(/^https?:/.test(b.brand_domain) ? b.brand_domain : "https://" + b.brand_domain)],
       ["Shopify domain", b.shopify_domain && esc(b.shopify_domain)],
@@ -256,7 +262,20 @@ function renderTask() {
         <textarea class="control" data-cant="${esc(k)}" rows="2" placeholder="e.g. The supplier has no photos of the blue one"${dis}>${esc(cant[k] || "")}</textarea></details></div>`;
   };
 
-  const handBack = t.kind === "store" ? `<div class="tk-main">${f("landing_url", "Store link · the live store", "https://brand.com")}</div>
+  const advPage = r.page_id ? `<div class="tk-main tk-adv">
+        <b>Advertorial page</b> ${r.page_published ? '<span class="tk-st tk-st-done">Live</span>' : '<span class="tk-st">Hidden until approved</span>'}<br>
+        <a href="/tasks/${t.id}/advertorial" target="_blank" rel="noopener">Preview ↗</a> ·
+        <a href="${esc(r.page_admin || "#")}" target="_blank" rel="noopener">Open in Shopify ↗</a>
+        ${r.advertorial_url ? `<br><span class="hint">Link for the ads: ${linkify(r.advertorial_url)}</span>` : ""}</div>`
+    : `<div class="tk-main tk-adv"><b>Advertorial page</b> <span class="tk-st">Not made yet</span>
+        <p class="hint">In ChatGPT or Claude (EcomVital connector) say “do task T-${t.id}”. The page is made in the store, hidden until it's approved.</p></div>`;
+  const handBack = t.kind === "advertorial" ? `${advPage}
+      <h4>The ad</h4>${copyBox}
+      <h4>Ad image <em class="tk-opt">(square)</em></h4>${creativeBox}
+      <h4>Other files <em class="tk-opt">(page pictures, etc.)</em></h4>
+      <div class="tk-files">${otherFiles.map((x) => fileTile(x, canRm(x))).join("") || '<p class="tk-empty">None</p>'}</div>
+      ${canWork ? uploader("staff", "file", "+ Upload page pictures") : ""}`
+    : t.kind === "store" ? `<div class="tk-main">${f("landing_url", "Store link · the live store", "https://brand.com")}</div>
       ${(todo || []).map(item).join("")}
       ${f("other_links", "Other links (one per line)", "", 2)}
       <h4>Files</h4>
@@ -283,7 +302,7 @@ function renderTask() {
     if ((t.mine || manage) && ["todo", "changes"].includes(t.status)) acts.push(`<button class="btn" data-move="doing">Start</button>`);
     if (canWork && ["todo", "doing", "changes"].includes(t.status)) acts.push(`<button class="btn" data-save>Save</button><button class="btn btn-primary" data-submit>Submit for review</button>`);
     if (t.mine && !manage && t.status === "submitted") acts.push(`<button class="btn" data-move="doing">Take back to edit</button>`);
-    if (manage && t.status === "submitted") acts.push(`<button class="btn btn-primary" data-move="approved">Approve</button><button class="btn" data-changes>Send back for changes</button>`);
+    if (manage && t.status === "submitted") acts.push(`<button class="btn btn-primary" data-move="approved"${t.kind === "advertorial" && r.page_id && !r.page_published ? ' data-confirm="Approve and publish the advertorial page in the store?">Approve &amp; publish page' : ">Approve"}</button><button class="btn" data-changes>Send back for changes</button>`);
     if (manage && t.status === "approved" && t.kind === "listing") acts.push(`${t.launch_ready ? "<button class=\"btn btn-primary\" data-launch>Launch ads on Meta…</button>"
       : "<button class=\"btn\" disabled title=\"The launch strategies are being set up\">Launch ads on Meta · coming soon</button>"}<button class="btn" data-move="launched" data-confirm="Mark as launched without creating the ads here?">Mark launched (set up by hand)</button>`);
     if (manage && t.status === "approved" && t.kind !== "listing") acts.push(`<button class="btn btn-primary" data-move="done">${t.kind === "store" ? "Store is live: mark done" : "Mark done"}</button>`);
@@ -329,7 +348,7 @@ function renderTask() {
       ${adminFiles.length ? `<div class="tk-files">${adminFiles.map((x) => fileTile(x, manage && !closed)).join("")}</div>` : ""}
       ${manage && !closed ? uploader("admin", "file", "+ Add reference files to the brief") : ""}
     </section>
-    <section class="tk-sec tk-work"><h3>${t.kind === "listing" ? "What was made" : t.kind === "store" ? "Building the store" : "The work"}</h3>
+    <section class="tk-sec tk-work"><h3>${t.kind === "listing" || t.kind === "advertorial" ? "What was made" : t.kind === "store" ? "Building the store" : "The work"}</h3>
       ${handBack}
       ${f("notes", "Notes for the admin", "", 2)}
     </section>
@@ -639,7 +658,9 @@ function setKind(kind) {
   for (const el of $("editor").querySelectorAll("[data-listing]")) el.hidden = kind !== "listing";
   for (const el of $("editor").querySelectorAll("[data-custom-only]")) el.hidden = kind !== "custom";
   for (const el of $("editor").querySelectorAll("[data-store-only]")) el.hidden = kind !== "store";
-  $("eName").placeholder = kind === "store" ? "e.g. New store: Bella Rosa UK (left empty = from the domain)" : "e.g. Autumn knitwear: collection + ads";
+  for (const el of $("editor").querySelectorAll("[data-adv-only]")) el.hidden = kind !== "advertorial";
+  $("eName").placeholder = kind === "store" ? "e.g. New store: Bella Rosa UK (left empty = from the domain)"
+    : kind === "advertorial" ? "e.g. Alina bag advertorial (left empty = from the link)" : "e.g. Autumn knitwear: collection + ads";
 }
 
 function renderStoreChecks(b) {
@@ -683,11 +704,15 @@ function openEditor(t = null) {
   $("sCountry").value = b.country || ""; $("sLang").value = b.language || ""; $("sCur").value = b.currency || "";
   $("sAds").value = b.ads_platform || "meta"; $("sComp").value = b.competitor_url || "";
   $("sReviews").value = b.reviews || "";
+  $("aLink").value = b.product_url || ""; $("aComp").value = b.competitor_advertorial || "";
+  $("aRating").value = b.review_rating || ""; $("aCount").value = b.review_count || ""; $("aReviews").value = b.reviews || "";
+  const admin = !!(state.data && state.data.manage);
+  for (const btn of $("eKind").querySelectorAll("button")) btn.hidden = !admin && btn.dataset.kind !== "advertorial";
   $("sEmail").value = b.support_email && !["yes", "no"].includes(b.support_email) ? b.support_email : "";
   renderStoreChecks(b);
   state.recs = [];
   renderRecs();
-  setKind(t ? t.kind : "listing");
+  setKind(t ? t.kind : (admin ? "listing" : "advertorial"));
   waHint();
   $("editor").hidden = false;
   $("eName").focus();
@@ -716,7 +741,13 @@ async function saveEditor() {
       country: $("sCountry").value, language: $("sLang").value, currency: $("sCur").value, ads_platform: $("sAds").value,
       competitor_url: $("sComp").value, reviews: $("sReviews").value, ...checks,
       todo: (state.editBrief.todo && state.editBrief.todo.length) ? state.editBrief.todo : Object.keys(storeTodo()) }
+    : state.kind === "advertorial" ? { ...state.editBrief, product_url: $("aLink").value.trim(), competitor_advertorial: $("aComp").value.trim(),
+      review_rating: $("aRating").value.trim(), review_count: $("aCount").value.trim(), reviews: $("aReviews").value }
     : { ...state.editBrief, description: $("eDesc").value };
+  if (state.kind === "advertorial" && !$("eName").value.trim()) {
+    const m = brief.product_url.match(/\/(?:products|collections)\/([^/?#]+)/);
+    if (m) $("eName").value = "Advertorial: " + decodeURIComponent(m[1]).replace(/-/g, " ");
+  }
   if (state.kind === "store" && !brief.brand_domain && !brief.shopify_domain) { toast("Fill in the brand domain or the Shopify domain.", true); return; }
   const body = { kind: state.kind, title: $("eName").value, store_id: $("eStore").value, assignee_id: $("eWho").value,
     due: $("eDue").value, priority: $("ePrio").value, special_notes: $("eNotes").value, brief };
@@ -995,7 +1026,23 @@ async function openKit() {
     $("kitTheme").textContent = th ? `${th.name} · ${(th.size / 1048576).toFixed(1)} MB · uploaded ${when(th.at)}` : "No theme uploaded yet.";
   } catch (e) { toast(e.message, true); }
 }
-$("storeKit").onclick = openKit;
+async function openAdvKit() {
+  try {
+    const d = await api("/api/tasks/kit/advertorial");
+    $("kitAdv").value = d.playbook || "";
+    $("kitAdvAt").textContent = d.custom ? `Your version · saved ${when(d.updated)}` : "EcomVital's first version (from your 8 examples)";
+  } catch (e) { toast(e.message, true); }
+}
+$("storeKit").onclick = () => { openKit(); openAdvKit(); };
+$("kitAdvSave").onclick = async () => {
+  try { await api("/api/tasks/kit/advertorial", { method: "PUT", json: { playbook: $("kitAdv").value } }); toast("Advertorial playbook saved"); openAdvKit(); }
+  catch (e) { toast(e.message, true); }
+};
+$("kitAdvReset").onclick = async () => {
+  if (!confirm("Go back to EcomVital's version of the advertorial playbook? Your edits are dropped.")) return;
+  try { await api("/api/tasks/kit/advertorial", { method: "PUT", json: { playbook: "" } }); toast("Back to EcomVital's version"); openAdvKit(); }
+  catch (e) { toast(e.message, true); }
+};
 for (const el of $("kit").querySelectorAll("[data-close]")) el.onclick = () => { $("kit").hidden = true; };
 $("kitSave").onclick = async () => {
   try { await api("/api/tasks/kit/playbook", { method: "PUT", json: { playbook: $("kitPlaybook").value } }); toast("Playbook saved"); openKit(); }
