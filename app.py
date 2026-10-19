@@ -15280,6 +15280,21 @@ async def _task_tool(name: str, args: dict, user: dict) -> dict:
         return {"ok": True, "task": f"T-{tid}", "status": "In progress"}
     if name == "task_save":
         with db._conn() as con:
+            row = _task_row(con, tid, user)
+        res_in = args.get("result") or {}
+        if row["kind"] == "advertorial" and (res_in.get("page") or res_in.get("ad_image_url")):
+            # connectors that still have an older tool list (no advertorial_save / task_add_image) do it all here
+            out = {}
+            if res_in.get("ad_image_url"):
+                out["ad_image"] = await _adv_add_image(tid, {"image_url": res_in["ad_image_url"], "use": "ad"}, user)
+            if res_in.get("page"):
+                return {**out, **await _adv_save(tid, {"page": res_in["page"], "primary_text": res_in.get("primary_text"),
+                                                       "headline": res_in.get("headline"),
+                                                       "description": res_in.get("ad_description") or res_in.get("description"),
+                                                       "submit": args.get("submit")}, user)}
+            if out:
+                return out
+        with db._conn() as con:
             old = tasks.loads(_task_row(con, tid, user)["result"])
         new = dict(old)
         for k, v in (args.get("result") or {}).items():

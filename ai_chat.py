@@ -178,7 +178,8 @@ TOOLS += [
     _tool("task_save", "Save work on a task (merged with what's already saved). result fields: landing_url (the main page the "
           "ads go to; required to submit a listing task), collection_url, product_urls (list), advertorial_url, branded_url, "
           "primary_text, headline, ad_description, cta, other_links, notes, custom {to-do item: answer} for custom to-do lines, "
-          "cant {to-do item: why it can't be done}. submit=true also hands it to the admin for review (EcomVital refuses "
+          "cant {to-do item: why it can't be done}. Advertorial tasks: result.page (same as advertorial_save's page) builds the "
+          "hidden Shopify page, result.ad_image_url adds the ad image. submit=true also hands it to the admin for review (EcomVital refuses "
           "while something required is missing). Creatives (images/videos) are uploaded on the Tasks desk itself.",
           {"task": {"type": "string"}, "result": {"type": "object"}, "submit": {"type": "boolean"}},
           ["task", "result", "submit"]),
