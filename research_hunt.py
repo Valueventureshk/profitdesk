@@ -572,6 +572,36 @@ async def analyse(item_id: int, extra: dict = None, store: dict = None) -> dict:
             "blocked": store["blocked"]}
 
 
+def rescore(item_id: int, extra: dict) -> dict:
+    """Score a store again from its saved facts plus new ad signs (no visit to the store)."""
+    item = rs.get_item(item_id)
+    sig = merge_signals(item, extra)
+    if not item.get("is_shopify"):
+        return {"shopify": False, "qualified": False}
+    today = datetime.now(HK).date()
+    pages = json.loads(item.get("fb_pages") or "[]")
+    names = [item.get("name") or ""] + [p.get("name", "") for p in pages] + sig["names"]
+    pts, why = score(names, item.get("domain") or "", sig["texts"], sig["ctas"], sig["formats"],
+                     max(len(pages), sig["n_pages"]), item.get("products_count") or 0)
+    age = _days(item.get("store_since") or "", today)
+    share = item.get("compare_share")
+    if share is not None:
+        why.append(f"{round(share * 100)}% of products show a was-price")
+    qualified = 1 if (QUALIFY_DAYS <= age <= MAX_STORE_DAYS and pts >= QUALIFY_SCORE
+                      and share is not None and share >= COMPARE_SHARE) else 0
+    if age > MAX_STORE_DAYS:
+        why.append("store older than 2 years: left out")
+    elif 0 <= age < QUALIFY_DAYS:
+        why.append(f"store only {age} days old: too new")
+    if share is not None and share < COMPARE_SHARE:
+        why.append("most products have no was-price: left out")
+    with db._conn() as con:
+        con.execute("UPDATE research_items SET ds_score = ?, ds_reasons = ?, qualified = ?, ad_signals = ? WHERE id = ?",
+                    (pts, "; ".join(why), qualified, json.dumps(sig), item_id))
+    relabel(item_id)
+    return {"shopify": True, "qualified": bool(qualified), "score": pts}
+
+
 def merge_signals(item: dict, extra: dict) -> dict:
     """The ad signs a store has shown so far (saved on the row), plus the new ones; capped."""
     try:
@@ -788,8 +818,11 @@ async def hunt(hid: int):
                     con.execute("UPDATE research_items SET found_by = ? WHERE id = ?",
                                 (f"{found_by} · {', '.join(sorted(s['countries'])) or ', '.join(countries)}", item_id))
                 if not is_new and sn and sn["checked_at"] > cutoff:
-                    results["shopify"] += 1
-                    results["qualified"] += rs.get_item(item_id).get("qualified") or 0
+                    # read recently: no new store visit, just add what these ads show and score again
+                    res = rescore(item_id, {"names": list(s["names"]), "texts": s["texts"], "ctas": s["ctas"],
+                                            "formats": s["formats"], "n_pages": len(s["pages"])})
+                    results["shopify"] += 1 if res.get("shopify") else 0
+                    results["qualified"] += 1 if res.get("qualified") else 0
                     return
                 res = await analyse(item_id, {"names": list(s["names"]), "texts": s["texts"], "ctas": s["ctas"],
                                               "formats": s["formats"], "n_pages": len(s["pages"])}, store)
@@ -801,10 +834,12 @@ async def hunt(hid: int):
                     f"({results['new']} new). Reading their Meta ads…",
                shopify=results["shopify"], qualified=results["qualified"], new_stores=results["new"])
         # 4 deep check the best new qualified stores
+        # dropshippers from this search whose Meta ads haven't been read yet (new ones, or ones that only now qualify)
+        here = [known[d] for d in stores if d in known]
         with db._conn() as con:
             deep = [r[0] for r in con.execute(
-                f"SELECT id FROM research_items WHERE qualified = 1 AND id IN ({','.join('?' * len(new_ids)) or 'NULL'})"
-                " ORDER BY ds_score DESC LIMIT ?", (*new_ids, h["deep_max"]))]
+                f"SELECT id FROM research_items WHERE qualified = 1 AND ads_at IS NULL AND id IN ({','.join('?' * len(here)) or 'NULL'})"
+                " ORDER BY ds_score DESC LIMIT ?", (*here, h["deep_max"]))]
         if deep:
             for i in range(0, len(deep), 10):
                 res = await deep_check(deep[i:i + 10], rs.APP_NAME)
