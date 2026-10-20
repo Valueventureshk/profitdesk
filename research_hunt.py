@@ -180,7 +180,7 @@ def unwrap(url: str) -> str:
 
 
 NOT_PRODUCT = re.compile(r"shipping protection|order protection|package protection|insurance|gift ?card|e-?gift|"
-                         r"\\broute\\b|warranty|\btip\b|priority (processing|shipping)|express (processing|shipping)|"
+                         r"\broute\b|warranty|\btip\b|priority (processing|shipping)|express (processing|shipping)|"
                          r"\bsample\b|donation|mystery|test product", re.I)
 
 
