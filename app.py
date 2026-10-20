@@ -69,6 +69,7 @@ import adcopy
 import paypal_track
 import research
 import research_hunt
+import world
 import timetrack
 import agent
 import slack_client
@@ -271,7 +272,7 @@ _DESK_PATHS = {
     "disputes": ("/disputes", "/api/disputes"),
     "recordings": ("/recordings", "/api/recordings"),
     "googleads": ("/googleads", "/api/googleads", "/api/ads"),
-    "tracking": ("/tracking", "/api/tracking"),
+    "tracking": ("/tracking", "/api/tracking", "/world", "/api/world"),
     "checkout": ("/checkout", "/api/checkout"),
     "tasks": ("/tasks", "/api/tasks"),
     "metaads": ("/metaads", "/api/metaads"),
@@ -15739,6 +15740,12 @@ app.include_router(adcopy.router)          # Product Importer → Ad copy
 app.include_router(paypal_track.router)    # Apps → PayPal Tracking
 app.include_router(research.router)        # Apps → Research
 app.include_router(research_hunt.router)   # Research → Find competitors
+app.include_router(world.router)           # EcomVital World (Tracking desk's access)
+
+
+@app.get("/world", response_class=HTMLResponse)
+def world_page():
+    return _page("world.html", ("world.js", "world-env.js", "world-chars.js", "world.css", "nav.js", "styles.css", "skin.css"))
 
 
 @app.get("/research", response_class=HTMLResponse)

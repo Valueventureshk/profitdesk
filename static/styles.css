@@ -2124,3 +2124,9 @@ html[data-theme="dark"] .gpl { background: #1E1B4B; border-color: #3730A3; }
 .pe-ovals { display: flex; flex-wrap: wrap; gap: 6px; }
 .pe-ovals .control { width: auto; min-width: 70px; max-width: 160px; flex: 1 1 90px; }
 .pe-copies { display: grid; gap: 4px; margin: 10px 0 6px; }
+
+/* Dashboard → EcomVital World */
+.btn-world { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; flex: 0 0 auto; text-decoration: none; background: #1F6F5C; border-color: #1F6F5C; color: #fff; }
+.btn-world::before { content: ""; width: 10px; height: 10px; background: currentColor; transform: rotate(45deg) skew(10deg, 10deg); border-radius: 2px; opacity: .85; }
+.btn-world:hover { background: #185A4A; border-color: #185A4A; color: #fff; }
+@media (max-width: 480px) { .btn-world .ew-long { display: none; } }

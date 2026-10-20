@@ -29,6 +29,7 @@ window.PDUrl = {
     { href: "/tasks", desk: "tasks", label: "Tasks", note: "Give the team work, check it, launch the ads" },
     // Apps: tools for the stores themselves
     { href: "/tracking", desk: "tracking", label: "Tracking", note: "Adds to cart, checkouts and orders per ad", group: "Apps" },
+    { href: "/world", desk: "tracking", label: "World", note: "Live shoppers walking around the store", group: "Apps" },
     { href: "/time", desk: "time", label: "Time", note: "Staff hours, activity and screenshots (desktop app)", group: "Apps" },
     { href: "/agent", desk: "agent", label: "Agent", note: "The ops agent: its work log, your advice, its questions", group: "Apps" },
     { href: "/metaads", desk: "metaads", label: "Meta Ads", note: "Campaigns, results and Claude managing them (Ask me first)", group: "Apps" },
@@ -58,6 +59,10 @@ window.PDUrl = {
     document.body.classList.toggle("read-only", lvl === "view");
     document.body.classList.toggle("not-manager", lvl !== "manage");
     window.pdLevel = lvl;
+    // buttons for another desk (e.g. "Enter World" on the dashboard) show only to people with that desk
+    document.querySelectorAll("[data-desk-only]").forEach((el) => {
+      el.hidden = !(m.role === "owner" || (m.desks || []).includes(el.dataset.deskOnly));
+    });
   }).catch(() => {});
   window.pdMe = () => ready.then(() => me);
 
@@ -141,7 +146,8 @@ window.PDUrl = {
   const svg = (k) => `<svg viewBox="0 0 24 24" aria-hidden="true">${ICON[k] || ""}</svg>`;
 
   async function buildRail() {
-    if (document.querySelector(".pd-rail") || !document.querySelector("[data-section-menu]")) return;
+    // full-screen pages (World) keep the logo menu and no sidebar
+    if (document.querySelector(".pd-rail") || !document.querySelector("[data-section-menu]") || document.body.hasAttribute("data-no-rail")) return;
     await ready;
     if (!me) return;
     const here = location.pathname.replace(/\/$/, "") || "/";

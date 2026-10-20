@@ -160,3 +160,7 @@ html.skin-new dialog { border-radius: var(--sk-card-radius); }
 html.skin-new .toast { border-radius: 12px; }
 
 }
+
+/* Dashboard → EcomVital World button */
+html.skin-new .btn-world, html.skin-new .btn-world:hover { background: #1F6F5C; border-color: #1F6F5C; color: #fff; }
+html.skin-new .btn-world:hover { filter: brightness(1.08); }
