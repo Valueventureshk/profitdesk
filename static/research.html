@@ -34,8 +34,11 @@
         <button class="btn btn-sm" id="colsBtn" title="Show or hide columns on this computer">Columns</button>
         <button class="btn btn-sm" id="addColBtn" data-manage-only>+ Add column</button>
         <button class="btn btn-sm" id="archBtn"></button>
+        <button class="btn btn-sm" id="checkAllBtn" data-manage-only title="Ask Apify for every competitor's active ads now (uses Apify credit)">Check all ads</button>
+        <button class="btn btn-sm" id="apifyBtn" data-owner-only>Apify</button>
       </div>
       <div class="rs-pop" id="colsPop" hidden></div>
+      <div class="rs-pop rs-apify" id="apifyPop" hidden></div>
       <form class="rs-pop" id="addColPop" hidden>
         <strong>New column</strong>
         <label class="field">Name<input id="colLabel" maxlength="40" placeholder="e.g. Best seller, Price range, Ad angle"></label>

@@ -164,6 +164,7 @@ async def lifespan(app):
     asyncio.create_task(_assist_loop())
     asyncio.create_task(_co_loop())
     asyncio.create_task(paypal_track.loop())
+    asyncio.create_task(research.loop())
     asyncio.create_task(_arrivals_loop())
     for i in db.list_invoices():                     # AI double-checks cut off by a restart
         if i.get("ai_check") == "pending":

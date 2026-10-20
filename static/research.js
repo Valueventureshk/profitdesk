@@ -2,7 +2,7 @@
    (Tab moves right), Esc cancels. Columns come from the server (built-in + ones the team added). */
 
 const $ = (id) => document.getElementById(id);
-let cols = [], items = [], appName = "EcomVital", archived = PDUrl.get("archived") === "1", archivedCount = 0;
+let cols = [], items = [], apifyOn = false, appName = "EcomVital", archived = PDUrl.get("archived") === "1", archivedCount = 0;
 let sort = { key: PDUrl.get("sort") || "", dir: PDUrl.get("dir") === "asc" ? 1 : -1 };
 let query = PDUrl.get("q") || "", nicheF = PDUrl.get("niche") || "", byF = PDUrl.get("by") || "";
 let hidden = new Set();
@@ -60,12 +60,14 @@ function display(it, c) {
   }
   if (v === null || v === undefined || v === "") return "";
   if (c.kind === "link") return `<a href="${esc(v)}" target="_blank" rel="noopener" data-open>${esc(shortLink(v))}</a>${c.key === "site_url" && it.duplicate ? `<span class="rs-dup" title="Another row has the same website">twice</span>` : ""}`;
-  if (c.kind === "number") return esc(c.key === "traffic" ? compact(v) : Number(v).toLocaleString());
+  if (c.kind === "number") return esc(c.key === "traffic" ? compact(v) : Number(v).toLocaleString() + (c.key === "ads_count" && it.ads_capped ? "+" : ""));
   if (c.kind === "date") { const d = new Date(v + "T00:00"); return esc(isNaN(d) ? v : d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })); }
   return esc(v);
 }
 function title(it, c) {
   const st = STAMP[c.key];
+  if (c.key === "ads_count" && it.ads_capped) return `At least this many: the check stopped at its limit (Apify settings). ${it.ads_by ? `By ${it.ads_by}, ${when(it.ads_at)}` : ""}`;
+  if (c.key === "ads_new_today" && it.ads_by === appName) return `Ads that started running today (Meta's US date). By ${appName}, ${when(it.ads_at)}`;
   if (st && it[st[0]]) return `Added by ${it[st[0]]}, ${when(it[st[1]])}`;
   const v = value(it, c);
   return v === null || v === undefined ? "" : String(v);
@@ -74,10 +76,12 @@ function title(it, c) {
 async function load() {
   try {
     const d = await api(`/api/research?archived=${archived ? 1 : 0}`);
-    cols = d.columns; items = d.items; appName = d.app_name; archivedCount = d.archived_count;
+    cols = d.columns; items = d.items; appName = d.app_name; archivedCount = d.archived_count; apifyOn = d.apify;
   } catch (e) { toast(e.message, true); return; }
   fillFilters();
   draw();
+  clearTimeout(window.__poll);
+  if (items.some((i) => i.check?.status === "running")) window.__poll = setTimeout(() => { if (!editing) load(); }, 8000);
 }
 
 function fillFilters() {
@@ -119,13 +123,27 @@ function draw() {
   const body = rows.map((it, i) => `<tr data-id="${it.id}"><td class="rn">${i + 1}</td>${vc.map((c) =>
     `<td class="c w-${c.key === "notes" ? "notes" : c.key === "name" ? "name" : c.kind}" data-key="${esc(c.key)}" title="${esc(title(it, c))}">
       <span class="rs-cell${c.kind === "number" ? " num" : ""}${display(it, c) ? "" : " empty"}">${display(it, c)}</span></td>`).join("")}
-    <td class="rs-acts"><button data-log="${it.id}" title="Who changed what">History</button>${canEdit() ? `<button data-arch="${it.id}">${archived ? "Restore" : "Archive"}</button>` : ""}</td></tr>`).join("");
+    <td class="rs-acts">${runNote(it)}${it.ads_by === appName ? `<button data-ads="${it.id}" title="The ads EcomVital found">Ads</button>` : ""}${checkBtn(it)}<button data-log="${it.id}" title="Who changed what">History</button>${canEdit() ? `<button data-arch="${it.id}">${archived ? "Restore" : "Archive"}</button>` : ""}</td></tr>`).join("");
   const add = !archived && canEdit() ? `<tr class="rs-new"><td class="rn">+</td>${vc.map((c) =>
     ["name", "site_url", "niche", "fb_page"].includes(c.key)
       ? `<td><input data-new="${c.key}" placeholder="${c.key === "name" ? "Add competitor…" : c.key === "site_url" ? "website.com" : c.key === "niche" ? "Niche" : "facebook.com/…"}"></td>`
       : `<td></td>`).join("")}<td></td></tr>` : "";
   const empty = !rows.length && !add ? `<tr><td class="rn"></td><td colspan="${vc.length + 1}"><p class="hint" style="padding:8px 10px">Nothing here yet.</p></td></tr>` : "";
   $("sheet").innerHTML = `<table class="rs-grid">${head}<tbody>${body}${empty}${add}</tbody></table>`;
+}
+
+function runNote(it) {
+  const c = it.check;
+  if (!c) return "";
+  if (c.status === "running") return `<span class="rs-run">Checking ads…</span>`;
+  if (c.status === "error") return `<span class="rs-run bad" title="${esc(c.error || "")}">Last check failed</span>`;
+  return "";
+}
+function checkBtn(it) {
+  if (archived || window.pdLevel !== "manage" || !apifyOn) return "";
+  if (it.check?.status === "running") return "";
+  return it.fb_page ? `<button data-check="${it.id}" title="Ask Apify for this page's active ads now (uses Apify credit)">Check ads</button>`
+    : `<button disabled title="Add the Facebook page first" style="opacity:.4;cursor:default">Check ads</button>`;
 }
 
 // ---- editing a cell
@@ -215,6 +233,54 @@ async function showLog(id) {
   } catch (e) { $("drawerBody").innerHTML = `<p class="hint">${esc(e.message)}</p>`; }
 }
 
+async function showAds(id) {
+  const it = items.find((x) => x.id === id);
+  $("drawerTitle").textContent = `Ads: ${it?.name || it?.domain || "row " + id}`;
+  $("drawerBody").innerHTML = `<p class="hint">Loading…</p>`;
+  $("drawer").hidden = false;
+  try {
+    const d = await api(`/api/research/items/${id}/ads`);
+    const on = d.ads.filter((a) => a.active).length;
+    const lr = d.last_run;
+    $("drawerBody").innerHTML = `<p class="hint">${on} running now${lr ? ` · last check ${esc(when(lr.finished_at || lr.started_at))}${lr.cost_usd ? ` · cost $${Number(lr.cost_usd).toFixed(3)}` : ""}${lr.capped ? " · stopped at the limit, there may be more" : ""}` : ""}. New today = started ${esc(d.today)} (Meta's US date).</p>`
+      + d.ads.map((a) => `<div class="rs-ad${a.active ? "" : " off"}"><small>${a.start_date ? "Started " + esc(a.start_date) : "Start date unknown"}${a.start_date === d.today ? " · <b>new today</b>" : ""}${a.copies > 1 ? ` · ${a.copies} copies` : ""}${a.active ? "" : " · stopped"} · <a href="https://www.facebook.com/ads/library/?id=${encodeURIComponent(a.ad_id)}" target="_blank" rel="noopener">See on Meta</a>${a.link ? ` · <a href="${esc(a.link)}" target="_blank" rel="noopener">${esc(shortLink(a.link))}</a>` : ""}</small><div class="txt">${esc(a.text || "(no text)")}</div></div>`).join("")
+      || `<p class="hint">No ads saved yet.</p>`;
+  } catch (e) { $("drawerBody").innerHTML = `<p class="hint">${esc(e.message)}</p>`; }
+}
+
+async function apifyPanel() {
+  const pop = $("apifyPop");
+  pop.innerHTML = `<p class="hint">Checking the Apify connection…</p>`;
+  let d;
+  try { d = await api("/api/research/apify?check=1"); } catch (e) { pop.innerHTML = `<p class="hint">${esc(e.message)}</p>`; return; }
+  const c = d.config, a = d.account || {}, m = d.this_month || {};
+  const usage = a.used_usd !== undefined && a.used_usd !== null ? ` · used $${Number(a.used_usd).toFixed(2)}${a.limit_usd ? ` of $${Number(a.limit_usd).toFixed(2)}` : ""} this month at Apify` : "";
+  pop.innerHTML = `<strong>Apify connection</strong>
+    ${d.connected ? `<div class="row">Connected${a.username ? ` as <b>${esc(a.username)}</b>` : ""} (key ending …${esc(d.key_end)})${esc(usage)}${d.error ? ` <span class="rs-run bad">${esc(d.error)}</span>` : ""}
+       <button type="button" class="btn btn-sm btn-danger" id="apRemove">Disconnect</button></div>`
+      : `<div class="row hint" style="margin:0">Paste the API token from Apify → Settings → API &amp; Integrations. It stays in EcomVital; nobody sees it again.</div>`}
+    <div class="row"><input type="password" id="apToken" placeholder="${d.connected ? "Paste a new key to replace it" : "apify_api_…"}" autocomplete="off" style="min-width:280px">
+      <button type="button" class="btn btn-sm btn-primary" id="apSave">${d.connected ? "Replace key" : "Connect"}</button></div>
+    <div class="row">
+      <label class="field">Countries <input type="text" id="apCountry" value="${esc(c.country)}" maxlength="3" size="4" title="ALL, or a two-letter code like US"></label>
+      <label class="field">Max ads per check <input type="number" id="apCap" value="${c.cap}" min="10" max="5000" step="10" style="width:90px"></label>
+      <label class="field"><input type="checkbox" id="apDaily"${c.daily ? " checked" : ""}> Check every competitor daily at</label>
+      <select id="apHour">${Array.from({ length: 24 }, (_, h) => `<option value="${h}"${h === c.hour ? " selected" : ""}>${String(h).padStart(2, "0")}:00</option>`).join("")}</select> <span class="hint" style="margin:0">Hong Kong time</span>
+      <button type="button" class="btn btn-sm" id="apSet">Save settings</button>
+    </div>
+    <p class="hint" style="margin:4px 0">Cost: about $0.75 per 1,000 ads found (Apify gives $5 free each month). A brand with 50 ads ≈ 4 cents a check.
+      This month in EcomVital: ${m.runs || 0} checks, ${m.ads || 0} ads${m.cost_usd ? `, $${Number(m.cost_usd).toFixed(2)}` : ""}.</p>
+    ${(d.recent || []).length ? `<table><tr><th>When</th><th>Competitor</th><th>Result</th><th>Cost</th></tr>${d.recent.map((r) => `<tr><td>${esc(when(r.started_at))}</td><td>${esc(r.name || "")}</td><td>${r.status === "done" ? `${r.ads} ads${r.capped ? "+" : ""}` : r.status === "running" ? "checking…" : `<span class="rs-run bad">${esc(r.error || "failed")}</span>`}</td><td>${r.cost_usd ? "$" + Number(r.cost_usd).toFixed(3) : ""}</td></tr>`).join("")}</table>` : ""}`;
+  const save = async (body, msg) => {
+    try { await send("/api/research/apify", body, "PUT"); toast(msg); apifyPanel(); load(); }
+    catch (e) { toast(e.message, true); }
+  };
+  $("apSave").onclick = () => { const t = $("apToken").value.trim(); if (!t) { toast("Paste the key first.", true); return; } save({ token: t }, "Apify connected."); };
+  $("apSet").onclick = () => save({ country: $("apCountry").value, cap: +$("apCap").value, daily: $("apDaily").checked, hour: +$("apHour").value }, "Saved.");
+  const rm = $("apRemove");
+  if (rm) rm.onclick = () => { if (confirm("Disconnect Apify? Checks stop until a key is pasted again.")) save({ remove: true }, "Disconnected."); };
+}
+
 // ---- wiring
 $("sheet").addEventListener("click", async (e) => {
   if (e.target.closest("[data-open]")) return;                  // a link opens, it doesn't edit
@@ -226,6 +292,14 @@ $("sheet").addEventListener("click", async (e) => {
     draw();
     return;
   }
+  const ck = e.target.closest("[data-check]");
+  if (ck) {
+    try { await send(`/api/research/items/${ck.dataset.check}/check`); toast("Checking with Apify… usually 1–3 minutes."); load(); }
+    catch (err) { toast(err.message, true); }
+    return;
+  }
+  const adsB = e.target.closest("[data-ads]");
+  if (adsB) { showAds(+adsB.dataset.ads); return; }
   const lg = e.target.closest("[data-log]");
   if (lg) { showLog(+lg.dataset.log); return; }
   const ar = e.target.closest("[data-arch]");
@@ -250,6 +324,15 @@ $("q").oninput = (e) => { clearTimeout(typing); typing = setTimeout(() => { quer
 $("niche").onchange = (e) => { nicheF = e.target.value; PDUrl.set({ niche: nicheF }); draw(); };
 $("by").onchange = (e) => { byF = e.target.value; PDUrl.set({ by: byF }); draw(); };
 $("archBtn").onclick = () => { archived = !archived; PDUrl.set({ archived: archived ? "1" : "" }); load(); };
+$("apifyBtn").onclick = () => { const p = $("apifyPop"); p.hidden = !p.hidden; $("colsPop").hidden = true; $("addColPop").hidden = true; if (!p.hidden) apifyPanel(); };
+$("checkAllBtn").onclick = async () => {
+  if (!apifyOn) { toast("Connect Apify first (Apify button).", true); return; }
+  const n = items.filter((i) => i.fb_page).length;
+  if (!n) { toast("No competitor has a Facebook page yet.", true); return; }
+  if (!confirm(`Check the active ads of ${n} competitor${n === 1 ? "" : "s"} now? This uses Apify credit (about $0.75 per 1,000 ads found).`)) return;
+  try { await send("/api/research/check-all"); toast("Checking… the sheet updates as each one finishes."); setTimeout(load, 3000); }
+  catch (e) { toast(e.message, true); }
+};
 $("drawerClose").onclick = () => { $("drawer").hidden = true; };
 
 $("colsBtn").onclick = () => {
