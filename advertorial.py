@@ -10,6 +10,7 @@ PLAYBOOK below is the first version, written from the owner's 8 examples (Manche
 import asyncio
 import html
 import ipaddress
+import os
 import json
 import re
 import secrets
@@ -115,7 +116,79 @@ THEMES = ("letter", "journal", "editorial", "scrapbook")
 ACCENTS = {"teal": "#1d7f8c", "terracotta": "#b5532f", "forest": "#2f6b4f", "navy": "#2b4a7a", "plum": "#7a3e65",
            "caramel": "#a8642a"}
 
-PLAYBOOK = """ADVERTORIAL PLAYBOOK v2 (EcomVital, from the owner's 8 examples, 18-19 Oct 2026)
+# The owner's house sample primary text (T-8, 20 Oct 2026): every primary text follows its beats and length.
+HOUSE_SAMPLE = """I almost did not post this.
+
+I am 67 and I am not one for putting things on Facebook. But three different women asked me about this bag during one Thursday morning shop, two of them stood behind me in the checkout queue, and it started to feel a bit mean keeping it to myself.
+
+It is from Perth Boutique, a small Australian boutique that has been quietly dressing women our age for a few years now. They have a sale on at the moment. The bag is called the Alina. A caramel-coloured crossbody with a gently curved top, neat squared stitching across the front, and a little front pocket that sits just where your hand falls.
+
+I will tell you what I told them in the queue.
+
+It does the one thing I had stopped believing a handbag could do. It looks like a proper, put-together bag, and it behaves like an organised one. My phone lives in the front pocket, my purse has its own place inside, and my keys go where my keys always go, so at the till I am not the woman holding everybody up while she digs. It sits crossbody so my hands are free, and it is light enough that I forget it is there. It does not look like a bag made for somebody half my age, and it does not look like I have given up either.
+
+I had my purse out at the till before the lady in front had finished packing, and Pauline, who I used to work with and who has never once commented on anything I carry, said it looked far too smart for a Thursday shop. I have decided to take that as a compliment. I had it on again the next morning to take the labrador across the field, and it stayed put and out of the way the whole time.
+
+That is the rarest sort of bag. The one you can take to a lunch, or sling on to walk the dog first thing, and feel right either way.
+
+I did go and read the reviews before I ordered. Just over three hundred of them, sitting at 4.2 stars. Not the suspiciously perfect five you see on some websites, which if I am honest made me trust it rather more. The same things kept coming up. One woman from Sydney had written, "I have stopped losing my keys. My phone finally has its own pocket and the colour goes with everything I own." That was the one that decided it for me.
+
+The reason I am posting today rather than next week is that the sale is on now and the first autumn stock is already going. They do it in the caramel and in a black, and it is the caramel that seems to be going first.
+
+If your own bag has spent years swallowing your glasses and your keys the moment you actually need them, this is where I would start.
+
+— Maggie"""
+SAMPLE_WORDS = 500                  # the sample's length; a primary text may be 475-525 words
+SAMPLE_PARAS = 11
+WRITER_NAME, WRITER_AGE = "Maggie Whitefield", "67"
+# page styles staff can pick on the task (the AI picks when left on auto)
+STYLES = {"letter": "Classic letter (clean, like Perth's first page)", "editorial": "Magazine feature (drop cap, boxed quotes)",
+          "journal": "Cream writing paper (framed, warm)", "scrapbook": "Scrapbook (taped photos, sticky notes)"}
+# never on the page or in the ad (owner, T-8): it is presented as a reader's real letter
+FORBIDDEN = re.compile(r"\b(fictional|fiction|fictitious|dramati[sz]ed|dramati[sz]ation|made[- ]up|invented|"
+                       r"(?:is|as) a character|composite|ai[- ]generated|ai[- ]made|ai image|generated (?:image|photo)|"
+                       r"image generator|illustrative|for illustration|stock (?:photo|image)|rendered|mock-?up)\b", re.I)
+
+
+def words(text: str) -> int:
+    return len([w for w in str(text or "").split() if re.search(r"\w", w)])
+
+
+def copy_issues(page: dict, primary_text: str, brief: dict) -> list:
+    """What would send the work back (the owner's standing edits), checked before anything is saved."""
+    out = []
+    texts = [primary_text or ""] + [str(v) for v in _all_text(page)]
+    hits = sorted({m.group(0).lower() for t in texts for m in FORBIDDEN.finditer(t)})
+    if hits:
+        out.append("remove these words, the page must read as a real reader's letter and never mention AI or that it "
+                   "is made up: " + ", ".join(hits))
+    if primary_text:
+        n = words(primary_text)
+        if not (SAMPLE_WORDS - 25 <= n <= SAMPLE_WORDS + 25):
+            out.append(f"the primary text is {n} words; make it {SAMPLE_WORDS - 25}-{SAMPLE_WORDS + 25} (the house sample is "
+                       f"{SAMPLE_WORDS}), keeping the sample's paragraph-by-paragraph beats")
+        name = (brief.get("writer_name") or WRITER_NAME).split()[0]
+        if name.lower() not in primary_text.lower():
+            out.append(f"sign the primary text with the writer's name ({name})")
+        age = str(brief.get("writer_age") or WRITER_AGE)
+        if age not in primary_text:
+            out.append(f"say the writer's age ({age}) in the primary text")
+    return out
+
+
+def _all_text(node):
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if k not in ("src", "photo", "image", "product_handle", "theme", "accent", "type"):
+                yield from _all_text(v)
+    elif isinstance(node, list):
+        for v in node:
+            yield from _all_text(v)
+    elif isinstance(node, str):
+        yield node
+
+
+PLAYBOOK = """ADVERTORIAL PLAYBOOK v3 (EcomVital, from the owner's 8 examples + the T-8 edits, 18-20 Oct 2026)
 
 WHAT YOU DELIVER for an "Advertorial + ad creative" task
 1. The advertorial page (saved with advertorial_save; EcomVital builds it in the store as a hidden page).
@@ -123,6 +196,19 @@ WHAT YOU DELIVER for an "Advertorial + ad creative" task
 3. Primary text, headline and description for that ad.
 Never stop at a plan or a draft in the chat: the task is done only when advertorial_save (or task_save with
 result.page) has returned the preview link, and the ad image is on the task.
+
+THE OWNER'S STANDING RULES (from the edits on T-8: follow them first time, no back-and-forth)
+- The writer is the task's writer (writer.name, default Maggie Whitefield) and her age (writer.age, default 67) is
+  said in both the primary text and the page ("I am 67..."). Byline and signature use her full name.
+- It is presented as a real reader's letter: NEVER say or hint that it is fictional, dramatised, invented, a character
+  or a composite, anywhere (page, captions, footer, copy).
+- Never mention that images are made by AI (no "AI image", "illustrative", "generated", "mock-up" in captions or text).
+  Captions are in her voice ("The morning it arrived").
+- The primary text follows the HOUSE SAMPLE (house_sample in task_get) beat by beat and is the same length: 475-525
+  words, about 11 short paragraphs. It tells the SAME story as the page: same event, same friend and compliment, same
+  product details, same reviews. Write the page first, then the primary text as its short version.
+- EcomVital checks these before saving and refuses with the reason, so fix and save again.
+- Page style: if the task has page_style, use it (EcomVital applies it anyway).
 
 THE INPUTS (task_get)
 - product: the product the whole advertorial and ad are about (product_facts from its link, or the product photo +
@@ -146,8 +232,8 @@ THE VOICE (every example)
 - The product is named with one vivid physical detail (colour, stitching, print, the bit you touch).
 - Store described as: "<Store>, a small <British/Australian> boutique that has been quietly dressing women our age for
   a few years now" (homeware/accessories: "quietly making the ordinary things a bit lovelier").
-- Signed with a first name (Maggie, Pat, Patricia...). Use a different narrator, town and event from the store's
-  other advertorials for the same product.
+- Signed with the writer's name (default Maggie Whitefield, 67). Use a different town, event and friend from the
+  store's other advertorials for the same product.
 
 STORY FRAMES (pick the one that suits the product, or the competitor's)
 A. "I almost did not post this." (dresses, outfits, bags)
@@ -162,8 +248,18 @@ B. "I saw a woman with it / asked her plainly." (accessories, shoes, jewellery, 
    could put it up for other women to read" -> "The short version." six benefits in one paragraph -> what happened since
    -> reviews -> sale -> "If your <thing> is <problem>, my full letter is below, with the six things laid out plainly."
 
-PRIMARY TEXT (the ad): 330-450 words, frame A or B, plain paragraphs, signed "— Name". Uses the real review count
-(and rating / one real quote when given). Ends pointing to the letter / the store.
+PRIMARY TEXT (the ad): mirror the house sample: 475-525 words in about 11 short paragraphs, beat by beat:
+  1 "I almost did not post this." 2 "I am 67 and I am not one for putting things on Facebook. But <N> different women
+  asked me about <it> <at the event>... it started to feel a bit mean keeping it to myself." 3 store + "They have a sale
+  on at the moment." + "The <thing> is called the <Name>." + one vivid physical description. 4 "I will tell you what I
+  told them <where>." 5 what it does, as everyday life (3-5 real benefits, "It does not look like <it> was made for
+  somebody half my age, and it does not look like I have given up either"). 6 the moment + a named friend's backhanded
+  compliment ("I have decided to take that as a compliment") + wearing/using it again next day. 7 "That is the rarest
+  sort of <thing>. The one you can <grand> or <everyday>, and feel right either way." 8 reviews: count, rating, "Not the
+  suspiciously perfect five you see on some websites, which if I am honest made me trust it rather more", one real
+  quote from the brief. 9 "The reason I am posting today rather than next week is that the sale is on now and <stock /
+  sizes / colour> is already going." 10 "If your own <thing> has <problem>, this is where I would start." 11 "— <first
+  name>". Frame B tasks keep the same length and the same sale / reviews / close beats.
 HEADLINE: under 60 characters. Patterns: "The <product> four women asked me about", "The <product> she wore to the
 <event>", "Six things this <product> gets right", "The one <product> she won't stop carrying".
 DESCRIPTION: under 45 characters. Patterns: "What I told them at the table", "So I asked her where it was from",
@@ -397,15 +493,19 @@ def _product_line(fx: dict, brief: dict) -> tuple:
     kind, handle = link_handle(brief.get("product_url"))
     name = (p or {}).get("title") or (handle.replace("-", " ").title() if kind == "product" and handle else "") \
         or (brief.get("product_description") or "").split(",")[0].split(".")[0][:60] or "the product"
-    colours = ", ".join(next(iter((p or {}).get("options", {}).values()), [])[:4]) if p else ""
-    desc = (brief.get("product_description") or (p or {}).get("description") or "")[:500]
+    opts = (p or {}).get("options") or {}
+    colours = ", ".join(next((v for k, v in opts.items() if k.lower() in ("colour", "color", "colours", "colors")), [])[:5])
+    desc = (brief.get("product_description") or (p or {}).get("description") or "")[:260].rsplit(" ", 1)[0]
     photo = ((p or {}).get("images") or [""])[0]
-    return name, (f"{desc} Colours: {colours}." if colours else desc), photo
+    return name, (f"{desc}... Colours: {colours}." if colours else f"{desc}..."), photo
 
 
-def prompts(task: dict, brief: dict, fx: dict, store: str, country: str = "", base_url: str = "") -> dict:
+def prompts(task: dict, brief: dict, fx: dict, store: str, country: str = "", base_url: str = "",
+            writer_photo: str = "") -> dict:
     """What a person pastes into ChatGPT (with or without the EcomVital connector), and the image prompts."""
     tid = task["id"]
+    wname, wage = brief.get("writer_name") or WRITER_NAME, str(brief.get("writer_age") or WRITER_AGE)
+    style = brief.get("page_style") if brief.get("page_style") in STYLES else ""
     name, desc, photo = _product_line(fx, brief)
     plain = re.sub(r"\s*\|.*$", "", name).strip().title() or "the product"
     where = country or "the store's country"
@@ -415,15 +515,18 @@ def prompts(task: dict, brief: dict, fx: dict, store: str, country: str = "", ba
             "logos, no watermark, no people's faces unless asked. ")
     return {
         "do_the_task_with_connector": (
-            f"Use EcomVital: do task T-{tid}. Read it with task_get and follow its advertorial playbook and ai_steps exactly. "
+            f"Use EcomVital: do task T-{tid}. Read it with task_get and follow its advertorial playbook, the owner's standing "
+            f"rules and ai_steps exactly. The writer is {wname}, {wage}; the primary text follows the house sample beat by beat "
+            f"at {SAMPLE_WORDS - 25}-{SAMPLE_WORDS + 25} words and tells the same story as the page"
+            + (f"; page style: {style}" if style else "") + ". "
             f"Write the primary text, headline, description and the full advertorial page, make the square ad image and 3 page "
             f"images with your image tool from the product photo, add them to the task, save everything with advertorial_save "
             f"(or task_save with result.page) and submit it. Don't stop until you can give me the preview link."),
         "write_without_connector": (
-            f"You are writing a Facebook advertorial in the voice of a woman of about 67 in {where}, for {store}, a small "
-            f"boutique. Product: {name}. {desc} Readers who click go to {send_to(brief)}. Write: 1) primary text, 330-450 "
-            f"words, plain warm voice, short sentences, small everyday moments, a friend's backhanded compliment, signed with "
-            f"a first name; 2) a headline under 60 characters like 'The {plain.lower()} four women asked me about'; 3) a "
+            f"You are writing a Facebook advertorial as {wname}, {wage}, in {where}, for {store}, a small "
+            f"boutique. Product: {name}. {desc} Readers who click go to {send_to(brief)}. Never say it is fictional and never "
+            f"mention AI images. Write: 1) primary text, {SAMPLE_WORDS} words (±25) in 11 short paragraphs following this "
+            f"sample beat by beat, for this product: <<<{HOUSE_SAMPLE}>>> signed '— {wname.split()[0]}'; 2) a headline under 60 characters like 'The {plain.lower()} four women asked me about'; 3) a "
             f"description under 45 characters like 'What I told them at the table'; 4) a 1,200-1,600 word 'letter from a "
             f"reader' page telling the long version with section headings. Use only these reviews: "
             f"{brief.get('review_rating') or '-'} stars, {brief.get('review_count') or '-'} reviews, {brief.get('reviews') or 'no quotes'}."),
@@ -438,8 +541,10 @@ def prompts(task: dict, brief: dict, fx: dict, store: str, country: str = "", ba
             f"Landscape 4:3 photo. {look}{base}Scene: on an armchair by the front door at home, a folded blanket beside it.",
             f"Landscape 4:3 photo. {look}{base}Scene: out on the day the story is about (a café table, the shops, a "
             f"garden), the {plain.lower()} in use, nobody's face in frame.",
-            f"Square portrait photo of a friendly woman of about 67 from {where}, natural selfie at home, warm light, "
-            f"no make-up look, casual top. For the letter's byline.",
+            (f"No portrait needed: the writer photo on the task ({writer_photo}) is used at the top of the letter."
+             if writer_photo else
+             f"Square portrait photo of a friendly woman of {wage} from {where}, natural selfie at home, warm light, "
+             f"no make-up look, casual top. For the letter's byline."),
         ],
         "after_making_images": ("Add each image to the task (task_add_image with its link, or download it and drop it on "
                                 f"the task: {base_url}/tasks?task={tid}), then save the page using the file:<id> "
@@ -662,6 +767,25 @@ async def fetch_image(url: str) -> tuple:
     if len(r.content) > 15 * 1024 * 1024:
         raise ValueError("The image is bigger than 15 MB.")
     return r.content, mime
+
+
+EXAMPLES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "advertorial_examples.json")
+
+
+def examples() -> list:
+    """Example advertorials the AI learns from: the owner's list (setting advertorial_examples, edited in Tasks → Store
+    kit), else the 8 examples it started with."""
+    try:
+        got = json.loads(db.get_setting("advertorial_examples") or "null")
+        if isinstance(got, list):
+            return got
+    except ValueError:
+        pass
+    try:
+        with open(EXAMPLES_FILE) as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return []
 
 
 def playbook() -> str:

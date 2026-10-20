@@ -194,10 +194,11 @@ function renderTask() {
   const manage = t.manage, closed = ["launched", "done", "cancelled"].includes(t.status);
   const canWork = (t.mine || manage) && !closed && (manage || !["submitted", "approved"].includes(t.status));
   const recs = t.files.filter((f) => f.side === "admin" && f.kind === "instruction");
-  const adminFiles = t.files.filter((f) => f.side === "admin" && f.kind !== "instruction" && f.kind !== "product");
+  const adminFiles = t.files.filter((f) => f.side === "admin" && !["instruction", "product", "writer"].includes(f.kind));
   const productPhotos = t.files.filter((f) => f.kind === "product");
+  const writerPhotos = t.files.filter((f) => f.kind === "writer");
   const creatives = t.files.filter((f) => f.side === "staff" && f.kind === "creative");
-  const otherFiles = t.files.filter((f) => f.side === "staff" && f.kind !== "creative" && f.kind !== "product");
+  const otherFiles = t.files.filter((f) => f.side === "staff" && !["creative", "product", "writer"].includes(f.kind));
   const me = state.data && state.data.me ? state.data.me.email : "";
   const canRm = (f) => !closed && (manage || (f.by === me && t.status !== "approved"));
   const dis = canWork ? "" : " disabled";
@@ -220,6 +221,9 @@ function renderTask() {
       ["Product photos", productPhotos.length ? `<div class="tk-files">${productPhotos.map((x) => fileTile(x, manage && !closed)).join("")}</div>` : ""],
       ["Landing page", linkify(b.send_to_url || (b.product_url || "").replace(/(\/collections\/[^/?#]+)\/products\/.*$/, "$1"))],
       ["Competitor advertorial", b.competitor_advertorial ? linkify(b.competitor_advertorial) : "None: we write our own"],
+      ["Writer", `${esc(b.writer_name || "Maggie Whitefield")}, ${esc(b.writer_age || "67")}`],
+      ["Customer photo", writerPhotos.length ? `<div class="tk-files">${writerPhotos.map((x) => fileTile(x, manage && !closed)).join("")}</div>` : "None: ChatGPT makes one"],
+      ["Page style", esc({ letter: "Classic letter", editorial: "Magazine feature", journal: "Writing paper", scrapbook: "Scrapbook" }[b.page_style] || "AI picks")],
       ["Reviews", [b.review_rating && `${esc(b.review_rating)} ★`, b.review_count && `${esc(b.review_count)} reviews`].filter(Boolean).join(" · ")],
       ["Review texts", b.reviews && `<details><summary>${lines(b.reviews).length} line(s)</summary>${esc(b.reviews).replace(/\n/g, "<br>")}</details>`],
     ] : []),
@@ -747,6 +751,8 @@ function openEditor(t = null) {
   $("sReviews").value = b.reviews || "";
   $("aLink").value = b.product_url || ""; $("aComp").value = b.competitor_advertorial || "";
   $("aDesc").value = b.product_description || ""; $("aSend").value = b.send_to_url || ""; $("aPhoto").value = "";
+  $("aWriter").value = b.writer_name || "Maggie Whitefield"; $("aAge").value = b.writer_age || "67";
+  $("aStyle").value = b.page_style || ""; $("aWriterPhoto").value = "";
   $("aRating").value = b.review_rating || ""; $("aCount").value = b.review_count || ""; $("aReviews").value = b.reviews || "";
   const admin = !!(state.data && state.data.manage);
   for (const btn of $("eKind").querySelectorAll("button")) btn.hidden = !admin && btn.dataset.kind !== "advertorial";
@@ -785,6 +791,7 @@ async function saveEditor() {
       todo: (state.editBrief.todo && state.editBrief.todo.length) ? state.editBrief.todo : Object.keys(storeTodo()) }
     : state.kind === "advertorial" ? { ...state.editBrief, product_url: $("aLink").value.trim(), competitor_advertorial: $("aComp").value.trim(),
       product_description: $("aDesc").value.trim(), send_to_url: $("aSend").value.trim(),
+      writer_name: $("aWriter").value.trim(), writer_age: $("aAge").value.trim(), page_style: $("aStyle").value,
       review_rating: $("aRating").value.trim(), review_count: $("aCount").value.trim(), reviews: $("aReviews").value }
     : { ...state.editBrief, description: $("eDesc").value };
   if (state.kind === "advertorial" && !$("eName").value.trim()) {
@@ -800,6 +807,11 @@ async function saveEditor() {
   try {
     const r = state.editing ? await api(`/api/tasks/${state.editing}`, { method: "PUT", json: body }) : await api("/api/tasks", { json: body });
     const id = state.editing || r.id;
+    const writerPhoto = state.kind === "advertorial" ? [...$("aWriterPhoto").files] : [];
+    if (writerPhoto.length) {
+      btn.textContent = "Uploading the customer photo…";
+      try { await sendFiles(id, "admin", "writer", writerPhoto); } catch (e) { toast(`Task saved, but the customer photo didn't upload: ${e.message}`, true); }
+    }
     const photos = state.kind === "advertorial" ? [...$("aPhoto").files] : [];
     if (photos.length) {
       btn.textContent = "Uploading the product photo…";
@@ -1081,7 +1093,36 @@ async function openAdvKit() {
     $("kitAdvAt").textContent = d.custom ? `Your version · saved ${when(d.updated)}` : "EcomVital's first version (from your 8 examples)";
   } catch (e) { toast(e.message, true); }
 }
-$("storeKit").onclick = () => { openKit(); openAdvKit(); };
+let kitExamples = [];
+async function openExamples() {
+  try { kitExamples = (await api("/api/tasks/kit/examples")).examples || []; } catch (e) { toast(e.message, true); return; }
+  renderExamples();
+}
+function renderExamples() {
+  $("kitEx").innerHTML = kitExamples.map((e, i) => `<div class="tk-ex"><div><b>${esc(e.headline || e.title || "Example " + (i + 1))}</b>
+      <span class="hint">${esc((e.primary_text || "").split(/\s+/).length)} words${e.advertorial_url ? " · " + esc(e.advertorial_url.replace(/^https?:\/\//, "")) : ""}</span>
+      ${e.notes ? `<span class="hint">· ${esc(e.notes)}</span>` : ""}</div>
+      <button class="btn btn-sm btn-ghost" data-exdel="${i}">Remove</button></div>`).join("") || '<p class="tk-empty">No examples yet</p>';
+}
+async function saveExamples(msg) {
+  try { await api("/api/tasks/kit/examples", { method: "PUT", json: { examples: kitExamples } }); toast(msg); renderExamples(); }
+  catch (e) { toast(e.message, true); }
+}
+$("kitEx").onclick = (e) => {
+  const b = e.target.closest("[data-exdel]");
+  if (!b || !confirm("Remove this example? ChatGPT stops learning from it.")) return;
+  kitExamples.splice(+b.dataset.exdel, 1);
+  saveExamples("Example removed");
+};
+$("exAdd").onclick = () => {
+  const ex = { primary_text: $("exText").value.trim(), headline: $("exHead").value.trim(), description: $("exDesc").value.trim(),
+    advertorial_url: $("exPage").value.trim(), landing_url: $("exLand").value.trim(), notes: $("exNotes").value.trim() };
+  if (!ex.primary_text) { toast("Paste the example's primary text.", true); return; }
+  kitExamples.push(ex);
+  for (const id of ["exText", "exHead", "exDesc", "exPage", "exLand", "exNotes"]) $(id).value = "";
+  saveExamples("Example added: ChatGPT will study it on the next task");
+};
+$("storeKit").onclick = () => { openKit(); openAdvKit(); openExamples(); };
 $("kitAdvSave").onclick = async () => {
   try { await api("/api/tasks/kit/advertorial", { method: "PUT", json: { playbook: $("kitAdv").value } }); toast("Advertorial playbook saved"); openAdvKit(); }
   catch (e) { toast(e.message, true); }

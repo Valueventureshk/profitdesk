@@ -120,6 +120,20 @@
           <label class="field"><span>Number of reviews</span><input id="aCount" class="control" placeholder="300+"></label>
         </div>
         <label class="field"><span>The reviews <em class="tk-opt">(a few real ones: name, place, stars, text; one per line)</em></span><textarea id="aReviews" class="control" rows="4" placeholder="Sue, Sydney ★★★★★ I have stopped losing my keys."></textarea></label>
+        <h4 class="tk-formhead">5 · The writer <em class="tk-opt">(the customer whose letter it is)</em></h4>
+        <div class="tk-row">
+          <label class="field"><span>Name</span><input id="aWriter" class="control" placeholder="Maggie Whitefield"></label>
+          <label class="field"><span>Age</span><input id="aAge" class="control" inputmode="numeric" placeholder="67"></label>
+        </div>
+        <label class="field"><span>Customer photo for the top of the letter <em class="tk-opt">(optional: left empty, ChatGPT makes one)</em></span><input id="aWriterPhoto" type="file" accept="image/*" class="control"></label>
+        <h4 class="tk-formhead">6 · Page style</h4>
+        <label class="field"><span>How the advertorial page looks</span><select id="aStyle" class="control">
+          <option value="">Let the AI pick</option>
+          <option value="letter">Classic letter: clean, like Perth's first page</option>
+          <option value="editorial">Magazine feature: big first letter, boxed quotes</option>
+          <option value="journal">Writing paper: cream page with a framed border</option>
+          <option value="scrapbook">Scrapbook: taped-in photos, sticky notes</option>
+        </select></label>
         <p class="hint">Once it's made, the task shows ready-made prompts: paste the first one into ChatGPT or Claude (with the EcomVital connector) and it does the whole task, or use them by hand.</p>
       </div>
       <div data-store-only hidden>
@@ -170,6 +184,17 @@
       <p class="hint" id="kitTheme">No theme uploaded yet.</p>
       <label class="btn btn-sm">⬆ Upload the theme .zip<input type="file" id="kitFile" accept=".zip" hidden></label>
       <p class="hint">In Shopify: Online Store → Themes → … next to the theme → Download theme file. Use Perth Boutique's.</p>
+      <h4 class="tk-formhead">Advertorial examples <em class="tk-opt">(ChatGPT / Claude study these on every advertorial task)</em></h4>
+      <div id="kitEx" class="tk-exlist"></div>
+      <details class="tk-exadd"><summary>+ Add an example</summary>
+        <label class="field"><span>Primary text</span><textarea id="exText" class="control" rows="6"></textarea></label>
+        <div class="tk-row"><label class="field"><span>Headline</span><input id="exHead" class="control"></label>
+          <label class="field"><span>Description</span><input id="exDesc" class="control"></label></div>
+        <div class="tk-row"><label class="field"><span>Advertorial page link</span><input id="exPage" class="control" placeholder="https://…/pages/…"></label>
+          <label class="field"><span>Where it sends readers</span><input id="exLand" class="control" placeholder="https://…/collections/…"></label></div>
+        <label class="field"><span>What to learn from it <em class="tk-opt">(optional)</em></span><input id="exNotes" class="control" placeholder="e.g. strong hook, the friend's compliment, six things format"></label>
+        <div class="row-actions"><button class="btn btn-primary" id="exAdd">Add example</button></div>
+      </details>
       <h4 class="tk-formhead">Advertorial Playbook <em class="tk-opt">(ChatGPT / Claude read this for every “Advertorial + ad creative” task)</em></h4>
       <textarea id="kitAdv" class="control tk-playbook" rows="16"></textarea>
       <div class="row-actions"><span class="hint" id="kitAdvAt"></span><button class="btn" id="kitAdvReset">Back to EcomVital's version</button><button class="btn btn-primary" id="kitAdvSave">Save advertorial playbook</button></div>

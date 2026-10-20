@@ -24,6 +24,7 @@ BRIEF_FIELDS = ("competitor_ads", "competitor_landing", "competitor_products", "
                 # advertorial + ad creative (advertorial.py): our product / collection link, the competitor's advertorial
                 # (optional: copy it), and the real reviews staff collected (rating, count, the reviews themselves)
                 "product_url", "product_description", "send_to_url", "competitor_advertorial", "review_rating", "review_count",
+                "writer_name", "writer_age", "page_style",
                 # older listing tasks (before the to-do picks) — still shown, no longer asked for
                 "collection", "products", "pages", "angle", "headlines", "budget", "countries")
 RESULT_FIELDS = ("landing_url", "collection_url", "product_urls", "advertorial_url", "branded_url", "primary_text",

@@ -222,6 +222,8 @@ TOOLS += [
           "signature {name} ] (each block has its type), card {title, product_handle (for a collection: which product), image, "
           "bullets[], button, note}, footer {about, store_line}}. Text may use **bold** and ==highlight==. Image src/photo/image = file:<id> (a file on the task) or an https "
           "image link (copied into the store's Files). Prices, stars and the 'advertisement' line are added by EcomVital. "
+          "Refused (with the reason) if it breaks the owner's standing rules: never fictional / never mentions AI images, "
+          "primary text 475-525 words following the house sample with the writer's name and age. "
           "primary_text / headline / description = the ad copy. submit=true also sends the task for review (needs the ad "
           "image on the task). Returns the preview link.",
           {"task": {"type": "string"}, "page": {"type": "object"}, "primary_text": {"type": ["string", "null"]},

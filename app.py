@@ -14871,6 +14871,22 @@ async def api_task_prompts(request: Request, task_id: int):
             "facts_error": (ctx.get("product_facts") or {}).get("error")}
 
 
+@app.get("/api/tasks/kit/examples")
+def api_adv_examples():
+    return {"examples": advertorial.examples(), "custom": db.get_setting("advertorial_examples") is not None}
+
+
+@app.put("/api/tasks/kit/examples")
+def api_adv_examples_save(request: Request, payload: dict):
+    """The example advertorials ChatGPT / Claude learn from (Tasks → Store kit)."""
+    _need_level(request, "tasks", "manage")
+    keep = ("headline", "description", "primary_text", "advertorial_url", "landing_url", "notes", "title")
+    rows = [{k: str(e.get(k) or "").strip()[:12000] for k in keep if str(e.get(k) or "").strip()}
+            for e in payload.get("examples") or [] if isinstance(e, dict) and str(e.get("primary_text") or "").strip()]
+    db.set_setting("advertorial_examples", json.dumps(rows[:60]))
+    return {"ok": True, "count": len(rows)}
+
+
 @app.get("/api/tasks/kit/advertorial")
 def api_adv_playbook():
     return {"playbook": advertorial.playbook(), "custom": bool(db.get_setting("advertorial_playbook")),
@@ -15076,15 +15092,31 @@ async def _adv_context(t: dict, brief: dict, result: dict) -> dict:
         out["product"]["photos_on_task"] = [f"file:{r[0]} ({r[1]})" for r in con.execute(
             "SELECT id, name FROM task_files WHERE task_id = ? AND kind = 'product' ORDER BY id", (t["id"],))]
     out["landing_page_every_button_goes_to"] = advertorial.send_to(brief)
+    with db._conn() as con:
+        wp = con.execute("SELECT id, name FROM task_files WHERE task_id = ? AND kind = 'writer' ORDER BY id DESC LIMIT 1",
+                         (t["id"],)).fetchone()
+    out["writer"] = {"name": brief.get("writer_name") or advertorial.WRITER_NAME,
+                     "age": brief.get("writer_age") or advertorial.WRITER_AGE,
+                     "photo": f"file:{wp[0]}" if wp else None,
+                     "photo_note": ("Use this photo as author.photo at the top of the letter; don't make a portrait." if wp
+                                    else "No writer photo given: make a portrait of her (prompts.page_images, last one) and use it as author.photo.")}
+    out["page_style"] = (brief.get("page_style") if brief.get("page_style") in advertorial.STYLES else
+                         "auto: pick the theme that suits the product")
+    out["house_sample_primary_text"] = {"text": advertorial.HOUSE_SAMPLE, "words": advertorial.SAMPLE_WORDS,
+                                        "paragraphs": advertorial.SAMPLE_PARAS,
+                                        "rule": f"Primary text = this sample's beats, for this product and this page's story, "
+                                                f"{advertorial.SAMPLE_WORDS - 25}-{advertorial.SAMPLE_WORDS + 25} words."}
+    out["examples_to_learn_from"] = advertorial.examples()
     fx_ = out.get("product_facts") or {}
     out["prompts"] = advertorial.prompts(t, brief, fx_, (fx_.get("store") or {}).get("name") or (st or {}).get("name", ""),
                                          "Australia" if "perth" in ((st or {}).get("name", "").lower()) else
-                                         (fx_.get("store") or {}).get("country", ""), BASE_URL)
+                                         (fx_.get("store") or {}).get("country", ""), BASE_URL, out["writer"]["photo"] or "")
     out["ai_steps"] = [
         "1. Read everything here first: special instructions, the playbook, product, landing page, reviews, competitor page.",
         "2. Write the primary text, headline and description (playbook).",
         "3. Write the whole page as page JSON (theme, accent, label, headline, author, blocks, card, footer) in the playbook's "
-        "voice and structure, using the styled blocks.",
+        "voice and structure, using the styled blocks. Follow THE OWNER'S STANDING RULES: writer's full name and age, never "
+        "fictional, never mention AI images; primary text = the house sample's beats and length, same story as the page.",
         "4. Make the square ad image with your image tool from prompts.ad_image (look at the product photo first), and 3 page "
         "images + the portrait from prompts.page_images.",
         "5. Put the images on the task: task_add_image with each image's link; if you have no link, ask the person to "
@@ -15182,6 +15214,19 @@ async def _adv_save(tid: int, args: dict, user: dict) -> dict:
     lacking = advertorial.check(page)
     if lacking:
         return {"error": "The page still needs: " + ", ".join(lacking) + "."}
+    b_ = tasks.loads(t["brief"])
+    issues = advertorial.copy_issues(page, str(args.get("primary_text") or ""), b_)
+    if issues:
+        return {"error": "Not saved yet. Fix first (the owner's standing rules): " + "; ".join(issues) + "."}
+    if b_.get("page_style") in advertorial.STYLES:
+        page["theme"] = b_["page_style"]                    # staff picked the style on the task
+    author = page.setdefault("author", {})
+    author["name"] = b_.get("writer_name") or author.get("name") or advertorial.WRITER_NAME
+    with db._conn() as con:
+        wp = con.execute("SELECT id FROM task_files WHERE task_id = ? AND kind = 'writer' ORDER BY id DESC LIMIT 1",
+                         (tid,)).fetchone()
+    if wp:
+        author["photo"] = f"file:{wp[0]}"                   # our own customer photo wins over a made-up portrait
     st = next((x for x in db.list_stores() if x["id"] == t["store_id"]), None)
     if not st:
         return {"error": "The task has no store connected to EcomVital."}
@@ -15571,12 +15616,12 @@ async def api_task_files(request: Request, task_id: int):
     user = _task_user(request)
     form = await request.form()
     side = "admin" if form.get("side") == "admin" else "staff"
-    kind = form.get("kind") if form.get("kind") in ("file", "instruction", "product") else "creative"
+    kind = form.get("kind") if form.get("kind") in ("file", "instruction", "product", "writer") else "creative"
     if kind == "instruction":
         side = "admin"
     with db._conn() as con:
         t = _task_row(con, task_id, user)
-    if kind == "product" and not _task_manager(user):
+    if kind in ("product", "writer") and not _task_manager(user):
         side = "staff"                          # staff add the product photo to the advertorial task they picked
     if side == "admin" and not _task_manager(user):
         raise HTTPException(403, "Only an admin can add files to the brief.")
