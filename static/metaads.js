@@ -72,6 +72,7 @@ function storeInfo() {
 
 async function loadStrategy() {
   if (!state.store) return;
+  loadCut();
   let s;
   try { s = await api(`/api/metaads/strategy?store=${state.store}`); } catch { $("strategy").hidden = true; return; }
   state.strat = s;
@@ -132,6 +133,54 @@ async function loadStrategy() {
       await api(`/api/metaads/strategy/${state.store}`, { method: "PUT", json: { step: $("stratStep").value, cap: $("stratCap").value } });
       toast("Saved");
       loadStrategy();
+    } catch (e) { toast(e.message, true); }
+  };
+}
+
+/* ------------------------------------------------ rule: "Budget cut on a poor day" (autopilot, once a day) */
+
+async function loadCut() {
+  let s;
+  try { s = await api(`/api/metaads/cutrule?store=${state.store}`); } catch { $("cutrule").hidden = true; return; }
+  const manage = window.pdLevel === "manage";
+  const box = $("cutrule");
+  box.hidden = false;
+  box.classList.toggle("on", !!s.on);
+  const c = s.currency;
+  const last = s.last;
+  const status = !s.on ? (s.stopped_at ? `Switched off ${when(s.stopped_at)}.` : "Off.")
+    : s.fired_day === s.today ? `Already ran today (${when(last && last.at)}): spend ${c} ${num(last ? last.spend : 0, 0)}, ROAS ${last ? last.roas.toFixed(2) : "–"}. Next check tomorrow.`
+    : `Watching today: checks every 5 minutes, runs at most once a day.`;
+  const feed = (s.feed || []).slice(0, 8).map((f) => `<li class="${f.status === "done" ? "down" : ""}"><time>${when(f.done_at || f.created_at)}</time>
+    <span>${f.status === "done" ? "▼ " : ""}${esc(f.summary || f.error || f.name)}</span></li>`).join("");
+  box.innerHTML = `<div class="ma-strat-head">
+      <div><span class="ma-pill ${s.on ? "on" : "off"}">${s.on ? "AUTOPILOT ON" : "Off"}</span>
+        <b>${esc(s.name)}</b>
+        <p class="hint">When today's spend across all campaigns reaches <b>${c} ${num(s.spend, 0)}</b> and today's overall ROAS
+          (EcomVital tracking) is below <b>${num(s.roas, 1)}</b>, every campaign with ROAS below ${num(s.roas, 1)} gets its daily budget cut by
+          <b>${num(s.pct, 0)}%</b>. Campaigns at ${num(s.roas, 1)} or above are not touched. Once a day at most. ${status}</p></div>
+      ${manage ? `<div class="ma-strat-acts">
+        <button class="btn ${s.on ? "btn-danger ma-off" : "btn-primary"}" id="cutToggle">${s.on ? "Turn off this rule" : "Turn on"}</button>
+        <details><summary>Settings</summary><div class="ma-rule-fields">
+          <label>Today's spend reaches (${c})<input class="control" id="cutSpend" value="${s.spend}"></label>
+          <label>ROAS below<input class="control" id="cutRoas" value="${s.roas}"></label>
+          <label>Cut budget by (%)<input class="control" id="cutPct" value="${s.pct}"></label>
+          <div class="row-actions"><button class="btn btn-sm" id="cutSave">Save</button></div>
+        </div></details></div>` : ""}
+    </div>
+    ${last && last.results ? `<p class="hint">Last run ${esc(last.day)}: ${last.results.map(esc).join(" · ")}</p>` : ""}
+    ${feed ? `<ul class="ma-feed">${feed}</ul>` : ""}`;
+  if (!manage) return;
+  $("cutToggle").onclick = async () => {
+    const on = !s.on;
+    if (on && !confirm(`Turn on “${s.name}”? Once a day, if spend reaches ${c} ${s.spend} with ROAS below ${s.roas}, the weak campaigns' budgets are cut by ${s.pct}% on Meta, without asking.`)) return;
+    try { await api(`/api/metaads/cutrule/${state.store}`, { method: "PUT", json: { on } }); toast(on ? "Budget-cut rule on." : "Budget-cut rule off."); loadCut(); }
+    catch (e) { toast(e.message, true); }
+  };
+  $("cutSave").onclick = async () => {
+    try {
+      await api(`/api/metaads/cutrule/${state.store}`, { method: "PUT", json: { spend: $("cutSpend").value, roas: $("cutRoas").value, pct: $("cutPct").value } });
+      toast("Saved"); loadCut();
     } catch (e) { toast(e.message, true); }
   };
 }
