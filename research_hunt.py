@@ -448,20 +448,23 @@ def _days(d: str, today: date) -> int:
         return -1
 
 
-def label(p: dict, store_age: int, today: date) -> tuple:
+def label(p: dict, store_age: int, today: date, top_median: int = -1) -> tuple:
+    """top_median = median age (days) of the store's top 25: a nugget is new among OLDER bestsellers."""
     rank, age = p.get("rank"), _days(p.get("created_at") or "", today)
     in_top = rank is not None and rank <= 25
     top_days = _days(p.get("best_since") or "", today)
     ads = p.get("meta_ads") or 0
     a = f"created {age} days ago" if age >= 0 else "created date unknown"
-    if in_top and 0 <= age <= 21 and store_age >= QUALIFY_DAYS:
-        return "nugget", f"#{rank} bestseller, {a}, store {store_age} days old: a new winner coming up"
+    if in_top and 0 <= age <= 21 and store_age >= QUALIFY_DAYS and top_median >= 45:
+        return "nugget", (f"#{rank} bestseller, {a}, while its top 25 are typically {top_median} days old "
+                          f"(store {store_age} days): a new winner coming up")
     if rank is not None and rank <= 5 and 0 <= age <= 56 and ads >= 2:
         return "compete", f"#{rank} bestseller, {a}, {ads} ads on Meta: compete in the same market"
     if rank is not None and rank <= 5 and (age >= 90 or top_days >= 60):
         return "proven", f"#{rank} bestseller, {a}: proven, try it in another market"
     if in_top:
-        return "top", f"#{rank} bestseller, {a}" + (f", {ads} ads on Meta" if ads else "")
+        note = " (the whole top 25 is new, so nothing stands out yet)" if 0 <= top_median < 45 and 0 <= age <= 21 else ""
+        return "top", f"#{rank} bestseller, {a}" + (f", {ads} ads on Meta" if ads else "") + note
     if ads:
         return "ads", f"Not in the top 25, {ads} ads on Meta, {a}"
     return None, ""
@@ -474,9 +477,11 @@ def relabel(item_id: int):
     store_age = _days(item.get("store_since") or "", today)
     with db._conn() as con:
         prods = [dict(r) for r in con.execute("SELECT * FROM research_products WHERE item_id = ?", (item_id,))]
+        ages = sorted(a for a in (_days(p["created_at"] or "", today) for p in prods if p["rank"]) if a >= 0)
+        top_median = ages[len(ages) // 2] if ages else -1
         nug = 0
         for p in prods:
-            lab, why = label(p, store_age, today)
+            lab, why = label(p, store_age, today, top_median)
             nug += lab == "nugget"
             con.execute("UPDATE research_products SET label = ?, why = ? WHERE item_id = ? AND handle = ?",
                         (lab, why, item_id, p["handle"]))
@@ -889,7 +894,16 @@ async def watch():
 
 async def loop():
     """Every 10 min: the daily free bestseller watch (HK morning), and the optional keyword rotation."""
-    await asyncio.sleep(300)
+    await asyncio.sleep(60)
+    try:                                   # labels follow the current rules after an update
+        ensure()
+        with db._conn() as con:
+            ids = [r[0] for r in con.execute("SELECT DISTINCT item_id FROM research_products")]
+        for i in ids:
+            relabel(i)
+    except Exception as e:
+        print(f"Research relabel failed: {e}")
+    await asyncio.sleep(240)
     while True:
         try:
             c = config()
