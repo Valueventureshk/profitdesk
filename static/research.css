@@ -1,0 +1,65 @@
+/* Apps → Research: a spreadsheet-like competitor sheet. Uses the shared tokens in styles.css. */
+.rs-panel { padding-bottom: 8px; }
+.rs-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+.rs-bar input[type=search] { width: 280px; max-width: 100%; margin: 0; }
+.rs-bar select { width: auto; margin: 0; }
+.rs-count { font-size: 12.5px; color: var(--muted); }
+.rs-spacer { flex: 1; }
+.rs-pop { border: 1px solid var(--line, #D6D3CB); background: var(--panel, #fff); border-radius: 10px; padding: 12px 14px;
+  margin-bottom: 10px; display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
+.rs-pop[hidden] { display: none; }
+.rs-pop .field { margin: 0; display: flex; gap: 6px; align-items: center; font-size: 13px; }
+.rs-pop .field input, .rs-pop .field select { margin: 0; width: auto; }
+.rs-pop label.rs-col { display: flex; gap: 6px; align-items: center; font-size: 13px; cursor: pointer; }
+.rs-pop label.rs-col input { width: auto; margin: 0; }
+.rs-pop-actions { display: flex; gap: 6px; margin-left: auto; }
+
+.rs-sheet { overflow: auto; max-height: calc(100vh - 230px); border: 1px solid var(--line, #D6D3CB); border-radius: 8px; }
+.rs-grid { border-collapse: separate; border-spacing: 0; width: max-content; min-width: 100%; font-size: 13px; }
+.rs-grid th, .rs-grid td { border-right: 1px solid var(--line-soft, #ECEAE4); border-bottom: 1px solid var(--line-soft, #ECEAE4);
+  padding: 0; text-align: left; vertical-align: top; background: var(--panel, #fff); }
+.rs-grid thead th { position: sticky; top: 0; z-index: 2; background: var(--bg-soft, #F7F6F2); font-size: 11.5px; font-weight: 600;
+  color: var(--muted); text-transform: uppercase; letter-spacing: .03em; white-space: nowrap; }
+.rs-grid thead th button { all: unset; display: flex; gap: 4px; align-items: center; padding: 8px 10px; cursor: pointer; width: 100%; box-sizing: border-box; }
+.rs-grid thead th .arrow { color: var(--ink); }
+.rs-grid .rn { position: sticky; left: 0; z-index: 1; width: 34px; min-width: 34px; text-align: center; color: var(--faint);
+  font-family: "IBM Plex Mono", monospace; font-size: 11.5px; padding: 8px 4px; background: var(--bg-soft, #F7F6F2); }
+.rs-grid thead .rn { z-index: 3; }
+.rs-grid td.c { min-width: 120px; max-width: 280px; }
+.rs-grid td.c.w-notes { min-width: 220px; }
+.rs-grid td.c.w-name { min-width: 160px; font-weight: 600; }
+.rs-grid td.c.w-number { min-width: 96px; }
+.rs-cell { display: block; padding: 8px 10px; min-height: 18px; cursor: text; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rs-grid td.w-notes .rs-cell { white-space: normal; }
+.rs-cell:hover { background: var(--bg-soft, #F7F6F2); }
+.rs-cell.empty::after { content: "—"; color: var(--line, #D6D3CB); }
+.rs-cell.num { font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; text-align: right; }
+.rs-cell a { color: inherit; text-decoration: underline; text-decoration-color: var(--line, #D6D3CB); }
+.rs-cell small { color: var(--faint); font-weight: 400; font-size: 11px; margin-left: 4px; }
+.rs-grid td.editing { outline: 2px solid var(--ink); outline-offset: -2px; }
+.rs-grid td.editing input, .rs-grid td.editing textarea { width: 100%; box-sizing: border-box; border: 0; margin: 0; padding: 8px 10px;
+  font: inherit; background: var(--panel, #fff); color: inherit; outline: none; border-radius: 0; }
+.rs-grid td.editing textarea { min-height: 70px; resize: vertical; }
+.rs-grid td.saving { opacity: .55; }
+.rs-who { display: inline-block; font-size: 11.5px; font-weight: 600; padding: 2px 8px; border-radius: 999px;
+  background: var(--line-soft, #ECEAE4); color: var(--ink); }
+.rs-who.app { background: #E8F3EF; color: var(--profit, #1F6F5C); }
+.rs-dup { display: inline-block; font-size: 10.5px; font-weight: 600; padding: 1px 6px; border-radius: 999px; background: #FFF7ED; color: #B45309; margin-left: 6px; }
+.rs-acts { white-space: nowrap; padding: 4px 6px !important; }
+.rs-acts button { all: unset; cursor: pointer; font-size: 12px; color: var(--muted); padding: 4px 6px; border-radius: 6px; }
+.rs-acts button:hover { background: var(--bg-soft, #F7F6F2); color: var(--ink); }
+.rs-new td { background: var(--bg-soft, #F7F6F2); }
+.rs-new input { width: 100%; box-sizing: border-box; border: 0; margin: 0; padding: 8px 10px; background: transparent; font: inherit; color: inherit; outline: none; }
+.rs-new input::placeholder { color: var(--faint); }
+.rs-drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(420px, 100vw); background: var(--panel, #fff); z-index: 50;
+  border-left: 1px solid var(--line, #D6D3CB); box-shadow: -8px 0 24px rgba(0,0,0,.08); padding: 16px; overflow: auto; }
+.rs-drawer[hidden] { display: none; }
+.rs-drawer-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.rs-log { border-bottom: 1px solid var(--line-soft, #ECEAE4); padding: 8px 0; font-size: 13px; }
+.rs-log small { display: block; color: var(--faint); font-size: 11.5px; }
+.rs-log s { color: var(--faint); }
+.read-only .rs-cell { cursor: default; }
+@media (max-width: 640px) {
+  .rs-bar input[type=search] { width: 100%; }
+  .rs-sheet { max-height: none; }
+}

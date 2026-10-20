@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EcomVital · Research</title>
+<script>try{var t=localStorage.getItem("pdTheme")||(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");document.documentElement.dataset.theme=t;if((localStorage.getItem("pdSkin")||"new")==="new")document.documentElement.classList.add("skin-new");}catch(e){}</script>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;650;700&display=swap">
+<link rel="stylesheet" href="/static/styles.css">
+<link rel="stylesheet" href="/static/skin.css">
+<link rel="stylesheet" href="/static/research.css">
+</head>
+<body>
+<div class="cash-page">
+  <header class="cash-top">
+    <div class="brand" data-section-menu title="Switch section">
+      <span class="brand-mark"><img src="/static/brand/ecomvital-120.png" alt=""></span>
+      <span class="brand-name">EcomVital</span>
+    </div>
+    <div class="crumb">
+      <h1>Research</h1>
+      <p id="sub">Competitors the team and EcomVital have looked at. Click any cell to type; it saves by itself.</p>
+    </div>
+  </header>
+
+  <main class="content">
+    <section class="panel rs-panel">
+      <div class="rs-bar">
+        <input type="search" id="q" placeholder="Search competitor, website, niche, notes…">
+        <select id="niche"><option value="">All niches</option></select>
+        <select id="by"><option value="">Anyone</option></select>
+        <span class="rs-count" id="count"></span>
+        <span class="rs-spacer"></span>
+        <button class="btn btn-sm" id="colsBtn" title="Show or hide columns on this computer">Columns</button>
+        <button class="btn btn-sm" id="addColBtn" data-manage-only>+ Add column</button>
+        <button class="btn btn-sm" id="archBtn"></button>
+      </div>
+      <div class="rs-pop" id="colsPop" hidden></div>
+      <form class="rs-pop" id="addColPop" hidden>
+        <strong>New column</strong>
+        <label class="field">Name<input id="colLabel" maxlength="40" placeholder="e.g. Best seller, Price range, Ad angle"></label>
+        <label class="field">Type<select id="colKind">
+          <option value="text">Text</option><option value="number">Number</option>
+          <option value="link">Link</option><option value="date">Date</option></select></label>
+        <div class="rs-pop-actions"><button type="button" class="btn btn-sm" id="colCancel">Cancel</button><button class="btn btn-sm btn-primary">Add column</button></div>
+      </form>
+      <div class="rs-sheet" id="sheet"><p class="hint">Loading…</p></div>
+    </section>
+  </main>
+</div>
+<aside class="rs-drawer" id="drawer" hidden>
+  <div class="rs-drawer-head"><strong id="drawerTitle">History</strong><button class="btn btn-sm" id="drawerClose">Close</button></div>
+  <div id="drawerBody"></div>
+</aside>
+<div id="toast" class="toast" hidden></div>
+<script src="/static/nav.js"></script>
+<script src="/static/chat.js"></script>
+<script src="/static/research.js"></script>
+</body>
+</html>
