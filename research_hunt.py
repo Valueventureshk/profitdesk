@@ -221,7 +221,7 @@ async def _get(client, url, log: list = None):
             r = await client.get(url)
         except httpx.HTTPError as e:
             if log is not None:
-                log.append(f"{urlparse(url).path}: {type(e).__name__}")
+                log.append(f"{urlparse(url).path}: {type(e).__name__} {str(e)[:120]}")
             continue
         if log is not None:
             log.append(f"{urlparse(url).path}: {r.status_code}")
@@ -235,6 +235,14 @@ async def read_store(domain: str) -> dict:
     directly; when Shopify refuses the server's address, again through Apify Proxy."""
     out = await _read_store(domain, None)
     if out["blocked"]:
+        # Shopify often refuses /products.json to servers (429) while its pages load fine: read the
+        # bestseller page + each product's own .js (created date, price, was-price) instead
+        alt = await _read_store_pages(domain)
+        out["log"] += ["(product pages instead)"] + alt["log"]
+        if alt["products"]:
+            alt["log"] = out["log"]
+            return alt
+    if out["blocked"]:
         token = db.get_setting("apify_token")
         proxy = await apify.proxy_url(token) if token else None
         if proxy:
@@ -244,6 +252,89 @@ async def read_store(domain: str) -> dict:
                 again["via"] = "apify proxy"
                 return again
             out["log"] = again["log"]
+    return out
+
+
+def _js_product(h: str, d: dict, base: str) -> dict:
+    def money(v):
+        try:
+            return f"{int(v) / 100:.2f}" if v not in (None, "") else ""
+        except (TypeError, ValueError):
+            return ""
+    img = d.get("featured_image") or ((d.get("images") or [""])[0]) or ""
+    if img.startswith("//"):
+        img = "https:" + img
+    return {"title": d.get("title") or h, "image": img, "price": money(d.get("price")),
+            "compare_at": money(d.get("compare_at_price")), "created_at": (d.get("created_at") or d.get("published_at") or "")[:10],
+            "url": f"{base}/products/{h}"}
+
+
+async def _read_store_pages(domain: str) -> dict:
+    """Fallback when /products.json is refused: bestseller page → top 25 handles → /products/<h>.js each;
+    store age from the oldest product in the product sitemap."""
+    out = {"shopify": False, "final_domain": domain, "products": {}, "best": [], "since": None,
+           "unreliable": False, "error": "", "blocked": False, "via": "product pages", "log": [], "compare_share": None}
+    log = out["log"]
+    async with _store_sem, httpx.AsyncClient(timeout=25, follow_redirects=True, headers={
+            "User-Agent": UA, "Accept-Language": "en-US,en;q=0.9"}) as c:
+        base = f"https://{domain}"
+        handles = []
+        for page in (1, 2):
+            r = await _get(c, f"{base}/collections/all?sort_by=best-selling&page={page}", log)
+            if r is None or r.status_code >= 400:
+                if page == 1:
+                    out["blocked"] = r is None or r.status_code in BLOCKED
+                break
+            if page == 1:
+                out["final_domain"] = rs.domain_of(str(r.url)) or domain
+                base = f"https://{out['final_domain']}"
+                out["shopify"] = "cdn.shopify.com" in r.text or "Shopify.shop" in r.text
+            for h in re.findall(r"/products/([A-Za-z0-9\-_%.]+)", r.text):
+                h = h.lower().split("?")[0]
+                if h not in handles:
+                    handles.append(h)
+            if len(handles) >= 30:
+                break
+        for h in handles[:30]:
+            if len(out["best"]) >= 25:
+                break
+            r = await _get(c, f"{base}/products/{h}.js", log)
+            if r is None or r.status_code >= 400:
+                continue
+            try:
+                d = r.json()
+            except ValueError:
+                continue
+            out["products"][h] = _js_product(h, d, base)
+            out["best"].append(h)
+            await asyncio.sleep(0.15)
+        if out["products"]:
+            out["shopify"] = True
+            # store age: the first product in the product sitemap is the oldest one
+            r = await _get(c, f"{base}/sitemap.xml", log)
+            sm = re.search(r"<loc>([^<]*sitemap_products_[^<]*)</loc>", r.text if r is not None and r.status_code < 400 else "")
+            dates = [p["created_at"] for p in out["products"].values() if p["created_at"]]
+            if sm:
+                r = await _get(c, sm.group(1).replace("&amp;", "&"), log)
+                locs = re.findall(r"<loc>([^<]*/products/[^<]+)</loc>", r.text if r is not None and r.status_code < 400 else "")
+                out["n_products"] = len(locs)
+                if locs:
+                    first = locs[0].rstrip("/").rsplit("/", 1)[-1]
+                    r = await _get(c, f"{base}/products/{first}.js", log)
+                    try:
+                        if r is not None and r.status_code < 400:
+                            d = r.json()
+                            dates.append((d.get("created_at") or d.get("published_at") or "")[:10])
+                    except ValueError:
+                        pass
+            dates = [d for d in dates if d]
+            out["since"] = min(dates) if dates else None
+            vals = list(out["products"].values())
+            out["compare_share"] = round(sum(1 for p in vals if p["compare_at"] and p["price"]
+                                             and float(p["compare_at"]) > float(p["price"]) > 0) / len(vals), 2)
+            newest = [h for h, _ in sorted(out["products"].items(), key=lambda kv: kv[1]["created_at"], reverse=True)][:8]
+            if len(out["best"]) >= 8 and out["best"][:8] == newest:
+                out["unreliable"] = True
     return out
 
 
@@ -435,7 +526,7 @@ async def analyse(item_id: int, extra: dict = None, store: dict = None) -> dict:
         kept = True
         store.update({"shopify": True, "since": item.get("store_since"), "unreliable": bool(item.get("best_unreliable")),
                       "compare_share": item.get("compare_share")})
-    n_products = len(store["products"]) or (item.get("products_count") or 0 if kept else 0)
+    n_products = store.get("n_products") or len(store["products"]) or (item.get("products_count") or 0 if kept else 0)
     pages = json.loads(item.get("fb_pages") or "[]")
     names = [item.get("name") or ""] + [p.get("name", "") for p in pages] + sig["names"]
     pts, why = score(names, store["final_domain"], sig["texts"], sig["ctas"], sig["formats"],
