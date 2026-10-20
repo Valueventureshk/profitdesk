@@ -44,6 +44,8 @@ DEFAULT_KEYWORDS = [
 PRICE_PER_AD = 0.00075            # Apify scraper, $0.75 / 1,000 ads (the panel shows the real cost)
 DEEP_CAP = 50                     # ads read per store in the deep check
 QUALIFY_DAYS = 30                 # store must be at least this old
+MAX_STORE_DAYS = 730              # … and at most 2 years old (owner: no stores from 2019 etc.)
+COMPARE_SHARE = 0.7               # most products must show a compare-at ("was") price
 QUALIFY_SCORE = 50                # dropshipper score to pass
 RECHECK_DAYS = 14                 # a store seen before isn't re-qualified sooner than this
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -101,6 +103,7 @@ CREATE TABLE IF NOT EXISTS research_products (
     title       TEXT,
     image       TEXT,
     price       TEXT,
+    compare_at  TEXT,                   -- the "was" price
     url         TEXT,
     created_at  TEXT,
     rank        INTEGER,                -- bestseller position (1 = best), NULL = not in the top 25
@@ -126,6 +129,8 @@ def ensure():
     if not _ready["ok"]:
         with db._conn() as con:
             con.executescript(SCHEMA)
+            if "compare_at" not in {r[1] for r in con.execute("PRAGMA table_info(research_products)")}:
+                con.execute("ALTER TABLE research_products ADD COLUMN compare_at TEXT")
             con.execute("UPDATE research_hunts SET status = 'error', error = 'Stopped by an app restart; run it again.',"
                         " finished_at = ? WHERE status = 'running'", (rs._now(),))
         _ready["ok"] = True
@@ -203,23 +208,59 @@ def product_handle(link: str) -> str:
 
 # ---------------------------------------------------------------- reading a store (free)
 
-async def _get(client, url):
-    try:
-        r = await client.get(url)
-        return r
-    except httpx.HTTPError:
-        return None
+BLOCKED = {403, 429, 430, 503}          # Shopify's "too many requests" / bot refusals (430 = security rejection)
+_store_sem = asyncio.Semaphore(3)       # stores read at once, all callers together
+
+
+async def _get(client, url, log: list = None):
+    """GET with a few patient retries when the store says slow down."""
+    for wait in (0, 3, 8):
+        if wait:
+            await asyncio.sleep(wait)
+        try:
+            r = await client.get(url)
+        except httpx.HTTPError as e:
+            if log is not None:
+                log.append(f"{urlparse(url).path}: {type(e).__name__}")
+            continue
+        if log is not None:
+            log.append(f"{urlparse(url).path}: {r.status_code}")
+        if r.status_code not in (429, 430, 503):
+            return r
+    return None
 
 
 async def read_store(domain: str) -> dict:
-    """{shopify, final_domain, products: {handle: {...}}, best: [handles], since, unreliable, error}."""
+    """{shopify, final_domain, products, best, since, unreliable, error, blocked, via, log}. Reads the store
+    directly; when Shopify refuses the server's address, again through Apify Proxy."""
+    out = await _read_store(domain, None)
+    if out["blocked"]:
+        token = db.get_setting("apify_token")
+        proxy = await apify.proxy_url(token) if token else None
+        if proxy:
+            again = await _read_store(domain, proxy)
+            again["log"] = out["log"] + ["(again through Apify Proxy)"] + again["log"]
+            if again["products"] or not again["blocked"]:
+                again["via"] = "apify proxy"
+                return again
+            out["log"] = again["log"]
+    return out
+
+
+async def _read_store(domain: str, proxy) -> dict:
     out = {"shopify": False, "final_domain": domain, "products": {}, "best": [], "since": None,
-           "unreliable": False, "error": ""}
-    async with httpx.AsyncClient(timeout=25, follow_redirects=True, headers={"User-Agent": UA, "Accept-Language": "en"}) as c:
+           "unreliable": False, "error": "", "blocked": False, "via": "direct", "log": []}
+    log = out["log"]
+    async with _store_sem, httpx.AsyncClient(timeout=25, follow_redirects=True, proxy=proxy, headers={
+            "User-Agent": UA, "Accept-Language": "en-US,en;q=0.9", "Accept": "application/json,text/html;q=0.9,*/*;q=0.8"}) as c:
         base = f"https://{domain}"
         for page in range(1, 9):
-            r = await _get(c, f"{base}/products.json?limit=250&page={page}")
-            if r is None or r.status_code >= 400:
+            r = await _get(c, f"{base}/products.json?limit=250&page={page}", log)
+            if r is None or r.status_code in BLOCKED:
+                if page == 1:
+                    out["blocked"] = True
+                break
+            if r.status_code >= 400:
                 break
             if page == 1:
                 out["final_domain"] = rs.domain_of(str(r.url)) or domain
@@ -238,21 +279,31 @@ async def read_store(domain: str) -> dict:
                 img = ((p.get("images") or [{}])[0] or {}).get("src") or ""
                 var = (p.get("variants") or [{}])[0] or {}
                 out["products"][h] = {"title": p.get("title") or h, "image": img, "price": var.get("price") or "",
+                                      "compare_at": var.get("compare_at_price") or "",
                                       "created_at": (p.get("created_at") or p.get("published_at") or "")[:10],
                                       "url": f"{base}/products/{h}"}
             if len(prods) < 250:
                 break
         if not out["shopify"]:
-            r = await _get(c, base)
-            if r is not None and r.status_code < 400 and ("cdn.shopify.com" in r.text or "Shopify.shop" in r.text):
+            r = await _get(c, base, log)
+            if r is None or r.status_code in BLOCKED:
+                out["blocked"] = True
+            elif r.status_code < 400 and ("cdn.shopify.com" in r.text or "Shopify.shop" in r.text):
                 out["shopify"] = True
                 out["error"] = "Shopify store, but it hides its product list."
             return out
+        def _was(p):
+            try:
+                return float(p["compare_at"] or 0) > float(p["price"] or 0) > 0
+            except ValueError:
+                return False
+        out["compare_share"] = round(sum(1 for p in out["products"].values() if _was(p)) / len(out["products"]), 2) \
+            if out["products"] else None
         dates = [p["created_at"] for p in out["products"].values() if p["created_at"]]
         out["since"] = min(dates) if dates else None
         seen = []
         for page in (1, 2):
-            r = await _get(c, f"{base}/collections/all?sort_by=best-selling&page={page}")
+            r = await _get(c, f"{base}/collections/all?sort_by=best-selling&page={page}", log)
             if r is None or r.status_code >= 400:
                 break
             for h in re.findall(r"/products/([A-Za-z0-9\-_%.]+)", r.text):
@@ -358,50 +409,87 @@ def save_products(item_id: int, store: dict):
             if not rank:
                 best_since = None
             con.execute(
-                "INSERT INTO research_products (item_id, handle, title, image, price, url, created_at, rank, prev_rank,"
-                " best_since, history, first_seen, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
+                "INSERT INTO research_products (item_id, handle, title, image, price, compare_at, url, created_at, rank, prev_rank,"
+                " best_since, history, first_seen, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
                 " ON CONFLICT(item_id, handle) DO UPDATE SET title = excluded.title, image = excluded.image,"
-                " price = excluded.price, url = excluded.url, created_at = excluded.created_at,"
+                " price = excluded.price, compare_at = excluded.compare_at, url = excluded.url, created_at = excluded.created_at,"
                 " prev_rank = research_products.rank, rank = excluded.rank, best_since = excluded.best_since,"
                 " history = excluded.history, updated_at = excluded.updated_at",
-                (item_id, h, p["title"], p["image"], p["price"], p["url"], p["created_at"], rank,
+                (item_id, h, p["title"], p["image"], p["price"], p.get("compare_at") or "", p["url"], p["created_at"], rank,
                  (o or {}).get("rank"), best_since, json.dumps(hist), now, now))
 
 
-async def analyse(item_id: int, extra: dict = None) -> dict:
+async def analyse(item_id: int, extra: dict = None, store: dict = None) -> dict:
     """Stages 2, 3, 5 for one row (free): Shopify, store age, score, bestsellers, labels."""
     ensure()
     item = rs.get_item(item_id)
     dom = item.get("domain") or ""
     if not dom:
         return {"ok": False, "error": "Add the website first."}
-    extra = extra or {}
-    store = await read_store(dom)
+    sig = merge_signals(item, extra or {})
+    store = store or await read_store(dom)
     today = datetime.now(HK).date()
+    kept = False
+    if store["blocked"] and not store["products"] and item.get("is_shopify"):
+        # the store couldn't be read this time: keep what was read before instead of blanking it
+        kept = True
+        store.update({"shopify": True, "since": item.get("store_since"), "unreliable": bool(item.get("best_unreliable")),
+                      "compare_share": item.get("compare_share")})
+    n_products = len(store["products"]) or (item.get("products_count") or 0 if kept else 0)
     pages = json.loads(item.get("fb_pages") or "[]")
-    names = [item.get("name") or ""] + [p.get("name", "") for p in pages] + extra.get("names", [])
-    pts, why = score(names, store["final_domain"], extra.get("texts", []), extra.get("ctas", []),
-                     extra.get("formats", []), max(len(pages), extra.get("n_pages", 0)), len(store["products"]))
+    names = [item.get("name") or ""] + [p.get("name", "") for p in pages] + sig["names"]
+    pts, why = score(names, store["final_domain"], sig["texts"], sig["ctas"], sig["formats"],
+                     max(len(pages), sig["n_pages"]), n_products)
     if not store["shopify"]:
-        pts, why = 0, ["not a Shopify store"]
+        pts, why = 0, ["not a Shopify store" if not store["blocked"] else "the store refused to be read"]
     age = _days(store["since"] or "", today)
-    qualified = 1 if store["shopify"] and age >= QUALIFY_DAYS and pts >= QUALIFY_SCORE else 0
+    share = store.get("compare_share")
+    if share is not None:
+        why.append(f"{round(share * 100)}% of products show a was-price")
+    qualified = 1 if (store["shopify"] and QUALIFY_DAYS <= age <= MAX_STORE_DAYS and pts >= QUALIFY_SCORE
+                      and share is not None and share >= COMPARE_SHARE) else 0
+    if store["shopify"] and age > MAX_STORE_DAYS:
+        why.append("store older than 2 years: left out")
+    elif store["shopify"] and 0 <= age < QUALIFY_DAYS:
+        why.append(f"store only {age} days old: too new")
+    if store["shopify"] and share is not None and share < COMPARE_SHARE:
+        why.append("most products have no was-price: left out")
     if store["unreliable"]:
         why.append("its ‘best selling’ page looks like newest-first, ranks may not be sales")
     if store["error"]:
         why.append(store["error"])
+    if kept:
+        why.append("couldn't read the store this time, kept the earlier figures")
     with db._conn() as con:
         con.execute("UPDATE research_items SET is_shopify = ?, store_since = ?, products_count = ?, ds_score = ?,"
-                    " ds_reasons = ?, qualified = ?, best_unreliable = ?, analysed_at = ? WHERE id = ?",
-                    (1 if store["shopify"] else 0, store["since"], len(store["products"]), pts, "; ".join(why),
-                     qualified, 1 if store["unreliable"] else 0, rs._now(), item_id))
+                    " ds_reasons = ?, qualified = ?, best_unreliable = ?, analysed_at = ?, ad_signals = ?, compare_share = ?"
+                    " WHERE id = ?",
+                    (1 if store["shopify"] else 0, store["since"], n_products, pts, "; ".join(why),
+                     qualified, 1 if store["unreliable"] else 0, rs._now(), json.dumps(sig), share, item_id))
         con.execute("INSERT OR REPLACE INTO research_seen (domain, shopify, item_id, checked_at) VALUES (?,?,?,?)",
                     (dom, 1 if store["shopify"] else 0, item_id, rs._now()))
     if store["products"]:
         save_products(item_id, store)
     relabel(item_id)
     return {"ok": True, "shopify": store["shopify"], "score": pts, "qualified": bool(qualified),
-            "bestsellers": len(store["best"]), "since": store["since"]}
+            "bestsellers": len(store["best"]), "since": store["since"], "kept": kept, "via": store["via"],
+            "blocked": store["blocked"]}
+
+
+def merge_signals(item: dict, extra: dict) -> dict:
+    """The ad signs a store has shown so far (saved on the row), plus the new ones; capped."""
+    try:
+        old = json.loads(item.get("ad_signals") or "{}")
+    except ValueError:
+        old = {}
+    out = {}
+    for k in ("names", "texts", "ctas", "formats"):
+        vals = list(old.get(k) or []) + list(extra.get(k) or [])
+        if k == "names":
+            vals = list(dict.fromkeys(v for v in vals if v))
+        out[k] = vals[-40:]
+    out["n_pages"] = max(int(old.get("n_pages") or 0), int(extra.get("n_pages") or 0))
+    return out
 
 
 # ---------------------------------------------------------------- deep check (Apify)
@@ -439,7 +527,7 @@ async def deep_check(item_ids: list, by_name: str) -> dict:
         if raw:
             db.set_setting("research_apify_sample", json.dumps(raw[0])[:6000])
         ads = [ad_info(r) for r in raw if not r.get("error")]
-        cost = run.get("usageTotalUsd")
+        cost = apify.run_cost(run)
         share = round(cost / len(items), 4) if cost else None
         today = rs.meta_today()
         for it in items:
@@ -513,6 +601,10 @@ def _save_ads(it: dict, ads: list, today: str, by_name: str, apify_run, cost, ru
                         (pp["ads"], pp["first"], item_id, h))
         con.execute("UPDATE research_runs SET status = 'done', apify_run = ?, ads = ?, capped = ?, cost_usd = ?,"
                     " finished_at = ? WHERE id = ?", (apify_run, len(live), 1 if capped else 0, cost, now, run_id))
+        sig = merge_signals(it, {"names": [p["name"] for p in pages.values() if p["name"]],
+                                 "texts": [a["text"] for a in live][:20], "ctas": [a["cta"] for a in live][:20],
+                                 "formats": [a["format"] for a in live][:20], "n_pages": len(pages)})
+        con.execute("UPDATE research_items SET ad_signals = ? WHERE id = ?", (json.dumps(sig), item_id))
     try:
         relabel(item_id)
     except Exception:
@@ -547,7 +639,7 @@ async def hunt(hid: int):
                    "count": h["cap"] * len(urls), "limitPerSource": h["cap"]}
         async with rs._sem:
             run, raw = await apify.run_actor(token, payload)
-        total_cost += run.get("usageTotalUsd") or 0
+        total_cost += apify.run_cost(run) or 0
         ads = [ad_info(r) for r in raw if not r.get("error")]
         stores = {}
         for a in ads:
@@ -582,6 +674,7 @@ async def hunt(hid: int):
             async with sem:
                 item_id = known.get(dom)
                 is_new = item_id is None
+                store = None
                 if is_new:
                     store = await read_store(dom)
                     with db._conn() as con:
@@ -603,7 +696,7 @@ async def hunt(hid: int):
                     results["qualified"] += rs.get_item(item_id).get("qualified") or 0
                     return
                 res = await analyse(item_id, {"names": list(s["names"]), "texts": s["texts"], "ctas": s["ctas"],
-                                              "formats": s["formats"], "n_pages": len(s["pages"])})
+                                              "formats": s["formats"], "n_pages": len(s["pages"])}, store)
                 results["shopify"] += 1 if res.get("shopify") else 0
                 results["qualified"] += 1 if res.get("qualified") else 0
 
@@ -702,7 +795,8 @@ def api_hunt_info():
     return {"config": c, "countries": [{"code": k, "name": n} for k, n in COUNTRIES], "hunts": hunts,
             "running": any(h["status"] == "running" for h in hunts), "price_per_ad": PRICE_PER_AD, "deep_cap": DEEP_CAP,
             "apify": bool(db.get_setting("apify_token")),
-            "rules": {"qualify_days": QUALIFY_DAYS, "qualify_score": QUALIFY_SCORE}}
+            "rules": {"qualify_days": QUALIFY_DAYS, "max_store_days": MAX_STORE_DAYS, "qualify_score": QUALIFY_SCORE,
+                      "compare_share": COMPARE_SHARE}}
 
 
 @router.post("/api/research/hunt")
@@ -760,6 +854,15 @@ async def api_analyse(item_id: int, request: Request):
         return await analyse(item_id)
     finally:
         _analysing.discard(item_id)
+
+
+@router.get("/api/research/debug-store")
+async def api_debug_store(domain: str, request: Request):
+    """Owner check: what the server gets back from a store (direct, then Apify Proxy)."""
+    rs._owner(request)
+    s = await read_store(rs.domain_of(domain))
+    return {"shopify": s["shopify"], "blocked": s["blocked"], "via": s["via"], "products": len(s["products"]),
+            "since": s["since"], "bestsellers": s["best"][:10], "log": s["log"]}
 
 
 @router.get("/api/research/products")

@@ -91,6 +91,40 @@ async def run_actor(token: str, payload: dict, max_wait: int = 900) -> tuple:
     return run, items
 
 
+def run_cost(run: dict):
+    """What a run cost the account: pay-per-event actors (this scraper charges per ad) report their
+    charges as chargedEventCounts × the event prices; otherwise the platform usage."""
+    events = run.get("chargedEventCounts") or {}
+    prices = ((run.get("pricingInfo") or {}).get("pricingPerEvent") or {}).get("actorChargeEvents") or {}
+    total = 0.0
+    for name, n in events.items():
+        try:
+            total += float(n or 0) * float((prices.get(name) or {}).get("eventPriceUsd") or 0)
+        except (TypeError, ValueError):
+            pass
+    if total:
+        return round(total, 4)
+    usage = run.get("usageTotalUsd")
+    return round(float(usage), 4) if usage else None
+
+
+_proxy = {}
+
+
+async def proxy_url(token: str):
+    """Apify Proxy (comes with the account) for reading stores that refuse the server's own address."""
+    if token in _proxy:
+        return _proxy[token]
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            user = (await _get(client, token, "/users/me")).get("data") or {}
+        pw = (user.get("proxy") or {}).get("password")
+    except ApifyError:
+        pw = None
+    _proxy[token] = f"http://auto:{pw}@proxy.apify.com:8000" if pw else None
+    return _proxy[token]
+
+
 def page_input(url: str, country: str = "ALL", cap: int = 500) -> dict:
     """The scraper's input for one Facebook page (or an Ad Library link): its active ads."""
     return {"urls": [{"url": url}], "count": cap, "limitPerSource": cap, "scrapeAdDetails": False,

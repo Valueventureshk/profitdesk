@@ -489,7 +489,7 @@ async function loadProducts() {
     ${d.products.map((p) => {
       const move = p.prev_rank && p.rank ? p.prev_rank - p.rank : null;
       return `<tr><td>${p.image ? `<img src="${esc(p.image)}&width=120" onerror="this.src='${esc(p.image)}'" alt="" loading="lazy">` : ""}</td>
-      <td><a href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.title)}</a>${p.price ? `<small class="num">${esc(p.price)}</small>` : ""}</td>
+      <td><a href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.title)}</a>${p.price ? `<small class="num">${esc(p.price)}${p.compare_at && +p.compare_at > +p.price ? ` <s>${esc(p.compare_at)}</s> −${Math.round((1 - p.price / p.compare_at) * 100)}%` : " · no was-price"}</small>` : ""}</td>
       <td>${esc(p.store || p.domain)}<small>${esc(p.domain)}${p.store_since ? ` · since ${esc(p.store_since)}` : ""}</small></td>
       <td class="num">${p.rank ? "#" + p.rank : "—"}${move ? `<small>${move > 0 ? "▲" + move : "▼" + -move} since last check</small>` : ""}${p.best_unreliable ? `<small title="This store's best-selling page looks like newest first">rank may not be sales</small>` : ""}</td>
       <td class="num">${esc(p.created_at || "")}<small>${p.age_days >= 0 ? p.age_days + " days ago" : ""}</small></td>
