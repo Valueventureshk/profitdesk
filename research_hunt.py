@@ -214,7 +214,7 @@ _store_sem = asyncio.Semaphore(3)       # stores read at once, all callers toget
 
 async def _get(client, url, log: list = None):
     """GET with a few patient retries when the store says slow down."""
-    for wait in (0, 3, 8):
+    for wait in (0, 4):
         if wait:
             await asyncio.sleep(wait)
         try:
@@ -295,12 +295,17 @@ async def _read_store_pages(domain: str) -> dict:
                     handles.append(h)
             if len(handles) >= 30:
                 break
+        misses = 0
         for h in handles[:30]:
-            if len(out["best"]) >= 25:
+            if len(out["best"]) >= 25 or misses >= 3:
                 break
             r = await _get(c, f"{base}/products/{h}.js", log)
-            if r is None or r.status_code >= 400:
+            if r is None or r.status_code in BLOCKED:
+                misses += 1             # refused again and again: give up on this store for now
                 continue
+            if r.status_code >= 400:
+                continue
+            misses = 0
             try:
                 d = r.json()
             except ValueError:
