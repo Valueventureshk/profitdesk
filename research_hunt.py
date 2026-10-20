@@ -179,6 +179,11 @@ def unwrap(url: str) -> str:
     return url
 
 
+NOT_PRODUCT = re.compile(r"shipping protection|order protection|package protection|insurance|gift ?card|e-?gift|"
+                         r"\\broute\\b|warranty|\btip\b|priority (processing|shipping)|express (processing|shipping)|"
+                         r"\bsample\b|donation|mystery|test product", re.I)
+
+
 def store_domain(url: str) -> str:
     d = rs.domain_of(unwrap(url))
     if not d or any(s in d for s in SKIP_DOMAINS):
@@ -482,6 +487,8 @@ def relabel(item_id: int):
         nug = 0
         for p in prods:
             lab, why = label(p, store_age, today, top_median)
+            if NOT_PRODUCT.search(f"{p['handle']} {p['title'] or ''}"):
+                lab, why = None, "add-on, not a product"
             nug += lab == "nugget"
             con.execute("UPDATE research_products SET label = ?, why = ? WHERE item_id = ? AND handle = ?",
                         (lab, why, item_id, p["handle"]))
@@ -494,7 +501,9 @@ def save_products(item_id: int, store: dict):
     """Top 25 bestsellers (rank, rank history) plus products already known from Meta ads."""
     today = datetime.now(HK).date().isoformat()
     now = rs._now()
-    best = {h: i + 1 for i, h in enumerate(store["best"])}
+    # add-ons (shipping protection, gift cards, tips…) aren't products: leave them out of the ranking
+    ranked = [h for h in store["best"] if not NOT_PRODUCT.search(f"{h} {store['products'].get(h, {}).get('title', '')}")]
+    best = {h: i + 1 for i, h in enumerate(ranked)}
     with db._conn() as con:
         old = {r["handle"]: dict(r) for r in con.execute("SELECT * FROM research_products WHERE item_id = ?", (item_id,))}
         for h, p in store["products"].items():
@@ -1011,9 +1020,12 @@ async def api_debug_store(domain: str, request: Request):
 
 
 @router.get("/api/research/products")
-def api_products(label: str = "", item: int = 0, q: str = ""):
+def api_products(label: str = "", item: int = 0, q: str = "", all: int = 0):
+    """Products of the dropshipper stores (all=1 or one store picked: every store)."""
     ensure()
     where, args = ["i.archived = 0"], []
+    if not all and not item:
+        where.append("i.qualified = 1")
     if label:
         labs = label.split(",")
         where.append(f"p.label IN ({','.join('?' * len(labs))})"); args += labs
@@ -1031,7 +1043,7 @@ def api_products(label: str = "", item: int = 0, q: str = ""):
             f" JOIN research_items i ON i.id = p.item_id WHERE {' AND '.join(where)} ORDER BY {order} LIMIT 1000", args)]
         counts = {r[0]: r[1] for r in con.execute(
             "SELECT p.label, COUNT(*) FROM research_products p JOIN research_items i ON i.id = p.item_id"
-            " WHERE i.archived = 0 AND p.label IS NOT NULL GROUP BY p.label")}
+            " WHERE i.archived = 0 AND p.label IS NOT NULL" + ("" if all else " AND i.qualified = 1") + " GROUP BY p.label")}
     today = datetime.now(HK).date()
     for r in rows:
         r["age_days"] = _days(r["created_at"] or "", today)
