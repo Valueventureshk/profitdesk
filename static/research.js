@@ -4,7 +4,8 @@
 const $ = (id) => document.getElementById(id);
 let cols = [], items = [], apifyOn = false, appName = "EcomVital", archived = PDUrl.get("archived") === "1", archivedCount = 0;
 let sort = { key: PDUrl.get("sort") || "", dir: PDUrl.get("dir") === "asc" ? 1 : -1 };
-let query = PDUrl.get("q") || "", nicheF = PDUrl.get("niche") || "", byF = PDUrl.get("by") || "";
+let query = PDUrl.get("q") || "", nicheF = PDUrl.get("niche") || "", byF = PDUrl.get("by") || "", qualF = PDUrl.get("qual") || "";
+let tab = PDUrl.get("tab") || "sheet", labelF = PDUrl.get("label") ?? "nugget,compete,proven", pquery = "";
 let hidden = new Set();
 try { hidden = new Set(JSON.parse(localStorage.getItem("pdResearchHide") || "[]")); } catch { /* private mode */ }
 
@@ -53,7 +54,18 @@ function shortLink(url) {
     return host + (path && path.length < 30 ? path : path ? path.slice(0, 28) + "…" : "");
   } catch { return url; }
 }
+const pagesOf = (it) => { try { return JSON.parse(it.fb_pages || "[]"); } catch { return []; } };
+function autoDisplay(it, c) {
+  const v = it[c.key];
+  if (c.key === "is_shopify") return v === null || v === undefined ? "" : v ? `<span class="rs-yes">✓ Shopify</span>` : `<span class="rs-no">No</span>`;
+  if (c.key === "store_since") { if (!v) return ""; const d = Math.round((Date.now() - new Date(v + "T00:00")) / 864e5); return `${esc(v)}<small>${d} days</small>`; }
+  if (c.key === "ds_score") return v === null || v === undefined ? "" : `${v}${it.qualified ? ` <span class="rs-yes" title="Looks like a dropshipper">✓</span>` : ""}`;
+  if (c.key === "fb_pages") { const n = pagesOf(it).length; return n ? String(n) : ""; }
+  if (c.key === "nuggets") return v ? `<span class="rs-lab nugget">${v}</span>` : "";
+  return esc(v ?? "");
+}
 function display(it, c) {
+  if (c.kind === "auto") return autoDisplay(it, c);
   const v = value(it, c);
   if (c.kind === "who") {
     return `<span class="rs-who${it.by_kind === "app" ? " app" : ""}">${esc(it.by_kind === "app" ? appName : v)}</span>`;
@@ -65,6 +77,9 @@ function display(it, c) {
   return esc(v);
 }
 function title(it, c) {
+  if (c.key === "ds_score" && it.ds_reasons) return `Why: ${it.ds_reasons}`;
+  if (c.key === "fb_pages" && it.fb_pages) return pagesOf(it).map((p) => `${p.name || p.id} (${p.ads} ads)`).join(", ");
+  if (c.key === "store_since" && it.store_since) return `Oldest product created ${it.store_since}${it.products_count ? `, ${it.products_count} products` : ""}`;
   const st = STAMP[c.key];
   if (c.key === "ads_count" && it.ads_capped) return `At least this many: the check stopped at its limit (Apify settings). ${it.ads_by ? `By ${it.ads_by}, ${when(it.ads_at)}` : ""}`;
   if (c.key === "ads_new_today" && it.ads_by === appName) return `Ads that started running today (Meta's US date). By ${appName}, ${when(it.ads_at)}`;
@@ -98,16 +113,18 @@ function shown() {
   const q = query.trim().toLowerCase();
   let rows = items.filter((it) => (!nicheF || it.niche === nicheF)
     && (!byF || (it.by_kind === "app" ? appName : it.by_name) === byF)
+    && (qualF === "" || String(it.qualified ? 1 : 0) === qualF)
     && (!q || [it.name, it.site_url, it.fb_page, it.niche, it.notes, it.by_name, ...Object.values(it.extra || {})]
       .some((v) => String(v ?? "").toLowerCase().includes(q))));
   if (sort.key) {
     const c = cols.find((x) => x.key === sort.key);
     if (c) rows = rows.slice().sort((a, b) => {
-      let x = c.kind === "who" ? (a.by_kind === "app" ? appName : a.by_name) : value(a, c);
-      let y = c.kind === "who" ? (b.by_kind === "app" ? appName : b.by_name) : value(b, c);
+      const sv = (r) => (c.kind === "who" ? (r.by_kind === "app" ? appName : r.by_name)
+        : c.key === "fb_pages" ? (pagesOf(r).length || null) : value(r, c));
+      let x = sv(a), y = sv(b);
       const ex = x === null || x === undefined || x === "", ey = y === null || y === undefined || y === "";
       if (ex || ey) return ex === ey ? 0 : ex ? 1 : -1;          // empty cells always last
-      if (c.kind === "number") return (x - y) * sort.dir;
+      if (typeof x === "number" && typeof y === "number") return (x - y) * sort.dir;
       return String(x).localeCompare(String(y)) * sort.dir;
     });
   }
@@ -122,8 +139,8 @@ function draw() {
   const head = `<thead><tr><th class="rn">#</th>${vc.map((c) => `<th><button data-sort="${esc(c.key)}" title="Sort">${esc(c.label)}${sort.key === c.key ? `<span class="arrow">${sort.dir > 0 ? "▲" : "▼"}</span>` : ""}</button></th>`).join("")}<th></th></tr></thead>`;
   const body = rows.map((it, i) => `<tr data-id="${it.id}"><td class="rn">${i + 1}</td>${vc.map((c) =>
     `<td class="c w-${c.key === "notes" ? "notes" : c.key === "name" ? "name" : c.kind}" data-key="${esc(c.key)}" title="${esc(title(it, c))}">
-      <span class="rs-cell${c.kind === "number" ? " num" : ""}${display(it, c) ? "" : " empty"}">${display(it, c)}</span></td>`).join("")}
-    <td class="rs-acts">${runNote(it)}${it.ads_by === appName ? `<button data-ads="${it.id}" title="The ads EcomVital found">Ads</button>` : ""}${checkBtn(it)}<button data-log="${it.id}" title="Who changed what">History</button>${canEdit() ? `<button data-arch="${it.id}">${archived ? "Restore" : "Archive"}</button>` : ""}</td></tr>`).join("");
+      <span class="rs-cell${c.kind === "number" || ["ds_score", "fb_pages", "nuggets"].includes(c.key) ? " num" : ""}${display(it, c) ? "" : " empty"}">${display(it, c)}</span></td>`).join("")}
+    <td class="rs-acts">${runNote(it)}${!archived && canEdit() && it.domain ? `<button data-analyse="${it.id}" title="Free: Shopify check, store age, dropshipper score, bestsellers and winning products">${it.analysed_at ? "Re-analyse" : "Analyse"}</button>` : ""}${it.nuggets || it.analysed_at ? `<button data-prods="${it.id}">Products</button>` : ""}${it.ads_by === appName ? `<button data-ads="${it.id}" title="The ads EcomVital found">Ads</button>` : ""}${checkBtn(it)}<button data-log="${it.id}" title="Who changed what">History</button>${canEdit() ? `<button data-arch="${it.id}">${archived ? "Restore" : "Archive"}</button>` : ""}</td></tr>`).join("");
   const add = !archived && canEdit() ? `<tr class="rs-new"><td class="rn">+</td>${vc.map((c) =>
     ["name", "site_url", "niche", "fb_page"].includes(c.key)
       ? `<td><input data-new="${c.key}" placeholder="${c.key === "name" ? "Add competitor…" : c.key === "site_url" ? "website.com" : c.key === "niche" ? "Niche" : "facebook.com/…"}"></td>`
@@ -152,7 +169,7 @@ function startEdit(td) {
   if (!canEdit() || archived) return;
   const key = td.dataset.key, id = +td.closest("tr").dataset.id;
   const c = cols.find((x) => x.key === key);
-  if (!c || c.kind === "who") return;
+  if (!c || c.kind === "who" || c.kind === "auto") return;
   const it = items.find((x) => x.id === id);
   const v = value(it, c) ?? "";
   td.classList.add("editing");
@@ -192,7 +209,7 @@ async function save(move, dir) {
   if (next) openAt(next);
 }
 function neighbour(id, key, dir) {
-  const vc = visible().filter((c) => c.kind !== "who"), rows = shown();
+  const vc = visible().filter((c) => c.kind !== "who" && c.kind !== "auto"), rows = shown();
   let ci = vc.findIndex((c) => c.key === key), ri = rows.findIndex((r) => r.id === id);
   if (dir === "right") ci++; else if (dir === "left") ci--; else if (dir === "down") ri++;
   if (ci >= vc.length) { ci = 0; ri++; }
@@ -298,6 +315,19 @@ $("sheet").addEventListener("click", async (e) => {
     catch (err) { toast(err.message, true); }
     return;
   }
+  const an = e.target.closest("[data-analyse]");
+  if (an) {
+    an.disabled = true; an.textContent = "Analysing…";
+    try {
+      const r = await send(`/api/research/items/${an.dataset.analyse}/analyse`);
+      if (r.ok === false) toast(r.error, true);
+      else toast(r.shopify ? `Shopify store: score ${r.score}${r.qualified ? " (dropshipper)" : ""}, ${r.bestsellers} bestsellers read.` : "Not a Shopify store.");
+    } catch (err) { toast(err.message, true); }
+    load();
+    return;
+  }
+  const pr = e.target.closest("[data-prods]");
+  if (pr) { productsFor = +pr.dataset.prods; labelF = ""; switchTab("products"); return; }
   const adsB = e.target.closest("[data-ads]");
   if (adsB) { showAds(+adsB.dataset.ads); return; }
   const lg = e.target.closest("[data-log]");
@@ -323,6 +353,8 @@ let typing;
 $("q").oninput = (e) => { clearTimeout(typing); typing = setTimeout(() => { query = e.target.value; PDUrl.set({ q: query }); draw(); }, 150); };
 $("niche").onchange = (e) => { nicheF = e.target.value; PDUrl.set({ niche: nicheF }); draw(); };
 $("by").onchange = (e) => { byF = e.target.value; PDUrl.set({ by: byF }); draw(); };
+$("qual").value = qualF;
+$("qual").onchange = (e) => { qualF = e.target.value; PDUrl.set({ qual: qualF }); draw(); };
 $("archBtn").onclick = () => { archived = !archived; PDUrl.set({ archived: archived ? "1" : "" }); load(); };
 $("apifyBtn").onclick = () => { const p = $("apifyPop"); p.hidden = !p.hidden; $("colsPop").hidden = true; $("addColPop").hidden = true; if (!p.hidden) apifyPanel(); };
 $("checkAllBtn").onclick = async () => {
@@ -376,4 +408,110 @@ $("addColPop").onsubmit = async (e) => {
   } catch (err) { toast(err.message, true); }
 };
 
-window.pdMe().then(load);
+// ---- Find competitors
+let hunt = null;
+const estimate = () => {
+  if (!hunt) return;
+  const n = document.querySelectorAll("#countries input:checked").length, cap = +$("cap").value || 0, deep = +$("deepMax").value || 0;
+  const usd = (n * cap + deep * hunt.deep_cap) * hunt.price_per_ad;
+  $("huntEst").textContent = `Up to ${n * cap} ads searched + up to ${deep} stores deep-checked (${hunt.deep_cap} ads each): at most about $${usd.toFixed(2)} of Apify credit. Shopify checks, bestsellers and labels are free.`;
+};
+async function loadHunt() {
+  if (window.pdLevel !== "manage") return;
+  try { hunt = await api("/api/research/hunt"); } catch (e) { return; }
+  const c = hunt.config;
+  if (!$("countries").dataset.ready) {
+    $("countries").innerHTML = hunt.countries.map((x) => `<label title="${esc(x.name)}"><input type="checkbox" value="${x.code}"${c.countries.includes(x.code) ? " checked" : ""}> ${x.code === "GB" ? "UK" : x.code}</label>`).join("");
+    $("cap").value = c.cap; $("match").value = c.match; $("deepMax").value = c.deep_max;
+    $("countries").dataset.ready = "1";
+  }
+  $("kwList").innerHTML = c.keywords.map((k) => `<option value="${esc(k)}">`).join("");
+  $("kwChips").innerHTML = c.keywords.map((k) => `<button type="button" data-kw="${esc(k)}">${esc(k)}</button>`).join("");
+  estimate();
+  const run = hunt.hunts.find((h) => h.status === "running");
+  const last = hunt.hunts[0];
+  const res = (h) => `${h.ads ?? 0} ads · ${h.stores ?? 0} stores · ${h.shopify ?? 0} Shopify · <b>${h.qualified ?? 0} dropshippers</b> (${h.new_stores ?? 0} new) · ${h.deep ?? 0} deep-checked · <b>${h.nuggets ?? 0} golden nuggets</b>${h.cost_usd ? ` · $${Number(h.cost_usd).toFixed(3)}` : ""}`;
+  $("huntStatus").innerHTML = run ? `<div class="rs-status">Running “${esc(run.keyword)}”: ${esc(run.stage || "")}</div>`
+    : last ? `<div class="rs-status${last.status === "error" ? " bad" : ""}">Last search “${esc(last.keyword)}” (${esc(when(last.finished_at || last.started_at))}): ${last.status === "error" ? esc(last.error || "stopped") : res(last)}</div>` : "";
+  $("runHunt").disabled = !!run;
+  $("runHunt").textContent = run ? "Running…" : "Run";
+  $("huntMore").innerHTML = `
+    <p class="hint" style="margin:8px 0 0">Saved keywords, one per line (the chips above):</p>
+    <textarea id="kwText">${esc(c.keywords.join("\n"))}</textarea>
+    <div class="rs-pop-actions" style="margin:0 0 8px"><button type="button" class="btn btn-sm" id="kwSave">Save keywords</button></div>
+    <label class="field" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="autoOn"${c.auto ? " checked" : ""} style="width:auto;margin:0"> Search one saved keyword automatically every day at
+      <select id="autoHour" style="width:auto;margin:0">${Array.from({ length: 24 }, (_, h) => `<option value="${h}"${h === c.auto_hour ? " selected" : ""}>${String(h).padStart(2, "0")}:00</option>`).join("")}</select> Hong Kong time (next: “${esc(c.keywords[c.auto_next % Math.max(1, c.keywords.length)] || "")}”)</label>
+    <p class="hint" style="margin:4px 0">Every morning EcomVital also re-reads the bestsellers of every dropshipper found (free), so new products jumping into a top 25 show up the same day.</p>
+    ${hunt.hunts.length ? `<table><tr><th>When</th><th>Keyword</th><th>Countries</th><th>Result</th><th>By</th></tr>${hunt.hunts.map((h) => `<tr><td>${esc(when(h.started_at))}</td><td>${esc(h.keyword)}</td><td>${esc(h.countries.join(", ").replace("GB", "UK"))}</td><td>${h.status === "running" ? esc(h.stage || "running") : h.status === "error" ? `<span class="rs-run bad">${esc(h.error || "")}</span>` : res(h)}</td><td>${esc(h.by_name || "")}</td></tr>`).join("")}</table>` : ""}`;
+  $("kwSave").onclick = async () => {
+    try { await send("/api/research/hunt/settings", { keywords: $("kwText").value.split("\n") }, "PUT"); toast("Keywords saved."); loadHunt(); }
+    catch (e) { toast(e.message, true); }
+  };
+  const saveAuto = async () => {
+    try { await send("/api/research/hunt/settings", { auto: $("autoOn").checked, auto_hour: +$("autoHour").value }, "PUT"); toast("Saved."); loadHunt(); }
+    catch (e) { toast(e.message, true); }
+  };
+  $("autoOn").onchange = saveAuto; $("autoHour").onchange = saveAuto;
+  clearTimeout(window.__huntPoll);
+  if (run) window.__huntPoll = setTimeout(() => { loadHunt(); if (!editing) load(); }, 5000);
+  else if (window.__wasRunning) { window.__wasRunning = false; load(); loadProducts(); }
+  if (run) window.__wasRunning = true;
+}
+$("kwChips").onclick = (e) => { const b = e.target.closest("[data-kw]"); if (b) { $("kw").value = b.dataset.kw; $("kw").focus(); } };
+for (const id of ["cap", "deepMax"]) $(id).oninput = estimate;
+$("countries").onchange = estimate;
+$("runHunt").onclick = async () => {
+  const keyword = $("kw").value.trim();
+  if (!keyword) { toast("Type or pick a keyword first.", true); return; }
+  if (!apifyOn) { toast("Connect Apify first (Apify button).", true); return; }
+  const countries = [...document.querySelectorAll("#countries input:checked")].map((x) => x.value);
+  try {
+    const r = await send("/api/research/hunt", { keyword, countries, cap: +$("cap").value, match: $("match").value, deep_max: +$("deepMax").value });
+    toast(`Searching “${keyword}”… usually 3–10 minutes. You can leave this page.`);
+    loadHunt();
+  } catch (e) { toast(e.message, true); }
+};
+
+// ---- Winning products
+let productsFor = 0;
+const LABELS = [["nugget,compete,proven", "Best picks"], ["nugget", "Golden nuggets"], ["compete", "Compete, same market"], ["proven", "Proven, other market"], ["top", "Top 25"], ["", "Everything"]];
+const LABEL_NAME = { nugget: "Golden nugget", compete: "Compete", proven: "Proven", top: "Top 25", ads: "On Meta" };
+async function loadProducts() {
+  const q = new URLSearchParams(Object.entries({ label: labelF, item: productsFor || "", q: pquery }).filter(([, v]) => v));
+  let d;
+  try { d = await api(`/api/research/products?${q}`); } catch (e) { toast(e.message, true); return; }
+  $("nugCount").textContent = d.counts.nugget || "";
+  const store = productsFor ? items.find((i) => i.id === productsFor) : null;
+  $("labels").innerHTML = (store ? `<button class="on" data-clear>${esc(store.name || store.domain)} ✕</button>` : "")
+    + LABELS.map(([k, n]) => `<button data-label="${k}" class="${labelF === k ? "on" : ""}">${n}${k && !k.includes(",") && d.counts[k] ? ` ${d.counts[k]}` : ""}</button>`).join("");
+  const today = Date.now();
+  $("products").innerHTML = d.products.length ? `<table class="rs-pgrid"><thead><tr><th></th><th>Product</th><th>Store</th><th>Bestseller</th><th>Created</th><th>Meta ads</th><th>Why</th></tr></thead><tbody>
+    ${d.products.map((p) => {
+      const move = p.prev_rank && p.rank ? p.prev_rank - p.rank : null;
+      return `<tr><td>${p.image ? `<img src="${esc(p.image)}&width=120" onerror="this.src='${esc(p.image)}'" alt="" loading="lazy">` : ""}</td>
+      <td><a href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.title)}</a>${p.price ? `<small class="num">${esc(p.price)}</small>` : ""}</td>
+      <td>${esc(p.store || p.domain)}<small>${esc(p.domain)}${p.store_since ? ` · since ${esc(p.store_since)}` : ""}</small></td>
+      <td class="num">${p.rank ? "#" + p.rank : "—"}${move ? `<small>${move > 0 ? "▲" + move : "▼" + -move} since last check</small>` : ""}${p.best_unreliable ? `<small title="This store's best-selling page looks like newest first">rank may not be sales</small>` : ""}</td>
+      <td class="num">${esc(p.created_at || "")}<small>${p.age_days >= 0 ? p.age_days + " days ago" : ""}</small></td>
+      <td class="num">${p.meta_ads || "—"}${p.meta_first ? `<small>since ${esc(p.meta_first)}</small>` : ""}</td>
+      <td>${p.label ? `<span class="rs-lab ${p.label}">${LABEL_NAME[p.label] || p.label}</span>` : ""}<div class="why">${esc(p.why || "")}</div></td></tr>`;
+    }).join("")}</tbody></table>` : `<p class="hint" style="padding:10px">No products here yet. Run Find competitors, or press Analyse on a competitor's row.</p>`;
+}
+function switchTab(t) {
+  tab = t;
+  PDUrl.set({ tab: t === "sheet" ? "" : t });
+  for (const b of document.querySelectorAll("#tabs [data-tab]")) b.classList.toggle("on", b.dataset.tab === t);
+  $("sheetPanel").hidden = t !== "sheet";
+  $("productsPanel").hidden = t !== "products";
+  if (t === "products") loadProducts();
+}
+$("tabs").onclick = (e) => { const b = e.target.closest("[data-tab]"); if (b) { if (b.dataset.tab === "products") productsFor = 0; switchTab(b.dataset.tab); } };
+$("labels").onclick = (e) => {
+  if (e.target.closest("[data-clear]")) { productsFor = 0; loadProducts(); return; }
+  const b = e.target.closest("[data-label]");
+  if (b) { labelF = b.dataset.label; PDUrl.set({ label: labelF }); loadProducts(); }
+};
+let ptyping;
+$("pq").oninput = (e) => { clearTimeout(ptyping); ptyping = setTimeout(() => { pquery = e.target.value; loadProducts(); }, 250); };
+
+window.pdMe().then(async () => { await load(); loadHunt(); switchTab(tab); });

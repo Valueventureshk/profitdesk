@@ -68,6 +68,7 @@ import products_desk
 import adcopy
 import paypal_track
 import research
+import research_hunt
 import timetrack
 import agent
 import slack_client
@@ -165,6 +166,7 @@ async def lifespan(app):
     asyncio.create_task(_co_loop())
     asyncio.create_task(paypal_track.loop())
     asyncio.create_task(research.loop())
+    asyncio.create_task(research_hunt.loop())
     asyncio.create_task(_arrivals_loop())
     for i in db.list_invoices():                     # AI double-checks cut off by a restart
         if i.get("ai_check") == "pending":
@@ -15736,6 +15738,7 @@ class _Static(StaticFiles):
 app.include_router(adcopy.router)          # Product Importer → Ad copy
 app.include_router(paypal_track.router)    # Apps → PayPal Tracking
 app.include_router(research.router)        # Apps → Research
+app.include_router(research_hunt.router)   # Research → Find competitors
 
 
 @app.get("/research", response_class=HTMLResponse)

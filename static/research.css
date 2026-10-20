@@ -70,6 +70,44 @@
 .rs-ad small { display: block; color: var(--faint); font-size: 11.5px; margin-bottom: 2px; }
 .rs-ad .txt { white-space: pre-wrap; max-height: 7.5em; overflow: hidden; }
 .rs-ad.off { opacity: .55; }
+.rs-hunt { margin-bottom: 14px; }
+.rs-hunt-form { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: flex-end; margin-top: 10px; }
+.rs-hunt-form .field { margin: 0; display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
+.rs-hunt-form .field input, .rs-hunt-form .field select { margin: 0; width: auto; }
+.rs-kw input { width: 220px; }
+.rs-countries { display: flex; gap: 8px; flex-wrap: wrap; }
+.rs-countries label { display: flex; gap: 5px; align-items: center; font-size: 13px; padding: 6px 10px; border: 1px solid var(--line, #D6D3CB); border-radius: 999px; cursor: pointer; }
+.rs-countries input { width: auto; margin: 0; }
+.rs-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.rs-chips button, .rs-labels button { font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line, #D6D3CB); background: transparent; color: inherit; cursor: pointer; }
+.rs-chips button:hover { background: var(--bg-soft, #F7F6F2); }
+.rs-labels { display: flex; flex-wrap: wrap; gap: 6px; }
+.rs-labels button.on { background: var(--ink); color: var(--panel); border-color: var(--ink); }
+.rs-status { margin-top: 10px; padding: 10px 12px; border-radius: 8px; background: var(--bg-soft, #F7F6F2); font-size: 13px; }
+.rs-status.bad { color: var(--down); }
+.rs-more { margin-top: 10px; font-size: 13px; }
+.rs-more summary { cursor: pointer; color: var(--muted); }
+.rs-more textarea { width: 100%; min-height: 90px; margin: 6px 0; font: inherit; font-size: 13px; }
+.rs-more table { font-size: 12.5px; margin-top: 8px; }
+.rs-more td, .rs-more th { padding: 3px 12px 3px 0; text-align: left; vertical-align: top; }
+.rs-tabs { display: flex; gap: 6px; margin: 0 0 10px; }
+.rs-tabs button { font: inherit; font-size: 13.5px; padding: 8px 16px; border-radius: 999px; border: 1px solid var(--line, #D6D3CB); background: transparent; color: inherit; cursor: pointer; }
+.rs-tabs button.on { background: var(--ink); color: var(--panel); border-color: var(--ink); }
+.rs-tabs b { font-family: "IBM Plex Mono", monospace; font-weight: 600; margin-left: 4px; }
+.rs-lab { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+.rs-lab.nugget { background: #FEF3C7; color: #92400E; }
+.rs-lab.compete { background: #E8F3EF; color: var(--profit, #1F6F5C); }
+.rs-lab.proven { background: #EFF6FF; color: #1D4ED8; }
+.rs-lab.top, .rs-lab.ads { background: var(--line-soft, #ECEAE4); color: var(--muted); }
+.rs-pgrid { border-collapse: separate; border-spacing: 0; width: 100%; font-size: 13px; }
+.rs-pgrid th, .rs-pgrid td { padding: 8px 10px; border-bottom: 1px solid var(--line-soft, #ECEAE4); text-align: left; vertical-align: top; background: var(--panel, #fff); }
+.rs-pgrid thead th { position: sticky; top: 0; z-index: 1; background: var(--bg-soft, #F7F6F2); font-size: 11.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
+.rs-pgrid img { width: 52px; height: 52px; object-fit: cover; border-radius: 6px; background: var(--line-soft, #ECEAE4); }
+.rs-pgrid .num { font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.rs-pgrid small { display: block; color: var(--faint); font-size: 11.5px; }
+.rs-pgrid .why { font-size: 12px; color: var(--muted); max-width: 300px; }
+.rs-yes { color: var(--profit, #1F6F5C); font-weight: 600; }
+.rs-no { color: var(--faint); }
 @media (max-width: 640px) {
   .rs-bar input[type=search] { width: 100%; }
   .rs-sheet { max-height: none; }

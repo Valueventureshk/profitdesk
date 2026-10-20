@@ -107,8 +107,19 @@ BUILTIN = [
     ("traffic", "Monthly traffic", "number"),
     ("ads_count", "Active ads", "number"),
     ("ads_new_today", "New ads today", "number"),
+    # filled by EcomVital (Find competitors / Analyse store)
+    ("is_shopify", "Shopify", "auto"),
+    ("store_since", "Store since", "auto"),
+    ("ds_score", "Dropship score", "auto"),
+    ("fb_pages", "FB pages", "auto"),
+    ("top_product", "No. 1 bestseller", "auto"),
+    ("nuggets", "Golden nuggets", "auto"),
+    ("found_by", "Found by", "auto"),
     ("notes", "Notes", "text"),
 ]
+AUTO_COLS = {"is_shopify": "INTEGER", "store_since": "TEXT", "products_count": "INTEGER", "ds_score": "INTEGER",
+             "ds_reasons": "TEXT", "fb_pages": "TEXT", "top_product": "TEXT", "nuggets": "INTEGER", "found_by": "TEXT",
+             "qualified": "INTEGER", "best_unreliable": "INTEGER", "analysed_at": "TEXT"}
 EDITABLE = {"name", "site_url", "fb_page", "niche", "traffic", "ads_count", "ads_new_today", "notes"}
 NUMBERS = {"traffic", "ads_count", "ads_new_today"}
 STAMPED = {"traffic": ("traffic_by", "traffic_at"), "ads_count": ("ads_by", "ads_at"),
@@ -123,6 +134,9 @@ def ensure():
             have = {r[1] for r in con.execute("PRAGMA table_info(research_items)")}
             if "ads_capped" not in have:
                 con.execute("ALTER TABLE research_items ADD COLUMN ads_capped INTEGER NOT NULL DEFAULT 0")
+            for col, kind in AUTO_COLS.items():
+                if col not in have:
+                    con.execute(f"ALTER TABLE research_items ADD COLUMN {col} {kind}")
             # a run cut off by a restart never finishes: mark it
             con.execute("UPDATE research_runs SET status = 'error', error = 'Stopped by an app restart; check again.',"
                         " finished_at = ? WHERE status = 'running'", (_now(),))
@@ -468,77 +482,20 @@ def meta_today() -> str:
 
 
 async def check_item(item_id: int, by_name: str) -> dict:
-    """Ask Apify for one competitor's active ads, save them, fill Active ads + New ads today."""
-    ensure()
-    item = get_item(item_id)
-    token = db.get_setting("apify_token")
-    if not token:
-        raise HTTPException(400, "Paste the Apify key first (Apify button at the top).")
-    if not item.get("fb_page"):
-        raise HTTPException(400, "Add the competitor's Facebook page first.")
-    if item_id in _running:
-        return {"ok": True, "running": True}
-    cfg = apify_config()
-    _running.add(item_id)
-    with db._conn() as con:
-        run_id = con.execute("INSERT INTO research_runs (item_id, status, by_name, started_at) VALUES (?, 'running', ?, ?)",
-                             (item_id, by_name, _now())).lastrowid
-    try:
-        async with _sem:
-            run, raw = await apify.run_actor(token, apify.page_input(item["fb_page"], cfg["country"], cfg["cap"]))
-        if raw:
-            db.set_setting("research_apify_sample", json.dumps(raw[0])[:6000])
-        ads = {}
-        for r in raw:
-            a = parse_ad(r)
-            if a["ad_id"] and not r.get("error"):
-                ads[a["ad_id"]] = a
-        live = [a for a in ads.values() if a["active"]]
-        capped = len(raw) >= cfg["cap"]
-        today = meta_today()
-        new_today = sum(1 for a in live if a["start_date"] == today)
-        now = _now()
-        with db._conn() as con:
-            for a in ads.values():
-                con.execute(
-                    "INSERT INTO research_ads (item_id, ad_id, page_name, start_date, active, copies, text, link, first_seen, last_seen)"
-                    " VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(item_id, ad_id) DO UPDATE SET page_name = excluded.page_name,"
-                    " start_date = excluded.start_date, active = excluded.active, copies = excluded.copies, text = excluded.text,"
-                    " link = excluded.link, last_seen = excluded.last_seen",
-                    (item_id, a["ad_id"], a["page_name"], a["start_date"], a["active"], a["copies"], a["text"], a["link"], now, now))
-            if not capped:        # everything came back: ads not in this answer have stopped
-                seen = list(ads)
-                con.execute(f"UPDATE research_ads SET active = 0 WHERE item_id = ? AND ad_id NOT IN ({','.join('?' * len(seen))})"
-                            if seen else "UPDATE research_ads SET active = 0 WHERE item_id = ?", (item_id, *seen))
-            old = con.execute("SELECT ads_count, ads_new_today FROM research_items WHERE id = ?", (item_id,)).fetchone()
-            con.execute("UPDATE research_items SET ads_count = ?, ads_new_today = ?, ads_capped = ?, ads_by = ?, ads_at = ?,"
-                        " updated_at = ?, updated_by = ? WHERE id = ?",
-                        (len(live), new_today, 1 if capped else 0, APP_NAME, now, now, APP_NAME, item_id))
-            if old["ads_count"] != len(live):
-                _log(con, item_id, "ads_count", old["ads_count"], len(live), APP_NAME)
-            if old["ads_new_today"] != new_today:
-                _log(con, item_id, "ads_new_today", old["ads_new_today"], new_today, APP_NAME)
-            con.execute("UPDATE research_runs SET status = 'done', apify_run = ?, ads = ?, capped = ?, cost_usd = ?,"
-                        " finished_at = ? WHERE id = ?", (run.get("id"), len(live), 1 if capped else 0,
-                                                          run.get("usageTotalUsd"), now, run_id))
-        return {"ok": True, "ads": len(live), "new_today": new_today, "capped": capped, "cost_usd": run.get("usageTotalUsd")}
-    except (apify.ApifyError, Exception) as e:
-        msg = str(e) if isinstance(e, apify.ApifyError) else f"Something went wrong: {e}"
-        with db._conn() as con:
-            con.execute("UPDATE research_runs SET status = 'error', error = ?, finished_at = ? WHERE id = ?",
-                        (msg[:500], _now(), run_id))
-        return {"ok": False, "error": msg}
-    finally:
-        _running.discard(item_id)
+    """Ask Apify for one competitor's active ads (its website searched in the Ad Library, so every
+    Facebook page of the store counts; its Facebook page when there's no website)."""
+    import research_hunt
+    return await research_hunt.deep_check([item_id], by_name)
 
 
 async def check_all(by_name: str) -> int:
+    import research_hunt
     ensure()
     with db._conn() as con:
         ids = [r[0] for r in con.execute(
-            "SELECT id FROM research_items WHERE archived = 0 AND fb_page != '' ORDER BY id")]
-    for i in ids:
-        await check_item(i, by_name)
+            "SELECT id FROM research_items WHERE archived = 0 AND (domain != '' OR fb_page != '') ORDER BY id")]
+    for n in range(0, len(ids), 10):
+        await research_hunt.deep_check(ids[n:n + 10], by_name)
     return len(ids)
 
 
@@ -630,8 +587,10 @@ async def api_check(item_id: int, request: Request):
     item = get_item(item_id)
     if not db.get_setting("apify_token"):
         raise HTTPException(400, "Paste the Apify key first (Apify button at the top).")
-    if not item.get("fb_page"):
-        raise HTTPException(400, "Add the competitor's Facebook page first.")
+    if not item.get("fb_page") and not item.get("domain"):
+        raise HTTPException(400, "Add the competitor's website or Facebook page first.")
+    if item_id in _running:
+        return {"ok": True, "running": True}
     asyncio.create_task(check_item(item_id, _who(request)))
     return {"ok": True, "started": True}
 

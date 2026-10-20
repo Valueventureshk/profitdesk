@@ -24,11 +24,44 @@
   </header>
 
   <main class="content">
-    <section class="panel rs-panel">
+    <section class="panel rs-hunt" id="huntPanel" data-manage-only>
+      <div class="rs-hunt-head">
+        <div><strong>Find competitors</strong>
+          <p class="hint" style="margin:2px 0 0">Pick a keyword and press Run. EcomVital searches Meta's Ad Library (active image ads), keeps only Shopify dropshippers, reads their bestsellers and finds the winning products.</p></div>
+      </div>
+      <div class="rs-hunt-form">
+        <label class="field rs-kw">Keyword<input id="kw" list="kwList" placeholder="e.g. 50% off" autocomplete="off"><datalist id="kwList"></datalist></label>
+        <div class="rs-countries" id="countries"></div>
+        <label class="field">Ads per country<input type="number" id="cap" min="10" max="200" step="10" style="width:76px"></label>
+        <label class="field">Match<select id="match"><option value="phrase">Exact phrase</option><option value="any">Any of the words</option></select></label>
+        <label class="field" title="How many of the best new stores get their Meta ads read (about 50 ads each)">Deep-check stores<input type="number" id="deepMax" min="0" max="40" style="width:64px"></label>
+        <button class="btn btn-primary" id="runHunt">Run</button>
+      </div>
+      <div class="rs-chips" id="kwChips"></div>
+      <p class="hint" id="huntEst" style="margin:6px 0 0"></p>
+      <div id="huntStatus"></div>
+      <details class="rs-more"><summary>Keywords, daily auto-search and past searches</summary><div id="huntMore"></div></details>
+    </section>
+
+    <nav class="rs-tabs" id="tabs">
+      <button data-tab="sheet" class="on">Competitors</button>
+      <button data-tab="products">Winning products <b id="nugCount"></b></button>
+    </nav>
+
+    <section class="panel rs-panel" id="productsPanel" hidden>
+      <div class="rs-bar">
+        <input type="search" id="pq" placeholder="Search product or store…">
+        <div class="rs-labels" id="labels"></div>
+      </div>
+      <div class="rs-sheet" id="products"><p class="hint">Loading…</p></div>
+    </section>
+
+    <section class="panel rs-panel" id="sheetPanel">
       <div class="rs-bar">
         <input type="search" id="q" placeholder="Search competitor, website, niche, notes…">
         <select id="niche"><option value="">All niches</option></select>
         <select id="by"><option value="">Anyone</option></select>
+        <select id="qual"><option value="">All stores</option><option value="1">Dropshippers only</option><option value="0">Not dropshippers</option></select>
         <span class="rs-count" id="count"></span>
         <span class="rs-spacer"></span>
         <button class="btn btn-sm" id="colsBtn" title="Show or hide columns on this computer">Columns</button>
