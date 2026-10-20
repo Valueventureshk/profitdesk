@@ -99,8 +99,8 @@ def record(store_id: int, ev: dict, ip: str) -> bool:
         con.execute(
             "INSERT OR IGNORE INTO px_events (id, store_id, client_id, name, at, url, ref, value, currency,"
             " product_id, variant_id, quantity, token, order_id, em_hash, ph_hash, fbp, fbc, ip, ua,"
-            " a_source, a_medium, a_campaign, a_content, a_term, a_id, a_click)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " a_source, a_medium, a_campaign, a_content, a_term, a_id, a_click, got_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (eid, store_id, cid, name, at_s, url, str(ev.get("ref") or "")[:500], value, d.get("currency"),
              _gid_num(d.get("product_id")), _gid_num(d.get("variant_id")), d.get("quantity"),
              (d.get("token") or "")[:80], _gid_num(d.get("order_id")) or None,
@@ -108,7 +108,8 @@ def record(store_id: int, ev: dict, ip: str) -> bool:
              ip, (ev.get("ua") or "")[:400],
              credit.get("utm_source"), credit.get("utm_medium"), credit.get("utm_campaign"), credit.get("utm_content"),
              credit.get("utm_term"), credit.get("utm_id"),
-             next((k for k in CLICK_KEYS if credit.get(k)), None)))
+             next((k for k in CLICK_KEYS if credit.get(k)), None),
+             datetime.now(timezone.utc).isoformat(timespec="seconds")))
     return True
 
 

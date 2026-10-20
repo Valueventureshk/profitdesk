@@ -729,6 +729,7 @@ _ADDED_COLUMNS = {
         ("check_at", "TEXT"),
     ],
     "px_visitors": [("g_click", "TEXT"), ("g_at", "TEXT")],
+    "px_events": [("got_at", "TEXT")],       # when EcomVital received it (UTC; `at` is the shopper's own clock)
     "gconv_uploads": [("adj_value", "REAL"), ("adj_status", "TEXT"), ("adj_at", "TEXT"), ("adj_error", "TEXT")],  # refund / cancel corrections   # the latest Google click (JSON {gclid|gbraid|wbraid}) and when
     "cog_lines": [("single_usd", "REAL"), ("product_id", "TEXT"), ("country", "TEXT"), ("original", "REAL")],  # original: price before discounts   # country: shipping country code   # product_id: Shopify product GID     # the line at single-item prices (bundles show their discount)
     "shipments": [("province", "TEXT"), ("fulfillment_gid", "TEXT"), ("pushed", "TEXT NOT NULL DEFAULT ''"),
