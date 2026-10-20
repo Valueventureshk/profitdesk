@@ -17,6 +17,7 @@ Optional auto-hunt rotates the saved keywords (off by default). Apify use is cap
 """
 import asyncio
 import json
+import math
 import re
 from datetime import date, datetime, timedelta, timezone
 from urllib.parse import parse_qs, quote, urlparse
@@ -421,29 +422,101 @@ async def _read_store(domain: str, proxy) -> dict:
 
 
 def score(names: list, domain: str, texts: list, ctas: list, formats: list, n_pages: int, n_products: int) -> tuple:
-    """Dropshipper score 0-100 and the reasons, from the VAs' signs."""
-    pts, why = 0, []
+    """Dropshipper score 0-100, the reasons, and the yes/no signs (for learning from people's answers)."""
+    pts, why, f = 0, [], {}
     blob = " ".join(names + [domain]).lower()
     squash = re.sub(r"[^a-z]", "", blob)
     place = next((p for p in PLACES if p in squash), None)
+    f["place"] = bool(place)
     if place:
         pts += 25; why.append(f"place in the name ({place})")
     bq = next((b for b in BOUTIQUE if b in blob), None)
+    f["boutique"] = bool(bq)
     if bq:
         pts += 15; why.append(f"“{bq.strip()}” name")
     disc = sum(1 for t in texts if t and DISCOUNT.search(t))
-    if texts and disc / len(texts) >= 0.3:
+    f["discount"] = bool(texts) and disc / len(texts) >= 0.3
+    if f["discount"]:
         pts += 20; why.append("discount / sale wording")
-    if formats and sum(1 for f in formats if f in ("IMAGE", "")) / len(formats) >= 0.8:
+    f["image"] = bool(formats) and sum(1 for x in formats if x in ("IMAGE", "")) / len(formats) >= 0.8
+    if f["image"]:
         pts += 10; why.append("image ads")
-    if ctas and sum(1 for c in ctas if c in GOOD_CTA) / len(ctas) >= 0.5:
+    f["cta"] = bool(ctas) and sum(1 for c in ctas if c in GOOD_CTA) / len(ctas) >= 0.5
+    if f["cta"]:
         pts += 10; why.append("Shop now / Order now buttons")
-    if n_pages >= 2:
+    f["multi_pages"] = n_pages >= 2
+    if f["multi_pages"]:
         pts += 10; why.append(f"{n_pages} Facebook pages")
     pts += 10; why.append("Shopify")
-    if n_products >= 50:
+    f["many_products"] = n_products >= 50
+    if f["many_products"]:
         pts += 5; why.append(f"{n_products} products")
-    return min(pts, 100), why
+    f["huge_catalog"] = n_products >= 500
+    return min(pts, 100), why, f
+
+
+# ---------------------------------------------------------------- learning from people's yes / no
+
+FEATURES = {"place": "place in the name", "boutique": "boutique-type name", "discount": "sale / discount wording",
+            "image": "image ads", "cta": "Shop now / Order now buttons", "multi_pages": "several Facebook pages",
+            "many_products": "50+ products", "huge_catalog": "500+ products", "wasprice_full": "was-price on 90%+ of products",
+            "young": "store under 6 months old"}
+LEARN_MIN = 8                     # answers needed (at least 3 yes and 3 no) before the learned guess is used
+LEARN_PASS = 0.6                  # learned "likely dropshipper" needed to count, when nobody has answered
+
+
+def learn() -> dict:
+    """Naive Bayes over the yes/no signs of every store a person judged."""
+    with db._conn() as con:
+        rows = [(r[0], json.loads(r[1] or "{}")) for r in con.execute(
+            "SELECT verdict, signals FROM research_items WHERE verdict IN ('yes', 'no') AND signals IS NOT NULL")]
+    yes = [f for v, f in rows if v == "yes"]
+    no = [f for v, f in rows if v == "no"]
+    m = {"yes": len(yes), "no": len(no), "ready": len(yes) >= 3 and len(no) >= 3 and len(rows) >= LEARN_MIN,
+         "prior": (len(yes) + 1) / (len(rows) + 2), "feats": {}}
+    for k in FEATURES:
+        cy, cn = sum(1 for f in yes if f.get(k)), sum(1 for f in no if f.get(k))
+        m["feats"][k] = {"p_yes": (cy + 1) / (len(yes) + 2), "p_no": (cn + 1) / (len(no) + 2), "yes": cy, "no": cn}
+    return m
+
+
+def probability(feats: dict, m: dict) -> float:
+    lo = math.log(m["prior"] / (1 - m["prior"]))
+    for k, st in m["feats"].items():
+        if feats.get(k):
+            lo += math.log(st["p_yes"] / st["p_no"])
+        else:
+            lo += math.log((1 - st["p_yes"]) / (1 - st["p_no"]))
+    return 1 / (1 + math.exp(-max(-30, min(30, lo))))
+
+
+def learning_summary() -> dict:
+    m = learn()
+    signs = sorted(((k, st) for k, st in m["feats"].items()),
+                   key=lambda kv: -abs(math.log(kv[1]["p_yes"] / kv[1]["p_no"])))
+    return {"yes": m["yes"], "no": m["no"], "ready": m["ready"], "need": LEARN_MIN,
+            "signs": [{"sign": FEATURES[k], "yes": st["yes"], "no": st["no"],
+                       "points_to": "dropshipper" if st["p_yes"] > st["p_no"] else "not"} for k, st in signs[:6]]}
+
+
+def decide(item: dict, shopify: bool, pts: int, why: list, feats: dict, age: int, share) -> tuple:
+    """(qualified, likely %, signs) from the owner's hard rules, a person's answer, then the learned guess."""
+    feats = {**feats, "wasprice_full": share is not None and share >= 0.9, "young": 0 <= age <= 180}
+    m = learn()
+    prob = probability(feats, m) if m["ready"] else None
+    hard = shopify and QUALIFY_DAYS <= age <= MAX_STORE_DAYS and share is not None and share >= COMPARE_SHARE
+    verdict = item.get("verdict")
+    if verdict == "no":
+        q = 0
+        why.append(f"{item.get('verdict_by') or 'someone'} said: not a dropshipper")
+    elif verdict == "yes":
+        q = 1 if shopify else 0
+        why.append(f"{item.get('verdict_by') or 'someone'} said: dropshipper")
+    else:
+        q = 1 if hard and (prob >= LEARN_PASS if prob is not None else pts >= QUALIFY_SCORE) else 0
+    if prob is not None:
+        why.append(f"likely dropshipper {round(prob * 100)}% (learned from {m['yes'] + m['no']} answers)")
+    return q, prob, feats
 
 
 def _days(d: str, today: date) -> int:
@@ -548,16 +621,15 @@ async def analyse(item_id: int, extra: dict = None, store: dict = None) -> dict:
     n_products = store.get("n_products") or len(store["products"]) or (item.get("products_count") or 0 if kept else 0)
     pages = json.loads(item.get("fb_pages") or "[]")
     names = [item.get("name") or ""] + [p.get("name", "") for p in pages] + sig["names"]
-    pts, why = score(names, store["final_domain"], sig["texts"], sig["ctas"], sig["formats"],
-                     max(len(pages), sig["n_pages"]), n_products)
+    pts, why, feats = score(names, store["final_domain"], sig["texts"], sig["ctas"], sig["formats"],
+                            max(len(pages), sig["n_pages"]), n_products)
     if not store["shopify"]:
         pts, why = 0, ["not a Shopify store" if not store["blocked"] else "the store refused to be read"]
     age = _days(store["since"] or "", today)
     share = store.get("compare_share")
     if share is not None:
         why.append(f"{round(share * 100)}% of products show a was-price")
-    qualified = 1 if (store["shopify"] and QUALIFY_DAYS <= age <= MAX_STORE_DAYS and pts >= QUALIFY_SCORE
-                      and share is not None and share >= COMPARE_SHARE) else 0
+    qualified, prob, feats = decide(item, store["shopify"], pts, why, feats, age, share)
     if store["shopify"] and age > MAX_STORE_DAYS:
         why.append("store older than 2 years: left out")
     elif store["shopify"] and 0 <= age < QUALIFY_DAYS:
@@ -572,10 +644,11 @@ async def analyse(item_id: int, extra: dict = None, store: dict = None) -> dict:
         why.append("couldn't read the store this time, kept the earlier figures")
     with db._conn() as con:
         con.execute("UPDATE research_items SET is_shopify = ?, store_since = ?, products_count = ?, ds_score = ?,"
-                    " ds_reasons = ?, qualified = ?, best_unreliable = ?, analysed_at = ?, ad_signals = ?, compare_share = ?"
-                    " WHERE id = ?",
+                    " ds_reasons = ?, qualified = ?, best_unreliable = ?, analysed_at = ?, ad_signals = ?, compare_share = ?,"
+                    " signals = ?, ai_prob = ? WHERE id = ?",
                     (1 if store["shopify"] else 0, store["since"], n_products, pts, "; ".join(why),
-                     qualified, 1 if store["unreliable"] else 0, rs._now(), json.dumps(sig), share, item_id))
+                     qualified, 1 if store["unreliable"] else 0, rs._now(), json.dumps(sig), share,
+                     json.dumps(feats), prob, item_id))
         con.execute("INSERT OR REPLACE INTO research_seen (domain, shopify, item_id, checked_at) VALUES (?,?,?,?)",
                     (dom, 1 if store["shopify"] else 0, item_id, rs._now()))
     if store["products"]:
@@ -595,14 +668,13 @@ def rescore(item_id: int, extra: dict) -> dict:
     today = datetime.now(HK).date()
     pages = json.loads(item.get("fb_pages") or "[]")
     names = [item.get("name") or ""] + [p.get("name", "") for p in pages] + sig["names"]
-    pts, why = score(names, item.get("domain") or "", sig["texts"], sig["ctas"], sig["formats"],
-                     max(len(pages), sig["n_pages"]), item.get("products_count") or 0)
+    pts, why, feats = score(names, item.get("domain") or "", sig["texts"], sig["ctas"], sig["formats"],
+                            max(len(pages), sig["n_pages"]), item.get("products_count") or 0)
     age = _days(item.get("store_since") or "", today)
     share = item.get("compare_share")
     if share is not None:
         why.append(f"{round(share * 100)}% of products show a was-price")
-    qualified = 1 if (QUALIFY_DAYS <= age <= MAX_STORE_DAYS and pts >= QUALIFY_SCORE
-                      and share is not None and share >= COMPARE_SHARE) else 0
+    qualified, prob, feats = decide(item, True, pts, why, feats, age, share)
     if age > MAX_STORE_DAYS:
         why.append("store older than 2 years: left out")
     elif 0 <= age < QUALIFY_DAYS:
@@ -610,8 +682,8 @@ def rescore(item_id: int, extra: dict) -> dict:
     if share is not None and share < COMPARE_SHARE:
         why.append("most products have no was-price: left out")
     with db._conn() as con:
-        con.execute("UPDATE research_items SET ds_score = ?, ds_reasons = ?, qualified = ?, ad_signals = ? WHERE id = ?",
-                    (pts, "; ".join(why), qualified, json.dumps(sig), item_id))
+        con.execute("UPDATE research_items SET ds_score = ?, ds_reasons = ?, qualified = ?, ad_signals = ?, signals = ?,"
+                    " ai_prob = ? WHERE id = ?", (pts, "; ".join(why), qualified, json.dumps(sig), json.dumps(feats), prob, item_id))
     relabel(item_id)
     return {"shopify": True, "qualified": bool(qualified), "score": pts}
 
@@ -801,6 +873,7 @@ async def hunt(hid: int):
         with db._conn() as con:
             seen = {r[0]: dict(r) for r in con.execute("SELECT * FROM research_seen")}
             known = {r["domain"]: r["id"] for r in con.execute("SELECT id, domain FROM research_items WHERE domain != ''")}
+            rejected = {r[0] for r in con.execute("SELECT domain FROM research_items WHERE verdict = 'no' AND domain != ''")}
         cutoff = (datetime.now(timezone.utc) - timedelta(days=RECHECK_DAYS)).isoformat()
         sem = asyncio.Semaphore(6)
         found_by = f"“{h['keyword']}”"
@@ -808,6 +881,8 @@ async def hunt(hid: int):
         new_ids = []
 
         async def one(dom, s):
+            if dom in rejected:
+                return                                  # someone said it's not a dropshipper
             sn = seen.get(dom)
             if sn and sn["checked_at"] > cutoff and not sn["shopify"]:
                 return                                  # not Shopify, checked recently
@@ -948,7 +1023,7 @@ def api_hunt_info():
         h["countries"] = json.loads(h["countries"] or "[]")
     return {"config": c, "countries": [{"code": k, "name": n} for k, n in COUNTRIES], "hunts": hunts,
             "running": any(h["status"] == "running" for h in hunts), "price_per_ad": PRICE_PER_AD, "deep_cap": DEEP_CAP,
-            "apify": bool(db.get_setting("apify_token")),
+            "apify": bool(db.get_setting("apify_token")), "learning": learning_summary(),
             "rules": {"qualify_days": QUALIFY_DAYS, "max_store_days": MAX_STORE_DAYS, "qualify_score": QUALIFY_SCORE,
                       "compare_share": COMPARE_SHARE}}
 
@@ -1008,6 +1083,36 @@ async def api_analyse(item_id: int, request: Request):
         return await analyse(item_id)
     finally:
         _analysing.discard(item_id)
+
+
+@router.post("/api/research/items/{item_id}/verdict")
+async def api_verdict(item_id: int, payload: dict, request: Request):
+    """{verdict: yes | no | null}. No hides the store (searches skip it); every answer teaches the guess."""
+    rs._level(request, "work")
+    ensure()
+    v = payload.get("verdict")
+    if v not in ("yes", "no", None):
+        raise HTTPException(400, "Answer yes or no.")
+    item = rs.get_item(item_id)
+    who = rs._who(request)
+    with db._conn() as con:
+        con.execute("UPDATE research_items SET verdict = ?, verdict_by = ?, verdict_at = ?, archived = ? WHERE id = ?",
+                    (v, who if v else None, rs._now() if v else None, 1 if v == "no" else 0, item_id))
+        rs._log(con, item_id, "verdict", item.get("verdict"), v or "(cleared)", who)
+    if item.get("is_shopify"):
+        rescore(item_id, {})
+
+    def all_again():           # the guess for every unanswered store follows the new answer
+        with db._conn() as con:
+            ids = [r[0] for r in con.execute(
+                "SELECT id FROM research_items WHERE is_shopify = 1 AND verdict IS NULL AND archived = 0")]
+        for i in ids:
+            try:
+                rescore(i, {})
+            except Exception as e:
+                print(f"Research rescore {i}: {e}")
+    await asyncio.to_thread(all_again)
+    return {"ok": True, "learning": learning_summary(), "item": rs.get_item(item_id)}
 
 
 @router.get("/api/research/debug-store")

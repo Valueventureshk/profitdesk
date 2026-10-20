@@ -101,6 +101,7 @@ _ready = {"ok": False}
 BUILTIN = [
     ("by_name", "Researched by", "who"),
     ("name", "Competitor", "text"),
+    ("verdict", "Dropshipper?", "auto"),     # a person's yes / no (buttons in the cell), else EcomVital's learned guess
     ("site_url", "Website", "link"),
     ("fb_page", "Facebook page", "link"),
     ("niche", "Niche", "text"),
@@ -120,7 +121,9 @@ BUILTIN = [
 AUTO_COLS = {"is_shopify": "INTEGER", "store_since": "TEXT", "products_count": "INTEGER", "ds_score": "INTEGER",
              "ds_reasons": "TEXT", "fb_pages": "TEXT", "top_product": "TEXT", "nuggets": "INTEGER", "found_by": "TEXT",
              "qualified": "INTEGER", "best_unreliable": "INTEGER", "analysed_at": "TEXT",
-             "ad_signals": "TEXT", "compare_share": "REAL"}       # what its ads showed (names, wording, buttons, formats), kept for re-scoring
+             "ad_signals": "TEXT", "compare_share": "REAL",
+             "verdict": "TEXT", "verdict_by": "TEXT", "verdict_at": "TEXT",   # a person's call: yes | no (dropshipper)
+             "signals": "TEXT", "ai_prob": "REAL"}       # what its ads showed (names, wording, buttons, formats), kept for re-scoring
 EDITABLE = {"name", "site_url", "fb_page", "niche", "traffic", "ads_count", "ads_new_today", "notes"}
 NUMBERS = {"traffic", "ads_count", "ads_new_today"}
 STAMPED = {"traffic": ("traffic_by", "traffic_at"), "ads_count": ("ads_by", "ads_at"),

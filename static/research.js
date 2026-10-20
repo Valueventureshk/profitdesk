@@ -57,6 +57,15 @@ function shortLink(url) {
 const pagesOf = (it) => { try { return JSON.parse(it.fb_pages || "[]"); } catch { return []; } };
 function autoDisplay(it, c) {
   const v = it[c.key];
+  if (c.key === "verdict") {
+    if (!v && canEdit() && it.is_shopify && !archived) {
+      const guess = it.ai_prob !== null && it.ai_prob !== undefined ? `<small title="EcomVital's guess, learned from your answers">likely ${Math.round(it.ai_prob * 100)}%</small>` : "";
+      return `<span class="rs-vbtns"><button data-verdict="yes" data-id="${it.id}" title="It's a dropshipper: keep it, its products count">✓</button><button data-verdict="no" data-id="${it.id}" title="Not a dropshipper: hide it, searches skip it">✗</button></span>${guess}`;
+    }
+    if (v === "yes") return `<span class="rs-yes" title="${esc(it.verdict_by || "")}">✓ Yes</span>`;
+    if (v === "no") return `<span class="rs-no" title="${esc(it.verdict_by || "")}">✗ No</span>`;
+    return it.ai_prob !== null && it.ai_prob !== undefined ? `<span class="rs-no" title="EcomVital's guess, learned from your answers">likely ${Math.round(it.ai_prob * 100)}%</span>` : "";
+  }
   if (c.key === "is_shopify") return v === null || v === undefined ? "" : v ? `<span class="rs-yes">✓ Shopify</span>` : `<span class="rs-no">No</span>`;
   if (c.key === "store_since") { if (!v) return ""; const d = Math.round((Date.now() - new Date(v + "T00:00")) / 864e5); return `${esc(v)}<small>${d} days</small>`; }
   if (c.key === "ds_score") return v === null || v === undefined ? "" : `${v}${it.qualified ? ` <span class="rs-yes" title="Looks like a dropshipper">✓</span>` : ""}`;
@@ -140,7 +149,7 @@ function draw() {
   const body = rows.map((it, i) => `<tr data-id="${it.id}"><td class="rn">${i + 1}</td>${vc.map((c) =>
     `<td class="c w-${c.key === "notes" ? "notes" : c.key === "name" ? "name" : c.kind}" data-key="${esc(c.key)}" title="${esc(title(it, c))}">
       <span class="rs-cell${c.kind === "number" || ["ds_score", "fb_pages", "nuggets"].includes(c.key) ? " num" : ""}${display(it, c) ? "" : " empty"}">${display(it, c)}</span></td>`).join("")}
-    <td class="rs-acts">${runNote(it)}${!archived && canEdit() && it.domain ? `<button data-analyse="${it.id}" title="Free: Shopify check, store age, dropshipper score, bestsellers and winning products">${it.analysed_at ? "Re-analyse" : "Analyse"}</button>` : ""}${it.nuggets || it.analysed_at ? `<button data-prods="${it.id}">Products</button>` : ""}${it.ads_by === appName ? `<button data-ads="${it.id}" title="The ads EcomVital found">Ads</button>` : ""}${checkBtn(it)}<button data-log="${it.id}" title="Who changed what">History</button>${canEdit() ? `<button data-arch="${it.id}">${archived ? "Restore" : "Archive"}</button>` : ""}</td></tr>`).join("");
+    <td class="rs-acts">${it.verdict ? verdictBtns(it) : ""}${runNote(it)}${!archived && canEdit() && it.domain ? `<button data-analyse="${it.id}" title="Free: Shopify check, store age, dropshipper score, bestsellers and winning products">${it.analysed_at ? "Re-analyse" : "Analyse"}</button>` : ""}${it.nuggets || it.analysed_at ? `<button data-prods="${it.id}">Products</button>` : ""}${it.ads_by === appName ? `<button data-ads="${it.id}" title="The ads EcomVital found">Ads</button>` : ""}${checkBtn(it)}<button data-log="${it.id}" title="Who changed what">History</button>${canEdit() ? `<button data-arch="${it.id}">${archived ? "Restore" : "Archive"}</button>` : ""}</td></tr>`).join("");
   const add = !archived && canEdit() ? `<tr class="rs-new"><td class="rn">+</td>${vc.map((c) =>
     ["name", "site_url", "niche", "fb_page"].includes(c.key)
       ? `<td><input data-new="${c.key}" placeholder="${c.key === "name" ? "Add competitor…" : c.key === "site_url" ? "website.com" : c.key === "niche" ? "Niche" : "facebook.com/…"}"></td>`
@@ -149,6 +158,12 @@ function draw() {
   $("sheet").innerHTML = `<table class="rs-grid">${head}<tbody>${body}${empty}${add}</tbody></table>`;
 }
 
+function verdictBtns(it) {
+  if (!canEdit() || !it.is_shopify) return "";
+  if (it.verdict) return `<button data-verdict="" data-id="${it.id}" title="Clear the answer">Undo ${it.verdict === "yes" ? "✓" : "✗"}</button>`;
+  return `<button data-verdict="yes" data-id="${it.id}" title="It's a dropshipper: keep it, its products count">✓ Dropshipper</button>`
+    + `<button data-verdict="no" data-id="${it.id}" title="Not a dropshipper: hide it, searches skip it">✗ Not</button>`;
+}
 function runNote(it) {
   const c = it.check;
   if (!c) return "";
@@ -315,6 +330,19 @@ $("sheet").addEventListener("click", async (e) => {
     catch (err) { toast(err.message, true); }
     return;
   }
+  const vb = e.target.closest("[data-verdict]");
+  if (vb) {
+    const v = vb.dataset.verdict || null;
+    vb.disabled = true;
+    try {
+      const r = await send(`/api/research/items/${vb.dataset.id}/verdict`, { verdict: v });
+      const l = r.learning;
+      toast(v === "no" ? "Hidden. Searches will skip this store." : v === "yes" ? "Marked as a dropshipper." : "Answer cleared.");
+      if (l && !l.ready && v) setTimeout(() => toast(`Learning: ${l.yes} yes, ${l.no} no so far. EcomVital starts guessing at ${l.need} answers (3+ of each).`), 2600);
+    } catch (err) { toast(err.message, true); }
+    load(); loadHunt();
+    return;
+  }
   const an = e.target.closest("[data-analyse]");
   if (an) {
     an.disabled = true; an.textContent = "Analysing…";
@@ -428,6 +456,10 @@ async function loadHunt() {
   $("kwList").innerHTML = c.keywords.map((k) => `<option value="${esc(k)}">`).join("");
   $("kwChips").innerHTML = c.keywords.map((k) => `<button type="button" data-kw="${esc(k)}">${esc(k)}</button>`).join("");
   estimate();
+  const L = hunt.learning;
+  $("huntLearn").innerHTML = L ? (L.ready
+    ? `<b>Learning from your answers</b> (${L.yes} dropshippers, ${L.no} not): EcomVital now judges new stores the way you do. Strongest signs: ${L.signs.slice(0, 4).map((x) => `${esc(x.sign)} (${x.yes} of ${L.yes} yes, ${x.no} of ${L.no} no)`).join("; ")}.`
+    : `<b>Teach it:</b> press ✓ Dropshipper or ✗ Not on stores in the sheet. ${L.yes} yes and ${L.no} no so far; from ${L.need} answers (3+ of each) EcomVital judges new stores the way you do.`) : "";
   const run = hunt.hunts.find((h) => h.status === "running");
   const last = hunt.hunts[0];
   const res = (h) => `${h.ads ?? 0} ads · ${h.stores ?? 0} stores · ${h.shopify ?? 0} Shopify · <b>${h.qualified ?? 0} dropshippers</b> (${h.new_stores ?? 0} new) · ${h.deep ?? 0} deep-checked · <b>${h.nuggets ?? 0} golden nuggets</b>${h.cost_usd ? ` · $${Number(h.cost_usd).toFixed(3)}` : ""}`;
