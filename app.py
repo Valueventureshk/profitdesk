@@ -15287,19 +15287,31 @@ def api_adv_styles_save(request: Request, payload: dict):
          "css": str(payload.get("css") or "")[:60000], "guide": str(payload.get("guide") or "")[:6000],
          "sample": payload.get("sample") if isinstance(payload.get("sample"), dict) else None,
          "accent": str(payload.get("accent") or "")[:20] or None,
+         "kind": "html" if payload.get("kind") == "html" else "blocks",
+         "template": str(payload.get("template") or "")[:300000] if payload.get("kind") == "html" else None,
          "made_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
     if "</style" in s["css"].lower():
         raise HTTPException(400, "The CSS can't contain a closing style tag.")
-    lib = [x for x in advertorial.custom_styles() if x["id"] != sid] + [s]
-    db.set_setting("advertorial_styles", json.dumps(lib))
+    try:
+        mine = json.loads(db.get_setting("advertorial_styles") or "[]")
+        hidden = json.loads(db.get_setting("advertorial_styles_hidden") or "[]")
+    except ValueError:
+        mine, hidden = [], []
+    db.set_setting("advertorial_styles", json.dumps([x for x in mine if x.get("id") != sid] + [s]))
+    db.set_setting("advertorial_styles_hidden", json.dumps([h for h in hidden if h != sid]))
     return {"ok": True, "id": sid, "preview": f"/tasks/styles/{sid}/preview"}
 
 
 @app.delete("/api/tasks/kit/styles/{style_id}")
 def api_adv_styles_delete(request: Request, style_id: str):
     _need_level(request, "tasks", "manage")
-    lib = [x for x in advertorial.custom_styles() if x["id"] != style_id]
-    db.set_setting("advertorial_styles", json.dumps(lib))
+    try:
+        mine = json.loads(db.get_setting("advertorial_styles") or "[]")
+        hidden = json.loads(db.get_setting("advertorial_styles_hidden") or "[]")
+    except ValueError:
+        mine, hidden = [], []
+    db.set_setting("advertorial_styles", json.dumps([x for x in mine if x.get("id") != style_id]))
+    db.set_setting("advertorial_styles_hidden", json.dumps(sorted(set(hidden) | {style_id})))
     return {"ok": True}
 
 
@@ -15548,11 +15560,21 @@ async def _adv_context(t: dict, brief: dict, result: dict) -> dict:
     ps = brief.get("page_style")
     lib = advertorial.style_of(ps)
     if lib:
-        out["page_style"] = {"id": ps, "name": lib.get("name"), "chosen_by_staff": True,
-                             "how_pages_in_this_style_are_built": lib.get("guide") or "",
-                             "structure_to_follow": lib.get("sample") or advertorial.PLACEHOLDER_PAGE,
-                             "rule": "Write the page in exactly this structure (same block types, order and amount; the "
-                                     "placeholders show what goes where). EcomVital applies the style's look when saving."}
+        if lib.get("kind") == "html":
+            out["page_style"] = {"id": ps, "name": lib.get("name"), "chosen_by_staff": True, "kind": "template",
+                                 "how_pages_in_this_style_are_built": lib.get("guide") or "",
+                                 "template": lib.get("template") or "",
+                                 "rule": "Fill this template: keep every tag, class and the order exactly; replace every ✎ "
+                                         "placeholder with the real text for this product and story (similar length); put "
+                                         "images in the img src as file:<id> or https links; leave link hrefs as they are "
+                                         "(EcomVital points them at the landing page). Save with advertorial_save page = "
+                                         "{title, html}. Prices: write the real prices from product_facts."}
+        else:
+            out["page_style"] = {"id": ps, "name": lib.get("name"), "chosen_by_staff": True,
+                                 "how_pages_in_this_style_are_built": lib.get("guide") or "",
+                                 "structure_to_follow": lib.get("sample") or advertorial.PLACEHOLDER_PAGE,
+                                 "rule": "Write the page in exactly this structure (same block types, order and amount; the "
+                                         "placeholders show what goes where). EcomVital applies the style's look when saving."}
     else:
         out["page_style"] = (ps if advertorial.known_style(ps) else "auto: pick the theme that suits the product")
     out["house_sample_primary_text"] = {"text": advertorial.HOUSE_SAMPLE, "words": advertorial.SAMPLE_WORDS,
@@ -15664,10 +15686,18 @@ async def _adv_save(tid: int, args: dict, user: dict) -> dict:
             page = json.loads(page)
         except ValueError:
             return {"error": "page must be the page content as an object (see the tool's description)."}
-    lacking = advertorial.check(page)
+    b_ = tasks.loads(t["brief"])
+    tpl = advertorial.style_of(b_.get("page_style"))
+    tpl = tpl if (tpl or {}).get("kind") == "html" else None
+    if tpl:                                              # template style: the AI sends the filled-in template as page.html
+        if not str(page.get("html") or "").strip():
+            return {"error": "This task's page style is a template: send page = {title, html: the template from task_get "
+                             "(page_style.template) with every ✎ placeholder replaced, same tags / classes / order}."}
+        lacking = advertorial.template_check(page["html"])
+    else:
+        lacking = advertorial.check(page)
     if lacking:
         return {"error": "The page still needs: " + ", ".join(lacking) + "."}
-    b_ = tasks.loads(t["brief"])
     issues = advertorial.copy_issues(page, str(args.get("primary_text") or ""), b_)
     if issues:
         return {"error": "Not saved yet. Fix first (the owner's standing rules): " + "; ".join(issues) + "."}
@@ -15697,15 +15727,16 @@ async def _adv_save(tid: int, args: dict, user: dict) -> dict:
     cache = state.get("images") or {}
     images = {}
     try:
-        for ref in advertorial.image_refs(page):
+        for ref in (advertorial.template_refs(page["html"]) if tpl else advertorial.image_refs(page)):
             images[ref] = await _adv_image_link(st, tid, ref, cache)
     except Exception as e:
         _adv_keep(tid, {**state, "images": cache})
         return {"error": f"Image problem: {e}"}
-    if prod and not (page.get("card") or {}).get("image") and prod["images"]:
+    if not tpl and prod and not (page.get("card") or {}).get("image") and prod["images"]:
         page.setdefault("card", {})["image"] = prod["images"][0]
         images[prod["images"][0]] = prod["images"][0]
-    body = advertorial.render(page, store=fx_["store"]["name"], link=advertorial.send_to(brief), images=images,
+    body = advertorial.render_template(tpl, page["html"], store=fx_["store"]["name"], link=advertorial.send_to(brief),
+                                       images=images) if tpl else advertorial.render(page, store=fx_["store"]["name"], link=advertorial.send_to(brief), images=images,
                               price=prod["price"] if prod else "", was=prod["compare_at_price"] if prod else "",
                               rating=str(brief.get("review_rating") or ""), count=str(brief.get("review_count") or ""),
                               style=lib_style)

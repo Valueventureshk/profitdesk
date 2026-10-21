@@ -155,12 +155,28 @@ STYLES = {"letter": "Classic letter (clean, like Perth's first page)", "editoria
 # The style library (setting advertorial_styles): page designs made from real pages (ours or competitors'), each a
 # base theme + its own CSS (scoped to .mb-lp.st-<id>) + a guide telling the AI how pages in that style are built.
 # Only the look is kept: every word is a placeholder and images are grey boxes until the AI writes the real page.
+_BUNDLED = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "advertorial_styles.json")
+
+
 def custom_styles() -> list:
+    """The library: styles saved in the app (setting) + the ones shipped in assets/advertorial_styles.json,
+    less any removed (setting advertorial_styles_hidden)."""
     try:
         got = json.loads(db.get_setting("advertorial_styles") or "[]")
     except ValueError:
         got = []
-    return [s for s in got if isinstance(s, dict) and s.get("id")]
+    try:
+        hidden = set(json.loads(db.get_setting("advertorial_styles_hidden") or "[]"))
+    except ValueError:
+        hidden = set()
+    try:
+        with open(_BUNDLED) as fh:
+            bundled = json.load(fh)
+    except (OSError, ValueError):
+        bundled = []
+    mine = [s for s in got if isinstance(s, dict) and s.get("id")]
+    ids = {s["id"] for s in mine}
+    return [s for s in bundled + mine if s.get("id") not in hidden and (s in mine or s["id"] not in ids)]
 
 
 def all_styles() -> dict:
@@ -175,6 +191,60 @@ def style_of(key) -> dict | None:
 
 def known_style(key) -> bool:
     return bool(key) and key in all_styles()
+
+
+# ---- template styles (kind "html"): a real page kept exactly (its own HTML + CSS), every word replaced by a "✎ …"
+# placeholder and every photo by a grey box. The AI fills the template (same tags, classes and order) and sends the
+# HTML; EcomVital cleans it, points every link at the landing page, copies images into Shopify and adds the
+# "advertisement" line and (when the template has none) the mobile shop bar.
+MARK = "✎"
+_BAD_TAGS = re.compile(r"<\s*(script|style|iframe|object|embed|form|input|textarea|select|link|meta|base)\b.*?(?:</\s*\1\s*>|/?>)",
+                       re.I | re.S)
+_ON_ATTR = re.compile(r"\s+on[a-z]+\s*=\s*(\"[^\"]*\"|'[^']*'|[^\s>]+)", re.I)
+
+
+def clean_html(s: str) -> str:
+    s = re.sub(r"<!--.*?-->", "", str(s or ""), flags=re.S)
+    s = _BAD_TAGS.sub("", s)
+    s = _ON_ATTR.sub("", s)
+    return re.sub(r"javascript:", "", s, flags=re.I)
+
+
+def template_refs(s: str) -> list:
+    return [m for m in re.findall(r'<img\b[^>]*?\bsrc\s*=\s*"([^"]+)"', str(s or ""), re.I) if not m.startswith("data:")]
+
+
+def template_check(s: str) -> list:
+    out = []
+    if not re.search(r"<h1\b", s or "", re.I):
+        out.append("a headline (<h1>)")
+    if not re.search(r"<a\b", s or "", re.I):
+        out.append("a button (<a>)")
+    left = len(re.findall(MARK, s or ""))
+    if left:
+        out.append(f"real text in place of the {left} remaining ✎ placeholders")
+    grey = len(re.findall(r'<img\b[^>]*?\bsrc\s*=\s*"data:image/svg', s or "", re.I))
+    if grey:
+        out.append(f"real images (file:<id> or https links) in place of the {grey} grey placeholder photos")
+    return out
+
+
+def render_template(style: dict, body: str, *, store: str, link: str, images: dict) -> str:
+    body = clean_html(body)
+    body = re.sub(r'(<img\b[^>]*?\bsrc\s*=\s*")([^"]+)(")',
+                  lambda m: m.group(1) + (html.escape(images[html.unescape(m.group(2))], quote=True)
+                                          if html.unescape(m.group(2)) in images else m.group(2)) + m.group(3),
+                  body, flags=re.I)
+    body = re.sub(r'(<a\b[^>]*?\bhref\s*=\s*")[^"]*(")', lambda m: m.group(1) + html.escape(link, quote=True) + m.group(2),
+                  body, flags=re.I)
+    disc = (f'<p style="text-align:center;font:12px/1.5 Helvetica,Arial,sans-serif;color:#8a857c;margin:18px 0 0">'
+            f'This page is an advertisement for {html.escape(store.strip())}.</p>')
+    sticky = ""
+    if "sticky" not in body.lower():
+        ac = style.get("accent") or ACCENT
+        sticky = (f'<div class="mb-lp" style="padding:0;margin:0;max-width:none"><a class="lp-sticky" href="{html.escape(link, quote=True)}">'
+                  f'Shop Now &rarr;</a></div><style>{STICKY_CSS.replace("ACCENT", ac)}</style>')
+    return f"<style>{style.get('css') or ''}</style>\n{body}\n{disc}{sticky}"
 
 
 _PH = ("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='800' height='{h}'>"
@@ -205,6 +275,8 @@ PLACEHOLDER_PAGE = {
 def preview(key: str, store: str = "Your store") -> str:
     """A style with placeholder text and grey image boxes, as staff see it before picking."""
     s = style_of(key)
+    if s and s.get("kind") == "html":
+        return render_template(s, s.get("template") or "", store=store, link="#", images={})
     page = dict((s or {}).get("sample") or PLACEHOLDER_PAGE)
     if not s:
         page["theme"] = key if key in THEMES else "letter"
