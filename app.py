@@ -5776,71 +5776,94 @@ async def _track_page_base(store, client) -> str | None:
 async def _scm_links():
     """Like Parcel Panel: point each shipment's tracking link (what Shopify shows on the order status page and in
     emails) at the store's own EcomVital tracking page instead of the supplier's 17TRACK / carrier link.
-    Fulfilments of the last 30 days, all their numbers at once, no customer email. Setting scm_link:<id> = "0" stops it."""
+    Fulfilments of the last 30 days, newest first, all their numbers at once, no customer email; stores side by side.
+    Setting scm_link:<id> = "0" stops it. What happened per store is kept in setting scm_links_last."""
+    if _scm_links_lock.locked():
+        return {"running": True}
+    async with _scm_links_lock:
+        stores = [s for s in db.list_stores() if not demo.is_demo(s) and s.get("access_token")
+                  and db.get_setting(f"scm_link:{s['id']}") != "0"]
+        got = await asyncio.gather(*[_scm_links_store(s) for s in stores], return_exceptions=True)
+        report = {s["name"].strip(): (str(g)[:200] if isinstance(g, Exception) else g) for s, g in zip(stores, got)}
+        db.set_setting("scm_links_last", json.dumps({"at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                                                     "stores": report}))
+        return report
+
+
+_scm_links_lock = asyncio.Lock()
+
+
+async def _scm_links_store(store) -> str:
     since = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
-    report = {}
-    for store in db.list_stores():
-        if demo.is_demo(store) or not store.get("access_token") or db.get_setting(f"scm_link:{store['id']}") == "0":
+    with db._conn() as con:
+        rows = [dict(r) for r in con.execute(
+            "SELECT fulfillment_gid, number, company, tracking_url FROM shipments WHERE store_id = ? AND cancelled = 0"
+            " AND number != '' AND fulfillment_gid IS NOT NULL AND COALESCE(fulfilled_at, order_at) >= ?"
+            " ORDER BY COALESCE(fulfilled_at, order_at) DESC",
+            (store["id"], since))]
+    todo = {}
+    for r in rows:
+        todo.setdefault(r["fulfillment_gid"], []).append(r)
+    todo = {g: ps for g, ps in todo.items() if any("/apps/track" not in (p["tracking_url"] or "") for p in ps)}
+    name = store["name"].strip()
+    if not todo:
+        return "all links already ours"
+    client = ShopifyClient(store["shop_domain"], store["access_token"])
+    base = await _track_page_base(store, client)
+    if not base:
+        return "skipped: no tracking page on this store"
+    try:
+        fails = json.loads(db.get_setting(f"scm_link_fail:{store['id']}") or "{}")
+    except ValueError:
+        fails = {}
+    done, last_err = 0, ""
+    for gid, ps in list(todo.items())[:600]:
+        if fails.get(gid, 0) >= 3:
             continue
-        with db._conn() as con:
-            rows = [dict(r) for r in con.execute(
-                "SELECT fulfillment_gid, number, company, tracking_url FROM shipments WHERE store_id = ? AND cancelled = 0"
-                " AND number != '' AND fulfillment_gid IS NOT NULL AND COALESCE(fulfilled_at, order_at) >= ?"
-                " ORDER BY COALESCE(fulfilled_at, order_at) DESC",
-                (store["id"], since))]
-        todo = {}
-        for r in rows:
-            todo.setdefault(r["fulfillment_gid"], []).append(r)
-        todo = {g: ps for g, ps in todo.items() if any("/apps/track" not in (p["tracking_url"] or "") for p in ps)}
-        name = store["name"].strip()
-        if not todo:
-            report[name] = "all links already ours"
-            continue
-        client = ShopifyClient(store["shop_domain"], store["access_token"])
-        base = await _track_page_base(store, client)
-        if not base:
-            report[name] = "skipped: no tracking page on this store"
-            continue
+        nums = list(dict.fromkeys(p["number"] for p in ps))
+        urls = [f"{base}?nums={_q(n)}" for n in nums]
+        t = {"number": nums[0], "url": urls[0]} if len(nums) == 1 else {"numbers": nums, "urls": urls}
+        if ps[0]["company"]:
+            t["company"] = ps[0]["company"]
         try:
-            fails = json.loads(db.get_setting(f"scm_link_fail:{store['id']}") or "{}")
-        except ValueError:
-            fails = {}
-        done, last_err = 0, ""
-        for gid, ps in list(todo.items())[:300]:
-            if fails.get(gid, 0) >= 3:
-                continue
-            nums = list(dict.fromkeys(p["number"] for p in ps))
-            urls = [f"{base}?nums={_q(n)}" for n in nums]
-            t = {"number": nums[0], "url": urls[0]} if len(nums) == 1 else {"numbers": nums, "urls": urls}
-            if ps[0]["company"]:
-                t["company"] = ps[0]["company"]
-            try:
-                got = (await client.gql(TRACK_LINK_UPDATE, {"id": gid, "t": t}))["fulfillmentTrackingInfoUpdate"]
-                err = "; ".join(e["message"] for e in got["userErrors"])
-            except Exception as e:
-                err = str(e)[:200]
-            if err:
-                fails[gid] = fails.get(gid, 0) + 1
-                last_err = err[:160]
-            else:
-                done += 1
-                with db._conn() as con:
-                    for n, u in zip(nums, urls):
-                        con.execute("UPDATE shipments SET tracking_url = ? WHERE store_id = ? AND fulfillment_gid = ? AND number = ?",
-                                    (u, store["id"], gid, n))
-            await asyncio.sleep(0.4)
-        db.set_setting(f"scm_link_fail:{store['id']}", json.dumps(fails))
-        report[name] = f"{done} switched, {len(todo) - done} left" + (f", last error: {last_err}" if last_err else "")
-        if done:
-            print(f"Tracking links: {done} fulfilments of {name} now open its tracking page", flush=True)
-    return report
+            got = (await client.gql(TRACK_LINK_UPDATE, {"id": gid, "t": t}))["fulfillmentTrackingInfoUpdate"]
+            err = "; ".join(e["message"] for e in got["userErrors"])
+        except Exception as e:
+            err = str(e)[:200]
+        if err:
+            fails[gid] = fails.get(gid, 0) + 1
+            last_err = err[:160]
+        else:
+            done += 1
+            with db._conn() as con:
+                for n, u in zip(nums, urls):
+                    con.execute("UPDATE shipments SET tracking_url = ? WHERE store_id = ? AND fulfillment_gid = ? AND number = ?",
+                                (u, store["id"], gid, n))
+        await asyncio.sleep(0.3)
+    db.set_setting(f"scm_link_fail:{store['id']}", json.dumps(fails))
+    if done:
+        print(f"Tracking links: {done} fulfilments of {name} now open its tracking page", flush=True)
+    return f"{done} switched, {len(todo) - done} left" + (f", last error: {last_err}" if last_err else "")
 
 
 @app.post("/api/scm/links")
 async def api_scm_links(request: Request):
-    """Owner: run the tracking-link switch now and see what happened per store."""
+    """Owner: start the tracking-link switch now (in the background); GET shows the last run per store."""
     _owner_only(request)
-    return await _scm_links()
+    if _scm_links_lock.locked():
+        return {"running": True}
+    asyncio.create_task(_scm_links())
+    return {"started": True}
+
+
+@app.get("/api/scm/links")
+def api_scm_links_last(request: Request):
+    _owner_only(request)
+    try:
+        last = json.loads(db.get_setting("scm_links_last") or "{}")
+    except ValueError:
+        last = {}
+    return {**last, "running": _scm_links_lock.locked()}
 
 
 async def _scm_run():
