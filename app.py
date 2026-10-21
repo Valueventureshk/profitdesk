@@ -15605,7 +15605,7 @@ async def _adv_context(t: dict, brief: dict, result: dict) -> dict:
                                  "rule": "Fill this template: keep every tag, class and the order exactly; replace every ✎ "
                                          "placeholder with the real text for this product and story (similar length); put "
                                          "images in the img src as file:<id> or https links; leave link hrefs as they are "
-                                         "(EcomVital points them at the landing page). Save with advertorial_save page = "
+                                         "(EcomVital points them at the landing page). The sticky bar button: a gentle suggestion like Browse the collection, never Shop now. Save with advertorial_save page = "
                                          "{title, html}. Prices: write the real prices from product_facts."}
         else:
             out["page_style"] = {"id": ps, "name": lib.get("name"), "chosen_by_staff": True,
@@ -15662,6 +15662,7 @@ async def _adv_context(t: dict, brief: dict, result: dict) -> dict:
                                      "placeholder with our own text for this product and story (similar length, the "
                                      "competitor's angle and beats, never their sentences); put our images in the img src as "
                                      "file:<id> or https links; leave link hrefs (EcomVital points them at the landing page). "
+                                     "The sticky bar's button: a gentle suggestion like 'Browse the collection' or 'See the products', never 'Shop now'. "
                                      "Save with advertorial_save page = {title, html}."
                                      + (" Note: much of their look comes from their theme files, which aren't copied, so the "
                                         "page will be plainer than theirs." if comp_tpl.get("weak") else "")}

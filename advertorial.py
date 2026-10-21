@@ -118,8 +118,30 @@ STICKY_CSS = """
 @media(max-width:749px){.mb-lp{padding-bottom:96px !important;}
   .mb-lp .lp-sticky{display:block;position:fixed;left:12px;right:12px;bottom:max(12px,env(safe-area-inset-bottom));z-index:2147483000;
     text-align:center;background:ACCENT;color:#fff !important;text-decoration:none !important;font:700 17px/1.2 Helvetica,Arial,sans-serif;
-    letter-spacing:.02em;padding:16px 18px;border-radius:12px;box-shadow:0 6px 22px rgba(0,0,0,.28);}}
+    letter-spacing:.02em;padding:16px 18px;border-radius:12px;box-shadow:0 6px 22px rgba(0,0,0,.28);}
+  .lp-js .mb-lp .lp-sticky{transform:translateY(170%);opacity:0;transition:transform .45s ease,opacity .35s ease;}
+  .lp-js .mb-lp .lp-sticky.lp-on{transform:none;opacity:1;}}
 """
+# Every advertorial page: the sticky bar slides in only once the reader has scrolled past the top (and slides away at
+# the top again); reading-progress bars fill as she reads. Works for the built-in styles and every template's own
+# bar (classes on / nv-on / lp-on / lo-visible). Without JavaScript the bars simply stay visible.
+ADV_JS = """<script>(function(){var d=document.documentElement;d.classList.add('lp-js','nv-js');
+function run(){var y=window.pageYOffset||d.scrollTop||0,h=d.scrollHeight-window.innerHeight,p=h>0?Math.min(100,y/h*100):0,
+on=y>Math.min(650,window.innerHeight*0.75);
+document.querySelectorAll('.ev-adv [class*="sticky"],.lp-sticky').forEach(function(e){if(/sticky-inner/.test(e.className))return;
+['on','nv-on','lp-on','lo-visible'].forEach(function(c){e.classList.toggle(c,on);});});
+document.querySelectorAll('.ev-adv .progress,.ev-adv .nv-progress').forEach(function(e){e.style.setProperty('width',p+'%','important');});}
+window.addEventListener('scroll',run,{passive:true});window.addEventListener('resize',run);run();})();</script>"""
+PUSHY = re.compile(r"\b(shop|buy|order|grab|get)\s+(it\s+|yours\s+)?now\b|^\s*(shop|buy)\s*$|✎", re.I)
+
+
+def sticky_text(link: str, text: str = "") -> str:
+    """The sticky bar suggests rather than pushes (owner, 21 Oct 2026): 'Browse the collection', 'See the product'."""
+    text = re.sub(r"\s*(&rarr;|→|>)\s*$", "", str(text or "")).strip()
+    if text and not PUSHY.search(text):
+        return text
+    path = urlparse(link or "").path
+    return "Browse the collection" if "/collections/" in path else "See the product" if "/products/" in path else "See the products"
 THEMES = ("letter", "journal", "editorial", "scrapbook")
 ACCENTS = {"teal": "#1d7f8c", "terracotta": "#b5532f", "forest": "#2f6b4f", "navy": "#2b4a7a", "plum": "#7a3e65",
            "caramel": "#a8642a"}
@@ -270,8 +292,11 @@ class _Placeholders(HTMLParser):
         if re.fullmatch(r"[\d\s.,%★☆✓✔✗✕×→←+\-–—:/()#·|]*", s):      # numbers, stars, ticks, arrows: keep the look
             self.out.append(html.escape(d))
             return
-        if re.search(r"[£$€]\s?\d", s):                                    # prices
-            self.out.append(lead + html.escape(re.sub(r"\d", "0", s)) + trail)
+        if re.search(r"[£$€]\s?\d", s):                                    # prices: keep the price's shape only
+            money = re.findall(r"(?:[A-Z]{0,3}[£$€]\s?[\d.,]+)", s)
+            rest = re.sub(r"(?:[A-Z]{0,3}[£$€]\s?[\d.,]+)", "", s)
+            shown = " ".join(re.sub(r"\d", "0", m_) for m_ in money)
+            self.out.append(lead + html.escape((f"✎ Short label · {shown}" if words(rest) else shown)) + trail)
             return
         tags = [t for t, _ in self.stack]
         classes = " ".join(c for _, c in self.stack)
@@ -353,12 +378,16 @@ def render_template(style: dict, body: str, *, store: str, link: str, images: di
                   body, flags=re.I)
     disc = (f'<p style="text-align:center;font:12px/1.5 Helvetica,Arial,sans-serif;color:#8a857c;margin:18px 0 0">'
             f'This page is an advertisement for {html.escape(store.strip())}.</p>')
+    # the template's own sticky bar: a gentle suggestion, never "Shop now"
+    body = re.sub(r'(class="[^"]*sticky[^"]*"[^>]*>(?:(?!</div>)[\s\S])*?<a\b[^>]*>)([\s\S]*?)(</a>)',
+                  lambda m: m.group(1) + html.escape(sticky_text(link, re.sub(r"<[^>]+>", "", html.unescape(m.group(2))))) + m.group(3),
+                  body, count=1, flags=re.I)
     sticky = ""
     if "sticky" not in body.lower():
         ac = style.get("accent") or ACCENT
         sticky = (f'<div class="mb-lp" style="padding:0;margin:0;max-width:none"><a class="lp-sticky" href="{html.escape(link, quote=True)}">'
-                  f'Shop Now &rarr;</a></div><style>{STICKY_CSS.replace("ACCENT", ac)}</style>')
-    return f"<style>{style.get('css') or ''}</style>\n{body}\n{disc}{sticky}"
+                  f'{html.escape(sticky_text(link))} &rarr;</a></div><style>{STICKY_CSS.replace("ACCENT", ac)}</style>')
+    return f"<style>{style.get('css') or ''}</style>\n<div class=\"ev-adv\">\n{body}\n{disc}{sticky}\n</div>\n{ADV_JS}"
 
 
 _PH = ("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='800' height='{h}'>"
@@ -706,13 +735,11 @@ def render(page: dict, *, store: str, link: str, images: dict, price: str = "", 
                + f'<p class="lp-disc">This page is an advertisement for {html.escape(store.strip())}.</p></div>')
     ac = accent or (lib or {}).get("accent") or accent_of(page.get("accent"))
     # mobile: a small "shop" bar fixed at the bottom of the screen, to the same landing page as every button
-    btn = (c.get("button") or next((b_.get("text") for b_ in page.get("blocks") or [] if b_.get("type") == "cta" and b_.get("text")), "")
-           or "Shop Now")
-    out.append(f'<a class="lp-sticky" href="{html.escape(link, quote=True)}">{_inline(btn)} &rarr;</a>')
+    out.append(f'<a class="lp-sticky" href="{html.escape(link, quote=True)}">{_inline(sticky_text(link, page.get("sticky")))} &rarr;</a>')
     extra = (lib or {}).get("css") or ""
-    cls = f"mb-lp th-{theme}" + (f" st-{re.sub(r'[^a-z0-9-]', '', str(lib.get('id')))}" if lib else "")
+    cls = f"ev-adv mb-lp th-{theme}" + (f" st-{re.sub(r'[^a-z0-9-]', '', str(lib.get('id')))}" if lib else "")
     return (f"<style>{CSS.replace('ACCENT', ac)}{STICKY_CSS.replace('ACCENT', ac)}{extra}</style>\n<div class=\"{cls}\">\n"
-            + "\n".join(out) + "\n</div>")
+            + "\n".join(out) + "\n</div>\n" + ADV_JS)
 
 
 def image_refs(page: dict) -> list:
