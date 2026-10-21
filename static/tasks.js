@@ -223,7 +223,7 @@ function renderTask() {
       ["Competitor advertorial", b.competitor_advertorial ? linkify(b.competitor_advertorial) : "None: we write our own"],
       ["Writer", `${esc(b.writer_name || "Maggie Whitefield")}, ${esc(b.writer_age || "67")}`],
       ["Customer photo", writerPhotos.length ? `<div class="tk-files">${writerPhotos.map((x) => fileTile(x, manage && !closed)).join("")}</div>` : "None: ChatGPT makes one"],
-      ["Page style", esc({ letter: "Classic letter", editorial: "Magazine feature", journal: "Writing paper", scrapbook: "Scrapbook" }[b.page_style] || "AI picks")],
+      ["Page style", b.page_style ? `${esc((state.styles.find((s) => s.id === b.page_style) || {}).name || b.page_style)} <a href="/tasks/styles/${encodeURIComponent(b.page_style)}/preview" target="_blank">preview ↗</a>` : "AI picks"],
       ["Reviews", [b.review_rating && `${esc(b.review_rating)} ★`, b.review_count && `${esc(b.review_count)} reviews`].filter(Boolean).join(" · ")],
       ["Review texts", b.reviews && `<details><summary>${lines(b.reviews).length} line(s)</summary>${esc(b.reviews).replace(/\n/g, "<br>")}</details>`],
     ] : []),
@@ -755,7 +755,7 @@ function openEditor(t = null) {
   $("aLink").value = b.product_url || ""; $("aComp").value = b.competitor_advertorial || "";
   $("aDesc").value = b.product_description || ""; $("aSend").value = b.send_to_url || ""; $("aPhoto").value = "";
   $("aWriter").value = b.writer_name || "Maggie Whitefield"; $("aAge").value = b.writer_age || "67";
-  $("aStyle").value = b.page_style || ""; $("aWriterPhoto").value = "";
+  $("aStyle").value = b.page_style || ""; stylePrev(); $("aWriterPhoto").value = "";
   $("aRating").value = b.review_rating || ""; $("aCount").value = b.review_count || ""; $("aReviews").value = b.reviews || "";
   const admin = !!(state.data && state.data.manage);
   for (const btn of $("eKind").querySelectorAll("button")) btn.hidden = !admin && btn.dataset.kind === "store";
@@ -1125,7 +1125,39 @@ $("exAdd").onclick = () => {
   for (const id of ["exText", "exHead", "exDesc", "exPage", "exLand", "exNotes"]) $(id).value = "";
   saveExamples("Example added: ChatGPT will study it on the next task");
 };
-$("storeKit").onclick = () => { openKit(); openAdvKit(); openExamples(); };
+$("storeKit").onclick = () => { openKit(); openAdvKit(); openExamples(); renderKitStyles(); };
+
+/* advertorial page styles: built-in themes + the style library (made from real pages), each with a placeholder preview */
+state.styles = [];
+async function loadStyles() {
+  try { state.styles = (await api("/api/tasks/kit/styles")).styles || []; } catch { return; }
+  const sel = $("aStyle"), keep = sel.value;
+  sel.innerHTML = '<option value="">Let the AI pick</option>' + state.styles.map((s) =>
+    `<option value="${esc(s.id)}">${esc(s.library ? "★ " + s.name : s.name)}</option>`).join("");
+  sel.value = keep;
+  stylePrev();
+}
+function stylePrev() {
+  const v = $("aStyle").value, a = $("aStylePrev");
+  a.hidden = !v;
+  if (v) a.href = `/tasks/styles/${encodeURIComponent(v)}/preview`;
+}
+$("aStyle").addEventListener("change", stylePrev);
+function renderKitStyles() {
+  const manage = !!(state.data && state.data.manage);
+  $("kitStyles").innerHTML = state.styles.map((s) => `<div class="tk-ex"><div><b>${esc(s.name)}</b>
+      <span class="hint">${s.library ? "from " + esc((s.source_url || "a page").replace(/^https?:\/\//, "").slice(0, 60)) : "built in"}</span></div>
+      <a class="btn btn-sm" href="${esc(s.preview)}" target="_blank">Preview</a>
+      ${s.library && manage ? `<button class="btn btn-sm btn-ghost" data-stdel="${esc(s.id)}">Remove</button>` : ""}</div>`).join("")
+    || '<p class="tk-empty">No styles yet</p>';
+}
+$("kitStyles").onclick = async (e) => {
+  const b = e.target.closest("[data-stdel]");
+  if (!b || !confirm("Remove this page style? Tasks that picked it go back to a built-in look.")) return;
+  try { await api(`/api/tasks/kit/styles/${encodeURIComponent(b.dataset.stdel)}`, { method: "DELETE" }); toast("Style removed"); await loadStyles(); renderKitStyles(); }
+  catch (err) { toast(err.message, true); }
+};
+loadStyles();
 $("kitAdvSave").onclick = async () => {
   try { await api("/api/tasks/kit/advertorial", { method: "PUT", json: { playbook: $("kitAdv").value } }); toast("Advertorial playbook saved"); openAdvKit(); }
   catch (e) { toast(e.message, true); }

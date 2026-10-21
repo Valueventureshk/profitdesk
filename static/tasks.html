@@ -127,7 +127,7 @@
         </div>
         <label class="field"><span>Customer photo for the top of the letter <em class="tk-opt">(optional: left empty, ChatGPT makes one)</em></span><input id="aWriterPhoto" type="file" accept="image/*" class="control"></label>
         <h4 class="tk-formhead">6 · Page style</h4>
-        <label class="field"><span>How the advertorial page looks</span><select id="aStyle" class="control">
+        <label class="field"><span>How the advertorial page looks <a id="aStylePrev" href="#" target="_blank" hidden>Preview this style ↗</a></span><select id="aStyle" class="control">
           <option value="">Let the AI pick</option>
           <option value="letter">Classic letter: clean, like Perth's first page</option>
           <option value="editorial">Magazine feature: big first letter, boxed quotes</option>
@@ -184,6 +184,8 @@
       <p class="hint" id="kitTheme">No theme uploaded yet.</p>
       <label class="btn btn-sm">⬆ Upload the theme .zip<input type="file" id="kitFile" accept=".zip" hidden></label>
       <p class="hint">In Shopify: Online Store → Themes → … next to the theme → Download theme file. Use Perth Boutique's.</p>
+      <h4 class="tk-formhead">Advertorial page styles <em class="tk-opt">(staff pick one on the task; send Claude Code a page link to add more)</em></h4>
+      <div id="kitStyles" class="tk-exlist"></div>
       <h4 class="tk-formhead">Advertorial examples <em class="tk-opt">(ChatGPT / Claude study these on every advertorial task)</em></h4>
       <div id="kitEx" class="tk-exlist"></div>
       <details class="tk-exadd"><summary>+ Add an example</summary>

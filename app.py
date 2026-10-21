@@ -15266,6 +15266,56 @@ async def api_task_prompts(request: Request, task_id: int):
             "facts_error": (ctx.get("product_facts") or {}).get("error")}
 
 
+@app.get("/api/tasks/kit/styles")
+def api_adv_styles():
+    """The advertorial page styles staff can pick: built-in themes + the style library (made from real pages)."""
+    lib = {s["id"]: s for s in advertorial.custom_styles()}
+    return {"styles": [{"id": k, "name": v, "library": k in lib, "source_url": (lib.get(k) or {}).get("source_url") or "",
+                        "made_at": (lib.get(k) or {}).get("made_at") or "", "preview": f"/tasks/styles/{k}/preview"}
+                       for k, v in advertorial.all_styles().items()]}
+
+
+@app.put("/api/tasks/kit/styles")
+def api_adv_styles_save(request: Request, payload: dict):
+    """Owner: add or replace one library style {id, name, source_url, base, css, guide, sample, accent}."""
+    _owner_only(request)
+    sid = re.sub(r"[^a-z0-9-]", "", str(payload.get("id") or "").lower())[:40]
+    if not sid or sid in advertorial.STYLES:
+        raise HTTPException(400, "Give the style an id (letters, numbers, dashes), not one of the built-in names.")
+    s = {"id": sid, "name": str(payload.get("name") or sid)[:80], "source_url": str(payload.get("source_url") or "")[:500],
+         "base": payload.get("base") if payload.get("base") in advertorial.THEMES else "letter",
+         "css": str(payload.get("css") or "")[:60000], "guide": str(payload.get("guide") or "")[:6000],
+         "sample": payload.get("sample") if isinstance(payload.get("sample"), dict) else None,
+         "accent": str(payload.get("accent") or "")[:20] or None,
+         "made_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+    if "</style" in s["css"].lower():
+        raise HTTPException(400, "The CSS can't contain a closing style tag.")
+    lib = [x for x in advertorial.custom_styles() if x["id"] != sid] + [s]
+    db.set_setting("advertorial_styles", json.dumps(lib))
+    return {"ok": True, "id": sid, "preview": f"/tasks/styles/{sid}/preview"}
+
+
+@app.delete("/api/tasks/kit/styles/{style_id}")
+def api_adv_styles_delete(request: Request, style_id: str):
+    _need_level(request, "tasks", "manage")
+    lib = [x for x in advertorial.custom_styles() if x["id"] != style_id]
+    db.set_setting("advertorial_styles", json.dumps(lib))
+    return {"ok": True}
+
+
+@app.get("/tasks/styles/{style_id}/preview", response_class=HTMLResponse)
+def adv_style_preview(style_id: str):
+    """A page style with placeholder text and grey image boxes (phone and desktop), before staff pick it."""
+    if not advertorial.known_style(style_id):
+        raise HTTPException(404, "No such page style.")
+    name = advertorial.all_styles()[style_id]
+    bar = (f'<div style="font:14px Helvetica,Arial,sans-serif;background:#14181F;color:#fff;padding:10px 16px">Page style: '
+           f'<b>{html.escape(name)}</b> · placeholder text only · on a phone the shop button sits at the bottom</div>')
+    return HTMLResponse(f'<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,'
+                        f'initial-scale=1"><title>{html.escape(name)} · style preview</title></head><body style="margin:0;'
+                        f'background:#fff">{bar}{advertorial.preview(style_id)}</body></html>')
+
+
 @app.get("/api/tasks/kit/examples")
 def api_adv_examples():
     return {"examples": advertorial.examples(), "custom": db.get_setting("advertorial_examples") is not None}
@@ -15495,8 +15545,16 @@ async def _adv_context(t: dict, brief: dict, result: dict) -> dict:
                      "photo": f"file:{wp[0]}" if wp else None,
                      "photo_note": ("Use this photo as author.photo at the top of the letter; don't make a portrait." if wp
                                     else "No writer photo given: make a portrait of her (prompts.page_images, last one) and use it as author.photo.")}
-    out["page_style"] = (brief.get("page_style") if brief.get("page_style") in advertorial.STYLES else
-                         "auto: pick the theme that suits the product")
+    ps = brief.get("page_style")
+    lib = advertorial.style_of(ps)
+    if lib:
+        out["page_style"] = {"id": ps, "name": lib.get("name"), "chosen_by_staff": True,
+                             "how_pages_in_this_style_are_built": lib.get("guide") or "",
+                             "structure_to_follow": lib.get("sample") or advertorial.PLACEHOLDER_PAGE,
+                             "rule": "Write the page in exactly this structure (same block types, order and amount; the "
+                                     "placeholders show what goes where). EcomVital applies the style's look when saving."}
+    else:
+        out["page_style"] = (ps if advertorial.known_style(ps) else "auto: pick the theme that suits the product")
     out["house_sample_primary_text"] = {"text": advertorial.HOUSE_SAMPLE, "words": advertorial.SAMPLE_WORDS,
                                         "paragraphs": advertorial.SAMPLE_PARAS,
                                         "rule": f"Primary text = this sample's beats, for this product and this page's story, "
@@ -15613,6 +15671,7 @@ async def _adv_save(tid: int, args: dict, user: dict) -> dict:
     issues = advertorial.copy_issues(page, str(args.get("primary_text") or ""), b_)
     if issues:
         return {"error": "Not saved yet. Fix first (the owner's standing rules): " + "; ".join(issues) + "."}
+    lib_style = advertorial.style_of(b_.get("page_style"))
     if b_.get("page_style") in advertorial.STYLES:
         page["theme"] = b_["page_style"]                    # staff picked the style on the task
     author = page.setdefault("author", {})
@@ -15648,7 +15707,8 @@ async def _adv_save(tid: int, args: dict, user: dict) -> dict:
         images[prod["images"][0]] = prod["images"][0]
     body = advertorial.render(page, store=fx_["store"]["name"], link=advertorial.send_to(brief), images=images,
                               price=prod["price"] if prod else "", was=prod["compare_at_price"] if prod else "",
-                              rating=str(brief.get("review_rating") or ""), count=str(brief.get("review_count") or ""))
+                              rating=str(brief.get("review_rating") or ""), count=str(brief.get("review_count") or ""),
+                              style=lib_style)
     title = str(page.get("title") or "A Letter From a Reader")[:120]
     handle = res.get("page_handle") or advertorial.handle_of(page.get("handle") or f"letter-{(prod or {}).get('handle') or tid}")
     try:

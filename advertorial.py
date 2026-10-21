@@ -112,6 +112,13 @@ CSS = """
   .mb-lp.th-journal{padding:30px 20px 46px;margin:10px 6px;}.mb-lp .lp-note{font-size:22px;margin:26px 2px;}
   .mb-lp.th-editorial .lp-first:first-letter{font-size:60px;}}
 """
+STICKY_CSS = """
+.mb-lp .lp-sticky{display:none;}
+@media(max-width:749px){.mb-lp{padding-bottom:96px !important;}
+  .mb-lp .lp-sticky{display:block;position:fixed;left:12px;right:12px;bottom:max(12px,env(safe-area-inset-bottom));z-index:2147483000;
+    text-align:center;background:ACCENT;color:#fff !important;text-decoration:none !important;font:700 17px/1.2 Helvetica,Arial,sans-serif;
+    letter-spacing:.02em;padding:16px 18px;border-radius:12px;box-shadow:0 6px 22px rgba(0,0,0,.28);}}
+"""
 THEMES = ("letter", "journal", "editorial", "scrapbook")
 ACCENTS = {"teal": "#1d7f8c", "terracotta": "#b5532f", "forest": "#2f6b4f", "navy": "#2b4a7a", "plum": "#7a3e65",
            "caramel": "#a8642a"}
@@ -144,6 +151,72 @@ WRITER_NAME, WRITER_AGE = "Maggie Whitefield", "67"
 # page styles staff can pick on the task (the AI picks when left on auto)
 STYLES = {"letter": "Classic letter (clean, like Perth's first page)", "editorial": "Magazine feature (drop cap, boxed quotes)",
           "journal": "Cream writing paper (framed, warm)", "scrapbook": "Scrapbook (taped photos, sticky notes)"}
+
+# The style library (setting advertorial_styles): page designs made from real pages (ours or competitors'), each a
+# base theme + its own CSS (scoped to .mb-lp.st-<id>) + a guide telling the AI how pages in that style are built.
+# Only the look is kept: every word is a placeholder and images are grey boxes until the AI writes the real page.
+def custom_styles() -> list:
+    try:
+        got = json.loads(db.get_setting("advertorial_styles") or "[]")
+    except ValueError:
+        got = []
+    return [s for s in got if isinstance(s, dict) and s.get("id")]
+
+
+def all_styles() -> dict:
+    """id -> name: the built-in themes, then the library's styles."""
+    return {**STYLES, **{s["id"]: s.get("name") or s["id"] for s in custom_styles()}}
+
+
+def style_of(key) -> dict | None:
+    """The library style with this id (with its CSS), or None for a built-in / unknown one."""
+    return next((s for s in custom_styles() if s["id"] == key), None)
+
+
+def known_style(key) -> bool:
+    return bool(key) and key in all_styles()
+
+
+_PH = ("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='800' height='{h}'>"
+       "<rect width='100%' height='100%' fill='%23d9d6cf'/><text x='50%' y='50%' font-family='Arial' font-size='34' "
+       "fill='%23827d72' text-anchor='middle' dominant-baseline='middle'>{t}</text></svg>")
+PLACEHOLDER_PAGE = {
+    "label": "Label line (e.g. A letter from a reader)", "headline": "Headline goes here: the hook that makes her read on",
+    "standfirst": "Standfirst: one or two sentences under the headline that set up the story.",
+    "author": {"name": "Writer name", "line": "Writer, age · town", "photo": "ph:author"},
+    "blocks": [
+        {"type": "p", "text": "Opening paragraph. The writer's own voice: who she is and why she is writing this."},
+        {"type": "p", "text": "Second paragraph. The problem she lived with, in everyday detail."},
+        {"type": "image", "src": "ph:photo1", "caption": "Photo caption", "style": "framed"},
+        {"type": "pull", "text": "A pull quote: the line people remember."},
+        {"type": "h2", "text": "Sub-heading: the turning point"},
+        {"type": "p", "text": "Paragraph about finding the product and trying it."},
+        {"type": "list", "items": [{"lead": "Point one.", "text": "Why it matters."}, {"lead": "Point two.", "text": "Why it matters."}]},
+        {"type": "box", "title": "Box title", "text": "A boxed note or summary.", "items": ["Tick one", "Tick two", "Tick three"]},
+        {"type": "review", "stars": 5, "text": "A real customer review goes here.", "name": "Name", "place": "Town", "verified": True},
+        {"type": "p", "text": "Closing paragraph: where to get it and why now."},
+        {"type": "cta", "text": "Button text"},
+        {"type": "signature", "name": "Writer's sign-off"}],
+    "card": {"title": "Product name", "image": "ph:product", "bullets": ["Benefit one", "Benefit two", "Benefit three"],
+             "button": "Shop button text", "note": "Small note under the button"},
+    "footer": {"about": "About line", "store_line": "Store line"}}
+
+
+def preview(key: str, store: str = "Your store") -> str:
+    """A style with placeholder text and grey image boxes, as staff see it before picking."""
+    s = style_of(key)
+    page = dict((s or {}).get("sample") or PLACEHOLDER_PAGE)
+    if not s:
+        page["theme"] = key if key in THEMES else "letter"
+    imgs = {"ph:author": _PH.format(h=800, t="Writer photo"), "ph:photo1": _PH.format(h=560, t="Photo"),
+            "ph:photo2": _PH.format(h=560, t="Photo"), "ph:product": _PH.format(h=800, t="Product photo")}
+    for b in page.get("blocks") or []:
+        if b.get("type") == "image" and str(b.get("src", "")).startswith("ph:") and b["src"] not in imgs:
+            imgs[b["src"]] = _PH.format(h=560, t="Photo")
+    return render(page, store=store, link="#", images=imgs, price="$59.99", was="$119.99", rating="4.7", count="312",
+                  style=s)
+
+
 # never on the page or in the ad (owner, T-8): it is presented as a reader's real letter
 FORBIDDEN = re.compile(r"\b(fictional|fiction|fictitious|dramati[sz]ed|dramati[sz]ation|made[- ]up|invented|"
                        r"(?:is|as) a character|composite|ai[- ]generated|ai[- ]made|ai image|generated (?:image|photo)|"
@@ -208,7 +281,7 @@ THE OWNER'S STANDING RULES (from the edits on T-8: follow them first time, no ba
   words, about 11 short paragraphs. It tells the SAME story as the page: same event, same friend and compliment, same
   product details, same reviews. Write the page first, then the primary text as its short version.
 - EcomVital checks these before saving and refuses with the reason, so fix and save again.
-- Page style: if the task has page_style, use it (EcomVital applies it anyway).
+- Page style: if the task has page_style, use it (EcomVital applies it anyway). A style from the style library comes with how_pages_in_this_style_are_built and structure_to_follow: write the page in exactly that structure (same block types, order and amount), replacing every placeholder with the real story.
 
 THE INPUTS (task_get)
 - product: the product the whole advertorial and ad are about (product_facts from its link, or the product photo +
@@ -362,13 +435,15 @@ def accent_of(v) -> str:
 
 
 def render(page: dict, *, store: str, link: str, images: dict, price: str = "", was: str = "",
-           rating: str = "", count: str = "", accent: str = None) -> str:
-    """The page body for Shopify (style + content). images maps each image reference to its final https link."""
+           rating: str = "", count: str = "", accent: str = None, style: dict = None) -> str:
+    """The page body for Shopify (style + content). images maps each image reference to its final https link.
+    style = a custom page style from the style library (its base theme + its own CSS), else page["theme"]."""
     def src(ref):
         ref = str(ref or "").strip()
         return images.get(ref) or (ref if ref.startswith("https://") else "")
 
-    theme = page.get("theme") if page.get("theme") in THEMES else "letter"
+    lib = style if isinstance(style, dict) and style.get("css") is not None else None
+    theme = (lib or {}).get("base") if (lib or {}).get("base") in THEMES else (page.get("theme") if page.get("theme") in THEMES else "letter")
     out = [f'<p class="lp-label">{_inline(page.get("label") or "A letter from a reader")}</p>',
            f'<h1>{_inline(page.get("headline"))}</h1>']
     if page.get("standfirst"):
@@ -443,8 +518,15 @@ def render(page: dict, *, store: str, link: str, images: dict, price: str = "", 
     out.append('<div class="lp-foot">' + (f"<p>{_inline(f['about'])}</p>" if f.get("about") else "")
                + (f"<p>{_inline(f['store_line'])}</p>" if f.get("store_line") else "")
                + f'<p class="lp-disc">This page is an advertisement for {html.escape(store.strip())}.</p></div>')
-    ac = accent or accent_of(page.get("accent"))
-    return (f"<style>{CSS.replace('ACCENT', ac)}</style>\n<div class=\"mb-lp th-{theme}\">\n" + "\n".join(out) + "\n</div>")
+    ac = accent or (lib or {}).get("accent") or accent_of(page.get("accent"))
+    # mobile: a small "shop" bar fixed at the bottom of the screen, to the same landing page as every button
+    btn = (c.get("button") or next((b_.get("text") for b_ in page.get("blocks") or [] if b_.get("type") == "cta" and b_.get("text")), "")
+           or "Shop Now")
+    out.append(f'<a class="lp-sticky" href="{html.escape(link, quote=True)}">{_inline(btn)} &rarr;</a>')
+    extra = (lib or {}).get("css") or ""
+    cls = f"mb-lp th-{theme}" + (f" st-{re.sub(r'[^a-z0-9-]', '', str(lib.get('id')))}" if lib else "")
+    return (f"<style>{CSS.replace('ACCENT', ac)}{STICKY_CSS.replace('ACCENT', ac)}{extra}</style>\n<div class=\"{cls}\">\n"
+            + "\n".join(out) + "\n</div>")
 
 
 def image_refs(page: dict) -> list:
@@ -505,7 +587,7 @@ def prompts(task: dict, brief: dict, fx: dict, store: str, country: str = "", ba
     """What a person pastes into ChatGPT (with or without the EcomVital connector), and the image prompts."""
     tid = task["id"]
     wname, wage = brief.get("writer_name") or WRITER_NAME, str(brief.get("writer_age") or WRITER_AGE)
-    style = brief.get("page_style") if brief.get("page_style") in STYLES else ""
+    style = brief.get("page_style") if known_style(brief.get("page_style")) else ""
     name, desc, photo = _product_line(fx, brief)
     plain = re.sub(r"\s*\|.*$", "", name).strip().title() or "the product"
     where = country or "the store's country"
