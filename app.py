@@ -5758,10 +5758,15 @@ async def _track_page_base(store, client) -> str | None:
     base = None
     try:
         dom = ((await client.gql("{ shop { primaryDomain { url } } }"))["shop"]["primaryDomain"]["url"] or "").rstrip("/")
+        base = f"{dom}/apps/track" if dom else None
+        # Shopify often refuses storefront reads from Railway's address (403/429/430/5xx), so only a clear
+        # "this page doesn't exist" (404, or a 200 that isn't our page) means the store has no tracking page.
         async with httpx.AsyncClient(timeout=20, follow_redirects=True) as h:
             r = await h.get(f"{dom}/apps/track", headers={"User-Agent": "Mozilla/5.0 EcomVital"})
-        if r.status_code == 200 and 'class="pdt' in r.text:
-            base = f"{dom}/apps/track"
+        if r.status_code == 404 or (r.status_code == 200 and 'class="pdt' not in r.text and "password" not in str(r.url)):
+            base = None
+    except httpx.HTTPError:
+        pass                                 # couldn't look: keep the store's domain
     except Exception:
         base = None
     _track_page_ok[store["id"]] = (time.monotonic(), base)
@@ -5773,6 +5778,7 @@ async def _scm_links():
     emails) at the store's own EcomVital tracking page instead of the supplier's 17TRACK / carrier link.
     Fulfilments of the last 30 days, all their numbers at once, no customer email. Setting scm_link:<id> = "0" stops it."""
     since = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    report = {}
     for store in db.list_stores():
         if demo.is_demo(store) or not store.get("access_token") or db.get_setting(f"scm_link:{store['id']}") == "0":
             continue
@@ -5785,17 +5791,20 @@ async def _scm_links():
         for r in rows:
             todo.setdefault(r["fulfillment_gid"], []).append(r)
         todo = {g: ps for g, ps in todo.items() if any("/apps/track" not in (p["tracking_url"] or "") for p in ps)}
+        name = store["name"].strip()
         if not todo:
+            report[name] = "all links already ours"
             continue
         client = ShopifyClient(store["shop_domain"], store["access_token"])
         base = await _track_page_base(store, client)
         if not base:
+            report[name] = "skipped: no tracking page on this store"
             continue
         try:
             fails = json.loads(db.get_setting(f"scm_link_fail:{store['id']}") or "{}")
         except ValueError:
             fails = {}
-        done = 0
+        done, last_err = 0, ""
         for gid, ps in list(todo.items())[:300]:
             if fails.get(gid, 0) >= 3:
                 continue
@@ -5811,6 +5820,7 @@ async def _scm_links():
                 err = str(e)[:200]
             if err:
                 fails[gid] = fails.get(gid, 0) + 1
+                last_err = err[:160]
             else:
                 done += 1
                 with db._conn() as con:
@@ -5819,8 +5829,17 @@ async def _scm_links():
                                     (u, store["id"], gid, n))
             await asyncio.sleep(0.4)
         db.set_setting(f"scm_link_fail:{store['id']}", json.dumps(fails))
+        report[name] = f"{done} switched, {len(todo) - done} left" + (f", last error: {last_err}" if last_err else "")
         if done:
-            print(f"Tracking links: {done} fulfilments of {store['name'].strip()} now open its tracking page", flush=True)
+            print(f"Tracking links: {done} fulfilments of {name} now open its tracking page", flush=True)
+    return report
+
+
+@app.post("/api/scm/links")
+async def api_scm_links(request: Request):
+    """Owner: run the tracking-link switch now and see what happened per store."""
+    _owner_only(request)
+    return await _scm_links()
 
 
 async def _scm_run():
