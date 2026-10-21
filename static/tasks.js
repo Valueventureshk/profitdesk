@@ -311,8 +311,7 @@ function renderTask() {
     if (canWork && ["todo", "doing", "changes"].includes(t.status)) acts.push(`<button class="btn" data-save>Save</button><button class="btn btn-primary" data-submit>Submit for review</button>`);
     if (t.mine && !manage && t.status === "submitted") acts.push(`<button class="btn" data-move="doing">Take back to edit</button>`);
     if (manage && t.status === "submitted") acts.push(`<button class="btn btn-primary" data-move="approved"${t.kind === "advertorial" && r.page_id && !r.page_published ? ' data-confirm="Approve and publish the advertorial page in the store?">Approve &amp; publish page' : ">Approve"}</button><button class="btn" data-changes>Send back for changes</button>`);
-    if (manage && t.status === "approved" && t.kind === "listing") acts.push(`${t.launch_ready ? "<button class=\"btn btn-primary\" data-launch>Launch ads on Meta…</button>"
-      : "<button class=\"btn\" disabled title=\"The launch strategies are being set up\">Launch ads on Meta · coming soon</button>"}<button class="btn" data-move="launched" data-confirm="Mark as launched without creating the ads here?">Mark launched (set up by hand)</button>`);
+    if (manage && t.status === "approved" && ["listing", "advertorial"].includes(t.kind)) acts.push(`<a class="btn btn-primary" href="/metaads?tab=launcher&store=${t.store_id}&tasks=${t.id}">Launch ads on Meta…</a><button class="btn" data-move="launched" data-confirm="Mark as launched without creating the ads here?">Mark launched (set up by hand)</button>`);
     if (manage && t.status === "approved" && t.kind !== "listing") acts.push(`<button class="btn btn-primary" data-move="done">${t.kind === "store" ? "Store is live: mark done" : "Mark done"}</button>`);
     if (manage && t.status === "approved") acts.push(`<button class="btn" data-changes>Send back for changes</button>`);
     if (canWork && t.status === "approved" && manage) acts.push(`<button class="btn" data-save>Save edits</button>`);

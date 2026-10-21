@@ -26,6 +26,7 @@
     <nav class="scm-pages" id="pages">
       <button data-page="overview" class="on">Overview</button>
       <button data-page="manage">Manage <span class="tab-badge" id="waitBadge" hidden></span></button>
+      <button data-page="launcher">Launcher</button>
     </nav>
   </header>
 
@@ -106,11 +107,16 @@
         <div class="table-wrap"><table class="table ma-log" id="log"></table></div>
       </section>
     </section>
+
+    <section id="launcherPage" hidden>
+      <div id="lx"></div>
+    </section>
   </main>
 </div>
 <div id="toast" class="toast" hidden></div>
 <script src="/static/nav.js"></script>
 <script src="/static/chat.js"></script>
 <script src="/static/metaads.js"></script>
+<script src="/static/launcher.js"></script>
 </body>
 </html>

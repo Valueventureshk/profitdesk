@@ -360,7 +360,10 @@ function showPage(p) {
   for (const b of $("pages").querySelectorAll("button")) b.classList.toggle("on", b.dataset.page === p);
   $("overviewPage").hidden = p !== "overview";
   $("managePage").hidden = p !== "manage";
-  if (p === "manage") loadManage(); else loadOverview();
+  $("launcherPage").hidden = p !== "launcher";
+  for (const id of ["strategy", "cutrule"]) $(id).classList.toggle("ma-hide", p === "launcher");
+  if (p === "launcher") { if (window.loadLauncher) window.loadLauncher(); }
+  else if (p === "manage") loadManage(); else loadOverview();
 }
 
 $("pages").onclick = (e) => { const b = e.target.closest("button[data-page]"); if (b) showPage(b.dataset.page); };

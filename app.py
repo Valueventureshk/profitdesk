@@ -75,6 +75,7 @@ import timetrack
 import agent
 import slack_client
 import meta_manage
+import ads_launcher
 import meta_rules
 import meta_brain
 import tasks
@@ -293,7 +294,7 @@ _DESK_HOME = {"profit": "/", "cash": "/cash", "cog": "/cog", "inbox": "/inbox", 
 _EVERYONE = {"/api/me", "/api/me/password", "/api/logout", "/change-password", "/connect-claude", "/api/mcp/tokens",
              "/api/setup", "/api/chat", "/api/assistant/inbox", "/api/assistant/inbox/read"}
 # What "read & write" people may change (owners may change anything).
-_WRITE_OK = ("/api/googleads/tags", "/api/cog/pdesk", "/api/invoices", "/api/suppliers/payee", "/api/disputes", "/api/cog/sync", "/api/inbox", "/api/expenses", "/api/scm", "/api/importer", "/api/sizecharts", "/api/tasks", "/api/agent/advice", "/api/agent/questions", "/api/research/items")
+_WRITE_OK = ("/api/googleads/tags", "/api/cog/pdesk", "/api/invoices", "/api/suppliers/payee", "/api/disputes", "/api/cog/sync", "/api/inbox", "/api/expenses", "/api/scm", "/api/importer", "/api/sizecharts", "/api/tasks", "/api/agent/advice", "/api/agent/questions", "/api/research/items", "/api/metaads/launcher/drafts", "/api/metaads/launcher/check")
 # What anyone with the desk may do, read-only people included (it changes nothing).
 _ANY_OK = ("/api/reports",)
 
@@ -12680,6 +12681,402 @@ def api_cut_get(store: int):
     return {**cfg, "today": _store_today(st).isoformat(), "currency": st.get("meta_currency") or st["currency"], "feed": feed}
 
 
+# ---- Meta Ads → Launcher (ads_launcher.py): approved advertorial / listing tasks → one campaign + one ad set, one ad
+# per task (several creatives = one flexible ad). Built PAUSED, switched on only when complete. Runs in the background
+# (task_launches row, strategy "launcher"); GET /api/metaads/launcher/runs shows progress.
+
+_LAUNCH_KINDS = ("advertorial", "listing")
+_launcher_running: set = set()
+
+
+def _launcher_task_info(t: dict) -> dict:
+    r = t["result_d"]
+    link = r.get("advertorial_url") or r.get("landing_url") or ""
+    copy = {"message": r.get("primary_text") or "", "headline": (tasks.lines(r.get("headline")) or [""])[0],
+            "description": r.get("ad_description") or r.get("description") or ""}
+    probs = []
+    if t["kind"] not in _LAUNCH_KINDS:
+        probs.append("isn't an advertorial or listing task")
+    if t["status"] != "approved":
+        probs.append(f"is “{tasks.STATUS_NAMES.get(t['status'], t['status'])}”, not approved")
+    if not str(link).startswith("http"):
+        probs.append("has no landing page link")
+    if not t["creatives"]:
+        probs.append("has no image or video creatives")
+    if not (copy["message"] and copy["headline"]):
+        probs.append("has no ad copy (primary text + headline)")
+    return {"id": t["id"], "title": t["title"], "kind": t["kind"], "store_id": t["store_id"], "link": link, "copy": copy,
+            "creatives": [{"id": f["id"], "name": f["name"], "video": f["name"].lower().endswith(_VID_EXT)} for f in t["creatives"]],
+            "problems": probs}
+
+
+@app.get("/api/metaads/launcher/ready")
+def api_launcher_ready(store: int):
+    """Tasks for this store that can go into a launch (approved advertorials / listings with creatives + copy)."""
+    _tasks_db()
+    st, _conn = _mads_store(store)
+    with db._conn() as con:
+        ids = [r[0] for r in con.execute("SELECT id FROM tasks WHERE store_id = ? AND status = 'approved' AND kind IN (?, ?)"
+                                         " ORDER BY id DESC", (st["id"], *_LAUNCH_KINDS))]
+        picked = _launch_tasks(con, ids) if ids else []
+    return {"tasks": [_launcher_task_info(t) for t in picked]}
+
+
+@app.get("/api/metaads/launcher/options")
+async def api_launcher_options(store: int):
+    """Everything the launcher form needs: Pages, Instagram accounts, pixels, campaigns, the account's clock and
+    currency, the switches' choices, presets, drafts and the last settings."""
+    _mads_db()
+    st, conn = _mads_store(store)
+    token, act = conn["access_token"], st["meta_account_id"]
+    cur = st.get("meta_currency") or st["currency"]
+    opts = await meta.launch_options(token, act)
+    ig, tz, errs = [], "UTC", list(opts.get("errors") or [])
+    async with httpx.AsyncClient(timeout=30) as client:
+        try:
+            got = await meta._get(client, f"act_{act}", token, {"fields": "timezone_name,currency,name"})
+            tz = got.get("timezone_name") or "UTC"
+        except meta.MetaAdsError as e:
+            errs.append(str(e))
+        for p in opts.get("pages") or []:
+            try:
+                got = await meta._get(client, p["id"], token, {"fields": "instagram_business_account{id,username}"})
+                a = got.get("instagram_business_account")
+                if a and a.get("id") not in {x["id"] for x in ig}:
+                    ig.append({"id": str(a["id"]), "name": "@" + (a.get("username") or a["id"]), "page_id": p["id"]})
+            except meta.MetaAdsError:
+                pass
+    try:
+        camps = await meta_manage.objects(token, act, "campaign", cur)
+    except meta.MetaAdsError as e:
+        camps, _ = [], errs.append(str(e))
+    cfg = ads_launcher.store_cfg(st["id"])
+    last = ads_launcher.merged(cfg["last"] or None)
+    if not last["adset"]["pixel_id"]:
+        last["adset"]["pixel_id"] = _px_cfg(st["id"]).get("meta_pixel") or (opts["pixels"][0]["id"] if len(opts.get("pixels") or []) == 1 else "")
+    if not last["ad"]["page_id"] and len(opts.get("pages") or []) == 1:
+        last["ad"]["page_id"] = opts["pages"][0]["id"]
+    if not last["adset"]["countries"]:
+        mk = db.get_setting(f"store_country:{st['id']}") or ""
+        last["adset"]["countries"] = mk or ""
+    return {"store": st["name"].strip(), "account": st.get("meta_account_name") or act, "account_id": act,
+            "currency": cur, "timezone": tz, "pages": opts.get("pages") or [], "pixels": opts.get("pixels") or [],
+            "instagram": ig, "campaigns": [{"id": c["id"], "name": c["name"], "status": c.get("effective"),
+                                            "cbo": bool(c.get("daily_budget"))} for c in camps],
+            "errors": errs, "settings": last, "presets": cfg["presets"], "drafts": cfg["drafts"],
+            "choices": {"bid": ads_launcher.BID_STRATEGIES, "events": ads_launcher.EVENTS, "attribution": ads_launcher.ATTRIBUTION,
+                        "cta": ads_launcher.CTAS, "enhancements": ads_launcher.ENHANCEMENTS},
+            "can_launch": True}
+
+
+@app.post("/api/metaads/launcher/presets/{store_id}")
+def api_launcher_preset(store_id: int, payload: dict, request: Request):
+    """Save (or replace by name) a named preset, or remove one ({remove: name})."""
+    st, _conn = _mads_store(store_id)
+    cfg = ads_launcher.store_cfg(st["id"])
+    if payload.get("remove"):
+        _need_level(request, "metaads", "manage")
+        cfg["presets"] = [p for p in cfg["presets"] if p["name"] != payload["remove"]]
+    else:
+        name = str(payload.get("name") or "").strip()[:60]
+        if not name:
+            raise HTTPException(400, "Give the preset a name.")
+        s = ads_launcher.merged(payload.get("settings"))
+        cfg["presets"] = [p for p in cfg["presets"] if p["name"] != name] + [
+            {"name": name, "settings": s, "by": (request.state.user or {}).get("email", ""),
+             "at": datetime.now(timezone.utc).isoformat(timespec="seconds")}]
+    ads_launcher.save_cfg(st["id"], cfg)
+    return {"ok": True, "presets": cfg["presets"]}
+
+
+@app.post("/api/metaads/launcher/drafts/{store_id}")
+def api_launcher_draft(store_id: int, payload: dict, request: Request):
+    """Staff (Work) set a launch up and save it for an admin; {remove: id} deletes one."""
+    st, _conn = _mads_store(store_id)
+    cfg = ads_launcher.store_cfg(st["id"])
+    if payload.get("remove"):
+        cfg["drafts"] = [d for d in cfg["drafts"] if d["id"] != payload["remove"]]
+    else:
+        ids = _launch_ids(payload.get("task_ids"))
+        cfg["drafts"] = cfg["drafts"][-19:] + [{"id": secrets.token_hex(4), "task_ids": ids,
+                                               "settings": ads_launcher.merged(payload.get("settings")),
+                                               "preset": str(payload.get("preset") or "")[:60],
+                                               "by": (request.state.user or {}).get("email", ""),
+                                               "at": datetime.now(timezone.utc).isoformat(timespec="seconds")}]
+    ads_launcher.save_cfg(st["id"], cfg)
+    return {"ok": True, "drafts": cfg["drafts"]}
+
+
+def _launcher_names(st, s: dict, picked: list, preset: str) -> dict:
+    today = _store_today(st).strftime("%d %b")
+    titles = ", ".join(t["title"] for t in picked)[:120]
+    kw = dict(store=st["name"].strip(), date=today, preset=preset or "Launch", tasks=titles,
+              countries=" ".join(ads_launcher.countries(s["adset"]["countries"])))
+    return {"campaign": ads_launcher.fill(s["campaign"]["name"], **kw) or f"{kw['store']} | {today}",
+            "adset": ads_launcher.fill(s["adset"]["name"], **kw) or titles,
+            "ads": {t["id"]: ads_launcher.fill(s["ad"]["name"], **kw, task=t["title"]) or t["title"] for t in picked}}
+
+
+async def _launcher_prepare(payload: dict) -> tuple:
+    st, conn = _mads_store(int(payload.get("store") or 0))
+    s = ads_launcher.merged(payload.get("settings"))
+    ids = _launch_ids(payload.get("task_ids"))
+    with db._conn() as con:
+        picked = _launch_tasks(con, ids)
+    info = [_launcher_task_info(t) for t in picked]
+    bad = [f"T-{i['id']} {i['title']}: {', '.join(i['problems'])}" for i in info if i["problems"]]
+    bad += [f"T-{t['id']} is for another store" for t in picked if t["store_id"] != st["id"]]
+    missing = ads_launcher.problems(s, len(picked))
+    return st, conn, s, picked, info, bad, missing
+
+
+@app.post("/api/metaads/launcher/check")
+async def api_launcher_check(payload: dict):
+    """Check a launch before pressing it: what's missing here, the names it will use, and Meta's own test of the
+    campaign (and, for an existing campaign, the ad set) in validate-only mode. Nothing is created."""
+    st, conn, s, picked, info, bad, missing = await _launcher_prepare(payload)
+    names = _launcher_names(st, s, picked, str(payload.get("preset") or ""))
+    out = {"names": {"campaign": names["campaign"], "adset": names["adset"],
+                     "ads": [{"task": t["title"], "name": names["ads"][t["id"]], "creatives": len(t["creatives"]),
+                              "kind": ("flexible ad" if len(t["creatives"]) > 1 and s["ad"]["multi"] == "flexible" else
+                                       f"{len(t['creatives'])} ads" if len(t["creatives"]) > 1 else
+                                       ("video ad" if t["creatives"] and t["creatives"][0]["name"].lower().endswith(_VID_EXT) else "image ad"))}
+                             for t in picked]},
+           "missing": missing, "task_problems": bad, "meta": []}
+    if missing or bad:
+        return out
+    token, act = conn["access_token"], st["meta_account_id"]
+    cur = st.get("meta_currency") or st["currency"]
+    minor = meta.minor_units(float(s["campaign"]["daily_budget"] or 0), cur)
+    bid = meta.minor_units(float(s["campaign"]["bid_amount"]), cur) if str(s["campaign"].get("bid_amount") or "").strip() else None
+    tz = "UTC"
+    async with httpx.AsyncClient(timeout=60) as client:
+        try:
+            tz = (await meta._get(client, f"act_{act}", token, {"fields": "timezone_name"})).get("timezone_name") or "UTC"
+            if s["campaign"]["mode"] == "new":
+                body = ads_launcher.campaign_body(s, names["campaign"], minor)
+                await meta._post(client, f"act_{act}/campaigns", token, {**body, "execution_options": ["validate_only"]})
+                out["meta"].append("Campaign: Meta accepts it.")
+            else:
+                cbo = any(c["id"] == s["campaign"]["existing_id"] and c.get("daily_budget")
+                          for c in await meta_manage.objects(token, act, "campaign", cur))
+                if cbo:
+                    s["campaign"]["budget_mode"] = "cbo"
+                body = ads_launcher.adset_body(s, names["adset"], s["campaign"]["existing_id"], minor, tz, bid)
+                await meta._post(client, f"act_{act}/adsets", token, {**body, "execution_options": ["validate_only"]})
+                out["meta"].append("Ad set: Meta accepts it.")
+            # the first task's ad, as Meta would get it (images only; uploading to the ad account's image library
+            # creates no ad): catches creative rules (enhancements, flexible format, Instagram account, link)
+            t0 = next((t for t in picked if any(not f["name"].lower().endswith(_VID_EXT) for f in t["creatives"])), None)
+            if t0:
+                media = []
+                for f in [f for f in t0["creatives"] if not f["name"].lower().endswith(_VID_EXT)][:3]:
+                    path, low = _task_file_path(f), f["name"].lower()
+                    send = path
+                    if not low.endswith((".jpg", ".jpeg", ".png", ".gif")):
+                        send = path + "_ad.jpg"
+                        if not os.path.exists(send) and not await asyncio.to_thread(_att_image, path, send, 2400):
+                            continue
+                    with open(send, "rb") as fh:
+                        media.append({"image_hash": await meta.upload_image(client, token, act, fh.read(), os.path.basename(send))})
+                if media:
+                    i0 = _launcher_task_info(t0)
+                    body = ads_launcher.creative_body(s, names["ads"][t0["id"]], s["ad"]["page_id"], s["ad"].get("instagram_id"),
+                                                      i0["link"], i0["copy"], media)
+                    await meta._post(client, f"act_{act}/adcreatives", token, {**body, "execution_options": ["validate_only"]})
+                    out["meta"].append(f"Ad ({'flexible, ' + str(len(media)) + ' images' if len(media) > 1 else 'image'}): Meta accepts it.")
+        except (meta.MetaAdsError, ValueError) as e:
+            out["meta_error"] = str(e)
+    out["timezone"] = tz
+    out["start"] = ads_launcher.start_time(s, tz) if s["adset"]["start"] == "at" and s["adset"].get("start_at") else "now"
+    return out
+
+
+@app.post("/api/metaads/launcher/launch")
+async def api_launcher_launch(payload: dict, request: Request):
+    """Launch (Manage level): starts in the background and returns the run id; GET /runs shows progress."""
+    _need_level(request, "metaads", "manage")
+    _tasks_db()
+    st, conn, s, picked, info, bad, missing = await _launcher_prepare(payload)
+    if missing or bad:
+        raise HTTPException(400, "Not ready: " + "; ".join(missing + bad))
+    user = (request.state.user or {})
+    ids = [t["id"] for t in picked]
+    preset = str(payload.get("preset") or "")[:60]
+    cfg = ads_launcher.store_cfg(st["id"])
+    cfg["last"] = s
+    if payload.get("draft_id"):
+        cfg["drafts"] = [d for d in cfg["drafts"] if d["id"] != payload["draft_id"]]
+    ads_launcher.save_cfg(st["id"], cfg)
+    with db._conn() as con:
+        pend = next((dict(b) for b in con.execute("SELECT * FROM task_launches WHERE strategy = 'launcher' AND status != 'done'"
+                                                  " AND store_id = ? ORDER BY id DESC", (st["id"],))
+                     if sorted(json.loads(b["task_ids"])) == sorted(ids)), None)
+        if pend:
+            rid = pend["id"]
+            con.execute("UPDATE task_launches SET settings = ?, status = 'running', error = NULL WHERE id = ?",
+                        (json.dumps({"settings": s, "preset": preset}), rid))
+        else:
+            rid = con.execute("INSERT INTO task_launches (store_id, strategy, task_ids, settings, progress, created_by)"
+                              " VALUES (?, 'launcher', ?, ?, '{}', ?)",
+                              (st["id"], json.dumps(ids), json.dumps({"settings": s, "preset": preset}),
+                               user.get("email", ""))).lastrowid
+        for t in picked:
+            con.execute("UPDATE tasks SET launch = ? WHERE id = ?", (json.dumps({"batch": rid}), t["id"]))
+            _task_log(con, t["id"], user, "launch", f"Launch #{rid} started from the Meta Ads launcher")
+    if rid not in _launcher_running:
+        _launcher_running.add(rid)
+        asyncio.create_task(_launcher_run(rid, user))
+    return {"ok": True, "run_id": rid, "carrying_on": bool(pend)}
+
+
+@app.get("/api/metaads/launcher/runs")
+def api_launcher_runs(store: int):
+    st, _conn = _mads_store(store)
+    with db._conn() as con:
+        rows = [dict(r) for r in con.execute("SELECT * FROM task_launches WHERE strategy = 'launcher' AND store_id = ?"
+                                             " ORDER BY id DESC LIMIT 15", (st["id"],))]
+    out = []
+    for r in rows:
+        p = tasks.loads(r["progress"])
+        out.append({"id": r["id"], "status": r["status"], "error": r["error"], "by": r["created_by"], "at": r["created_at"],
+                    "done_at": r["done_at"], "task_ids": json.loads(r["task_ids"]), "step": p.get("step") or "",
+                    "campaign_id": p.get("campaign_id"), "adset_id": p.get("adset_id"), "ads": len(p.get("ads") or {}),
+                    "running": r["id"] in _launcher_running,
+                    "ads_manager": (f"https://adsmanager.facebook.com/adsmanager/manage/campaigns?act={st['meta_account_id']}"
+                                    f"&selected_campaign_ids={p['campaign_id']}") if p.get("campaign_id") else ""})
+    return {"runs": out}
+
+
+async def _launcher_run(rid: int, user: dict):
+    """Build the launch on Meta: campaign → ad set → media → one ad per task, all PAUSED; then switch on. Ids saved as
+    made, so a stopped run carries on next time. Videos wait (up to ~20 min) for Meta's thumbnail."""
+    try:
+        with db._conn() as con:
+            row = dict(con.execute("SELECT * FROM task_launches WHERE id = ?", (rid,)).fetchone())
+            ids = json.loads(row["task_ids"])
+            picked = _launch_tasks(con, ids)
+        conf = tasks.loads(row["settings"])
+        s, preset = ads_launcher.merged(conf.get("settings")), conf.get("preset") or ""
+        st, conn = _mads_store(row["store_id"])
+        token, act = conn["access_token"], st["meta_account_id"]
+        cur = st.get("meta_currency") or st["currency"]
+        prog = tasks.loads(row["progress"])
+        prog.setdefault("media", {})
+        prog.setdefault("ads", {})
+        names = _launcher_names(st, s, picked, preset)
+
+        def save(status="running", error=None, step=None):
+            if step:
+                prog["step"] = step
+            with db._conn() as con:
+                con.execute("UPDATE task_launches SET progress = ?, status = ?, error = ? WHERE id = ?",
+                            (json.dumps(prog), status, error, rid))
+
+        minor = meta.minor_units(float(s["campaign"]["daily_budget"] or 0), cur)
+        bid = meta.minor_units(float(s["campaign"]["bid_amount"]), cur) if str(s["campaign"].get("bid_amount") or "").strip() else None
+        async with httpx.AsyncClient(timeout=300) as client:
+            tz = (await meta._get(client, f"act_{act}", token, {"fields": "timezone_name"})).get("timezone_name") or "UTC"
+            if not prog.get("campaign_id"):
+                if s["campaign"]["mode"] == "existing":
+                    prog["campaign_id"], prog["campaign_existing"] = s["campaign"]["existing_id"], True
+                    camps = await meta_manage.objects(token, act, "campaign", cur)
+                    if any(c["id"] == prog["campaign_id"] and c.get("daily_budget") for c in camps):
+                        s["campaign"]["budget_mode"] = "cbo"
+                else:
+                    got = await meta._post(client, f"act_{act}/campaigns", token,
+                                           ads_launcher.campaign_body(s, names["campaign"], minor))
+                    prog["campaign_id"] = str(got["id"])
+                save(step="Campaign made")
+            if prog.get("campaign_existing"):
+                camps = await meta_manage.objects(token, act, "campaign", cur)
+                if any(c["id"] == prog["campaign_id"] and c.get("daily_budget") for c in camps):
+                    s["campaign"]["budget_mode"] = "cbo"
+            if not prog.get("adset_id"):
+                got = await meta._post(client, f"act_{act}/adsets", token,
+                                       ads_launcher.adset_body(s, names["adset"], prog["campaign_id"], minor, tz, bid))
+                prog["adset_id"] = str(got["id"])
+                save(step="Ad set made")
+            for t in picked:
+                tk = str(t["id"])
+                if tk in prog["ads"]:
+                    continue
+                media = []
+                for f in t["creatives"]:
+                    fk = str(f["id"])
+                    m = prog["media"].get(fk) or {}
+                    path, low = _task_file_path(f), f["name"].lower()
+                    if low.endswith(_VID_EXT):
+                        if not m.get("video_id"):
+                            m["video_id"] = await meta.upload_video(client, token, act, path, f["name"])
+                            prog["media"][fk] = m
+                            save(step=f"Uploaded {f['name']}")
+                        for _ in range(40):
+                            m["thumb"] = m.get("thumb") or await meta.video_thumbnail(client, token, m["video_id"])
+                            if m["thumb"]:
+                                break
+                            save("waiting", step=f"Meta is processing the video {f['name']}")
+                            await asyncio.sleep(30)
+                        if not m.get("thumb"):
+                            raise meta.MetaAdsError(f"Meta is still processing the video {f['name']}; press Launch again later.")
+                    elif not m.get("image_hash"):
+                        send = path
+                        if not low.endswith((".jpg", ".jpeg", ".png", ".gif")):
+                            send = path + "_ad.jpg"
+                            if not os.path.exists(send) and not await asyncio.to_thread(_att_image, path, send, 2400):
+                                raise meta.MetaAdsError(f"{f['name']} isn't an image Meta can use.")
+                        with open(send, "rb") as fh:
+                            data = fh.read()
+                        m["image_hash"] = await meta.upload_image(client, token, act, data, os.path.basename(send))
+                    prog["media"][fk] = m
+                    media.append(m)
+                save("running", step=f"Making the ad for {t['title']}")
+                info = _launcher_task_info(t)
+                groups = [media] if s["ad"]["multi"] == "flexible" or len(media) == 1 else [[x] for x in media]
+                made = []
+                for i, g in enumerate(groups):
+                    nm = names["ads"][t["id"]] + (f" · {i + 1}" if len(groups) > 1 else "")
+                    body = ads_launcher.creative_body(s, nm, s["ad"]["page_id"], s["ad"].get("instagram_id"), info["link"],
+                                                      info["copy"], g)
+                    cr = await meta._post(client, f"act_{act}/adcreatives", token, body)
+                    ad = await meta._post(client, f"act_{act}/ads", token,
+                                          {"name": nm, "adset_id": prog["adset_id"], "creative": {"creative_id": cr["id"]},
+                                           "status": "PAUSED"})
+                    made.append({"creative_id": str(cr["id"]), "ad_id": str(ad["id"])})
+                prog["ads"][tk] = made
+                save(step=f"Ad made for {t['title']}")
+            # everything exists: switch on (ads, ad set, and the campaign when it's new)
+            if not prog.get("live"):
+                for made in prog["ads"].values():
+                    for a in made:
+                        await meta._post(client, a["ad_id"], token, {"status": "ACTIVE"})
+                await meta._post(client, prog["adset_id"], token, {"status": "ACTIVE"})
+                if not prog.get("campaign_existing"):
+                    await meta._post(client, prog["campaign_id"], token, {"status": "ACTIVE"})
+                prog["live"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        prog["step"] = "Live" if s["adset"]["start"] != "at" else f"Scheduled to start {s['adset']['start_at']} ({tz})"
+        with db._conn() as con:
+            con.execute("UPDATE task_launches SET progress = ?, status = 'done', error = NULL, done_at = datetime('now')"
+                        " WHERE id = ?", (json.dumps(prog), rid))
+            for t in picked:
+                n = len(prog["ads"].get(str(t["id"])) or [])
+                info = {"batch": rid, "campaign_id": prog["campaign_id"], "adset_id": prog["adset_id"], "account_id": act,
+                        "strategy": "launcher", "strategy_name": preset or "Launcher", "ads": n,
+                        "with": [i for i in ids if i != t["id"]]}
+                con.execute("UPDATE tasks SET launch = ?, status = 'launched', closed_at = datetime('now') WHERE id = ?",
+                            (json.dumps(info), t["id"]))
+                _task_log(con, t["id"], user, "launch", f"Launched on Meta ({prog['step']}): campaign {prog['campaign_id']}, "
+                                                        f"ad set {prog['adset_id']}, {n} ad{'s' if n != 1 else ''}")
+    except Exception as e:
+        msg = str(getattr(e, "detail", None) or e)[:600]
+        with db._conn() as con:
+            p = tasks.loads(con.execute("SELECT progress FROM task_launches WHERE id = ?", (rid,)).fetchone()[0])
+            con.execute("UPDATE task_launches SET status = 'failed', error = ? WHERE id = ?", (msg, rid))
+        print(f"Launcher run {rid} stopped: {msg} (made so far: {p})", flush=True)
+    finally:
+        _launcher_running.discard(rid)
+
+
 @app.put("/api/metaads/cutrule/{store_id}")
 def api_cut_set(store_id: int, payload: dict, request: Request):
     """Switch the rule on/off, or change its trigger spend / ROAS line / cut %."""
@@ -12706,7 +13103,7 @@ def api_cut_set(store_id: int, payload: dict, request: Request):
 
 @app.get("/metaads", response_class=HTMLResponse)
 def metaads_page():
-    return _page("metaads.html", ("metaads.js", "metaads.css", "nav.js", "styles.css", "skin.css", "chat.js"))
+    return _page("metaads.html", ("metaads.js", "launcher.js", "metaads.css", "nav.js", "styles.css", "skin.css", "chat.js"))
 
 
 @app.get("/api/metaads/stores")
