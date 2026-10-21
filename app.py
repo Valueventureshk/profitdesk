@@ -5980,8 +5980,12 @@ async def proxy_track(request: Request, order: str = None, email: str = None, nu
         db.set_setting(key, json.dumps(v))
     dropship = (db.get_setting(f"track_dropship:{store['id']}") or "1") == "1"
     lang = db.get_setting(f"track_lang:{store['id']}") or "en"
+    try:                                     # hours after tracking is added that the page still says "preparing"
+        hold = float(db.get_setting(f"track_hold_hours:{store['id']}") or trackpage.HOLD_HOURS)
+    except ValueError:
+        hold = trackpage.HOLD_HOURS
     body = trackpage.page(store["name"].strip(), parcels, {"order": order, "email": email}, message, dropship,
-                          (query.get("path_prefix") or "/apps/track") if signed else "/proxy/track", lang)
+                          (query.get("path_prefix") or "/apps/track") if signed else "/proxy/track", lang, hold)
     if signed:
         return Response(body, media_type="application/liquid")
     # Owner preview, outside the store's theme.

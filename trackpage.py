@@ -12,7 +12,7 @@ import hashlib
 import hmac
 import html
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 
 STEPS = [("ordered", "Ordered"), ("shipped", "Shipped"), ("transit", "In transit"),
          ("out", "Out for delivery"), ("delivered", "Delivered")]
@@ -140,14 +140,38 @@ def _when(iso, with_time=True, lang="en") -> str:
     return f"{names['days'][d.weekday()]} {d.day} {month}"
 
 
+HOLD_HOURS = 36
+HOLD_STATUSES = ("pending", "info_received", "in_transit", "expired", "exception")
+
+
+def held(s: dict, hours: float = HOLD_HOURS) -> bool:
+    """Suppliers buy the label (tracking number) a day or more before the parcel leaves their warehouse, so for
+    the first `hours` after tracking was added the customer sees "We're preparing your order", not "shipped".
+    Out for delivery / delivered / pickup always show as they are."""
+    if not hours or not s.get("number") or not s.get("fulfilled_at") or s.get("status") not in HOLD_STATUSES:
+        return False
+    try:
+        f = datetime.fromisoformat(str(s["fulfilled_at"]).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if f.tzinfo is None:
+        f = f.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - f).total_seconds() < hours * 3600
+
+
 def _origin(e: dict, dest: str) -> bool:
     """An event that gives away where the parcel came from."""
     text = f" {e.get('location', '')} {e.get('text', '')} ".lower()
     return any(w in text for w in ORIGIN_WORDS)
 
 
-def timeline(s: dict, dropship: bool, lang: str = "en") -> list:
+def timeline(s: dict, dropship: bool, lang: str = "en", hold: bool = False) -> list:
     """Events to show the customer, newest first: [(time, text, place)]."""
+    if hold:
+        out = [(s["fulfilled_at"], t("We're preparing your order", lang), "")]
+        if s.get("order_at"):
+            out.append((s["order_at"], t("Order confirmed", lang), ""))
+        return out
     events = json.loads(s.get("events") or "[]") if isinstance(s.get("events"), str) else (s.get("events") or [])
     dest = s.get("country") or ""
     out = []
@@ -179,8 +203,9 @@ def timeline(s: dict, dropship: bool, lang: str = "en") -> list:
     return sorted(out, key=key, reverse=True)
 
 
-def _parcel(s: dict, dropship: bool, n: int, of: int, lang: str = "en") -> str:
-    status = s["status"] if s.get("number") else "awaiting"
+def _parcel(s: dict, dropship: bool, n: int, of: int, lang: str = "en", hold_hours: float = HOLD_HOURS) -> str:
+    hold = held(s, hold_hours)
+    status = "awaiting" if hold or not s.get("number") else s["status"]
     step = STEP_OF.get(status, 1)
     bar = "".join(f'<li class="{"done" if i <= step else ""}{" now" if i == step else ""}"><span></span>{_e(t(label, lang))}</li>'
                   for i, (_, label) in enumerate(STEPS))
@@ -189,11 +214,13 @@ def _parcel(s: dict, dropship: bool, n: int, of: int, lang: str = "en") -> str:
     else:
         carrier, number = (s.get("carrier_name") or s.get("company") or ""), s.get("number") or ""
     eta = ""
-    if status != "delivered" and (s.get("eta_from") or s.get("eta_to")):
+    if hold:
+        carrier = number = ""
+    if not hold and status != "delivered" and (s.get("eta_from") or s.get("eta_to")):
         a, b = _when(s.get("eta_from"), False, lang), _when(s.get("eta_to"), False, lang)
         eta = f'<p class="pdt-eta">{_e(t("Estimated delivery", lang))} <strong>{_e(a)}{" – " + _e(b) if b and b != a else ""}</strong></p>'
     rows = "".join(f'<li><time>{_e(_when(when, True, lang))}</time><div>{_e(text)}{f"<small>{_e(place)}</small>" if place else ""}</div></li>'
-                   for when, text, place in timeline(s, dropship, lang))
+                   for when, text, place in timeline(s, dropship, lang, hold))
     head = t("Parcel {} of {}", lang, n, of) if of > 1 else _e(t("Order {}", lang, s.get("order_name") or ""))
     return f'''<section class="pdt-card">
   <p class="pdt-kicker">{head}</p>
@@ -234,14 +261,14 @@ STYLE = """<style>
 
 
 def page(store_name: str, parcels: list, ask: dict, message: str, dropship: bool, action: str,
-         lang: str = "en") -> str:
+         lang: str = "en", hold_hours: float = HOLD_HOURS) -> str:
     form = f'''<form method="get" action="{_e(action)}">
   <label>{_e(t("Order number", lang))}<input name="order" value="{_e(ask.get("order"))}" placeholder="{_e(t("e.g. #13109", lang))}" autocomplete="off"></label>
   <label>{_e(t("Email", lang))}<input name="email" type="email" value="{_e(ask.get("email"))}" placeholder="{_e(t("The email you ordered with", lang))}"></label>
   <button type="submit">{_e(t("Track", lang))}</button>
 </form>
 <p class="pdt-or">{_e(t("Or use your tracking number:", lang))} <a href="#" onclick="var n=prompt('{_e(t("Tracking number", lang)).replace("&#x27;", "")}');if(n)location.href='{_e(action)}?nums='+encodeURIComponent(n);return false">{_e(t("enter it here", lang))}</a></p>'''
-    body = "".join(_parcel(p, dropship, i + 1, len(parcels), lang) for i, p in enumerate(parcels))
+    body = "".join(_parcel(p, dropship, i + 1, len(parcels), lang, hold_hours) for i, p in enumerate(parcels))
     msg = f'<p class="pdt-msg">{_e(t(message, lang))}</p>' if message else ""
     return f'''{STYLE}
 <div class="pdt" lang="{lang}">
