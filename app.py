@@ -9387,10 +9387,11 @@ async def _assist_tool(name: str, args: dict, user: dict):
             up, cut = _up_cfg(st["id"]), _cut_cfg(st["id"])
             return {"store": st["name"].strip(), "currency": cur,
                     "up10": {k: up[k] for k in ("on", "name", "step", "cap", "caps", "started_at", "stopped_at")},
-                    "budget_cut": {k: cut[k] for k in ("on", "name", "spend", "roas", "pct", "fired_day", "last")},
+                    "budget_cut": {k: cut[k] for k in ("on", "name", "spend", "roas", "pct", "every", "checked_day", "checked", "runs", "last")},
                     "explain": "up10: every pixel purchase credited to a campaign raises its daily budget by step (cap 0 = no cap). "
-                               "budget_cut: once a store day, when today's spend reaches `spend` and overall pixel ROAS is below "
-                               "`roas`, campaigns below `roas` get their daily budget cut by `pct`%."}
+                               "budget_cut: when today's spend reaches `spend` (and again every `every` more, if every > 0) and overall "
+                               "pixel ROAS is below `roas` at that checkpoint, campaigns below `roas` get their daily budget cut by "
+                               "`pct`%. Resets at the store's midnight."}
         if not auth.at_least(user or {}, "metaads", "manage"):
             return {"error": "Changing Meta Ads needs Manage access to the Meta Ads desk."}
         if name == "propose_meta_autopilot":
@@ -9398,7 +9399,7 @@ async def _assist_tool(name: str, args: dict, user: dict):
             if rule not in ("up10", "budget_cut"):
                 return {"error": "rule must be up10 or budget_cut."}
             body = {k: v for k, v in (args.get("settings") or {}).items()
-                    if k in (("step", "cap") if rule == "up10" else ("spend", "roas", "pct")) and v is not None}
+                    if k in (("step", "cap") if rule == "up10" else ("spend", "roas", "pct", "every")) and v is not None}
             if args.get("on") is not None:
                 body["on"] = bool(args["on"])
             if not body:
@@ -12548,11 +12549,14 @@ def api_up_set(store_id: int, payload: dict, request: Request):
 
 # ---- Rule "Budget cut on a poor day" (Autopilot, alongside "$10 up"): once today's spend across all campaigns
 # reaches `spend` and today's overall ROAS (EcomVital pixel) is below `roas`, every campaign that spent today with a
-# ROAS below `roas` gets its daily budget cut by `pct`%; campaigns at or above `roas` are left alone. At most once per
-# store day: after it fires it waits for the next day. Each cut is a logged change with Undo.
+# ROAS below `roas` gets its daily budget cut by `pct`%; campaigns at or above `roas` are left alone. Checkpoints:
+# with `every` > 0 it checks again each time spend passes another `every` (1,000 → 1,200 → 1,400 …), each checkpoint
+# once, whether or not the earlier one cut anything (owner, 21 Oct 2026; CUTEHOME every 200). `every` 0 = one check a
+# day. Everything resets at midnight on the store's clock. Each cut is a logged change with Undo.
 
 CUT_DEFAULTS = {"on": False, "name": "Budget cut on a poor day", "spend": 1000.0, "roas": 2.0, "pct": 50.0,
-                "started_at": None, "stopped_at": None, "by": "", "fired_day": None, "last": None}
+                "started_at": None, "stopped_at": None, "by": "", "fired_day": None, "last": None,
+                "every": 0.0, "checked_day": None, "checked": None, "runs": []}
 _cut_lock: dict = {}
 _cut_checked: dict = {}
 
@@ -12566,10 +12570,17 @@ def _cut_cfg(store_id: int) -> dict:
 
 
 async def _cut_run(st, conn) -> dict | None:
-    """Check today once; cut the poor campaigns if the day qualifies. Returns what it did, or None."""
+    """Check today's spend against the next checkpoint; cut the poor campaigns when overall ROAS is below the line.
+    Returns what it did at this checkpoint, or None."""
     cfg = _cut_cfg(st["id"])
     today = _store_today(st).isoformat()
-    if not cfg["on"] or cfg["fired_day"] == today:
+    if not cfg["on"]:
+        return None
+    every = float(cfg.get("every") or 0)
+    checked = cfg["checked"] if cfg.get("checked_day") == today else None
+    if checked is None and cfg.get("fired_day") == today:         # fired before checkpoints existed
+        checked = cfg["spend"]
+    if checked is not None and every <= 0:
         return None
     lock = _cut_lock.setdefault(st["id"], asyncio.Lock())
     if lock.locked():
@@ -12579,11 +12590,22 @@ async def _cut_run(st, conn) -> dict | None:
         d = await _mads_rows(st, conn, "campaign", 1, False, (today, today, 1))
         spend, value = d["total"]["spend"], d["total"]["px_value"]
         roas = value / spend if spend else 0.0
-        if spend < cfg["spend"] or roas >= cfg["roas"]:
+        if spend < cfg["spend"]:
+            return None
+        point = cfg["spend"] + (int((spend - cfg["spend"]) // every) * every if every > 0 else 0)
+        if checked is not None and point <= checked:
             return None
         cur = d["currency"]
-        # mark the day first, so whatever happens below the cut can never run twice today
+        # mark this checkpoint first, so it can never run twice today, whatever happens below
         cfg = _cut_cfg(st["id"])
+        runs = cfg["runs"] if cfg.get("checked_day") == today else []
+        cfg.update(checked_day=today, checked=point)
+        if roas >= cfg["roas"]:
+            runs = runs + [{"point": point, "spend": round(spend, 2), "roas": round(roas, 2), "cut": 0,
+                            "at": datetime.now(timezone.utc).isoformat(timespec="seconds")}]
+            cfg["runs"] = runs[-20:]
+            db.set_setting(f"meta_cut:{st['id']}", json.dumps({k: cfg[k] for k in CUT_DEFAULTS}))
+            return None
         cfg["fired_day"] = today
         db.set_setting(f"meta_cut:{st['id']}", json.dumps({k: cfg[k] for k in CUT_DEFAULTS}))
         results = []
@@ -12621,9 +12643,13 @@ async def _cut_run(st, conn) -> dict | None:
             except (meta.MetaAdsError, HTTPException) as e:
                 results.append(f"{r['name']}: Meta refused ({str(getattr(e, 'detail', None) or e)[:200]})")
         last = {"day": today, "at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "spend": round(spend, 2),
-                "roas": round(roas, 2), "results": results or ["No campaign below the ROAS line had spend today."]}
+                "roas": round(roas, 2), "point": point,
+                "results": results or ["No campaign below the ROAS line had spend today."]}
         cfg = _cut_cfg(st["id"])                   # re-read: someone may have changed it meanwhile
-        cfg.update(fired_day=today, last=last)
+        runs = cfg["runs"] if cfg.get("checked_day") == today else []
+        runs = runs + [{"point": point, "spend": round(spend, 2), "roas": round(roas, 2), "at": last["at"],
+                        "cut": sum(1 for x in results if " → " in x or " -> " in x)}]
+        cfg.update(fired_day=today, last=last, runs=runs[-20:])
         db.set_setting(f"meta_cut:{st['id']}", json.dumps({k: cfg[k] for k in CUT_DEFAULTS}))
         return last
 
@@ -12667,7 +12693,7 @@ def api_cut_set(store_id: int, payload: dict, request: Request):
             cfg.update(on=True, started_at=now_, stopped_at=None, by=who)
         elif not on and cfg["on"]:
             cfg.update(on=False, stopped_at=now_, by=who)
-    for k, lo, hi in (("spend", 1.0, 10_000_000.0), ("roas", 0.1, 100.0), ("pct", 1.0, 90.0)):
+    for k, lo, hi in (("spend", 1.0, 10_000_000.0), ("roas", 0.1, 100.0), ("pct", 1.0, 90.0), ("every", 0.0, 10_000_000.0)):
         if k in payload:
             try:
                 cfg[k] = min(hi, max(lo, float(payload[k])))

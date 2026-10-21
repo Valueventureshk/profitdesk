@@ -122,7 +122,7 @@ TOOLS += [
     _tool("propose_meta_autopilot", "Propose switching a store's Meta autopilot rule on/off or changing its numbers (needs Manage "
           "on Meta Ads; the person confirms). rule up10 settings: step (raise per purchase), cap (max daily budget per campaign, "
           "0 = no cap). rule budget_cut settings: spend (today's spend that triggers it), roas (line below which campaigns are "
-          "cut), pct (cut %). These are the only Meta rules EcomVital runs by itself; other ideas: tell the person and use "
+          "cut), pct (cut %), every (check again each time spend passes this much more, e.g. 200; 0 = once a day). These are the only Meta rules EcomVital runs by itself; other ideas: tell the person and use "
           "request_change.", {**_STORE, "rule": {"type": "string"}, "on": {"type": ["boolean", "null"]},
                               "settings": {"type": "object"}}, ["store", "rule", "on", "settings"]),
     _tool("google_product_issues", "Products Google won't show (disapproved / limited / not eligible) for a store's Google Ads "

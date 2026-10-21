@@ -156,8 +156,12 @@ async function loadCut() {
   box.classList.toggle("on", !!s.on);
   const c = s.currency;
   const last = s.last;
+  const every = +s.every || 0;
+  const runs = s.checked_day === s.today ? (s.runs || []) : [];
+  const next = every > 0 ? (s.checked_day === s.today && s.checked != null ? +s.checked + every : +s.spend) : null;
   const status = !s.on ? (s.stopped_at ? `Switched off ${when(s.stopped_at)}.` : "Off.")
-    : s.fired_day === s.today ? `Already ran today (${when(last && last.at)}): spend ${c} ${num(last ? last.spend : 0, 0)}, ROAS ${last ? last.roas.toFixed(2) : "–"}. Next check tomorrow.`
+    : every > 0 ? `Today: ${runs.length ? runs.map((r) => `${c} ${num(r.point, 0)} → ROAS ${(+r.roas).toFixed(2)}${r.cut ? `, ${r.cut} cut` : ", nothing cut"}`).join(" · ") + ". " : ""}Next check at ${c} ${num(next, 0)} spend. Resets at midnight.`
+    : (s.checked_day === s.today || s.fired_day === s.today) ? `Already checked today${last && last.day === s.today ? ` (${when(last.at)}): spend ${c} ${num(last.spend, 0)}, ROAS ${last.roas.toFixed(2)}` : ""}. Next check tomorrow.`
     : `Watching today: checks every 5 minutes, runs at most once a day.`;
   const feed = (s.feed || []).slice(0, 8).map((f) => `<li class="${f.status === "done" ? "down" : ""}"><time>${when(f.done_at || f.created_at)}</time>
     <span>${f.status === "done" ? "▼ " : ""}${esc(f.summary || f.error || f.name)}</span></li>`).join("");
@@ -166,13 +170,14 @@ async function loadCut() {
         <b>${esc(s.name)}</b>
         <p class="hint">When today's spend across all campaigns reaches <b>${c} ${num(s.spend, 0)}</b> and today's overall ROAS
           (EcomVital tracking) is below <b>${num(s.roas, 1)}</b>, every campaign with ROAS below ${num(s.roas, 1)} gets its daily budget cut by
-          <b>${num(s.pct, 0)}%</b>. Campaigns at ${num(s.roas, 1)} or above are not touched. Once a day at most. ${status}</p></div>
+          <b>${num(s.pct, 0)}%</b>. Campaigns at ${num(s.roas, 1)} or above are not touched. ${every > 0 ? `Checks again at every extra <b>${c} ${num(every, 0)}</b> of spend (${c} ${num(+s.spend + every, 0)}, ${c} ${num(+s.spend + 2 * every, 0)} …), each checkpoint once a day.` : "Once a day at most."} ${status}</p></div>
       ${manage ? `<div class="ma-strat-acts">
         <button class="btn ${s.on ? "btn-danger ma-off" : "btn-primary"}" id="cutToggle">${s.on ? "Turn off this rule" : "Turn on"}</button>
         <details><summary>Settings</summary><div class="ma-rule-fields">
           <label>Today's spend reaches (${c})<input class="control" id="cutSpend" value="${s.spend}"></label>
           <label>ROAS below<input class="control" id="cutRoas" value="${s.roas}"></label>
           <label>Cut budget by (%)<input class="control" id="cutPct" value="${s.pct}"></label>
+          <label>Check again every (${c} of extra spend, 0 = once a day)<input class="control" id="cutEvery" value="${every}"></label>
           <div class="row-actions"><button class="btn btn-sm" id="cutSave">Save</button></div>
         </div></details></div>` : ""}
     </div>
@@ -190,7 +195,7 @@ async function loadCut() {
   };
   $("cutSave").onclick = async () => {
     try {
-      await api(`/api/metaads/cutrule/${state.store}`, { method: "PUT", json: { spend: $("cutSpend").value, roas: $("cutRoas").value, pct: $("cutPct").value } });
+      await api(`/api/metaads/cutrule/${state.store}`, { method: "PUT", json: { spend: $("cutSpend").value, roas: $("cutRoas").value, pct: $("cutPct").value, every: $("cutEvery").value } });
       toast("Saved"); loadCut();
     } catch (e) { toast(e.message, true); }
   };
