@@ -3929,6 +3929,17 @@ async def _confirm_action(action_id: str, confirm: bool, user: dict) -> dict:
         st = _ads_store(a["payload"]["store"])
         done = await _ads_run_batch(st, a["payload"]["batch"], user.get("email", ""))
         return {"ok": True, "text": "Done in Google Ads: " + "; ".join(done)}
+    if a["kind"] in ("meta_plan", "meta_auto"):
+        if not auth.at_least(user, "metaads", "manage"):
+            raise HTTPException(403, "You need Manage access to the Meta Ads desk to confirm this.")
+        _chat_actions.pop(action_id, None)
+        st, conn = _mads_store(a["payload"]["store"])
+        if a["kind"] == "meta_plan":
+            done = await _mads_run_batch(st, conn, a["payload"]["batch"], user.get("email", ""))
+            return {"ok": True, "text": "Done on Meta: " + "; ".join(done)}
+        fn = api_up_set if a["payload"]["rule"] == "up10" else api_cut_set
+        fn(st["id"], a["payload"]["body"], _AsUser(user))
+        return {"ok": True, "text": f"Saved: {a['title']} ({', '.join(f'{k} = {v}' for k, v in a['payload']['body'].items())})."}
     if not auth.at_least(user, "cog", "work"):
         raise HTTPException(403, "You need Work access to the COG desk to confirm this.")
     _chat_actions.pop(action_id, None)
@@ -9357,6 +9368,84 @@ async def _assist_tool(name: str, args: dict, user: dict):
         names = {x["id"]: x["name"].strip() for x in sts}
         return {"hours_utc": "clock hours in UTC", "stores": {names[k]: v for k, v in data.items()},
                 "note": "Only stores with the EcomVital pixel; only shoppers who allowed tracking."}
+    if name in ("meta_campaigns", "propose_meta_change", "meta_autopilot", "propose_meta_autopilot"):
+        _need(user, "metaads")
+        _mads_db()
+        st, conn = _mads_store(int(re.sub(r"\D", "", str(args.get("store") or "")) or 0))
+        cur = st.get("meta_currency") or st["currency"]
+        if name == "meta_campaigns":
+            period = str(args.get("period") or "7")
+            d = await _mads_rows(st, conn, "campaign", 7, False, _mads_period(st, period, "", "") or None)
+            return _round({"store": st["name"].strip(), "currency": cur, "period": f"{d['since']} to {d['until']} (store days)",
+                           "note": "pixel_* = EcomVital tracking (real orders); meta_* = Meta's own counting.",
+                           "total": {k: d["total"].get(k) for k in ("spend", "purchases", "value", "roas", "px_purchases", "px_value", "px_roas")},
+                           "campaigns": [{"id": r["id"], "name": r["name"], "status": r["effective"], "daily_budget": r.get("daily_budget") or None,
+                                          "spend": r["spend"], "meta_purchases": r["purchases"], "meta_roas": r["roas"],
+                                          "pixel_purchases": r["px_purchases"], "pixel_value": r["px_value"], "pixel_roas": r["px_roas"],
+                                          "autopilot_added": r.get("auto_added")} for r in d["rows"]]})
+        if name == "meta_autopilot":
+            up, cut = _up_cfg(st["id"]), _cut_cfg(st["id"])
+            return {"store": st["name"].strip(), "currency": cur,
+                    "up10": {k: up[k] for k in ("on", "name", "step", "cap", "caps", "started_at", "stopped_at")},
+                    "budget_cut": {k: cut[k] for k in ("on", "name", "spend", "roas", "pct", "fired_day", "last")},
+                    "explain": "up10: every pixel purchase credited to a campaign raises its daily budget by step (cap 0 = no cap). "
+                               "budget_cut: once a store day, when today's spend reaches `spend` and overall pixel ROAS is below "
+                               "`roas`, campaigns below `roas` get their daily budget cut by `pct`%."}
+        if not auth.at_least(user or {}, "metaads", "manage"):
+            return {"error": "Changing Meta Ads needs Manage access to the Meta Ads desk."}
+        if name == "propose_meta_autopilot":
+            rule = args.get("rule")
+            if rule not in ("up10", "budget_cut"):
+                return {"error": "rule must be up10 or budget_cut."}
+            body = {k: v for k, v in (args.get("settings") or {}).items()
+                    if k in (("step", "cap") if rule == "up10" else ("spend", "roas", "pct")) and v is not None}
+            if args.get("on") is not None:
+                body["on"] = bool(args["on"])
+            if not body:
+                return {"error": "Nothing to change: give on (true/false) and/or settings."}
+            label = "$10 up every purchase" if rule == "up10" else "Budget cut on a poor day"
+            detail = ", ".join(f"{k} = {v}" for k, v in body.items())
+            return _propose(user, "meta_auto", f"{st['name'].strip()}: {label}", detail,
+                            {"store": st["id"], "rule": rule, "body": body})
+        # propose_meta_change: budget / status steps on campaigns (or ad sets), like the Meta Ads desk's own changes
+        objs = {}
+        for lvl in ("campaign", "adset"):
+            try:
+                objs[lvl] = await meta_manage.objects(conn["access_token"], st["meta_account_id"], lvl, cur)
+            except meta.MetaAdsError as e:
+                return {"error": f"Meta didn't answer: {str(e)[:200]}"}
+        steps, lines = [], []
+        for sp in args.get("steps") or []:
+            lvl = "adset" if sp.get("level") == "adset" else "campaign"
+            key = str(sp.get("campaign") or sp.get("name") or sp.get("id") or "").strip()
+            o = next((x for x in objs[lvl] if x["id"] == key), None) or next(
+                (x for x in objs[lvl] if (x["name"] or "").strip().lower() == key.lower()), None)
+            if not o:
+                return {"error": f"No {lvl} called “{key}” in this ad account (use meta_campaigns for exact names)."}
+            ch = sp.get("change")
+            if ch == "budget":
+                try:
+                    to = round(float(sp.get("to")), 2)
+                except (TypeError, ValueError):
+                    return {"error": f"Budget for {o['name']} must be a number."}
+                if not o.get("daily_budget"):
+                    return {"error": f"{o['name']} has no daily budget of its own (it's on the {'campaign' if lvl == 'adset' else 'ad sets'})."}
+                lines.append(f"{o['name']}: daily budget {o['daily_budget']:.2f} → {to:.2f} {cur}")
+            elif ch == "status":
+                to = "ACTIVE" if str(sp.get("to") or "").upper() in ("ACTIVE", "ON", "ENABLED") else "PAUSED"
+                lines.append(f"{o['name']}: {'switch on' if to == 'ACTIVE' else 'pause'}")
+            else:
+                return {"error": "Each step needs change = budget or status."}
+            steps.append({"change": ch, "level": lvl, "id": o["id"], "name": o["name"], "to": to,
+                          "reason": (args.get("summary") or "Asked in chat")[:300]})
+        if not steps:
+            return {"error": "No steps given."}
+        batch = _mads_batch("chat")
+        with db._conn() as con:
+            for sp in steps:
+                _mads_log(con, st["id"], batch, "chat", sp)
+        return _propose(user, "meta_plan", f"{st['name'].strip()}: {args.get('summary') or 'Meta Ads change'}",
+                        "; ".join(lines)[:900], {"store": st["id"], "batch": batch})
     if name in ("google_campaigns", "google_products", "propose_google_change"):
         _need(user, "googleads")
         st = _ads_store(args["store"])

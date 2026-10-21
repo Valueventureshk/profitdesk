@@ -108,6 +108,23 @@ TOOLS += [
           "set_budget to budget x 1.2.",
           {**_STORE, "summary": {"type": "string"}, "steps": {"type": "array", "items": {"type": "object"}}},
           ["store", "summary", "steps"], ),
+    _tool("meta_campaigns", "A store's Meta (Facebook/Instagram) ad campaigns: status, daily budget, spend, Meta's purchases and "
+          "ROAS, EcomVital pixel purchases / value / ROAS (real orders), and what the $10-up autopilot added. period: today, "
+          "yesterday, 3, 7, 14, 30, month, lastmonth.", {**_STORE, "period": {"type": "string"}}, ["store", "period"]),
+    _tool("propose_meta_change", "Propose changes to a store's Meta campaigns or ad sets (needs Manage on Meta Ads). Nothing "
+          "changes until the person confirms. Steps, each {campaign (exact name or id), change: budget|status, to (new daily "
+          "budget in the account currency, or ACTIVE|PAUSED), level: campaign|adset (default campaign)}. 'Cut by 50%' = "
+          "to = budget x 0.5 (read budgets with meta_campaigns first). Meta checks each change in test mode first; Undo on the desk.",
+          {**_STORE, "summary": {"type": "string"}, "steps": {"type": "array", "items": {"type": "object"}}},
+          ["store", "summary", "steps"]),
+    _tool("meta_autopilot", "A store's Meta autopilot rules and their settings: '$10 up every purchase' (up10) and 'Budget cut "
+          "on a poor day' (budget_cut), with the last budget-cut run.", _STORE, ["store"]),
+    _tool("propose_meta_autopilot", "Propose switching a store's Meta autopilot rule on/off or changing its numbers (needs Manage "
+          "on Meta Ads; the person confirms). rule up10 settings: step (raise per purchase), cap (max daily budget per campaign, "
+          "0 = no cap). rule budget_cut settings: spend (today's spend that triggers it), roas (line below which campaigns are "
+          "cut), pct (cut %). These are the only Meta rules EcomVital runs by itself; other ideas: tell the person and use "
+          "request_change.", {**_STORE, "rule": {"type": "string"}, "on": {"type": ["boolean", "null"]},
+                              "settings": {"type": "object"}}, ["store", "rule", "on", "settings"]),
     _tool("google_product_issues", "Products Google won't show (disapproved / limited / not eligible) for a store's Google Ads "
           "account, with Google's reasons, and links to each product in Shopify admin and on the store. Read only.",
           {**_STORE}, ["store"]),
@@ -250,7 +267,7 @@ TOOLS += [
           ["sql", "purpose"]),
 ]
 # Anthropic allows at most 20 strict tools: the simple ones (few or no inputs) don't need it.
-_LOOSE = {"propose_google_change", "list_stores", "get_cash", "get_inbox", "list_schedules_alerts", "delete_schedule_alert",
+_LOOSE = {"propose_google_change", "meta_campaigns", "propose_meta_change", "meta_autopilot", "propose_meta_autopilot", "list_stores", "get_cash", "get_inbox", "list_schedules_alerts", "delete_schedule_alert",
           "store_health", "tracking_live", "google_campaigns", "google_product_issues", "find_shopify_products",
           "remember", "forget", "product_sales", "get_disputes", "find_parcels", "data_schema", "data_query", "request_change", "list_change_requests", "tasks_list", "task_get", "task_start", "task_save", "task_comment", "task_review", "task_create", "advertorial_save", "task_add_image"}
 for _t in TOOLS:
@@ -276,7 +293,7 @@ Desks (pages) and what they hold:
 - Also: Reports (CSV exports), Size Charts, Product Importer, Session Recordings, Settings (connections, people, WhatsApp, backups).
 - Time (Apps): staff hours, activity %, apps/sites and screenshots from the EcomVital Time desktop app (Mac + Windows), like Hubstaff.
 - Agent (Apps): the ops agent working through Slack: its work log (jobs and steps), advice that becomes lessons, its questions; it files supplier invoices posted in Slack into COG, keeps bank transfer notices and checks them against the bank, shows each supplier's position (paid up to which invoice/order, on credit) and has its own Ask chat.
-- Meta Ads (Apps): campaigns / ad sets / ads with Meta's and the pixel's results; Manage tab where Claude proposes changes and rules for Meta ads (Ask me first: every change waits for Do it, with Undo).
+- Meta Ads (Apps): campaigns / ad sets / ads with Meta's and the pixel's results; Manage tab where Claude proposes changes and rules for Meta ads (Ask me first: every change waits for Do it, with Undo). Autopilot rules per store: "$10 up every purchase" and "Budget cut on a poor day" (once a day: today's spend ≥ a trigger and pixel ROAS below a line → weak campaigns' budgets cut by a %). In chat: meta_campaigns, meta_autopilot read them; propose_meta_change (budgets / pause / switch on) and propose_meta_autopilot (rule on/off and its numbers) change them after the person confirms.
 - Tasks: a board where admins give staff work: listing + ads (competitor ad / landing / product links and a To do list: advertorial, collection, product pages, branded page, creatives, ad copy, custom items) or a custom task, with special instructions (text, voice notes, screen recordings); staff hand back one main landing page link plus each item, or a note saying why they couldn't; admins approve, then tick one or several approved cards and launch them on Meta with a strategy (X/Y/Z), everything PAUSED (switched on in Ads Manager); launched tasks go to History. End of day shows what each person did.
 WhatsApp: you answer only in this one-to-one chat (no group chats). Voice notes need the OpenAI key in Settings → WhatsApp. Changes you propose are confirmed by replying YES.
 
