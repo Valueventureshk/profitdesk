@@ -69,6 +69,7 @@ import adcopy
 import paypal_track
 import research
 import research_hunt
+import social
 import world
 import timetrack
 import agent
@@ -168,6 +169,7 @@ async def lifespan(app):
     asyncio.create_task(paypal_track.loop())
     asyncio.create_task(research.loop())
     asyncio.create_task(research_hunt.loop())
+    asyncio.create_task(social.loop())
     asyncio.create_task(_arrivals_loop())
     for i in db.list_invoices():                     # AI double-checks cut off by a restart
         if i.get("ai_check") == "pending":
@@ -248,7 +250,7 @@ _cache: dict[tuple, tuple[float, dict]] = {}
 
 # Reachable without logging in: the login page itself and what it needs.
 _OPEN = {"/login", "/api/login", "/api/logout", "/api/first-user", "/api/first-restore",
-         "/api/scm/webhook", "/api/whatsapp/webhook", "/api/slack/events",
+         "/api/scm/webhook", "/api/whatsapp/webhook", "/api/slack/events", "/api/meta/webhook",
          "/healthz", "/about", "/privacy", "/terms", "/api/interest",
          "/.well-known/apple-developer-merchantid-domain-association"}
 
@@ -2865,7 +2867,7 @@ async def _suggest_labels():
 
 @app.get("/inbox", response_class=HTMLResponse)
 def inbox_page():
-    return _page("inbox.html", ("inbox.js", "nav.js", "styles.css", "skin.css", "chat.js"))
+    return _page("inbox.html", ("inbox.js", "social.js", "nav.js", "styles.css", "skin.css", "chat.js"))
 
 
 @app.get("/api/inbox/mailboxes")
@@ -9269,6 +9271,9 @@ async def _assist_tool(name: str, args: dict, user: dict):
                 "rows": [_round({**a, "orders": len(a["orders"])}) for a in out[:lim]],
                 "note": "Sales are the order lines' value after discounts, in each store's currency; cost is COG in USD. "
                         "Covers orders already costed (synced every 5 minutes)."}
+    if name == "facebook_comments":
+        _need(user, "inbox")
+        return social.hidden_for_chat(int(args.get("days") or 7), int(args.get("store") or 0))
     if name == "get_disputes":
         _need(user, "disputes")
         want = (args.get("state") or "open").lower()
@@ -15994,6 +15999,7 @@ app.include_router(paypal_track.router)    # Apps → PayPal Tracking
 app.include_router(research.router)        # Apps → Research
 app.include_router(research_hunt.router)   # Research → Find competitors
 app.include_router(world.router)           # EcomVital World (Tracking desk's access)
+app.include_router(social.router)          # Inbox → Comments & Messages (Facebook)
 
 
 @app.get("/world", response_class=HTMLResponse)

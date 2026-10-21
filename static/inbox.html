@@ -20,13 +20,18 @@
       <h1>Inbox</h1>
       <p id="sub">Loading…</p>
     </div>
+    <div class="scm-pages inbox-tabs" id="inboxTabs">
+      <button data-tab="mail" class="on">Email</button>
+      <button data-tab="social">Comments &amp; Messages<span class="tab-badge" id="socialBadge" hidden></span></button>
+    </div>
     <div class="controls">
-      <select id="mailboxSelect" class="control"></select>
+      <select id="mailboxSelect" class="control mail-only"></select>
+      <select id="socialStore" class="control social-only" title="Store or Facebook Page"></select>
       <button id="refresh" class="btn btn-ghost">Refresh</button>
     </div>
   </header>
   <div id="aiWarn" class="warnings"></div>
-  <main class="inbox inbox3">
+  <main class="inbox inbox3" id="mailMain">
     <nav class="inbox-nav" id="nav">
       <div class="inbox-search"><input type="search" id="inboxSearch" class="control" placeholder="Search order #, name, email…" autocomplete="off"></div>
       <div class="inav-label">Mail</div>
@@ -52,10 +57,31 @@
       <p class="hint inbox-empty">Pick a ticket or email.</p>
     </section>
   </main>
+  <main class="inbox inbox3 social" id="social" hidden>
+    <nav class="inbox-nav" id="snav">
+      <div class="inbox-search"><input type="search" id="socialSearch" class="control" placeholder="Search name or words…" autocomplete="off"></div>
+      <div class="inav-label">Comments</div>
+      <button data-sview="needs_reply" class="on"><i>✎</i>Needs a reply<b data-scount="needs_reply"></b></button>
+      <button data-sview="all"><i>☰</i>All comments</button>
+      <button data-sview="ads" class="sub" title="Comments on ads only"><i>◎</i>On ads</button>
+      <button data-sview="hidden"><i>⊘</i>Hidden<b data-scount="hidden"></b></button>
+      <button data-sview="matches" title="Visible comments with a hide word, written before auto-hide was on"><i>!</i>Has a hide word<b data-scount="matches"></b></button>
+      <button data-sview="done"><i>✓</i>Done</button>
+      <div class="inav-label">Messenger</div>
+      <button data-sview="chats_open"><i>✉</i>Waiting on us<b data-scount="chats_open"></b></button>
+      <button data-sview="chats_all" class="sub"><i>☷</i>All chats</button>
+      <div class="inav-label">Setup</div>
+      <button data-sview="pages"><i>⚑</i>Pages &amp; stores</button>
+      <button data-sview="words"><i>⚙</i>Hide words</button>
+    </nav>
+    <aside class="inbox-list" id="slist"></aside>
+    <section class="inbox-read" id="sread"><p class="hint inbox-empty">Pick a comment or chat.</p></section>
+  </main>
 </div>
 <div id="toast" class="toast" hidden></div>
 <script src="/static/nav.js"></script>
 <script src="/static/chat.js"></script>
 <script src="/static/inbox.js"></script>
+<script src="/static/social.js"></script>
 </body>
 </html>

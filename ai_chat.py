@@ -146,6 +146,11 @@ TOOLS += [
           "waiting, review, closed), deadline, amount, reason, customer, store and order.",
           {"state": {"type": ["string", "null"], "description": "open (default), respond, waiting, review, closed or all"}},
           ["state"]),
+    _tool("facebook_comments", "Inbox → Comments & Messages (Facebook Pages): comments needing a reply, open Messenger chats, and "
+          "the comments hidden in the last N days with who hid them (auto = the hide-words list, with the word) and when.",
+          {"days": {"type": ["integer", "null"], "description": "hidden in the last N days (default 7)"},
+           "store": {"type": ["integer", "null"], "description": "a store id, or null for all"}},
+          ["days", "store"]),
     _tool("find_parcels", "Where an order's parcels are (the SCM desk / 17TRACK): status, carrier, tracking number and link, "
           "last event and when. Search by order number (e.g. #AS13184) or the customer's email.",
           {"query": {"type": "string"}}, ["query"]),

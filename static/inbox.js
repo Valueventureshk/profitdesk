@@ -844,7 +844,7 @@ function pollTraining() {
   }, 4000);
 }
 
-function refresh() { loadCounts(); loadLabels(); if (view !== "training") loadList(); }
+function refresh() { if (document.body.classList.contains("tab-social")) return; loadCounts(); loadLabels(); if (view !== "training") loadList(); }
 
 for (const b of $("nav").querySelectorAll("[data-view]")) {
   b.title = [...b.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent).join("").trim();
