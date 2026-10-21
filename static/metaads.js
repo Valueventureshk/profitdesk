@@ -70,6 +70,12 @@ function storeInfo() {
 
 /* ------------------------------------------------ strategy: "$10 up every purchase" (autopilot) */
 
+/* the "Changes made" lists stay folded unless opened, and stay as they were across the 30-second refresh */
+state.logOpen = state.logOpen || {};
+function keepLogs(box) {
+  for (const d of box.querySelectorAll("details.ma-log")) d.addEventListener("toggle", () => { state.logOpen[d.dataset.log] = d.open; });
+}
+
 async function loadStrategy() {
   if (!state.store) return;
   loadCut();
@@ -103,7 +109,9 @@ async function loadStrategy() {
               <input class="control" id="capVal" placeholder="Cap (${s.currency}/day)"><button class="btn btn-sm" id="capAdd">Set cap</button></div></div>
           </div></details></div>` : ""}
     </div>
-    ${feed ? `<ul class="ma-feed">${feed}</ul>` : ""}`;
+    ${feed ? `<details class="ma-log" data-log="up"${state.logOpen.up ? " open" : ""}><summary>Changes made (last ${s.feed.slice(0, 8).length})</summary>
+      <ul class="ma-feed">${feed}</ul></details>` : ""}`;
+  keepLogs(box);
   if (!manage) return;
   $("stratToggle").onclick = async () => {
     const on = !s.on;
@@ -168,8 +176,11 @@ async function loadCut() {
           <div class="row-actions"><button class="btn btn-sm" id="cutSave">Save</button></div>
         </div></details></div>` : ""}
     </div>
-    ${last && last.results ? `<p class="hint">Last run ${esc(last.day)}: ${last.results.map(esc).join(" · ")}</p>` : ""}
-    ${feed ? `<ul class="ma-feed">${feed}</ul>` : ""}`;
+    ${last && last.results || feed ? `<details class="ma-log" data-log="cut"${state.logOpen.cut ? " open" : ""}><summary>Changes made${last && last.results
+        ? ` (last run ${esc(last.day)}: ${last.results.filter((x) => / → /.test(x)).length} cut${last.results.filter((x) => /refused|couldn't/i.test(x)).length ? `, ${last.results.filter((x) => /refused|couldn't/i.test(x)).length} refused by Meta` : ""})` : ""}</summary>
+      ${last && last.results ? `<ul class="ma-feed">${last.results.map((x) => `<li class="${/ → /.test(x) ? "down" : ""}"><span>${/ → /.test(x) ? "▼ " : ""}${esc(x)}</span></li>`).join("")}</ul>` : ""}
+      ${feed ? `<ul class="ma-feed">${feed}</ul>` : ""}</details>` : ""}`;
+  keepLogs(box);
   if (!manage) return;
   $("cutToggle").onclick = async () => {
     const on = !s.on;

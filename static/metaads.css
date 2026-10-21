@@ -102,3 +102,8 @@
 .ma-cap-row span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ma-cap-add { display: flex; gap: 6px; flex-wrap: wrap; }
 .ma-cap-add .control { width: auto; min-width: 0; flex: 1; }
+
+.ma-log { margin-top: 10px; }
+.ma-log > summary { cursor: pointer; font-size: 12.5px; color: var(--muted); padding: 4px 0; }
+.ma-log > summary:hover { color: var(--ink); }
+.ma-log[open] > summary { margin-bottom: 4px; }

@@ -12514,8 +12514,21 @@ async def _cut_run(st, conn) -> dict | None:
                         "change": "budget", "level": "campaign", "id": r["id"], "name": r["name"], "to": to,
                         "reason": f"{cfg['name']}: today's spend {cur} {spend:,.2f}, overall ROAS {roas:.2f} (below "
                                   f"{cfg['roas']:g}); this campaign {r['px_roas'] or 0:.2f}, budget {budget:.2f} − {cfg['pct']:g}%"})
-                done = await _mads_run_batch(st, conn, batch, f"{cfg['name']} (autopilot)", cap=0)
-                results += done
+                done = None
+                for attempt in range(4):              # Meta's "slow down" (#613/#17/#4): wait and try again
+                    try:
+                        done = await _mads_run_batch(st, conn, batch, f"{cfg['name']} (autopilot)", cap=0)
+                        break
+                    except HTTPException as e:
+                        msg = str(getattr(e, "detail", None) or e)
+                        if attempt < 3 and re.search(r"#613|#17\b|#4\b|rate limit|too many calls|request limit", msg, re.I):
+                            with db._conn() as con:      # the failed step goes back to waiting, so it can run again
+                                con.execute("UPDATE mads_actions SET status = 'proposed', error = NULL WHERE batch = ?", (batch,))
+                            await asyncio.sleep(35)
+                            continue
+                        raise
+                results += done or []
+                await asyncio.sleep(3)                    # space the changes out so Meta doesn't push back
             except (meta.MetaAdsError, HTTPException) as e:
                 results.append(f"{r['name']}: Meta refused ({str(getattr(e, 'detail', None) or e)[:200]})")
         last = {"day": today, "at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "spend": round(spend, 2),
