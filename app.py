@@ -5785,7 +5785,8 @@ async def _scm_links():
         with db._conn() as con:
             rows = [dict(r) for r in con.execute(
                 "SELECT fulfillment_gid, number, company, tracking_url FROM shipments WHERE store_id = ? AND cancelled = 0"
-                " AND number != '' AND fulfillment_gid IS NOT NULL AND COALESCE(fulfilled_at, order_at) >= ?",
+                " AND number != '' AND fulfillment_gid IS NOT NULL AND COALESCE(fulfilled_at, order_at) >= ?"
+                " ORDER BY COALESCE(fulfilled_at, order_at) DESC",
                 (store["id"], since))]
         todo = {}
         for r in rows:
