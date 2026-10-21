@@ -195,7 +195,7 @@ TOOLS += [
           {"task": {"type": "string"}, "decision": {"type": "string", "enum": ["approve", "changes", "done", "launched", "cancel"]},
            "comment": {"type": ["string", "null"]}}, ["task", "decision", "comment"]),
     _tool("task_create", "Create a task and give it to someone (they get it on the Tasks desk and WhatsApp). Admins: any kind. "
-          "Staff: only kind advertorial, for themselves. kind listing = product / store listing with ads (to-do picks: "
+          "Staff (Work level): kinds listing, custom or advertorial, always for themselves (store tasks: admins only). kind listing = product / store listing with ads (to-do picks: "
           "advertorial, collection, product_pages, branded_page, creatives, ad_copy, plus any custom lines); advertorial = "
           "an advertorial page + one image ad with its copy (needs store, product_url = our collection or product link, "
           "optional competitor_advertorial link, and the real reviews: review_rating, review_count, reviews); custom = anything "

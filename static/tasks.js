@@ -323,7 +323,10 @@ function renderTask() {
       ${!closed && t.assignee_id ? `<button class="btn btn-sm" data-followup${t.wa && t.wa.ready && t.wa.number ? "" : ` disabled title="${t.wa && t.wa.ready ? "No WhatsApp number for this person: add it in Settings → WhatsApp" : "WhatsApp isn't connected (Settings → WhatsApp)"}"`}>Follow up on WhatsApp</button>` : ""}
       ${!closed ? '<button class="btn btn-sm btn-ghost" data-edit>Edit brief</button>' : ""}
       ${!closed ? '<button class="btn btn-sm btn-ghost" data-move="cancelled" data-confirm="Cancel this task? It moves to History.">Cancel task</button>' : ""}
-      <button class="btn btn-sm btn-ghost btn-danger" data-delete>Delete</button></div>` : "";
+      <button class="btn btn-sm btn-ghost btn-danger" data-delete>Delete</button></div>`
+    : !closed && t.kind !== "store" && t.created_by && t.created_by === (state.data && state.data.me ? state.data.me.email : "")
+      && !["submitted", "approved"].includes(t.status)
+      ? '<div class="tk-admin-acts"><button class="btn btn-sm btn-ghost" data-edit>Edit brief</button></div>' : "";
 
   const launch = t.launch || {};
   const nAds = typeof launch.ads === "number" ? launch.ads : Object.keys(launch.ads || {}).length;
@@ -755,12 +758,12 @@ function openEditor(t = null) {
   $("aStyle").value = b.page_style || ""; $("aWriterPhoto").value = "";
   $("aRating").value = b.review_rating || ""; $("aCount").value = b.review_count || ""; $("aReviews").value = b.reviews || "";
   const admin = !!(state.data && state.data.manage);
-  for (const btn of $("eKind").querySelectorAll("button")) btn.hidden = !admin && btn.dataset.kind !== "advertorial";
+  for (const btn of $("eKind").querySelectorAll("button")) btn.hidden = !admin && btn.dataset.kind === "store";
   $("sEmail").value = b.support_email && !["yes", "no"].includes(b.support_email) ? b.support_email : "";
   renderStoreChecks(b);
   state.recs = [];
   renderRecs();
-  setKind(t ? t.kind : (admin ? "listing" : "advertorial"));
+  setKind(t ? t.kind : "listing");
   waHint();
   $("editor").hidden = false;
   $("eName").focus();

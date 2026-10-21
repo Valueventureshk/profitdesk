@@ -14377,6 +14377,9 @@ def _task_user(request: Request) -> dict:
     return getattr(request.state, "user", None) or {}
 
 
+STAFF_TASK_KINDS = ("listing", "custom", "advertorial")     # what Work-level staff may create for themselves
+
+
 def _task_manager(user: dict) -> bool:
     return auth.at_least(user, "tasks", "manage")
 
@@ -15707,8 +15710,8 @@ async def api_task_create(request: Request, payload: dict):
     _tasks_db()
     user = _task_user(request)
     if not _task_manager(user):
-        # staff may pick an "Advertorial + ad creative" task for themselves; every other kind is given by an admin
-        if payload.get("kind") != "advertorial":
+        # Work-level staff may create listing / custom / advertorial tasks for themselves; store tasks come from an admin
+        if payload.get("kind") not in STAFF_TASK_KINDS:
             _need_level(request, "tasks", "manage")
         payload = {**payload, "assignee_id": user.get("id")}
     f = _task_fields(payload)
@@ -15736,10 +15739,11 @@ async def api_task_create(request: Request, payload: dict):
 async def api_task_edit(request: Request, task_id: int, payload: dict):
     _tasks_db()
     user = _task_user(request)
-    if not _task_manager(user):                 # staff: only the advertorial tasks they picked themselves
+    if not _task_manager(user):                 # staff: only the tasks they created themselves (not store tasks)
         with db._conn() as con:
             mine = _task_row(con, task_id, user)
-        if mine["kind"] != "advertorial" or mine["created_by"] != user.get("email") or payload.get("kind") != "advertorial":
+        if (mine["kind"] not in STAFF_TASK_KINDS or mine["created_by"] != user.get("email")
+                or payload.get("kind") not in STAFF_TASK_KINDS):
             _need_level(request, "tasks", "manage")
         payload = {**payload, "assignee_id": user.get("id")}
     f = _task_fields(payload)
