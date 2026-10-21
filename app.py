@@ -15266,6 +15266,44 @@ async def api_task_prompts(request: Request, task_id: int):
             "facts_error": (ctx.get("product_facts") or {}).get("error")}
 
 
+async def _adv_comp_style(tid: int, brief: dict) -> dict | None:
+    """Advertorial tasks with a competitor link and no style picked: the competitor's page as a template (made once per
+    link, kept with the task)."""
+    url = str(brief.get("competitor_advertorial") or "").strip()
+    if not url or brief.get("page_style"):
+        return None
+    state = _adv_state(tid)
+    got = state.get("comp_style")
+    if not got or got.get("url") != url:
+        try:
+            got = await advertorial.template_from_url(url)
+        except Exception as e:
+            got = {"error": str(e)[:200]}
+        got = {**got, "url": url}
+        _adv_keep(tid, {**_adv_state(tid), "comp_style": got})
+    if got.get("error"):
+        return None
+    return {**got, "id": f"comp-{tid}", "name": "Copy of the competitor's design", "kind": "html"}
+
+
+@app.get("/tasks/{task_id}/competitor-style", response_class=HTMLResponse)
+async def task_comp_style_preview(request: Request, task_id: int):
+    """The competitor's page design as this task's template: their layout, placeholder text, grey photos."""
+    _tasks_db()
+    with db._conn() as con:
+        t = _task_row(con, task_id, _task_user(request))
+    s = await _adv_comp_style(task_id, tasks.loads(t["brief"]))
+    err = (_adv_state(task_id).get("comp_style") or {}).get("error")
+    body = (advertorial.render_template(s, s["template"], store="Your store", link="#", images={}) if s else
+            f'<p style="font-family:sans-serif;padding:40px">Couldn\'t make a template from the competitor link'
+            f'{": " + html.escape(err) if err else " (no link, or a style is picked on the task)"}.</p>')
+    note = " · their theme's own stylesheet isn't copied, so it looks plainer than theirs" if s and s.get("weak") else ""
+    bar = (f'<div style="font:14px Helvetica,Arial,sans-serif;background:#14181F;color:#fff;padding:10px 16px">T-{task_id}: '
+           f'the competitor\'s design with placeholder text{note} · <a style="color:#9fd" href="/tasks?task={task_id}">back</a></div>')
+    return HTMLResponse(f'<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,'
+                        f'initial-scale=1"><title>Competitor design</title></head><body style="margin:0;background:#fff">{bar}{body}</body></html>')
+
+
 @app.get("/api/tasks/kit/styles")
 def api_adv_styles():
     """The advertorial page styles staff can pick: built-in themes + the style library (made from real pages)."""
@@ -15612,6 +15650,21 @@ async def _adv_context(t: dict, brief: dict, result: dict) -> dict:
             if not comp.get("error"):
                 _adv_keep(t["id"], {**state, "competitor": comp})
         out["competitor_page"] = comp
+    comp_tpl = await _adv_comp_style(t["id"], brief)
+    if comp_tpl:
+        out["page_style"] = {"id": comp_tpl["id"], "name": comp_tpl["name"], "kind": "template", "copied_from": comp_tpl["url"],
+                             "how_pages_in_this_style_are_built": "The competitor's own page design, kept exactly: same "
+                                                                  "sections, order and look. Their words and photos are "
+                                                                  "removed (✎ placeholders, grey photos); write ours.",
+                             "template": comp_tpl["template"],
+                             "preview": f"{BASE_URL}/tasks/{t['id']}/competitor-style",
+                             "rule": "Fill this template: keep every tag, class and the order exactly; replace every ✎ "
+                                     "placeholder with our own text for this product and story (similar length, the "
+                                     "competitor's angle and beats, never their sentences); put our images in the img src as "
+                                     "file:<id> or https links; leave link hrefs (EcomVital points them at the landing page). "
+                                     "Save with advertorial_save page = {title, html}."
+                                     + (" Note: much of their look comes from their theme files, which aren't copied, so the "
+                                        "page will be plainer than theirs." if comp_tpl.get("weak") else "")}
     out["mode"] = "copycat: follow the competitor's advertorial" if brief.get("competitor_advertorial") else "write our own"
     if result.get("page_id"):
         out["page_so_far"] = {"preview": f"{BASE_URL}/tasks/{t['id']}/advertorial", "shopify_admin": result.get("page_admin"),
@@ -15689,6 +15742,8 @@ async def _adv_save(tid: int, args: dict, user: dict) -> dict:
     b_ = tasks.loads(t["brief"])
     tpl = advertorial.style_of(b_.get("page_style"))
     tpl = tpl if (tpl or {}).get("kind") == "html" else None
+    if not tpl and not b_.get("page_style"):
+        tpl = await _adv_comp_style(tid, b_)               # "copy the competitor's design" tasks
     if tpl:                                              # template style: the AI sends the filled-in template as page.html
         if not str(page.get("html") or "").strip():
             return {"error": "This task's page style is a template: send page = {title, html: the template from task_get "
@@ -15732,6 +15787,9 @@ async def _adv_save(tid: int, args: dict, user: dict) -> dict:
     except Exception as e:
         _adv_keep(tid, {**state, "images": cache})
         return {"error": f"Image problem: {e}"}
+    if not tpl and prod and prod["images"] and (page.get("card") or {}).get("image") and \
+            page["card"]["image"] in [b.get("src") for b in page.get("blocks") or [] if b.get("type") == "image"]:
+        page["card"]["image"] = None                      # the buy card shows the real product photo, not a repeat
     if not tpl and prod and not (page.get("card") or {}).get("image") and prod["images"]:
         page.setdefault("card", {})["image"] = prod["images"][0]
         images[prod["images"][0]] = prod["images"][0]

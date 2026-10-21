@@ -223,7 +223,7 @@ function renderTask() {
       ["Competitor advertorial", b.competitor_advertorial ? linkify(b.competitor_advertorial) : "None: we write our own"],
       ["Writer", `${esc(b.writer_name || "Maggie Whitefield")}, ${esc(b.writer_age || "67")}`],
       ["Customer photo", writerPhotos.length ? `<div class="tk-files">${writerPhotos.map((x) => fileTile(x, manage && !closed)).join("")}</div>` : "None: ChatGPT makes one"],
-      ["Page style", b.page_style ? `${esc((state.styles.find((s) => s.id === b.page_style) || {}).name || b.page_style)} <a href="/tasks/styles/${encodeURIComponent(b.page_style)}/preview" target="_blank">preview ↗</a>` : "AI picks"],
+      ["Page style", !b.page_style && b.competitor_advertorial ? `Copy of the competitor's design <a href="/tasks/${t.id}/competitor-style" target="_blank">preview ↗</a>` : b.page_style ? `${esc((state.styles.find((s) => s.id === b.page_style) || {}).name || b.page_style)} <a href="/tasks/styles/${encodeURIComponent(b.page_style)}/preview" target="_blank">preview ↗</a>` : "AI picks"],
       ["Reviews", [b.review_rating && `${esc(b.review_rating)} ★`, b.review_count && `${esc(b.review_count)} reviews`].filter(Boolean).join(" · ")],
       ["Review texts", b.reviews && `<details><summary>${lines(b.reviews).length} line(s)</summary>${esc(b.reviews).replace(/\n/g, "<br>")}</details>`],
     ] : []),

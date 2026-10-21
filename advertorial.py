@@ -9,6 +9,7 @@ PLAYBOOK below is the first version, written from the owner's 8 examples (Manche
 """
 import asyncio
 import html
+from html.parser import HTMLParser
 import ipaddress
 import os
 import json
@@ -212,6 +213,119 @@ def clean_html(s: str) -> str:
 
 def template_refs(s: str) -> list:
     return [m for m in re.findall(r'<img\b[^>]*?\bsrc\s*=\s*"([^"]+)"', str(s or ""), re.I) if not m.startswith("data:")]
+
+
+# Turning a page into a template: same tags, classes and order; every word a ✎ placeholder of the same length,
+# photos grey boxes, links "#". Used for the style library and for "copy the competitor's design" tasks.
+_TPL_IMG = ("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='800' height='{h}'><rect width='100%' "
+          "height='100%' fill='%23d9d6cf'/><text x='50%' y='50%' font-family='Arial' font-size='34' fill='%23827d72' "
+          "text-anchor='middle' dominant-baseline='middle'>{t}</text></svg>")
+_VOID = {"img", "br", "hr", "input", "meta", "link", "source", "wbr"}
+_ROLE = {"h1": "Headline", "h2": "Section heading", "h3": "Point heading", "h4": "Small heading", "li": "List point",
+        "figcaption": "Photo caption", "blockquote": "Quote", "a": "Button text", "button": "Button text"}
+
+
+class _Placeholders(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.out, self.stack, self.imgs = [], [], 0
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        if tag == "img":
+            self.imgs += 1
+            cls = a.get("class") or ""
+            round_ = "border-radius:50%" in (a.get("style") or "") or any(k in cls for k in ("avatar", "author")) or \
+                (a.get("width") or "") in ("52", "56", "60", "64", "48", "80")
+            a["src"] = _TPL_IMG.format(h=800 if round_ else 640, t="Writer photo" if round_ else "Photo")
+            a.pop("srcset", None)
+            a["alt"] = "Writer photo" if round_ else "Photo"
+        if tag == "a":
+            a["href"] = "#"
+        attr = "".join(f' {k}="{html.escape(v, quote=True)}"' if v is not None else f" {k}" for k, v in a.items())
+        self.out.append(f"<{tag}{attr}>")
+        if tag not in _VOID:
+            self.stack.append((tag, a.get("class") or ""))
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+        if tag not in _VOID and self.stack:
+            self.stack.pop()
+
+    def handle_endtag(self, tag):
+        if tag in _VOID:
+            return
+        while self.stack:
+            t, _ = self.stack.pop()
+            if t == tag:
+                break
+        self.out.append(f"</{tag}>")
+
+    def handle_data(self, d):
+        if not d.strip():
+            self.out.append(d)
+            return
+        s = d.strip()
+        lead, trail = d[:len(d) - len(d.lstrip())], d[len(d.rstrip()):]
+        if re.fullmatch(r"[\d\s.,%★☆✓✔✗✕×→←+\-–—:/()#·|]*", s):      # numbers, stars, ticks, arrows: keep the look
+            self.out.append(html.escape(d))
+            return
+        if re.search(r"[£$€]\s?\d", s):                                    # prices
+            self.out.append(lead + html.escape(re.sub(r"\d", "0", s)) + trail)
+            return
+        tags = [t for t, _ in self.stack]
+        classes = " ".join(c for _, c in self.stack)
+        role = next((_ROLE[t] for t in reversed(tags) if t in _ROLE), None)
+        n = words(s)
+        if role is None:
+            if "label" in classes or "kicker" in classes or "lab" in classes or "tag" in classes or n <= 4:
+                role = "Short label"
+            elif any(k in classes for k in ("byline", "meta", "who", "sign")):
+                role = "Writer name · town · age"
+            else:
+                role = "Paragraph"
+        filler = ("Placeholder text in the writer's own voice, the real words for this product and story go here "
+                  "at about the same length so the page keeps its shape. ").split()
+        if n > 6:
+            body = " ".join((filler * (n // len(filler) + 1))[:max(0, n - len(role.split()) - 4)])
+            txt = f"✎ {role} (about {n} words): {body}"
+        else:
+            txt = f"✎ {role}"
+        self.out.append(lead + html.escape(txt) + trail)
+
+    def handle_comment(self, d):
+        pass
+
+
+
+
+def placeholders(fragment: str) -> str:
+    p = _Placeholders()
+    p.feed(clean_html(fragment))
+    return "".join(p.out).strip()
+
+
+async def template_from_url(url: str) -> dict:
+    """A competitor's advertorial as a template style: its page HTML (main content) with placeholders, and the CSS that
+    is written on the page itself. weak = most of its look comes from its theme's stylesheet files, which aren't copied."""
+    if not _public(url):
+        return {"error": "Not a public https link."}
+    async with httpx.AsyncClient(timeout=30, follow_redirects=True,
+                                 headers={"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) EcomVital"}) as c:
+        r = await c.get(url)
+    if r.status_code >= 400:
+        return {"error": f"The page answered {r.status_code}."}
+    doc = r.text
+    m = re.search(r"<main\b[^>]*>([\s\S]*?)</main>", doc, re.I) or re.search(r"<body\b[^>]*>([\s\S]*?)</body>", doc, re.I)
+    inner = m.group(1) if m else doc
+    css = "\n".join(re.findall(r"<style\b[^>]*>([\s\S]*?)</style>", inner, re.I))
+    css = re.sub(r"</\s*style", "", css, flags=re.I)[:120000]
+    inline = len(re.findall(r'\sstyle\s*=\s*"', inner, re.I))
+    tpl = placeholders(inner)
+    if not re.search(r"<h1\b", tpl, re.I) or tpl.count(MARK) < 5:
+        return {"error": "Couldn't find the advertorial on that page (no headline / text)."}
+    return {"url": url, "css": css, "template": tpl, "weak": len(css) < 800 and inline < 15,
+            "placeholders": tpl.count(MARK)}
 
 
 def template_check(s: str) -> list:
