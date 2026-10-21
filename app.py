@@ -5738,6 +5738,91 @@ async def _scm_push():
         await asyncio.sleep(0.6)
 
 
+from urllib.parse import quote as _q
+
+TRACK_LINK_UPDATE = """
+mutation Link($id: ID!, $t: FulfillmentTrackingInput!) {
+  fulfillmentTrackingInfoUpdate(fulfillmentId: $id, trackingInfoInput: $t, notifyCustomer: false) {
+    fulfillment { id }
+    userErrors { field message }
+  }
+}"""
+_track_page_ok: dict = {}           # store id -> (checked at, store's own tracking page answers)
+
+
+async def _track_page_base(store, client) -> str | None:
+    """https://<store's main domain>/apps/track when that page answers with our tracking page, else None."""
+    at, base = _track_page_ok.get(store["id"], (0, None))
+    if time.monotonic() - at < 6 * 3600:
+        return base
+    base = None
+    try:
+        dom = ((await client.gql("{ shop { primaryDomain { url } } }"))["shop"]["primaryDomain"]["url"] or "").rstrip("/")
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as h:
+            r = await h.get(f"{dom}/apps/track", headers={"User-Agent": "Mozilla/5.0 EcomVital"})
+        if r.status_code == 200 and 'class="pdt' in r.text:
+            base = f"{dom}/apps/track"
+    except Exception:
+        base = None
+    _track_page_ok[store["id"]] = (time.monotonic(), base)
+    return base
+
+
+async def _scm_links():
+    """Like Parcel Panel: point each shipment's tracking link (what Shopify shows on the order status page and in
+    emails) at the store's own EcomVital tracking page instead of the supplier's 17TRACK / carrier link.
+    Fulfilments of the last 30 days, all their numbers at once, no customer email. Setting scm_link:<id> = "0" stops it."""
+    since = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    for store in db.list_stores():
+        if demo.is_demo(store) or not store.get("access_token") or db.get_setting(f"scm_link:{store['id']}") == "0":
+            continue
+        with db._conn() as con:
+            rows = [dict(r) for r in con.execute(
+                "SELECT fulfillment_gid, number, company, tracking_url FROM shipments WHERE store_id = ? AND cancelled = 0"
+                " AND number != '' AND fulfillment_gid IS NOT NULL AND COALESCE(fulfilled_at, order_at) >= ?",
+                (store["id"], since))]
+        todo = {}
+        for r in rows:
+            todo.setdefault(r["fulfillment_gid"], []).append(r)
+        todo = {g: ps for g, ps in todo.items() if any("/apps/track" not in (p["tracking_url"] or "") for p in ps)}
+        if not todo:
+            continue
+        client = ShopifyClient(store["shop_domain"], store["access_token"])
+        base = await _track_page_base(store, client)
+        if not base:
+            continue
+        try:
+            fails = json.loads(db.get_setting(f"scm_link_fail:{store['id']}") or "{}")
+        except ValueError:
+            fails = {}
+        done = 0
+        for gid, ps in list(todo.items())[:300]:
+            if fails.get(gid, 0) >= 3:
+                continue
+            nums = list(dict.fromkeys(p["number"] for p in ps))
+            urls = [f"{base}?nums={_q(n)}" for n in nums]
+            t = {"number": nums[0], "url": urls[0]} if len(nums) == 1 else {"numbers": nums, "urls": urls}
+            if ps[0]["company"]:
+                t["company"] = ps[0]["company"]
+            try:
+                got = (await client.gql(TRACK_LINK_UPDATE, {"id": gid, "t": t}))["fulfillmentTrackingInfoUpdate"]
+                err = "; ".join(e["message"] for e in got["userErrors"])
+            except Exception as e:
+                err = str(e)[:200]
+            if err:
+                fails[gid] = fails.get(gid, 0) + 1
+            else:
+                done += 1
+                with db._conn() as con:
+                    for n, u in zip(nums, urls):
+                        con.execute("UPDATE shipments SET tracking_url = ? WHERE store_id = ? AND fulfillment_gid = ? AND number = ?",
+                                    (u, store["id"], gid, n))
+            await asyncio.sleep(0.4)
+        db.set_setting(f"scm_link_fail:{store['id']}", json.dumps(fails))
+        if done:
+            print(f"Tracking links: {done} fulfilments of {store['name'].strip()} now open its tracking page", flush=True)
+
+
 async def _scm_run():
     async with _scm_running:
         if not db.get_setting("scm_resync_v3"):
@@ -5746,6 +5831,7 @@ async def _scm_run():
                 con.execute("DELETE FROM settings WHERE key LIKE 'scm_sync:%'")
             db.set_setting("scm_resync_v3", "1")
         await _scm_sync_orders()
+        await _scm_links()
         await _scm_track()
         await _scm_push()
         _scm_set_status(last_sync=datetime.now(timezone.utc).isoformat())
