@@ -230,7 +230,9 @@ def _dispute_error(r: httpx.Response, what: str) -> PayPalError:
 
 
 async def disputes(client_id: str, secret: str, since: datetime) -> list:
-    """Every dispute (inquiry, claim, chargeback) updated since `since`, newest first (summary rows)."""
+    """Every dispute (inquiry, claim, chargeback) updated since `since`, newest first (summary rows).
+    PayPal refuses update_time_after more than 180 days back (INVALID_DATE_RANGE), so it's capped at 179."""
+    since = max(since, datetime.now(timezone.utc) - timedelta(days=179))
     out, token_page = [], None
     async with httpx.AsyncClient(timeout=60) as client:
         token = await _token(client, client_id, secret)
