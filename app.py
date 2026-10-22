@@ -1386,6 +1386,25 @@ def _usual_suppliers() -> dict:
 
 PLACED_DAYS = 30      # orders not shipped yet count as owed from the day they're placed, for this long
 
+# How the business works with suppliers (owner, 22 Oct 2026; setting `supplier_rules` overrides):
+#  main / main_from: orders placed from that day that aren't on an invoice yet are owed to the main supplier
+#    (Dayone ships everything; Graypop only cross-fulfils and then sends its own invoice for that order);
+#  settled: {supplier: day}: that supplier's orders up to and including the day are paid, invoiced or not
+#    (all Graypop orders were paid off; its last invoices came by WhatsApp, not all reached the app).
+SUPPLIER_RULES = {"main": "Dayone", "main_from": "2026-10-17", "settled": {"Graypop": "2026-10-16"}}
+
+
+def _supplier_rules() -> dict:
+    try:
+        return {**SUPPLIER_RULES, **json.loads(db.get_setting("supplier_rules") or "{}")}
+    except ValueError:
+        return SUPPLIER_RULES
+
+
+def _canon_supplier(name: str) -> str:
+    """A supplier name as the app knows it: "Dayone Fulfillment Co.,Ltd" → "Dayone" (same start), else as given."""
+    return _agent_supplier_for({}, name) or name
+
 
 def _fulfilled_rows(since_day: date) -> list:
     """suppliers.fulfilled_orders for orders since a day (invoiced or not): shipped ones from their fulfilment day, and
@@ -1410,7 +1429,15 @@ def _fulfilled_rows(since_day: date) -> list:
     for l in lines:
         l["on_invoice"] = (l["store_id"], cog.order_key(l["order_name"])) in on_invoice
     cog_desk.set_suppliers(lines, inv_lines, cog_desk.supplier_shares(inv_lines))     # cross-fulfilled orders
+    rules = _supplier_rules()
+    if rules.get("main") and rules.get("main_from"):
+        for l in lines:           # not on an invoice yet and placed after the switch: the main supplier ships it
+            if not l["on_invoice"] and (l.get("created") or "")[:10] >= rules["main_from"]:
+                l["supplier"] = rules["main"]
     rows = suppliers.fulfilled_orders(lines, fulfilled, CASH_TZ)
+    settled = {cog_desk.sup_key(k): v for k, v in (rules.get("settled") or {}).items()}
+    for o in rows:                # paid off up to that day, invoiced or not
+        o["settled"] = o["day"] <= settled.get(cog_desk.sup_key(o["supplier"]), "")
     for o in rows:
         o["shipped"] = (o["store_id"], o["order"]) in shipped
     return rows
@@ -1432,7 +1459,7 @@ def _supplier_payable(supplier: str = "", fresh: bool = False) -> dict:
     imap = _invoice_map()
     invs = cog_desk.by_day(list(imap.values()), lines_of, cutoff, supplier)
     credit = round(sum(i["total"] for i in invs if not i["paid"]), 2)
-    est = cog_desk.not_invoiced(_fulfilled_rows(date.fromisoformat(cutoff)), cutoff, supplier,
+    est = cog_desk.not_invoiced([o for o in _fulfilled_rows(date.fromisoformat(cutoff)) if not o.get("settled")], cutoff, supplier,
                                 cog_desk.billed_up_to(imap, lines_of))
     out = {"cutoff": cutoff, "credit": credit, "estimated": est["total"], "estimated_orders": est["orders"],
            "billed_no_file": est["billed_no_file"], "billed_no_file_cost": est["billed_no_file_cost"],
@@ -1639,6 +1666,7 @@ async def _ingest_invoice(data: bytes, filename: str, user: str) -> dict:
                         "number": inv["number"], "lines": len(inv["lines"]), "total": inv["total"],
                         "sum": inv["total"], "counts": {}, "missing": 0}
             raise HTTPException(400, f"Invoice {inv['number']} from {inv['supplier']} is already uploaded.")
+    inv["supplier"] = _canon_supplier(inv.get("supplier") or "")
     checked, sids, queried = await _check_invoice(inv)
     iid = db.save_invoice(inv, checked, filename[:120], user)
     _save_invoice_file(iid, data, filename)
@@ -5089,9 +5117,9 @@ async def _disputes_refresh(force: bool = False) -> list:
     async with _disp_lock:
         if not force and time.time() - _disp["at"] < 300:
             return _disp["problems"]
-        problems = []
+        problems, unread = [], []
         since = datetime.now(timezone.utc) - timedelta(days=200)
-        sem = asyncio.Semaphore(5)
+        sem = asyncio.Semaphore(3)
 
         async def paypal_one(c, row):
             known = db.get_dispute(f"pp:{c['id']}:{row.get('dispute_id')}")
@@ -5103,12 +5131,17 @@ async def _disputes_refresh(force: bool = False) -> list:
                 return
             if case["state"] != "closed" or closed_unread:
                 async with sem:
-                    try:
-                        case = disputes.from_paypal(await paypal.dispute(c["client_id"], c["secret"], row["dispute_id"]), c)
-                        if case["state"] == "closed":
-                            case["outcome_read"] = True
-                    except paypal.PayPalError:
-                        pass
+                    for attempt in range(3):          # PayPal sometimes refuses bursts or times out: try again
+                        try:
+                            case = disputes.from_paypal(await paypal.dispute(c["client_id"], c["secret"], row["dispute_id"]), c)
+                            if case["state"] == "closed":
+                                case["outcome_read"] = True
+                            break
+                        except Exception as e:
+                            if attempt == 2:
+                                unread.append(f"{row.get('dispute_id')}: {str(e)[:120]}")
+                            else:
+                                await asyncio.sleep(2 + attempt * 3)
             await asyncio.to_thread(db.save_dispute, case)
 
         async def one(c):
@@ -5130,6 +5163,9 @@ async def _disputes_refresh(force: bool = False) -> list:
                     found = None
                 if found:
                     db.link_dispute(row["key"], *found)
+        if unread:
+            print(f"Disputes: {len(unread)} PayPal cases not read in full, e.g. {unread[0]}", flush=True)
+            problems.append(f"PayPal: {len(unread)} case(s) couldn't be read in full yet; they're tried again in 5 minutes.")
         _disp.update(at=time.time(), problems=problems)
         return problems
 
