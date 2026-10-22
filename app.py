@@ -5039,13 +5039,17 @@ async def _disputes_refresh(force: bool = False) -> list:
         async def paypal_one(c, row):
             known = db.get_dispute(f"pp:{c['id']}:{row.get('dispute_id')}")
             old = json.loads(known["data"]) if known else {}
-            if old.get("updated") == row.get("update_time") and old.get("full"):
-                return
             case = disputes.from_paypal(row, c)
-            if case["state"] != "closed":
+            # a closed case's result (won / lost / refunded) is only in its full details: read it once
+            closed_unread = case["state"] == "closed" and not old.get("outcome_read")
+            if old.get("updated") == row.get("update_time") and old.get("full") and not closed_unread:
+                return
+            if case["state"] != "closed" or closed_unread:
                 async with sem:
                     try:
                         case = disputes.from_paypal(await paypal.dispute(c["client_id"], c["secret"], row["dispute_id"]), c)
+                        if case["state"] == "closed":
+                            case["outcome_read"] = True
                     except paypal.PayPalError:
                         pass
             await asyncio.to_thread(db.save_dispute, case)

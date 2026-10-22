@@ -95,7 +95,7 @@ def from_paypal(d: dict, conn: dict) -> dict:
         state = "respond" if d.get("seller_response_due_date") else "waiting"
     outcome = None
     if state == "closed":
-        outcome = ("won" if "SELLER_FAVOUR" in outcome_code else "cancelled" if "CANCELED" in outcome_code
+        outcome = ("won" if "SELLER_FAVOUR" in outcome_code or outcome_code == "DENIED" else "cancelled" if "CANCELED" in outcome_code
                    else "refunded" if outcome_code in ("ACCEPTED", "RESOLVED_WITH_PAYOUT") else "lost"
                    if "BUYER_FAVOUR" in outcome_code else (outcome_code.lower() or "closed"))
     amt = d.get("dispute_amount") or {}
