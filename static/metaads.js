@@ -203,9 +203,9 @@ async function loadCut() {
 
 /* ------------------------------------------------ overview */
 
-async function loadOverview(fresh = false) {
+async function loadOverview(fresh = false, quiet = false) {
   if (!state.store) return;
-  $("table").innerHTML = '<tbody><tr><td class="empty">Reading Meta…</td></tr></tbody>';
+  if (!quiet) $("table").innerHTML = '<tbody><tr><td class="empty">Reading Meta…</td></tr></tbody>';
   try {
     const p = $("days").value;
     if (p === "custom" && !($("dFrom").value && $("dTo").value)) {
@@ -213,7 +213,8 @@ async function loadOverview(fresh = false) {
       return;
     }
     const dates = p === "custom" ? `&start=${$("dFrom").value}&end=${$("dTo").value}` : "";
-    state.data = await api(`/api/metaads/overview?store=${state.store}&level=${state.level}&period=${p}${dates}${fresh ? "&fresh=1" : ""}`);
+    const view = `&active=${$("activeOnly").checked ? 1 : 0}&q=${encodeURIComponent($("q").value.trim())}`;
+    state.data = await api(`/api/metaads/overview?store=${state.store}&level=${state.level}&period=${p}${dates}${view}${fresh ? "&fresh=1" : ""}`);
   } catch (e) { $("table").innerHTML = `<tbody><tr><td class="empty">${esc(e.message)}</td></tr></tbody>`; return; }
   state.cur = state.data.currency;
   renderOverview();
@@ -234,9 +235,9 @@ function renderOverview() {
     ["Autopilot raised", t.auto_raises ? `+${money(t.auto_added)}<small>${num(t.auto_raises)} raise${t.auto_raises === 1 ? "" : "s"}</small>` : "–"],
   ].map(([k, v]) => `<div class="ma-tile"><span>${k}</span><b>${v}</b></div>`).join("")
     + `<div class="ma-tile ma-when"><span>${esc(d.since)} → ${esc(d.until)}</span></div>`;
-  const q = $("q").value.trim().toLowerCase();
-  const rows = d.rows.filter((r) => (!$("activeOnly").checked || r.effective === "ACTIVE" || r.spend)
-    && (!q || `${r.name} ${r.campaign || ""} ${r.adset || ""}`.toLowerCase().includes(q)));
+  const shown = new Set(d.shown || []);
+  const rows = d.rows.filter((r) => shown.has(r.id));
+  const f = d.foot, campaign = state.level === "campaign";
   const parent = (r) => r.level === "ad" ? `${esc(r.campaign)} › ${esc(r.adset)}` : r.level === "adset" ? esc(r.campaign) : "";
   const budget = (r) => {
     if (r.level === "ad") return "";
@@ -257,7 +258,27 @@ function renderOverview() {
       <td>${money(r.value)}</td><td><b>${roasTxt(r.roas)}</b></td>
       <td class="ma-px">${num(r.px_purchases)}</td><td class="ma-px">${money(r.px_value)}</td><td class="ma-px"><b>${roasTxt(r.px_roas)}</b></td>
       ${state.level === "campaign" ? `<td class="ma-auto">${r.auto_raises ? `<b>+${money(r.auto_added)}</b><span class="sub">${num(r.auto_raises)}×</span>` : "–"}</td>` : ""}</tr>`).join("")
-    || `<tr><td class="empty" colspan="16">Nothing ${$("activeOnly").checked ? "running or spending " : ""}in this window.</td></tr>`}</tbody>`;
+    || `<tr><td class="empty" colspan="16">Nothing ${$("activeOnly").checked ? "running or spending " : ""}in this window.</td></tr>`}</tbody>
+    ${rows.length > 1 ? `<tfoot><tr class="ma-total">
+      <td class="ma-name"><span><span class="name">Total</span><span class="sub">${num(f.rows)} ${LEVEL[state.level].toLowerCase()}s shown</span></span></td><td></td>
+      <td>${footBudget(f.budget)}</td><td>${money(f.spend)}</td><td>${num(f.impressions)}</td><td>${num(f.clicks)}</td>
+      <td>${pct(f.ctr)}</td><td>${f.cpc === null ? "–" : money(f.cpc)}</td><td>${num(f.atc)}</td><td>${num(f.purchases)}</td>
+      <td>${money(f.value)}</td><td><b>${roasTxt(f.roas)}</b></td>
+      <td class="ma-px">${num(f.px_purchases)}</td><td class="ma-px">${money(f.px_value)}</td><td class="ma-px"><b>${roasTxt(f.px_roas)}</b></td>
+      ${campaign ? `<td class="ma-auto">${f.auto_raises ? `<b>+${money(f.auto_added)}</b><span class="sub">${num(f.auto_raises)}×</span>` : "–"}</td>` : ""}</tr></tfoot>` : ""}`;
+}
+
+/* The total row's daily budget: running ones; paused ones and budgets kept elsewhere in small print. */
+function footBudget(b) {
+  if (!b) return "";
+  const where = state.level === "campaign" ? "on their ad sets" : "on their campaign";
+  const notes = [];
+  if (b.all !== b.running) notes.push(`incl. paused: ${money(b.all)}`);
+  if (b.elsewhere_n) notes.push(`${num(b.elsewhere_n)} with the budget ${where}, not added`);
+  if (b.lifetime_n) notes.push(`${num(b.lifetime_n)} lifetime budget${b.lifetime_n === 1 ? "" : "s"}, not added`);
+  return `<b title="Daily budgets of the running ${LEVEL[state.level].toLowerCase()}s shown">${b.running_n ? money(b.running) : "–"}</b>`
+    + `<span class="sub">${b.running_n ? `${num(b.running_n)} running` : "none running"}</span>`
+    + notes.map((n) => `<span class="sub">${esc(n)}</span>`).join("");
 }
 
 async function quick(change, id, to) {
@@ -394,7 +415,11 @@ if (PDUrl.get("period") && [...$("days").options].some((o) => o.value === PDUrl.
 }
 $("dGo").onclick = () => { PDUrl.set({ period: "custom", from: $("dFrom").value, to: $("dTo").value }); loadOverview(); };
 $("refresh").onclick = () => loadOverview(true);
-$("activeOnly").onchange = $("q").oninput = () => state.data && renderOverview();
+let viewTimer;
+$("activeOnly").onchange = $("q").oninput = () => {      // the server picks the rows and adds up the total row
+  clearTimeout(viewTimer);
+  viewTimer = setTimeout(() => state.data && loadOverview(false, true), 250);
+};
 $("enabled").onchange = async () => {
   try {
     await api(`/api/metaads/settings/${state.store}`, { method: "PUT", json: { enabled: $("enabled").checked } });

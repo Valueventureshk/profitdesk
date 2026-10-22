@@ -13322,11 +13322,39 @@ def api_mads_stores():
 
 @app.get("/api/metaads/overview")
 async def api_mads_overview(store: int, level: str = "campaign", days: int = 7, fresh: int = 0, period: str = "",
-                            start: str = "", end: str = ""):
+                            start: str = "", end: str = "", active: int = 1, q: str = ""):
     """period: today | yesterday | 3 | 7 | 14 | 30 | month | lastmonth | custom (start, end: store days)."""
     _mads_db()
     st, conn = _mads_store(store)
-    return await _mads_rows(st, conn, level, days, bool(fresh), _mads_period(st, period, start, end))
+    out = await _mads_rows(st, conn, level, days, bool(fresh), _mads_period(st, period, start, end))
+    return {**out, **_mads_view(out["rows"], bool(active), q)}
+
+
+def _mads_view(rows: list, active: bool, q: str) -> dict:
+    """The rows the Overview table shows (Running only = running now or spent in the window; search on names) and
+    the total row under them. Daily budget total: running ones, plus the same incl. paused; budgets that live a
+    level up / down (CBO / ABO) or are lifetime budgets aren't daily figures here, so they're counted, not added."""
+    q = (q or "").strip().lower()
+    shown = [r for r in rows if (not active or r.get("effective") == "ACTIVE" or r.get("spend"))
+             and (not q or q in f"{r.get('name') or ''} {r.get('campaign') or ''} {r.get('adset') or ''}".lower())]
+    keys = ("spend", "impressions", "clicks", "purchases", "value", "atc", "px_purchases", "px_value", "auto_added", "auto_raises")
+    foot = {k: sum(r.get(k) or 0 for r in shown) for k in keys}
+    foot["rows"] = len(shown)
+    sp = foot["spend"]
+    foot["ctr"] = foot["clicks"] / foot["impressions"] if foot["impressions"] else None
+    foot["cpc"] = sp / foot["clicks"] if sp and foot["clicks"] else None
+    foot["roas"] = foot["value"] / sp if sp else None
+    foot["px_roas"] = foot["px_value"] / sp if sp else None
+    budget = None
+    if shown and shown[0].get("level") in ("campaign", "adset"):
+        daily = [r for r in shown if r.get("daily_budget")]
+        run = [r for r in daily if r.get("effective") == "ACTIVE"]
+        budget = {"running": round(sum(r["daily_budget"] for r in run), 2), "running_n": len(run),
+                  "all": round(sum(r["daily_budget"] for r in daily), 2), "all_n": len(daily),
+                  "lifetime_n": sum(1 for r in shown if not r.get("daily_budget") and r.get("lifetime_budget")),
+                  "elsewhere_n": sum(1 for r in shown if not r.get("daily_budget") and not r.get("lifetime_budget"))}
+    foot["budget"] = budget
+    return {"shown": [r["id"] for r in shown], "foot": foot}
 
 
 def _mads_period(st, period: str, start: str, end: str):
