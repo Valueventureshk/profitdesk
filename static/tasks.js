@@ -224,6 +224,7 @@ function renderTask() {
       ["Writer", `${esc(b.writer_name || "Maggie Whitefield")}, ${esc(b.writer_age || "67")}`],
       ["Customer photo", writerPhotos.length ? `<div class="tk-files">${writerPhotos.map((x) => fileTile(x, manage && !closed)).join("")}</div>` : "None: ChatGPT makes one"],
       ["Page style", !b.page_style && b.competitor_advertorial ? `Copy of the competitor's design <a href="/tasks/${t.id}/competitor-style" target="_blank">preview ↗</a>` : b.page_style ? `${esc((state.styles.find((s) => s.id === b.page_style) || {}).name || b.page_style)} <a href="/tasks/styles/${encodeURIComponent(b.page_style)}/preview" target="_blank">preview ↗</a>` : "AI picks"],
+      ["Sticky button", b.sticky === "yes" ? "Yes: slides in on scroll, text written by the AI" : "No"],
       ["Reviews", [b.review_rating && `${esc(b.review_rating)} ★`, b.review_count && `${esc(b.review_count)} reviews`].filter(Boolean).join(" · ")],
       ["Review texts", b.reviews && `<details><summary>${lines(b.reviews).length} line(s)</summary>${esc(b.reviews).replace(/\n/g, "<br>")}</details>`],
     ] : []),
@@ -755,6 +756,7 @@ function openEditor(t = null) {
   $("aDesc").value = b.product_description || ""; $("aSend").value = b.send_to_url || ""; $("aPhoto").value = "";
   $("aWriter").value = b.writer_name || "Maggie Whitefield"; $("aAge").value = b.writer_age || "67";
   $("aStyle").value = b.page_style || ""; stylePrev(); $("aWriterPhoto").value = "";
+  $("aSticky").checked = b.sticky === "yes";
   $("aRating").value = b.review_rating || ""; $("aCount").value = b.review_count || ""; $("aReviews").value = b.reviews || "";
   const admin = !!(state.data && state.data.manage);
   for (const btn of $("eKind").querySelectorAll("button")) btn.hidden = !admin && btn.dataset.kind === "store";
@@ -794,6 +796,7 @@ async function saveEditor() {
     : state.kind === "advertorial" ? { ...state.editBrief, product_url: $("aLink").value.trim(), competitor_advertorial: $("aComp").value.trim(),
       product_description: $("aDesc").value.trim(), send_to_url: $("aSend").value.trim(),
       writer_name: $("aWriter").value.trim(), writer_age: $("aAge").value.trim(), page_style: $("aStyle").value,
+      sticky: $("aSticky").checked ? "yes" : "",
       review_rating: $("aRating").value.trim(), review_count: $("aCount").value.trim(), reviews: $("aReviews").value }
     : { ...state.editBrief, description: $("eDesc").value };
   if (state.kind === "advertorial" && !$("eName").value.trim()) {

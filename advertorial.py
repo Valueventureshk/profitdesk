@@ -368,7 +368,13 @@ def template_check(s: str) -> list:
     return out
 
 
-def render_template(style: dict, body: str, *, store: str, link: str, images: dict) -> str:
+# No sticky bar asked for on the task: hide a template's own bar too.
+NO_STICKY_CSS = '.ev-adv [class*="sticky"]:not([class*="sticky-inner"]){display:none!important;}'
+
+
+def render_template(style: dict, body: str, *, store: str, link: str, images: dict, sticky: bool = False,
+                    sticky_label: str = "") -> str:
+    """sticky: the staff ticked "sticky button" on the task (its text = sticky_label, the AI's pick from the page)."""
     body = clean_html(body)
     body = re.sub(r'(<img\b[^>]*?\bsrc\s*=\s*")([^"]+)(")',
                   lambda m: m.group(1) + (html.escape(images[html.unescape(m.group(2))], quote=True)
@@ -382,12 +388,14 @@ def render_template(style: dict, body: str, *, store: str, link: str, images: di
     body = re.sub(r'(class="[^"]*sticky[^"]*"[^>]*>(?:(?!</div>)[\s\S])*?<a\b[^>]*>)([\s\S]*?)(</a>)',
                   lambda m: m.group(1) + html.escape(sticky_text(link, re.sub(r"<[^>]+>", "", html.unescape(m.group(2))))) + m.group(3),
                   body, count=1, flags=re.I)
-    sticky = ""
-    if "sticky" not in body.lower():
+    sticky_html = ""
+    if not sticky:
+        sticky_html = f"<style>{NO_STICKY_CSS}</style>"
+    elif "sticky" not in body.lower():
         ac = style.get("accent") or ACCENT
-        sticky = (f'<div class="mb-lp" style="padding:0;margin:0;max-width:none"><a class="lp-sticky" href="{html.escape(link, quote=True)}">'
-                  f'{html.escape(sticky_text(link))} &rarr;</a></div><style>{STICKY_CSS.replace("ACCENT", ac)}</style>')
-    return f"<style>{style.get('css') or ''}</style>\n<div class=\"ev-adv\">\n{body}\n{disc}{sticky}\n</div>\n{ADV_JS}"
+        sticky_html = (f'<div class="mb-lp" style="padding:0;margin:0;max-width:none"><a class="lp-sticky" href="{html.escape(link, quote=True)}">'
+                       f'{html.escape(sticky_text(link, sticky_label))} &rarr;</a></div><style>{STICKY_CSS.replace("ACCENT", ac)}</style>')
+    return f"<style>{style.get('css') or ''}</style>\n<div class=\"ev-adv\">\n{body}\n{disc}{sticky_html}\n</div>\n{ADV_JS}"
 
 
 _PH = ("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='800' height='{h}'>"
@@ -650,7 +658,7 @@ def accent_of(v) -> str:
 
 
 def render(page: dict, *, store: str, link: str, images: dict, price: str = "", was: str = "",
-           rating: str = "", count: str = "", accent: str = None, style: dict = None) -> str:
+           rating: str = "", count: str = "", accent: str = None, style: dict = None, sticky: bool = False) -> str:
     """The page body for Shopify (style + content). images maps each image reference to its final https link.
     style = a custom page style from the style library (its base theme + its own CSS), else page["theme"]."""
     def src(ref):
@@ -735,7 +743,8 @@ def render(page: dict, *, store: str, link: str, images: dict, price: str = "", 
                + f'<p class="lp-disc">This page is an advertisement for {html.escape(store.strip())}.</p></div>')
     ac = accent or (lib or {}).get("accent") or accent_of(page.get("accent"))
     # mobile: a small "shop" bar fixed at the bottom of the screen, to the same landing page as every button
-    out.append(f'<a class="lp-sticky" href="{html.escape(link, quote=True)}">{_inline(sticky_text(link, page.get("sticky")))} &rarr;</a>')
+    if sticky:      # only when the task asks for it (owner, 22 Oct 2026); its text is the AI's, from the page
+        out.append(f'<a class="lp-sticky" href="{html.escape(link, quote=True)}">{_inline(sticky_text(link, page.get("sticky")))} &rarr;</a>')
     extra = (lib or {}).get("css") or ""
     cls = f"ev-adv mb-lp th-{theme}" + (f" st-{re.sub(r'[^a-z0-9-]', '', str(lib.get('id')))}" if lib else "")
     return (f"<style>{CSS.replace('ACCENT', ac)}{STICKY_CSS.replace('ACCENT', ac)}{extra}</style>\n<div class=\"{cls}\">\n"
@@ -814,9 +823,12 @@ def prompts(task: dict, brief: dict, fx: dict, store: str, country: str = "", ba
             f"rules and ai_steps exactly. The writer is {wname}, {wage}; the primary text follows the house sample beat by beat "
             f"at {SAMPLE_WORDS - 25}-{SAMPLE_WORDS + 25} words and tells the same story as the page"
             + (f"; page style: {style}" if style else "") + ". "
-            f"Write the primary text, headline, description and the full advertorial page, make the square ad image and 3 page "
-            f"images with your image tool from the product photo, add them to the task, save everything with advertorial_save "
-            f"(or task_save with result.page) and submit it. Don't stop until you can give me the preview link."),
+            f"Work in its phases, in order: write the primary text, headline, description and the full page; then make EVERY "
+            f"image in its image_plan ({'5' if writer_photo else '6'} images: AD-1, AD-2, PAGE-1, PAGE-2, PAGE-3"
+            f"{'' if writer_photo else ', PORTRAIT'}), one per generation, each labelled with its id, never fewer; then give "
+            f"me a checklist of which image I upload where on the task and wait until I say done; then read the task again, "
+            f"put my uploaded images in their places, save with advertorial_save and submit. Finish by giving me the preview "
+            f"link."),
         "write_without_connector": (
             f"You are writing a Facebook advertorial as {wname}, {wage}, in {where}, for {store}, a small "
             f"boutique. Product: {name}. {desc} Readers who click go to {send_to(brief)}. Never say it is fictional and never "
@@ -841,10 +853,23 @@ def prompts(task: dict, brief: dict, fx: dict, store: str, country: str = "", ba
              f"Square portrait photo of a friendly woman of {wage} from {where}, natural selfie at home, warm light, "
              f"no make-up look, casual top. For the letter's byline."),
         ],
-        "after_making_images": ("Add each image to the task (task_add_image with its link, or download it and drop it on "
-                                f"the task: {base_url}/tasks?task={tid}), then save the page using the file:<id> "
-                                "of each image."),
+        "after_making_images": (f"Download each image and upload it on the task ({base_url}/tasks?task={tid}): AD-1 and "
+                                "AD-2 under 'Ad image', then PAGE-1, PAGE-2, PAGE-3 (and PORTRAIT) under 'Other files', in "
+                                "that order. Then say done, so the page is built with them."),
     }
+
+
+def image_plan(p: dict, have_writer_photo: bool) -> list:
+    """Every image the AI must make for an advertorial task, with an id, what it is for and where staff upload it."""
+    pages = p.get("page_images") or []
+    plan = [{"id": "AD-1", "for": "the ad (square)", "upload_to": "Ad image", "prompt": p.get("ad_image")},
+            {"id": "AD-2", "for": "a second ad version (square)", "upload_to": "Ad image", "prompt": p.get("ad_image_alternative")}]
+    for i, pr in enumerate(pages[:3], 1):
+        plan.append({"id": f"PAGE-{i}", "for": f"page photo {i} (in the story)", "upload_to": "Other files", "prompt": pr})
+    if not have_writer_photo and len(pages) > 3:
+        plan.append({"id": "PORTRAIT", "for": "the writer's photo at the top of the letter", "upload_to": "Other files",
+                     "prompt": pages[3]})
+    return plan
 
 
 # ---------------------------------------------------------------- Shopify: product facts, the page, images

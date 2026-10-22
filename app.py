@@ -16121,10 +16121,7 @@ async def _adv_context(t: dict, brief: dict, result: dict) -> dict:
     out = {"advertorial_playbook_follow_this": advertorial.playbook(),
            "reviews_from_staff": {"rating": brief.get("review_rating"), "count": brief.get("review_count"),
                                   "reviews": brief.get("reviews")},
-           "how_to_finish": ("1) Write the primary text, headline, description and the page (playbook). 2) Make the ad image "
-                             "(and page images) from the product photos; add each with task_add_image (image_url), or ask the "
-                             "person to drop it on the task, then use file:<id> in the page. 3) advertorial_save with page + "
-                             "copy (submit=true once the ad image is on the task). 4) Give the person the preview link.")}
+           "how_to_finish": "Follow ai_steps in order, phase by phase. Never skip a phase or an image."}
     src = brief.get("product_url") or advertorial.send_to(brief)
     if st and advertorial.link_handle(src)[0]:
         try:
@@ -16154,7 +16151,7 @@ async def _adv_context(t: dict, brief: dict, result: dict) -> dict:
                                  "rule": "Fill this template: keep every tag, class and the order exactly; replace every ✎ "
                                          "placeholder with the real text for this product and story (similar length); put "
                                          "images in the img src as file:<id> or https links; leave link hrefs as they are "
-                                         "(EcomVital points them at the landing page). The sticky bar button: a gentle suggestion like Browse the collection, never Shop now. Save with advertorial_save page = "
+                                         "(EcomVital points them at the landing page). Sticky bar: see sticky_button. Save with advertorial_save page = "
                                          "{title, html}. Prices: write the real prices from product_facts."}
         else:
             out["page_style"] = {"id": ps, "name": lib.get("name"), "chosen_by_staff": True,
@@ -16173,20 +16170,43 @@ async def _adv_context(t: dict, brief: dict, result: dict) -> dict:
     out["prompts"] = advertorial.prompts(t, brief, fx_, (fx_.get("store") or {}).get("name") or (st or {}).get("name", ""),
                                          "Australia" if "perth" in ((st or {}).get("name", "").lower()) else
                                          (fx_.get("store") or {}).get("country", ""), BASE_URL, out["writer"]["photo"] or "")
+    sticky_on = str(brief.get("sticky") or "").lower() in ("yes", "true", "1", "on")
+    out["sticky_button"] = (
+        {"wanted": True, "rule": "Staff asked for a sticky button (it slides in once the reader scrolls). Write its text "
+                                 "yourself from this advertorial's story and offer: 2-5 words that invite rather than push "
+                                 "(e.g. 'See the bag Maggie found', 'Browse the cardigans'), never 'Shop now' / 'Buy now'. "
+                                 "Put it in page.sticky (template pages: also as the text of the template's sticky-bar link)."}
+        if sticky_on else
+        {"wanted": False, "rule": "No sticky button on this page: don't add page.sticky. If the template has a sticky bar, "
+                                  "leave it; EcomVital hides it."})
+    out["image_plan"] = advertorial.image_plan(out["prompts"], bool(out["writer"]["photo"]))
+    up = f"{BASE_URL}/tasks?task={t['id']}"
     out["ai_steps"] = [
-        "1. Read everything here first: special instructions, the playbook, product, landing page, reviews, competitor page.",
-        "2. Write the primary text, headline and description (playbook).",
-        "3. Write the whole page as page JSON (theme, accent, label, headline, author, blocks, card, footer) in the playbook's "
-        "voice and structure, using the styled blocks. Follow THE OWNER'S STANDING RULES: writer's full name and age, never "
-        "fictional, never mention AI images; primary text = the house sample's beats and length, same story as the page.",
-        "4. Make the square ad image with your image tool from prompts.ad_image (look at the product photo first), and 3 page "
-        "images + the portrait from prompts.page_images.",
-        "5. Put the images on the task: task_add_image with each image's link; if you have no link, ask the person to "
-        "download them and drop them on the task, then call task_get again to get their file:<id>.",
-        "6. Save: advertorial_save (or task_save with result.page, result.primary_text, result.headline, "
-        "result.ad_description) with submit=true once the ad image is on the task. Images in the page: file:<id> or "
-        "product photo links.",
-        "7. Reply with the preview link and what's left for a person to check. Don't stop before step 6 is done.",
+        "PHASE 1 · READ. Read everything here first: special instructions, comments_and_steps (pick up where the work "
+        "stopped), the playbook, product, landing page, reviews, competitor page, page_style, sticky_button, image_plan, files.",
+        "PHASE 2 · WRITE. Write the primary text, headline, description and the whole page (page JSON, or the template's "
+        "HTML for a template style) in the playbook's voice. THE OWNER'S STANDING RULES: writer's full name and age, never "
+        "fictional, never mention AI images; primary text = the house sample's beats and length, same story as the page. "
+        "Save the copy now with task_save (result.primary_text, result.headline, result.ad_description; submit=false) so "
+        "nothing is lost.",
+        "PHASE 3 · IMAGES, ALL OF THEM. Make EVERY image in image_plan, one image per generation, in the listed order "
+        "(look at the product photo first; the product must match it exactly). Count them: the plan has "
+        f"{len(out['image_plan'])} images and you are not done until you have made {len(out['image_plan'])}. Label each one "
+        "in the chat with its id (AD-1, PAGE-1 ...). If your image tool stops or refuses, say exactly which ids are still "
+        "missing and make them as soon as the person says continue. Never reuse one image for two slots and never use the "
+        "product photo instead of a made image.",
+        "PHASE 4 · HAND OVER AND WAIT. Give the person one checklist: each image id, what it shows, and where to upload it "
+        f"on the task ({up}): AD images under 'Ad image', in order; PAGE images and PORTRAIT under 'Other files', in the "
+        "order listed. Also post the same checklist as a task_comment. Then STOP and wait until the person says done. "
+        "(If task_add_image accepts a public https link to your image, you may add it yourself instead.)",
+        "PHASE 5 · CHECK THE UPLOADS. When the person says done, call task_get again. Match the new files to the plan "
+        "by section and upload order (files[].where_on_task, oldest first, only files uploaded after your checklist). "
+        "If the count doesn't match the plan, say which are missing and wait again. Don't guess.",
+        "PHASE 6 · BUILD THE PAGE. Put each image in its place with its file:<id> ref (PAGE-n in the page's image blocks, "
+        "PORTRAIT as author.photo; a customer photo on the task beats a made portrait). Follow sticky_button. Save with "
+        "advertorial_save (or task_save with result.page) and submit=true once the AD images are on the task.",
+        "PHASE 7 · REPORT. Reply with the preview link, the image placement, and what a person should check. Don't stop "
+        "before PHASE 6 is done.",
     ]
     if brief.get("competitor_advertorial"):
         state = _adv_state(t["id"])
@@ -16211,7 +16231,7 @@ async def _adv_context(t: dict, brief: dict, result: dict) -> dict:
                                      "placeholder with our own text for this product and story (similar length, the "
                                      "competitor's angle and beats, never their sentences); put our images in the img src as "
                                      "file:<id> or https links; leave link hrefs (EcomVital points them at the landing page). "
-                                     "The sticky bar's button: a gentle suggestion like 'Browse the collection' or 'See the products', never 'Shop now'. "
+                                     "Sticky bar: see sticky_button. "
                                      "Save with advertorial_save page = {title, html}."
                                      + (" Note: much of their look comes from their theme files, which aren't copied, so the "
                                         "page will be plainer than theirs." if comp_tpl.get("weak") else "")}
@@ -16343,8 +16363,10 @@ async def _adv_save(tid: int, args: dict, user: dict) -> dict:
     if not tpl and prod and not (page.get("card") or {}).get("image") and prod["images"]:
         page.setdefault("card", {})["image"] = prod["images"][0]
         images[prod["images"][0]] = prod["images"][0]
+    sticky_on = str(brief.get("sticky") or "").lower() in ("yes", "true", "1", "on")
     body = advertorial.render_template(tpl, page["html"], store=fx_["store"]["name"], link=advertorial.send_to(brief),
-                                       images=images) if tpl else advertorial.render(page, store=fx_["store"]["name"], link=advertorial.send_to(brief), images=images,
+                                       images=images, sticky=sticky_on, sticky_label=str(page.get("sticky") or "")) \
+        if tpl else advertorial.render(page, store=fx_["store"]["name"], link=advertorial.send_to(brief), images=images, sticky=sticky_on,
                               price=prod["price"] if prod else "", was=prod["compare_at_price"] if prod else "",
                               rating=str(brief.get("review_rating") or ""), count=str(brief.get("review_count") or ""),
                               style=lib_style)
@@ -16413,6 +16435,8 @@ async def _task_tool(name: str, args: dict, user: dict) -> dict:
         brief = {k: args.get(k) for k in ("todo", "description", "competitor_ads", "competitor_landing", "competitor_products",
                                           "product_url", "competitor_advertorial", "review_rating", "review_count", "reviews")
                  if args.get(k)}
+        if args.get("sticky"):
+            brief["sticky"] = "yes"
         got = await api_task_create(req, {"kind": args.get("kind") or "custom", "title": args.get("title"),
                                           "assignee_id": p["id"] if p else None, "store_id": st_["id"] if st_ else None,
                                           "due": args.get("due"), "priority": args.get("priority") or "normal",
@@ -16436,8 +16460,12 @@ async def _task_tool(name: str, args: dict, user: dict) -> dict:
                 "still_missing_to_submit": tasks.missing(t["kind"], brief, result, n_cr),
                 "comments_and_steps": [{"who": l.get("who"), "at": l["at"], "what": l["action"], "text": l.get("text")}
                                        for l in (t.get("log") or [])][-30:],
-                "files": [{"name": f["name"], "from": "admin" if f["side"] == "admin" else "staff", "kind": f["kind"],
-                           "open": f"{BASE_URL}/api/tasks/file/{f['id']}"} for f in t.get("files") or []],
+                "files": [{"ref": f"file:{f['id']}", "name": f["name"], "from": "admin" if f["side"] == "admin" else "staff",
+                           "kind": f["kind"], "where_on_task": {"creative": "Ad image / creatives", "product": "Product photo",
+                                                                "writer": "Customer photo"}.get(f["kind"], "Other files"),
+                           "uploaded_at": f.get("at") or f.get("created_at"),
+                           "open": f"{BASE_URL}/api/tasks/file/{f['id']}"}
+                          for f in sorted(t.get("files") or [], key=lambda x: x["id"])],
                 **({"store_playbook_follow_this": db.get_setting("store_playbook") or "(no playbook saved yet: ask the owner)",
                     "admin_checks_still_no": tasks.store_pending(brief), "store_kit": _store_kit_info()}
                    if t["kind"] == "store" else {}),

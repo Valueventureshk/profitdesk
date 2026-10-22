@@ -231,7 +231,8 @@ TOOLS += [
            "competitor_advertorial": {"type": ["string", "null"], "description": "advertorial: the competitor's advertorial to copy"},
            "review_rating": {"type": ["string", "null"], "description": "advertorial: e.g. 4.2"},
            "review_count": {"type": ["string", "null"], "description": "advertorial: e.g. 300+"},
-           "reviews": {"type": ["string", "null"], "description": "advertorial: real customer reviews, one per line"}},
+           "reviews": {"type": ["string", "null"], "description": "advertorial: real customer reviews, one per line"},
+           "sticky": {"type": ["boolean", "null"], "description": "advertorial: add a sticky button (slides in on scroll); off unless asked"}},
           ["title", "kind", "assignee", "store", "due", "priority", "special_notes", "todo", "description",
            "competitor_ads", "competitor_landing", "competitor_products"]),
     _tool("advertorial_save", "Advertorial + ad creative tasks: send the advertorial page and the ad copy. EcomVital builds the "
@@ -242,8 +243,8 @@ TOOLS += [
           "image {src, caption, alt, style: plain|framed|polaroid} | cta {text} | list {items:[{lead, text}]} | checklist "
           "{items[]} | box {title, text, items?} | review {text, name, place, stars, verified} | note {text} | divider | "
           "signature {name} ] (each block has its type), card {title, product_handle (for a collection: which product), image, "
-          "bullets[], button, note}, footer {about, store_line}, sticky (optional: the phone bar's text, a gentle suggestion "
-          "like 'Browse the collection' or 'See the products', never 'Shop now')}. If the task's page_style is a template (task_get "
+          "bullets[], button, note}, footer {about, store_line}, sticky (only when task_get sticky_button.wanted is true: the phone bar's "
+          "text, your own 2-5 words from this page's story, inviting not pushing, never 'Shop now')}. If the task's page_style is a template (task_get "
           "page_style.kind = template), send page = {title, html} instead: the template filled in. Text may use **bold** and ==highlight==. Image src/photo/image = file:<id> (a file on the task) or an https "
           "image link (copied into the store's Files). Prices, stars and the 'advertisement' line are added by EcomVital. "
           "Refused (with the reason) if it breaks the owner's standing rules: never fictional / never mentions AI images, "

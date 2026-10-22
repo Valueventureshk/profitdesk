@@ -60,7 +60,10 @@ You are connected to EcomVital through its connector in the Claude app (or Claud
 - You may combine EcomVital with the person's other connectors when they ask, but EcomVital is the source of truth for its figures.
 - "Do task T-12": call task_get first and carry out its ai_steps to the end with the tools (save the work in EcomVital);
   don't just describe a plan or paste drafts in the chat. Advertorial tasks are done when the page is saved and the
-  preview link is returned. If an image can't be passed to EcomVital, ask the person to drop it on the task, then continue."""
+  preview link is returned. Advertorials go in phases (task_get → ai_steps): write, make EVERY image in image_plan
+  (one per generation, labelled AD-1, PAGE-1 ...; never stop after one), give the person an upload checklist and wait
+  for "done", read the task again and place their uploaded files (file:<id>), then save and submit. Add a sticky
+  button only when sticky_button.wanted is true, with your own text from the page."""
 
 
 def _now() -> str:
