@@ -2521,7 +2521,8 @@ async def api_pdesk(store: str = "all", start: str = "", end: str = ""):
             "image": ((p or {}).get("featuredImage") or {}).get("url"), "handle": (p or {}).get("handle"),
             "status": ((p or {}).get("status") or "").title() or ("Not in Shopify" if pid.isdigit() else "No product id"),
             "listed": ((p or {}).get("createdAt") or "")[:10] or None,
-            "supplier": ex.get("supplier") or cost.get("cost_supplier") or g["supplier"] or "",
+            # the main supplier fulfils everything since the switch (SUPPLIER_RULES); a supplier typed by the team wins
+            "supplier": ex.get("supplier") or _supplier_rules().get("main") or cost.get("cost_supplier") or g["supplier"] or "",
             "supplier_set": bool(ex.get("supplier")), "material": ex.get("material") or "",
             **({"cost": round(g["sale_cost"][1], 2), "cost_day": g["sale_cost"][0][1], "cost_is_bundle": False,
                 "cost_note": "per BOGO sale (2 pairs)" + ("" if g["sale_cost"][0][0] else ", from history")}
