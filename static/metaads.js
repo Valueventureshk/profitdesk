@@ -201,15 +201,27 @@ function cutShowFields(box) {
   for (const l of box.querySelectorAll("[data-show]")) l.hidden = !l.dataset.show.split(" ").every((x) => on.has(x));
 }
 
-function cutCampaigns(r, manage) {
+/* Which campaigns a rule covers: a dropdown of switch · name · budget (from the server's campaign list), plus "All campaigns". */
+function cutBudgetTxt(x, c) {
+  if (x.daily_budget) return `${c} ${num(x.daily_budget, 2)}`;
+  if (x.lifetime_budget) return `${c} ${num(x.lifetime_budget, 2)} lifetime`;
+  return x.known ? "on ad sets" : "–";
+}
+function cutCampaigns(r, manage, c) {
   const picked = r.campaigns || {};
+  const all = r.scope === "all";
   const list = (state.cutCamps || []).slice();
-  for (const [id, name] of Object.entries(picked)) if (!list.some((x) => x.id === id)) list.push({ id, name, effective: "" });
-  const rows = list.map((x) => `<label class="ma-sw-row"><span class="ma-sw"><input type="checkbox" data-cutcamp="${r.id}" data-id="${esc(x.id)}" data-name="${esc(x.name)}"${picked[x.id] !== undefined ? " checked" : ""}${manage ? "" : " disabled"}><i></i></span>
-      <span class="nm">${esc(x.name)}</span>${x.effective && x.effective !== "ACTIVE" ? `<span class="ma-sub">${esc(STATUS[x.effective] || x.effective)}</span>` : ""}</label>`).join("");
+  for (const [id, name] of Object.entries(picked)) if (!list.some((x) => x.id === id)) list.push({ id, name });
+  const dis = !manage || all ? " disabled" : "";
+  const rows = list.map((x) => `<label class="ma-sw-row${all ? " dim" : ""}"><span class="ma-sw"><input type="checkbox" data-cutcamp="${r.id}" data-id="${esc(x.id)}" data-name="${esc(x.name)}"${all || picked[x.id] !== undefined ? " checked" : ""}${dis}><i></i></span>
+      <span class="nm" title="${esc(x.name)}">${esc(x.name)}</span><span class="bud">${cutBudgetTxt(x, c)}</span></label>`).join("");
+  const n = Object.keys(picked).length;
   return `<details class="ma-cut-camps" data-open="camps-${r.id}"${state.logOpen[`camps-${r.id}`] ? " open" : ""}>
-    <summary>Campaigns in this rule: <b>${Object.keys(picked).length}</b> switched on ▾</summary>
-    <div class="ma-sw-list">${state.cutCamps ? rows || '<p class="hint">No campaigns ran in the last 7 days.</p>' : '<p class="hint">Loading campaigns…</p>'}</div></details>`;
+    <summary><span>Applies to: <b>${all ? "All campaigns" : `${n} campaign${n === 1 ? "" : "s"}`}</b></span><span class="caret">▾</span></summary>
+    <div class="ma-sw-list">
+      <label class="ma-sw-row ma-sw-all"><span class="ma-sw"><input type="checkbox" data-cutall="${r.id}"${all ? " checked" : ""}${manage ? "" : " disabled"}><i></i></span>
+        <span class="nm">All campaigns <span class="ma-sub">(new ones included)</span></span><span class="bud">Daily budget</span></label>
+      ${state.cutCamps ? rows || '<p class="hint">No campaigns ran in the last 7 days.</p>' : '<p class="hint">Loading campaigns…</p>'}</div></details>`;
 }
 
 function cutWatch(rows, c, at) {
@@ -254,7 +266,7 @@ async function loadCut(force = false) {
             ${manage ? `<details class="ma-cut-set"><summary>Settings</summary>${cutSettings(r, c)}</details>` : ""}
           </div>
         </div>
-        ${r.scope === "picked" ? cutCampaigns(r, manage) : ""}
+        ${cutCampaigns(r, manage, c)}
         <div class="ma-cut-check" id="cutCheck-${r.id}"></div>
         ${r.trigger === "campaign" && r.on && st.watch && st.watch.rows && st.watch.rows.length ? `<details class="ma-log" data-log="watch-${r.id}"${state.logOpen[`watch-${r.id}`] ? " open" : ""}><summary>Today per campaign</summary>${cutWatch(st.watch.rows, c, st.watch.at)}</details>` : ""}
         ${feed ? `<details class="ma-log" data-log="cut-${r.id}"${state.logOpen[`cut-${r.id}`] ? " open" : ""}><summary>Changes made (last ${(r.feed || []).slice(0, 10).length})</summary><ul class="ma-feed">${feed}</ul></details>` : ""}
@@ -263,9 +275,9 @@ async function loadCut(force = false) {
   keepLogs(box);
   for (const d of box.querySelectorAll("details[data-open]")) d.addEventListener("toggle", () => { state.logOpen[d.dataset.open] = d.open; });
   for (const f of box.querySelectorAll(".ma-cut-fields")) { cutShowFields(f); f.addEventListener("change", () => cutShowFields(f)); }
-  if (!state.cutCamps && s.rules.some((r) => r.scope === "picked")) {
+  if (!state.cutCamps) {
     api(`/api/metaads/overview?store=${state.store}&level=campaign&period=7&active=0`).then((d) => {
-      state.cutCamps = (d.rows || []).map((x) => ({ id: x.id, name: x.name, effective: x.effective }));
+      state.cutCamps = (d.rows || []).map((x) => ({ id: x.id, name: x.name, daily_budget: x.daily_budget, lifetime_budget: x.lifetime_budget, known: true }));
       loadCut(true);
     }).catch(() => { state.cutCamps = []; });
   }
@@ -319,6 +331,16 @@ $("cutrule").addEventListener("click", (e) => {
   if (b) { const box = b.closest(".ma-cut-check"); box.className = "ma-cut-check"; box.innerHTML = ""; }
 });
 $("cutrule").addEventListener("change", (e) => {
+  const al = e.target.closest("[data-cutall]");
+  if (al) {
+    const r = ((state.cut || {}).rules || []).find((x) => x.id === al.dataset.cutall) || {};
+    const body = { scope: al.checked ? "all" : "picked" };
+    if (!al.checked && !Object.keys(r.campaigns || {}).length) {     // start from every campaign on; switch off the ones to leave out
+      body.campaigns = Object.fromEntries((state.cutCamps || []).map((x) => [x.id, x.name]));
+    }
+    cutPut(al.dataset.cutall, body, al.checked ? "Rule covers all campaigns." : "Now switch off the campaigns this rule should leave alone.");
+    return;
+  }
   const cb = e.target.closest("[data-cutcamp]");
   if (!cb) return;
   cutPut(cb.dataset.cutcamp, { campaign: { id: cb.dataset.id, name: cb.dataset.name, on: cb.checked } },
