@@ -31,3 +31,6 @@ desktop/*.spec
 
 # Lock key for the stored API keys (vault.py). Never upload.
 data.key
+
+# Local Python packages for the dev server
+.venv/
