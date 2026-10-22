@@ -4822,6 +4822,7 @@ async def api_cash(currency: str = None):
         sup = {"credit": pay["credit"] * k, "estimated": pay["estimated"] * k, "total": pay["total"] * k, "cutoff": pay["cutoff"]}
         sm = st["summary"] or {}
         sup["after"] = (sm["after_ads"] if sm.get("after_ads") is not None else sm.get("position") or 0.0) - sup["total"]
+        sup["total_payable"] = (sm.get("ads_payable") or 0.0) + sup["total"]     # ads + suppliers, for the Payables box
     except Exception as e:
         print(f"Supplier payable failed: {e}")
     return {
