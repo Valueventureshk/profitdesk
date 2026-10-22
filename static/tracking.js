@@ -35,7 +35,7 @@ let colState = (() => {
   } catch { /* none saved */ }
   return DEFAULT_COLS.map((x) => [...x]);
 })();
-const state = { store: PDUrl.get("store") || "", range: PDUrl.get("range") || "today", key: PDUrl.get("key") || "", cur: PDUrl.get("cur") || "", hour: PDUrl.get("hour") || "" };
+const state = { store: PDUrl.get("store") || "", range: PDUrl.get("range") || "today", key: PDUrl.get("key") || "", cur: PDUrl.get("cur") || "", hours: PDUrl.get("hours") || (PDUrl.get("hour") ? `${PDUrl.get("hour")}-${Number(PDUrl.get("hour")) + 1}` : "") };
 
 function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -91,16 +91,48 @@ function storeHour() {
   try { return Number(new Intl.DateTimeFormat("en-GB", { timeZone: store()?.timezone || undefined, hour: "2-digit", hourCycle: "h23" }).format(new Date())); }
   catch { return new Date().getHours(); }
 }
-function hourItems() {
-  const [a] = range(), today = a === storeToday(), now = storeHour();
-  const out = [["", "All day"]];
-  for (let h = 0; h < 24; h++) {
-    if (today && h > now) break;
-    out.push([String(h), slot(h) + (today && h === now ? " · so far" : "")]);
-  }
-  return out;
+// state.hours = "from-to" on the store's clock (to is exclusive, 1..24), "" = all day
+const hrs = () => (state.hours ? state.hours.split("-").map(Number) : null);
+const fmtH = (h) => `${pad(h % 24)}:00`;
+function hoursName() {
+  const h = hrs();
+  if (!h) return "All day";
+  const sofar = range()[0] === storeToday() && h[1] > storeHour();
+  return `${fmtH(h[0])}–${fmtH(h[1])}` + (sofar ? " · so far" : "");
 }
-const hourQ = () => (state.hour !== "" && oneDay() ? `&hour=${state.hour}` : "");
+function hourMenu() {
+  const box = $("hourMenu");
+  const open = box.hidden;
+  for (const m of document.querySelectorAll(".trk-menu")) m.hidden = true;
+  if (!open) return;
+  const today = range()[0] === storeToday(), now = storeHour();
+  const lastTo = today ? now + 1 : 24;                       // today: up to the current hour (so far)
+  const h = hrs() || [0, lastTo];
+  const opt = (v, cur, label) => `<option value="${v}"${v === cur ? " selected" : ""}>${label}</option>`;
+  const froms = [], tos = [];
+  for (let i = 0; i < lastTo; i++) froms.push(opt(i, h[0], fmtH(i)));
+  for (let i = 1; i <= lastTo; i++) tos.push(opt(i, Math.min(h[1], lastTo), i === 24 ? "24:00" : fmtH(i) + (today && i === lastTo ? " (now)" : "")));
+  const singles = [];
+  for (let i = 0; i < lastTo; i++) {
+    const v = `${i}-${i + 1}`;
+    singles.push(`<button data-v="${v}" class="${v === state.hours ? "on" : ""}">${slot(i)}${today && i === now ? " · so far" : ""}</button>`);
+  }
+  box.innerHTML = `<button data-v="" class="${state.hours ? "" : "on"}">All day</button>
+    <div class="trk-hrange"><span>From</span><select id="hFrom" class="control">${froms.join("")}</select>
+      <span>to</span><select id="hTo" class="control">${tos.join("")}</select>
+      <button id="hGo" class="trk-hgo">Show</button></div>
+    <div class="trk-hsep">Or one hour</div>${singles.join("")}`;
+  box.hidden = false;
+  for (const b of box.querySelectorAll("button[data-v]")) b.onclick = () => { box.hidden = true; state.hours = b.dataset.v; load(); };
+  $("hGo").onclick = () => {
+    const a = Number($("hFrom").value), b = Number($("hTo").value);
+    if (b <= a) { toast("The end time must be after the start time.", true); return; }
+    box.hidden = true;
+    state.hours = a === 0 && b === 24 ? "" : `${a}-${b}`;
+    load();
+  };
+}
+const hourQ = () => (state.hours && oneDay() ? `&hours=${state.hours}` : "");
 
 function menu(box, items, current, onPick) {
   const open = box.hidden;
@@ -130,9 +162,9 @@ function syncControls() {
   $("rangeName").textContent = (RANGES.find((r) => r[0] === state.range) || [, "Today"])[1];
   $("dates").hidden = state.range !== "custom";
   $("hourBox").hidden = !oneDay();
-  if (!oneDay()) state.hour = "";
-  if (state.hour !== "" && oneDay() && range()[0] === storeToday() && Number(state.hour) > storeHour()) state.hour = "";
-  $("hourName").textContent = state.hour === "" ? "All day" : slot(Number(state.hour)) + (range()[0] === storeToday() && Number(state.hour) === storeHour() ? " · so far" : "");
+  if (!oneDay()) state.hours = "";
+  if (state.hours && range()[0] === storeToday() && hrs()[0] > storeHour()) state.hours = "";
+  $("hourName").textContent = hoursName();
   for (const r of document.querySelectorAll("#level input")) r.checked = r.value === level;
   $("key").value = state.key || LEVEL_KEY[level];
   $("keyName").textContent = $("key").selectedOptions[0]?.textContent || "";
@@ -145,7 +177,7 @@ async function load() {
   const [start, end] = range();
   const key = state.key || LEVEL_KEY[level];
   PDUrl.set({ store: state.store, range: state.range === "today" ? null : state.range, level: level === "campaign" ? null : level,
-              key: state.key || null, cur: state.cur || null, hour: state.hour === "" ? null : state.hour });
+              key: state.key || null, cur: state.cur || null, hours: state.hours || null, hour: null });
   $("reload").disabled = true;
   try {
     data = await api(`/api/tracking/report?store=${state.store}&start=${start}&end=${end}&field=${KEY[key]}&currency=${encodeURIComponent(state.cur)}${hourQ()}`);
@@ -511,7 +543,7 @@ $("rangeBtn").onclick = () => menu($("rangeMenu"), RANGES, state.range, (v) => {
   load();
 });
 $("from").onchange = $("to").onchange = load;
-$("hourBtn").onclick = () => menu($("hourMenu"), hourItems(), state.hour, (v) => { state.hour = v; load(); });
+$("hourBtn").onclick = hourMenu;
 for (const r of document.querySelectorAll("#level input")) r.onchange = () => { level = r.value; state.key = ""; sort = { k: null, dir: -1 }; load(); };
 $("key").onchange = () => { state.key = $("key").value === LEVEL_KEY[level] ? "" : $("key").value; load(); };
 $("cur").onchange = () => { state.cur = $("cur").value; load(); };

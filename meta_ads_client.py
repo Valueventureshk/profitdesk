@@ -246,25 +246,33 @@ async def billing(token: str) -> dict:
     return {str(a.get("account_id")): a for a in rows if a.get("account_id")}
 
 
-async def level_spend(token: str, account_id: str, since: str, until: str, level: str, hour: int | None = None) -> list:
+async def level_spend(token: str, account_id: str, since: str, until: str, level: str, hour=None) -> list:
     """Spend per campaign / ad set / ad over since..until (ad account days):
     [{"id", "name", "campaign", "adset", "spend", "impressions", "clicks"}]. For the Tracking report.
-    With hour (0-23, ad account clock): only that hour of the day (Meta's hourly breakdown)."""
+    With hour (0-23, or a set of hours, ad account clock): only those hours of the day (Meta's hourly
+    breakdown), added up per row."""
     level = level if level in ("campaign", "adset", "ad") else "campaign"
     acct = str(account_id).removeprefix("act_")
     fields = {"campaign": "campaign_id,campaign_name", "adset": "adset_id,adset_name,campaign_name",
               "ad": "ad_id,ad_name,adset_name,campaign_name"}[level] + ",spend,impressions,inline_link_clicks"
+    hours = None if hour is None else ({int(hour)} if isinstance(hour, int) else {int(h) for h in hour})
     async with httpx.AsyncClient(timeout=60) as client:
         q = {"level": level, "fields": fields, "limit": 500, "time_range": json.dumps({"since": since, "until": until})}
-        if hour is not None:
+        if hours is not None:
             q["breakdowns"] = "hourly_stats_aggregated_by_advertiser_time_zone"
         rows = await _get_all(client, f"act_{acct}/insights", token, q)
-    if hour is not None:
-        rows = [r for r in rows if str(r.get("hourly_stats_aggregated_by_advertiser_time_zone") or "").startswith(f"{hour:02d}:")]
-    return [{"id": r.get(f"{level}_id"), "name": r.get(f"{level}_name") or "", "campaign": r.get("campaign_name") or "",
-             "adset": r.get("adset_name") or "", "spend": float(r.get("spend") or 0),
-             "impressions": int(r.get("impressions") or 0), "clicks": int(r.get("inline_link_clicks") or 0)}
-            for r in rows]
+    if hours is not None:
+        rows = [r for r in rows if str(r.get("hourly_stats_aggregated_by_advertiser_time_zone") or "")[:2].isdigit()
+                and int(str(r["hourly_stats_aggregated_by_advertiser_time_zone"])[:2]) in hours]
+    out = {}
+    for r in rows:
+        key = r.get(f"{level}_id")
+        o = out.setdefault(key, {"id": key, "name": r.get(f"{level}_name") or "", "campaign": r.get("campaign_name") or "",
+                                 "adset": r.get("adset_name") or "", "spend": 0.0, "impressions": 0, "clicks": 0})
+        o["spend"] += float(r.get("spend") or 0)
+        o["impressions"] += int(r.get("impressions") or 0)
+        o["clicks"] += int(r.get("inline_link_clicks") or 0)
+    return list(out.values())
 
 
 # ---------------------------------------------------------------- creating ads (Tasks desk → Launch)

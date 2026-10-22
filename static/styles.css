@@ -2250,3 +2250,10 @@ body:not(.tab-social) .social-only, body.tab-social .mail-only { display: none; 
 .pay-total { border-top: 1px solid var(--line); padding-top: 8px; }
 .pay-total span { color: var(--ink); }
 .pay-total b { font-size: 20px; }
+.trk-hrange { display: flex; align-items: center; gap: 6px; padding: 8px 10px; margin: 4px 0; border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line); font-size: 13px; }
+.trk-hrange select { width: auto; padding: 4px 6px; font-family: inherit; font-size: 13px; }
+.trk-menu .trk-hgo { margin-left: auto; padding: 5px 12px; border-radius: 8px; background: var(--ink); color: var(--panel); font-weight: 600; }
+.trk-menu .trk-hgo:hover { background: var(--ink); opacity: .9; }
+.trk-hsep { padding: 6px 10px 2px; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-family: var(--font); }
+.trk-hours { min-width: 290px; }

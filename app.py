@@ -7658,16 +7658,47 @@ def _utc_range(st, start: str, end: str):
     return a.isoformat(timespec="seconds"), b.isoformat(timespec="seconds")
 
 
+def _trk_hours(start: str, end: str, hour: str = "", hours: str = ""):
+    """(from, to) hours of one day on the store's clock (to = 1..24, exclusive), from hour=13 (one hour) or
+    hours=0-5 (00:00 to 05:00). None = the whole day(s)."""
+    if hours.strip():
+        try:
+            h0, h1 = (int(x) for x in hours.split("-", 1))
+        except ValueError:
+            raise HTTPException(400, "Pick the hours as from-to, e.g. 0-5.")
+    elif hour.strip():
+        if not hour.isdigit():
+            raise HTTPException(400, "Pick an hour.")
+        h0, h1 = int(hour), int(hour) + 1
+    else:
+        return None
+    if start != end:
+        raise HTTPException(400, "Pick one day to look at some hours of it.")
+    if not (0 <= h0 < h1 <= 24):
+        raise HTTPException(400, "The end hour must be after the start hour.")
+    return h0, h1
+
+
+def _trk_window(st: dict, day: str, h0: int, h1: int):
+    """The UTC start and end of hours h0..h1 of one store day."""
+    tz = _zone(st)
+    base = datetime.combine(date.fromisoformat(day), clock.min, tz)
+    a = (base + timedelta(hours=h0)).astimezone(timezone.utc)
+    return a, (base + timedelta(hours=h1)).astimezone(timezone.utc)
+
+
 @app.get("/api/tracking/events")
-async def api_tracking_events(store: int, start: str, end: str, value: str, field: str = "a_campaign", hour: str = ""):
-    """The single adds to cart, checkouts and purchases behind one report row (optionally one hour of one day)."""
+async def api_tracking_events(store: int, start: str, end: str, value: str, field: str = "a_campaign", hour: str = "",
+                              hours: str = ""):
+    """The single adds to cart, checkouts and purchases behind one report row (optionally some hours of one day)."""
     st = next((x for x in db.list_stores() if x["id"] == store), None)
     if not st:
         raise HTTPException(404, "Store not found.")
     a, b = _utc_range(st, start, end)
-    if hour.isdigit() and 0 <= int(hour) <= 23 and start == end:
-        t = datetime.combine(date.fromisoformat(start), clock(int(hour)), _zone(st)).astimezone(timezone.utc)
-        a, b = t.isoformat(timespec="seconds"), (t + timedelta(hours=1)).isoformat(timespec="seconds")
+    hh = _trk_hours(start, end, hour, hours)
+    if hh:
+        ta, tb = _trk_window(st, start, *hh)
+        a, b = ta.isoformat(timespec="seconds"), tb.isoformat(timespec="seconds")
     return {"events": await asyncio.to_thread(tracking.events, store, a, b, field, value), "currency": st["currency"],
             "timezone": st["timezone"]}
 
@@ -7680,7 +7711,7 @@ async def api_tracking_journey(store: int, client: str):
 
 @app.get("/api/tracking/report")
 async def api_tracking_report(store: int, start: str, end: str, field: str = "a_campaign", since: str = "",
-                              currency: str = "", hour: str = ""):
+                              currency: str = "", hour: str = "", hours: str = ""):
     """Rows like wetracked.io's report: adds to cart, checkouts and purchases (count + value) per
     campaign / ad set / ad or any UTM. Days are the store's own."""
     st = next((x for x in db.list_stores() if x["id"] == store), None)
@@ -7692,13 +7723,9 @@ async def api_tracking_report(store: int, start: str, end: str, field: str = "a_
         b = datetime.combine(date.fromisoformat(end) + timedelta(days=1), clock.min, tz).astimezone(timezone.utc)
     except ValueError:
         raise HTTPException(400, "Pick the dates.")
-    hr = None
-    if hour.strip():                            # one hour of one day, on the store's clock (00-01 … 23-00)
-        if start != end or not hour.isdigit() or not 0 <= int(hour) <= 23:
-            raise HTTPException(400, "Pick one day to look at a single hour.")
-        hr = int(hour)
-        a = datetime.combine(date.fromisoformat(start), clock(hr), tz).astimezone(timezone.utc)
-        b = a + timedelta(hours=1)
+    hh = _trk_hours(start, end, hour, hours)    # some hours of one day, on the store's clock (e.g. 00:00-05:00)
+    if hh:
+        a, b = _trk_window(st, start, *hh)
     a_s = a.isoformat(timespec="seconds")
     if since:                                   # from an exact moment (side-by-side checks against another tool)
         try:
@@ -7711,19 +7738,32 @@ async def api_tracking_report(store: int, start: str, end: str, field: str = "a_
     conn = next((c for c in db.list_meta_connections() if c["id"] == st.get("meta_connection_id")), None)
     if lvl and st.get("meta_account_id") and conn:
         try:
-            if hr is None:
+            if not hh:
                 spends = await meta.level_spend(conn["access_token"], st["meta_account_id"], start, end, lvl)
             else:
-                # the same hour on the ad account's clock (Meta reports hours there)
+                # the same hours on the ad account's clock (Meta reports hours there); they may fall on two of its days
                 try:
                     atz = ZoneInfo(await meta.account_timezone(conn["access_token"], st["meta_account_id"]))
                 except (ZoneInfoNotFoundError, ValueError):
                     atz = timezone.utc
-                at = a.astimezone(atz)
-                spends = await meta.level_spend(conn["access_token"], st["meta_account_id"], at.date().isoformat(),
-                                                at.date().isoformat(), lvl, hour=at.hour)
-                if at.minute:
-                    note = "The Meta ad account's clock is offset by half an hour from the store's, so spend is for the closest hour."
+                by_day = defaultdict(set)
+                off = False
+                for k in range(hh[1] - hh[0]):
+                    at = (a + timedelta(hours=k)).astimezone(atz)
+                    by_day[at.date().isoformat()].add(at.hour)
+                    off = off or bool(at.minute)
+                parts = await asyncio.gather(*[meta.level_spend(conn["access_token"], st["meta_account_id"], d, d, lvl, hour=hs)
+                                               for d, hs in by_day.items()])
+                merged = {}
+                for part in parts:
+                    for r in part:
+                        m = merged.setdefault(r["id"], {**r, "spend": 0.0, "impressions": 0, "clicks": 0})
+                        m["spend"] += r["spend"]
+                        m["impressions"] += r["impressions"]
+                        m["clicks"] += r["clicks"]
+                spends = list(merged.values())
+                if off:
+                    note = "The Meta ad account's clock is offset by half an hour from the store's, so spend is for the closest hours."
             table = await fx.table(st["currency"])
             f = fx.factor(table, st.get("meta_currency") or st["currency"], st["currency"]) if table else 1.0
             out = tracking.with_spend(out, spends, f)
