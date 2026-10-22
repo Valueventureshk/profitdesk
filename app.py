@@ -4711,6 +4711,54 @@ def _digits_only(v) -> str:
     return "".join(ch for ch in str(v or "") if ch.isdigit())
 
 
+UNBOOKED_HOURS = 72          # older unbooked payments are left out: they're a problem to look at, not cash coming
+
+
+def _unbooked_sales(connected: set) -> tuple:
+    """Shopify orders paid through Airwallex / PayPal in the last UNBOOKED_HOURS that the provider hasn't
+    booked yet (order_fees.fee_actual is filled once its payment shows up in the provider's records).
+    connected: the providers whose snapshot answered. Returns (pending items, problems).
+    Safety: if a store's payments 12-72 h old are mostly unmatched, the matching itself isn't working
+    (fees couldn't be read), so that store + provider is left out instead of counting days of sales."""
+    now = datetime.now(timezone.utc)
+    with db._conn() as con:
+        rows = [dict(r) for r in con.execute(
+            "SELECT f.store_id, s.name AS store, s.currency, f.order_name, f.gateway, f.created, f.amount,"
+            " f.fee_est, f.fee_actual FROM order_fees f JOIN stores s ON s.id = f.store_id"
+            " WHERE (f.gateway LIKE '%airwallex%' OR f.gateway LIKE '%paypal%') AND f.amount > 0"
+            " AND julianday(f.created) >= julianday('now', ?)"
+            " AND NOT EXISTS (SELECT 1 FROM cog_lines c WHERE c.store_id = f.store_id"
+            "                 AND c.order_name = f.order_name AND c.cancelled = 1)",
+            (f"-{UNBOOKED_HOURS} hours",))]
+    groups = defaultdict(list)
+    for r in rows:
+        gw = "airwallex" if "airwallex" in (r["gateway"] or "").lower() else "paypal"
+        if gw not in connected:
+            continue
+        try:
+            t = datetime.fromisoformat(str(r["created"]).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        r["gw"], r["age"], r["t"] = gw, (now - t).total_seconds() / 3600, t
+        groups[(r["store_id"], gw)].append(r)
+    items, problems = [], []
+    for (sid, gw), rs in groups.items():
+        old = [r for r in rs if r["age"] >= 12]
+        if len(old) >= 3 and sum(r["fee_actual"] is None for r in old) > len(old) / 2:
+            problems.append(f"{rs[0]['store'].strip()}: {gw.title()} payments aren't being matched to orders "
+                            f"right now, so its not-yet-booked sales are left out of the total.")
+            continue
+        for r in rs:
+            if r["fee_actual"] is not None:
+                continue
+            due = (r["t"] + timedelta(days=2 if gw == "airwallex" else 1)).isoformat()
+            items.append({"id": f"unbooked:{sid}:{r['order_name']}", "currency": r["currency"],
+                          "net": r["amount"] - (r["fee_est"] or 0.0), "type": "UNBOOKED_SALE",
+                          "estimated": due, "created": r["created"], "gateway": gw,
+                          "order": r["order_name"], "store": r["store"].strip()})
+    return items, problems
+
+
 async def _cash_state(currency: str = None, with_ads: bool = False) -> dict:
     """Live balances and pending money from every connected account, summarised."""
     conns = db.list_cash_connections()
@@ -4742,8 +4790,15 @@ async def _cash_state(currency: str = None, with_ads: bool = False) -> dict:
         except Exception as e:
             problems.append(f"Ad bills: {e}")
 
+    try:
+        unbooked, ub_problems = await asyncio.to_thread(_unbooked_sales, {a["provider"] for a in accounts})
+        problems += ub_problems
+    except Exception as e:
+        unbooked = []
+        print(f"Unbooked sales failed: {e}", flush=True)
     codes = {b["currency"] for a in accounts for b in a["balances"]} | \
             {p["currency"] for a in accounts for p in a["pending"]} | \
+            {p["currency"] for p in unbooked} | \
             {r["currency"] for r in (ad_rows or []) if r.get("currency")}
     fx_table = await fx.table(base) if codes - {base} else None
     factor = (lambda code: fx.factor(fx_table, code, base)) if fx_table else (lambda code: 1.0)
@@ -4754,7 +4809,7 @@ async def _cash_state(currency: str = None, with_ads: bool = False) -> dict:
     except Exception as e:
         transit_ok = False
         problems.append(f"Money on its way between your accounts couldn't be checked: {e}")
-    summary = cashflow.summarize(accounts, factor, today, CASH_TZ, transit)
+    summary = cashflow.summarize(accounts, factor, today, CASH_TZ, transit, unbooked)
     try:                    # what was due today and has already landed (cashflow.track_arrivals)
         arr = json.loads(db.get_setting("cash_arrivals") or "{}")
         if transit_ok:      # otherwise paired deposits would come and go and look like arrivals
@@ -5004,7 +5059,8 @@ async def api_cash_statement(start: str, end: str = None, currency: str = None):
     except Exception:
         pass
 
-    out = statement.build(moves, st["factor"], st["summary"]["position"], t0, t1, now,
+    # the statement rebuilds from what the accounts have booked, so it starts from the booked position
+    out = statement.build(moves, st["factor"], st["summary"].get("position_booked", st["summary"]["position"]), t0, t1, now,
                           shopify=by_gateway if shop_ok else None, ad_spend=ad_spend, ours=_own_payees())
     return {"currency": st["base"], "problems": problems, **out}
 

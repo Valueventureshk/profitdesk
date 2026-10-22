@@ -111,6 +111,7 @@ function renderCards(s, sup) {
       ${sup && Math.abs(sup.total) >= 0.5 ? `<div class="after-ads">${money(sup.after)} <span>after ad bills and suppliers</span></div>` : ""}
       <div class="card-note">${money(s.available)} available now + ${money(s.receivable)} receivable
         (sales settling, reserves and PayPal holds still to be released)</div>
+      ${s.unbooked && s.unbooked.count ? `<div class="card-note" title="Orders paid in Shopify through Airwallex / PayPal in the last 3 days that the provider hasn't booked yet (less their expected fees). Each leaves this line once it's booked and shows under Sales settling instead.">Incl. ${money(s.unbooked.total)} sales not yet booked: ${[s.unbooked.airwallex ? `${s.unbooked.airwallex} Airwallex` : "", s.unbooked.paypal ? `${s.unbooked.paypal} PayPal` : ""].filter(Boolean).join(" + ")} order${s.unbooked.count === 1 ? "" : "s"}</div>` : ""}
       <div class="card-link">View statement →</div>
     </div>`;
   const now = `<div class="card feature">

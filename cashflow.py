@@ -48,6 +48,7 @@ KIND = {
     "DISPUTE_REVERSAL": "Disputes",
     "PRE_CHARGEBACK_ACCEPTED": "Disputes",
     "FEE": "Fees",
+    "UNBOOKED_SALE": "Sales not yet booked",
 }
 
 
@@ -68,10 +69,13 @@ def _due(estimated: str, tz) -> date | None:
         return None
 
 
-def summarize(accounts: list, factor, today: date, tz, transit: list = ()) -> dict:
+def summarize(accounts: list, factor, today: date, tz, transit: list = (), unbooked: list = ()) -> dict:
     """accounts: [{"id", "label", "provider", "balances": [...], "pending": [...]}]
     factor(currency) -> multiplier into the display currency.
-    transit: statement.in_transit() (money on its way between own accounts)."""
+    transit: statement.in_transit() (money on its way between own accounts).
+    unbooked: Shopify orders paid through Airwallex / PayPal that the provider hasn't booked yet
+    (app._unbooked_sales), as pending items of type UNBOOKED_SALE. They count as receivable, like a
+    sale settling, so the cash figure moves when the order comes in (the same moment its COG counts)."""
     in_transit = sum(t["amount"] * factor(t["currency"]) for t in transit)
     available = in_transit
     reserved = 0.0
@@ -82,7 +86,11 @@ def summarize(accounts: list, factor, today: date, tz, transit: list = ()) -> di
     per_account = []
     by_type: dict[str, dict] = {}   # raw Airwallex types, to check what "Other" is
 
-    for acct in accounts:
+    sources = list(accounts)
+    if unbooked:
+        sources.append({"id": "unbooked", "label": "Not yet booked", "provider": "shopify", "balances": [],
+                        "pending": list(unbooked), "_virtual": True})
+    for acct in sources:
         a_avail = sum(b["available"] * factor(b["currency"]) for b in acct["balances"])
         a_reserved = sum(b["reserved"] * factor(b["currency"]) for b in acct["balances"])
         a_incoming = {key: 0.0 for key, _, _ in HORIZONS}
@@ -116,6 +124,8 @@ def summarize(accounts: list, factor, today: date, tz, transit: list = ()) -> di
                 day["total"] += amount
                 day["kinds"][kind] = day["kinds"].get(kind, 0.0) + amount
 
+        if acct.get("_virtual"):
+            continue
         per_account.append({
             "id": acct["id"], "label": acct["label"], "provider": acct["provider"],
             "available": a_avail, "reserved": a_reserved,
@@ -124,7 +134,12 @@ def summarize(accounts: list, factor, today: date, tz, transit: list = ()) -> di
         })
 
     receivable = incoming[HORIZONS[-1][0]] + later
+    unbooked_total = sum(p["net"] * factor(p["currency"]) for p in unbooked)
     return {
+        "unbooked": {"total": unbooked_total, "count": len(unbooked),
+                     "airwallex": sum(1 for p in unbooked if p.get("gateway") == "airwallex"),
+                     "paypal": sum(1 for p in unbooked if p.get("gateway") == "paypal")},
+        "position_booked": available + receivable - unbooked_total,
         "available": available,
         "in_transit": in_transit,
         "transit": [{**t, "value": t["amount"] * factor(t["currency"])} for t in transit],

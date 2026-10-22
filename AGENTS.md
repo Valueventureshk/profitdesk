@@ -237,6 +237,13 @@ Cash flow rules learned the hard way:
   remembered; once one leaves the pending list of an account that answered (and the transit check worked), it has
   settled into the available balance → "Arrived" (green) on today's row and "Incl. … arrived today" on Available now.
   `_arrivals_loop` looks every 30 min so it shows even when nobody had the page open.
+- Not-yet-booked sales (22 Oct 2026, owner): Airwallex books card payments hours after the order (PayPal a little), while COG /
+  supplier payable count at once. `_unbooked_sales` adds Shopify orders paid via Airwallex / PayPal in the last `UNBOOKED_HOURS`
+  (72) whose payment isn't matched yet (`order_fees.fee_actual` NULL; cancelled orders out) as receivable items type
+  UNBOOKED_SALE ("Sales not yet booked", net of fee_est, due created + 2 days Airwallex / + 1 PayPal) via
+  `cashflow.summarize(unbooked=)`; summary `unbooked` {total, count, airwallex, paypal}, `position_booked` = position without
+  them (the statement starts from that). Guard: a store + provider whose 12-72 h old payments are mostly unmatched is left out
+  with a problem note (matching broken, not unbooked). Not in arrivals tracking (virtual account).
 - Airwallex card authorisation holds are already off the available balance; don't
   count them as pending. Some sub-accounts answer in camelCase (`_f()` reads both).
 - Airwallex returns at most ~a month per search, oldest first: read in windows.
