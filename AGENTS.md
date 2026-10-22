@@ -55,7 +55,8 @@ file and have it work.
 | `meta_ads_client.py` | Meta System User token + Insights spend reporting, ad account balances |
 | `google_sheet.py` | Google spend from the Sheet the Google Ads scripts write hourly |
 | `google-ads-script.js` | The script pasted into each Google Ads account (hourly schedule) |
-| `auth.py` | Email + password login, sessions |
+| `auth.py` | Email + password login, sessions, login log (`login_log`), new-device / 10-wrong-passwords alerts (`auth.on_event` → `_security_event` → owners' Ask inbox + WhatsApp), `auth.confirm` (password asked again) |
+| `vault.py` | **Key lock** (22 Oct 2026): pasted keys (vault.COLUMNS: stores.access_token, shopify_apps.client_secret, meta_connections/meta_auth.access_token, cash_connections.secret, mail_accounts.password/gmail_token, google_auth.refresh_token, fb_pages.page_token; settings vault.SETTINGS + `px_meta_token:*`) stored Fernet-encrypted as `enc1:…`; `db._Row` unlocks on read so the app sees plain values; `db.seal_keys` (start-up + `_seal_loop` every minute; `set_setting` seals secret keys at once) locks plain ones. Lock key: env `DATA_KEY` (comma list) and/or `<DB dir>/data.key` (made on first start, gitignored, NOT in backups). Restoring a backup from another server needs that server's lock key (restore forms take the key file → `vault.add_keys`); an unreadable value reads as '' and shows on Settings → Security. Never compare encrypted columns in SQL (`WHERE access_token = ?` won't match). New secret column/setting → add it to vault.COLUMNS / SETTINGS. |
 | `fx.py` | Daily exchange rates (ECB + open.er-api) |
 | `airwallex_client.py` | Airwallex balances, financial transactions, card (Issuing) transactions |
 | `paypal_client.py` | PayPal balances + transaction feed; hold release schedule |
@@ -150,6 +151,7 @@ file and have it work.
   Per mailbox `auto_ask`: a new customer ticket (email < 2 days old) with no order found gets one AI
   reply (Haiku, customer's language) asking for order number, name and checkout email (`tickets.auto_asked`).
 - Comments & Messages (21 Oct 2026): live, finds 3 Pages (Perth Boutique + Maggie Whitfield → Perth Boutique, Sweet Home Australia → CUTEHOME), all three "Needs the new token" until the owner pastes System User tokens with pages_read_user_content, pages_manage_engagement, pages_messaging, pages_manage_metadata. Nothing is read or hidden before that. The Meta app's Page webhook is not set up (optional; polling works without it).
+- Security (22 Oct 2026): Settings → Security (owner): everyone's active logins (device, address, last active) with Sign out / Sign out everyone except this browser (`/api/security`, `/api/security/signout`), recent login tries, lock key status + Download lock key (password). Backup download is POST `/api/backup` {password}; restore needs `x-password` (+ optional `x-lock-key`). Backup / lock-key downloads alert the owners. Headers on every response except /proxy /apps /t: nosniff, Referrer-Policy, CSP `frame-ancestors 'self' https://admin.shopify.com https://*.myshopify.com` (embedded store apps), HSTS over https. 2-step login: owner postponed (22 Oct).
 - Cash at end of day: `_snapshot_loop` saves the Cash flow cards at 23:59 HK into
   `cash_snapshots` (one row per day). Shown in Reports, report type `cash_snapshots`,
   chat tool `get_cash_history`. Days before 10 Oct 2026 have none; the chat falls back

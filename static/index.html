@@ -209,15 +209,25 @@
 
       <section class="block">
         <h3>Backup</h3>
-        <p class="hint">One file with everything: stores, connections, keys, settings and
-          logins. Keep it somewhere private, since it holds your access keys.</p>
-        <a class="btn btn-ghost btn-block" href="/api/backup">Download backup</a>
+        <p class="hint">One file with everything: stores, connections, settings and logins. The access
+          keys inside stay locked: the file alone can't be used to reach your stores or accounts.</p>
+        <label class="field"><span>Your password (asked again for backups)</span>
+          <input id="backupPw" type="password" autocomplete="current-password"></label>
+        <button id="backupGo" class="btn btn-ghost btn-block">Download backup</button>
         <details class="advanced"><summary>Restore from a backup</summary>
           <p class="hint">Replaces everything in this EcomVital with the backup. You'll
-            log in again afterwards with the backup's accounts.</p>
+            log in again afterwards with the backup's accounts. Type your password above first.</p>
           <input id="restoreFile" type="file" accept=".db">
+          <p class="hint">Backup from a different server? Also choose that server's lock key file
+            (Security → Download lock key there), or its keys stay locked.</p>
+          <input id="restoreKey" type="file" accept=".txt">
           <button id="restoreGo" class="btn btn-danger btn-block" style="margin-top:8px">Restore backup</button>
         </details>
+      </section>
+
+      <section class="block">
+        <h3>Security</h3>
+        <div id="secBox"></div>
       </section>
 
       <section class="block">

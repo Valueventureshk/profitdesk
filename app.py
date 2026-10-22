@@ -70,6 +70,7 @@ import paypal_track
 import research
 import research_hunt
 import social
+import vault
 import world
 import timetrack
 import agent
@@ -148,6 +149,9 @@ def _watchdog(loop_thread_id: int):
 async def lifespan(app):
     db.init()
     co.init()
+    _MAIN["loop"] = asyncio.get_running_loop()
+    auth.on_event = _security_event
+    asyncio.create_task(_seal_loop())
     import threading
     asyncio.create_task(_heartbeat())
     threading.Thread(target=_watchdog, args=(threading.get_ident(),), daemon=True).start()
@@ -394,6 +398,23 @@ async def _require_login(request: Request, call_next):
     return RedirectResponse(f"/login?next={quote(target, safe='')}", status_code=303)
 
 
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    resp = await call_next(request)
+    path = request.url.path
+    if not path.startswith(("/proxy", "/apps/", "/t/")):
+        h = resp.headers
+        h.setdefault("X-Content-Type-Options", "nosniff")
+        h.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        if "content-security-policy" not in h:
+            # only Shopify's admin (embedded store apps) and our own pages may show EcomVital in a frame
+            h["Content-Security-Policy"] = ("frame-ancestors 'self' https://admin.shopify.com "
+                                            "https://*.myshopify.com")
+        if request.headers.get("x-forwarded-proto") == "https" or request.url.scheme == "https":
+            h.setdefault("Strict-Transport-Security", "max-age=15552000")
+    return resp
+
+
 def _set_session(response, request: Request, token: str):
     secure = (request.url.scheme == "https"
               or request.headers.get("x-forwarded-proto") == "https"
@@ -405,6 +426,120 @@ def _set_session(response, request: Request, token: str):
 def _client_ip(request: Request) -> str:
     fwd = request.headers.get("x-forwarded-for", "")
     return fwd.split(",")[0].strip() or (request.client.host if request.client else "?")
+
+
+# ---------------------------------------------------------------- security: logins, alerts, lock key
+
+_MAIN = {}          # the server's event loop, so logins (handled in worker threads) can send alerts
+
+
+def _device(ua: str) -> str:
+    """'Chrome on Mac' from a browser's user-agent text."""
+    ua = ua or ""
+    if ua.startswith("EcomVital Time"):
+        return ua
+    b = ("Edge" if "Edg/" in ua else "Opera" if "OPR/" in ua else "Samsung browser" if "SamsungBrowser" in ua
+         else "Chrome" if ("Chrome/" in ua or "CriOS" in ua) else "Firefox" if ("Firefox/" in ua or "FxiOS" in ua)
+         else "Safari" if "Safari/" in ua else "a browser" if ua else "an unknown app")
+    o = ("iPhone" if "iPhone" in ua else "iPad" if "iPad" in ua else "Android" if "Android" in ua
+         else "Windows" if "Windows" in ua else "Mac" if "Mac OS X" in ua or "Macintosh" in ua
+         else "Linux" if "Linux" in ua else "")
+    return f"{b} on {o}" if o else b
+
+
+def _owners() -> list:
+    return [u for u in db.list_users() if u.get("role") == "owner"]
+
+
+def _security_alert(title: str, body: str):
+    """Ask-chat inbox + WhatsApp for every owner. Safe to call from any thread."""
+    def go():
+        for u in _owners():
+            _assist_deliver(u["email"], title, body, "security")
+    loop = _MAIN.get("loop")
+    try:
+        running = asyncio.get_running_loop()
+    except RuntimeError:
+        running = None
+    if loop and running is not loop:
+        loop.call_soon_threadsafe(go)
+    else:
+        go()
+
+
+def _hk_now() -> str:
+    return datetime.now(CASH_TZ).strftime("%-d %b %H:%M") + " HK"
+
+
+def _security_event(kind: str, info: dict):
+    where = f"internet address {info.get('ip') or '?'}"
+    if kind == "new_device":
+        u = info["user"]
+        via = {"time app": " (EcomVital Time app)"}.get(info.get("via"), "")
+        _security_alert("🔐 New login",
+                        f"{u.get('name') or u['email']} ({u['email']}) logged in from {_device(info.get('ua'))}{via}, "
+                        f"{where}, {_hk_now()}.\nNot them? Settings → Security → sign that login out, then reset "
+                        f"their password in People.")
+    elif kind == "locked":
+        _security_alert("⚠️ Wrong passwords",
+                        f"10 wrong passwords for {info.get('email') or 'an unknown email'} from {_device(info.get('ua'))}, "
+                        f"{where}, {_hk_now()}. That address is blocked for 15 minutes.")
+
+
+def _security_note(user: dict, what: str, ip: str):
+    """Tell the owners about a sensitive action (backup / lock key download)."""
+    _security_alert("🔐 Security", f"{user.get('name') or user['email']} {what} from internet address {ip}, {_hk_now()}.")
+
+
+async def _seal_loop():
+    """Lock any newly pasted key within a minute (vault.py)."""
+    while True:
+        try:
+            await asyncio.to_thread(db.seal_keys)
+        except Exception as e:
+            print(f"seal_keys failed: {e}", flush=True)
+        await asyncio.sleep(60)
+
+
+@app.get("/api/security")
+def api_security(request: Request):
+    """Owner: everyone's active logins, recent login tries, and the lock key's state."""
+    mine = auth.digest(request.cookies.get(auth.SESSION_COOKIE))
+    sessions = [{"id": x["id"], "name": x["name"], "email": x["email"], "device": _device(x["ua"]),
+                 "ip": x["ip"], "via": x["via"], "since": x["created_at"], "last_seen": x["last_seen"],
+                 "this": x["token_hash"] == mine} for x in db.list_sessions()]
+    logins = [{"at": x["at"], "email": x["email"], "name": x["name"], "ok": bool(x["ok"]), "ip": x["ip"],
+               "device": _device(x["ua"]), "via": x["via"]} for x in db.recent_logins(40)]
+    with db._conn() as con:
+        keys = vault.status(con)
+    return {"sessions": sessions, "logins": logins, "keys": keys}
+
+
+@app.post("/api/security/signout")
+def api_security_signout(payload: dict, request: Request):
+    """Owner: sign out chosen logins ({ids}) or every login except this browser ({others: true})."""
+    mine = auth.digest(request.cookies.get(auth.SESSION_COOKIE))
+    rows = db.list_sessions()
+    if payload.get("others"):
+        ids = [x["id"] for x in rows if x["token_hash"] != mine]
+    else:
+        want = {int(i) for i in payload.get("ids") or []}
+        ids = [x["id"] for x in rows if x["id"] in want and x["token_hash"] != mine]
+    db.delete_session_ids(ids)
+    return {"signed_out": len(ids)}
+
+
+@app.post("/api/security/lock-key")
+def api_security_lock_key(payload: dict, request: Request):
+    """Owner: the lock key file (password asked again). Needed to restore a backup on another server."""
+    try:
+        auth.confirm(request.state.user["id"], payload.get("password"), _client_ip(request))
+    except auth.AuthError as e:
+        raise HTTPException(400, str(e))
+    _security_note(request.state.user, "downloaded the lock key", _client_ip(request))
+    return Response(vault.keys_text(), media_type="text/plain",
+                    headers={"Content-Disposition": 'attachment; filename="ecomvital-lock-key.txt"',
+                             "Cache-Control": "no-store"})
 
 
 def _legal(name):
@@ -515,7 +650,8 @@ def _check_setup_code(code: str):
 @app.post("/api/login")
 def api_login(payload: dict, request: Request):
     try:
-        token = auth.log_in(payload.get("email"), payload.get("password"), _client_ip(request))
+        token = auth.log_in(payload.get("email"), payload.get("password"), _client_ip(request),
+                            request.headers.get("user-agent", ""), "web")
     except auth.AuthError as e:
         raise HTTPException(400, str(e))
     resp = JSONResponse({"ok": True})
@@ -531,7 +667,8 @@ def api_first_user(payload: dict, request: Request):
     _check_setup_code(payload.get("setup_code"))
     try:
         auth.create_user(payload.get("email"), payload.get("name"), payload.get("password"), "owner")
-        token = auth.log_in(payload.get("email"), payload.get("password"), _client_ip(request))
+        token = auth.log_in(payload.get("email"), payload.get("password"), _client_ip(request),
+                            request.headers.get("user-agent", ""), "web")
     except auth.AuthError as e:
         raise HTTPException(400, str(e))
     resp = JSONResponse({"ok": True})
@@ -555,7 +692,12 @@ async def api_first_restore(request: Request):
 
 @app.post("/api/restore")
 async def api_restore(request: Request):
-    """Replace everything with a backup (logged in)."""
+    """Replace everything with a backup (logged in; password asked again)."""
+    from urllib.parse import unquote
+    try:
+        auth.confirm(request.state.user["id"], unquote(request.headers.get("x-password", "")), _client_ip(request))
+    except auth.AuthError as e:
+        raise HTTPException(400, str(e))
     return await _restore(request)
 
 
@@ -564,6 +706,8 @@ async def _restore(request: Request):
     if not data or len(data) > _MAX_BACKUP:
         raise HTTPException(400, "Choose a EcomVital backup file (.db) to upload.")
     try:
+        if request.headers.get("x-lock-key"):        # backup from another server: its lock key opens its keys
+            vault.add_keys(request.headers["x-lock-key"])
         db.restore_bytes(data)
     except ValueError as e:
         raise HTTPException(400, str(e))
@@ -574,10 +718,16 @@ async def _restore(request: Request):
     return resp
 
 
-@app.get("/api/backup")
-def api_backup():
-    """Download the whole database: stores, connections, settings and accounts."""
+@app.post("/api/backup")
+def api_backup(payload: dict, request: Request):
+    """Download the whole database: stores, connections, settings and accounts (password asked again).
+    The keys inside stay locked; restoring on another server also needs the lock key."""
     from fastapi.responses import Response
+    try:
+        auth.confirm(request.state.user["id"], payload.get("password"), _client_ip(request))
+    except auth.AuthError as e:
+        raise HTTPException(400, str(e))
+    _security_note(request.state.user, "downloaded a backup", _client_ip(request))
     stamp = datetime.now().strftime("%Y-%m-%d-%H%M")
     return Response(db.backup_bytes(), media_type="application/octet-stream",
                     headers={"Content-Disposition": f'attachment; filename="profitdesk-backup-{stamp}.db"',
@@ -667,7 +817,8 @@ def api_change_password(payload: dict, request: Request):
     me = request.state.user
     try:
         auth.change_password(me["id"], payload.get("current"), payload.get("new"))
-        token = auth.log_in(me["email"], payload.get("new"), _client_ip(request))
+        token = auth.log_in(me["email"], payload.get("new"), _client_ip(request),
+                            request.headers.get("user-agent", ""), "password change")
     except auth.AuthError as e:
         raise HTTPException(400, str(e))
     resp = JSONResponse({"ok": True})
@@ -14548,7 +14699,8 @@ async def api_time_login(payload: dict, request: Request):
     """Sign the desktop app in with the person's EcomVital email + password; it gets its own device token."""
     _time_db()
     try:
-        token = auth.log_in(payload.get("email"), payload.get("password"), _client_ip(request))
+        token = auth.log_in(payload.get("email"), payload.get("password"), _client_ip(request),
+                            f"EcomVital Time · {payload.get('device') or ''} · {payload.get('os') or ''}", "time app")
     except auth.AuthError as e:
         raise HTTPException(400, str(e))
     user = auth.user_for(token)

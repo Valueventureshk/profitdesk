@@ -700,6 +700,7 @@ async function connectWithToken(domain, token) {
 
 // Settings as tidy groups of expandable items, each with its logo.
 const SET_ICONS = {
+  lock: `<svg class="logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/><path d="M12 14.5v2.5"/></svg>`,
   phone: `<svg class="logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2.5" width="12" height="19" rx="2.5"/><rect x="8.5" y="6" width="3" height="3" rx=".6"/><rect x="12.5" y="6" width="3" height="3" rx=".6"/><rect x="8.5" y="10.5" width="7" height="3" rx=".6"/><path d="M11 18.5h2"/></svg>`,
   shopify: LOGO.shopify, google: LOGO.google, meta: LOGO.meta,
   gmail: `<svg class="logo" viewBox="0 0 24 24"><path fill="#4285F4" d="M2 6.5V18a1.5 1.5 0 0 0 1.5 1.5H6V10l6 4.5 6-4.5v9.5h2.5A1.5 1.5 0 0 0 22 18V6.5l-2.4-1.8L12 10.4 4.4 4.7z"/><path fill="#EA4335" d="M6 10v9.5h0V10l6 4.5 6-4.5L12 10.4 4.4 4.7 2 6.5z" opacity=".9"/><path fill="#34A853" d="M18 10v9.5h2.5A1.5 1.5 0 0 0 22 18V6.5z"/><path fill="#FBBC05" d="M2 6.5V18a1.5 1.5 0 0 0 1.5 1.5H6V10z"/></svg>`,
@@ -721,6 +722,7 @@ const SET_META = {
   "Store groups": ["Money", "groups", "Group stores to see them together on the dashboard"],
   "People": ["Team", "people", "Who can log in, their access level and desks"],
   "Backup": ["Data", "backup", "Download or restore everything in one file"],
+  "Security": ["Team", "lock", "Who is logged in, sign-outs, login alerts, the lock key"],
   "iPhone widget": ["Data", "phone", "Pick figures to show on your iPhone home screen"],
 };
 let settingsOrganised = false;
@@ -782,6 +784,7 @@ async function openSettings() {
   renderAI();
   renderWA();
   renderWidgets();
+  renderSecurity();
   renderStoreSettings();
   await Promise.all([loadAccounts(), loadMetaAccounts()]);
 }
@@ -1090,6 +1093,70 @@ async function renderAI() {
       toast("Saved. Sorting starts now; tickets appear in the Inbox within a few minutes.");
       renderAI();
     } catch (e) { toast(e.message, true); }
+  };
+}
+
+/* ------------------------------------------------ security */
+
+function agoText(unix) {
+  if (!unix) return "–";
+  const m = Math.round((Date.now() / 1000 - unix) / 60);
+  if (m < 2) return "now";
+  if (m < 60) return `${m} min ago`;
+  if (m < 48 * 60) return `${Math.round(m / 60)} h ago`;
+  return `${Math.round(m / 1440)} days ago`;
+}
+
+function hkTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso.includes("T") ? iso : iso.replace(" ", "T") + "Z");
+  return d.toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit",
+    timeZone: "Asia/Hong_Kong" });
+}
+
+async function renderSecurity() {
+  if (!$("secBox")) return;
+  let r;
+  try { r = await api("/api/security"); } catch (e) { $("secBox").innerHTML = `<p class="hint neg">${esc(e.message)}</p>`; return; }
+  const k = r.keys;
+  const keyLine = k.unreadable
+    ? `<span class="neg">${k.unreadable} key${k.unreadable === 1 ? "" : "s"} can't be opened with this server's lock key
+       (restored from another server?). Paste those connections again, or restore with that server's lock key.</span>`
+    : `${k.locked} access key${k.locked === 1 ? "" : "s"} locked${k.plain ? `, ${k.plain} locking within a minute` : ""}.`;
+  const sess = r.sessions.map((x) => `
+    <div class="group-row"><div class="group-name"><strong>${esc(x.name || x.email)}${x.this ? " · this browser" : ""}</strong>
+      <span>${esc(x.device)} · ${esc(x.ip || "?")} · active ${agoText(x.last_seen)} · since ${hkTime(x.since)}</span></div>
+      ${x.this ? "" : `<button class="btn btn-ghost" data-signout="${x.id}">Sign out</button>`}</div>`).join("");
+  const logs = r.logins.map((x) => `
+    <div class="group-row"><div class="group-name"><strong class="${x.ok ? "" : "neg"}">${x.ok ? "Logged in" : "Wrong password"}
+      · ${esc(x.name || x.email || "?")}</strong>
+      <span>${hkTime(x.at)} HK · ${esc(x.device)} · ${esc(x.ip || "?")}${x.via && x.via !== "web" ? " · " + esc(x.via) : ""}</span></div></div>`).join("");
+  $("secBox").innerHTML = `
+    <p class="hint">New logins from a browser or address someone hasn't used before, and 10 wrong passwords in a row,
+      are sent to the owners on WhatsApp and in the Ask chat.</p>
+    <h4>Logged in now (${r.sessions.length})</h4>
+    ${sess || `<p class="hint">Nobody.</p>`}
+    <button id="secOthers" class="btn btn-ghost btn-block" style="margin-top:8px">Sign out everyone except this browser</button>
+    <details class="advanced"><summary>Recent login tries</summary>${logs || `<p class="hint">None yet.</p>`}</details>
+    <h4 style="margin-top:14px">Lock key</h4>
+    <p class="hint">${keyLine} The lock key is kept on the server, apart from the database and backups.
+      Download it once and keep it in your password manager: you need it to restore a backup on a different server.</p>
+    <label class="field"><span>Your password</span><input id="secPw" type="password" autocomplete="current-password"></label>
+    <button id="secKey" class="btn btn-ghost btn-block">Download lock key</button>`;
+  for (const b of $("secBox").querySelectorAll("[data-signout]")) {
+    b.onclick = async () => {
+      try { await jsonPost("/api/security/signout", { ids: [Number(b.dataset.signout)] }); toast("Signed out."); renderSecurity(); }
+      catch (e) { toast(e.message, true); }
+    };
+  }
+  $("secOthers").onclick = async () => {
+    if (!confirm("Sign out every login except this browser? Everyone else (you on other devices too) logs in again.")) return;
+    try { const g = await jsonPost("/api/security/signout", { others: true }); toast(`Signed out ${g.signed_out}.`); renderSecurity(); }
+    catch (e) { toast(e.message, true); }
+  };
+  $("secKey").onclick = async () => {
+    try { await downloadWithPassword("/api/security/lock-key", $("secPw").value, "ecomvital-lock-key.txt"); $("secPw").value = ""; }
+    catch (e) { toast(e.message, true); }
   };
 }
 
@@ -1715,12 +1782,45 @@ $("newTokenConnect").onclick = async () => {
 };
 
 $("openSettings").onclick = openSettings;
+async function saveFile(blob, name) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+}
+
+async function downloadWithPassword(path, pw, fallbackName) {
+  if (!pw) throw new Error("Type your password first.");
+  const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password: pw }) });
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    throw new Error(body.error || "Couldn't download it.");
+  }
+  const m = (r.headers.get("content-disposition") || "").match(/filename="([^"]+)"/);
+  await saveFile(await r.blob(), m ? m[1] : fallbackName);
+}
+
+$("backupGo").onclick = async () => {
+  try {
+    await downloadWithPassword("/api/backup", $("backupPw").value, "ecomvital-backup.db");
+    $("backupPw").value = "";
+    toast("Backup downloaded. Keep it somewhere private.");
+  } catch (e) { toast(e.message, true); }
+};
+
 $("restoreGo").onclick = async () => {
   const f = $("restoreFile").files[0];
   if (!f) { toast("Choose the backup file first.", true); return; }
+  if (!$("backupPw").value) { toast("Type your password in the box above first.", true); return; }
   if (!confirm("Replace everything in this EcomVital with that backup?")) return;
   try {
-    const r = await fetch("/api/restore", { method: "POST", body: f });
+    const headers = { "x-password": encodeURIComponent($("backupPw").value) };
+    const kf = $("restoreKey").files[0];
+    if (kf) headers["x-lock-key"] = (await kf.text()).trim().split(/\s+/).join(",");
+    const r = await fetch("/api/restore", { method: "POST", body: f, headers });
     const body = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(body.error || "Couldn't restore that backup.");
     alert(`Restored ${body.stores} stores. Log in again.`);

@@ -28,3 +28,6 @@ private-docs/
 desktop/build/
 desktop/dist/
 desktop/*.spec
+
+# Lock key for the stored API keys (vault.py). Never upload.
+data.key

@@ -155,21 +155,45 @@ def _locked(ip: str) -> bool:
     return len(recent) >= _LOCK_AFTER
 
 
-def log_in(email: str, password: str, ip: str) -> str:
+# Called with ("new_device" | "locked", details) so the app can alert the owners. Set by app.py.
+on_event = None
+
+
+def _event(kind: str, **info):
+    if on_event:
+        try:
+            on_event(kind, info)
+        except Exception as e:                       # an alert must never stop a login
+            print(f"login alert failed: {e}", flush=True)
+
+
+def log_in(email: str, password: str, ip: str, ua: str = "", via: str = "web") -> str:
     """Check the details and return a new session token."""
+    email = (email or "").strip().lower()
     if _locked(ip):
         raise AuthError("Too many wrong attempts. Wait 15 minutes and try again.")
-    user = db.get_user_by_email((email or "").strip().lower())
+    user = db.get_user_by_email(email)
     # Hash even when there's no such user, so timing doesn't reveal who exists.
     ok = check_password(password or "", user["password_hash"] if user
                         else "scrypt$00$00")
     if not (user and ok):
         _failures.setdefault(ip, []).append(time.time())
+        db.log_login(email, user["id"] if user else None, False, ip, ua, via)
+        if len([t for t in _failures[ip] if time.time() - t < _LOCK_WINDOW]) == _LOCK_AFTER:
+            _event("locked", email=email, ip=ip, ua=ua, via=via)
         raise AuthError("That email and password don't match.")
     _failures.pop(ip, None)
+    known = db.seen_device(user["id"], ip, ua)
+    db.log_login(email, user["id"], True, ip, ua, via)
     token = secrets.token_urlsafe(32)
-    db.create_session(_digest(token), user["id"], time.time() + SESSION_DAYS * 86400)
+    db.create_session(_digest(token), user["id"], time.time() + SESSION_DAYS * 86400, ip, ua, via)
+    if not known and via != "password change":
+        _event("new_device", user=user, ip=ip, ua=ua, via=via)
     return token
+
+
+def digest(token: str) -> str:
+    return _digest(token or "")
 
 
 def log_out(token: str):
@@ -186,3 +210,14 @@ def user_for(token: str):
 
 def _digest(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+def confirm(user_id: int, password: str, ip: str):
+    """Ask for the password again before something sensitive (backup, lock key). Wrong tries count
+    towards the same 15-minute lock as logging in."""
+    if _locked(ip):
+        raise AuthError("Too many wrong attempts. Wait 15 minutes and try again.")
+    user = db.get_user(user_id)
+    if not (user and check_password(password or "", user["password_hash"])):
+        _failures.setdefault(ip, []).append(time.time())
+        raise AuthError("That password isn't right.")

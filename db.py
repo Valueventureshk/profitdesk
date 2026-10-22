@@ -96,6 +96,18 @@ CREATE TABLE IF NOT EXISTS sessions (
     created_at TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Every login try (ok or wrong password): the owner's Security list and new-device alerts.
+CREATE TABLE IF NOT EXISTS login_log (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    at      TEXT    NOT NULL,              -- UTC
+    email   TEXT,
+    user_id INTEGER,
+    ok      INTEGER NOT NULL,
+    ip      TEXT,
+    ua      TEXT,
+    via     TEXT                           -- web / time app / password change
+);
+
 -- Money accounts for the Cash flow page (Airwallex, PayPal).
 -- Keys are read-only API credentials created in each provider.
 CREATE TABLE IF NOT EXISTS cash_connections (
@@ -688,12 +700,27 @@ class AlreadyLinked(RuntimeError):
     """Raised when an ad account is already attached to a different store."""
 
 
+class _Row(sqlite3.Row):
+    """sqlite3.Row that unlocks keys sealed by vault.py when they're read."""
+    __slots__ = ()
+
+    def __getitem__(self, k):
+        v = sqlite3.Row.__getitem__(self, k)
+        if v.__class__ is str and v.startswith("enc1:"):
+            import vault
+            return vault.unseal(v)
+        return v
+
+    def __iter__(self):
+        return (self[i] for i in range(len(self)))
+
+
 @contextmanager
 def _conn():
     # WAL: readers never wait for a writer (background jobs copy mail, re-cost orders... while pages
     # read). busy_timeout: a second writer waits up to 10 s instead of failing.
     con = sqlite3.connect(DB_PATH, timeout=10)
-    con.row_factory = sqlite3.Row
+    con.row_factory = _Row
     con.execute("PRAGMA busy_timeout = 10000")
     con.execute("PRAGMA synchronous = NORMAL")
     try:
@@ -705,6 +732,12 @@ def _conn():
 
 # Columns added after the first release. Older databases get them on startup.
 _ADDED_COLUMNS = {
+    "sessions": [
+        ("ip", "TEXT"),               # where it logged in from
+        ("ua", "TEXT"),               # browser / device
+        ("via", "TEXT"),
+        ("last_seen", "REAL"),        # unix time, updated at most every 5 minutes
+    ],
     "tickets": [
         ("handler", "TEXT"),          # who on the team is handling it (name shown to everyone)
         ("handler_email", "TEXT"),
@@ -872,6 +905,14 @@ def init():
                 (cur.lastrowid,),
             )
             con.execute("DELETE FROM meta_auth")
+    seal_keys()
+
+
+def seal_keys() -> int:
+    """Lock any key still stored plain (vault.py)."""
+    import vault
+    with _conn() as con:
+        return vault.seal_all(con)
 
 
 # ---------------------------------------------------------------- stores
@@ -1341,24 +1382,68 @@ def delete_user(user_id: int):
         con.execute("DELETE FROM users WHERE id = ?", (user_id,))
 
 
-def create_session(token_hash: str, user_id: int, expires_at: float):
+def create_session(token_hash: str, user_id: int, expires_at: float, ip=None, ua=None, via=None):
+    import time
     with _conn() as con:
         con.execute("DELETE FROM sessions WHERE expires_at < strftime('%s','now')")
         con.execute(
-            "INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)",
-            (token_hash, user_id, expires_at),
+            "INSERT INTO sessions (token_hash, user_id, expires_at, ip, ua, via, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (token_hash, user_id, expires_at, ip, (ua or "")[:300], via, time.time()),
         )
+
+
+def log_login(email, user_id, ok: bool, ip, ua, via):
+    from datetime import datetime, timezone
+    with _conn() as con:
+        con.execute("INSERT INTO login_log (at, email, user_id, ok, ip, ua, via) VALUES (?,?,?,?,?,?,?)",
+                    (datetime.now(timezone.utc).isoformat(timespec="seconds"), (email or "")[:200], user_id,
+                     int(ok), ip, (ua or "")[:300], via))
+        con.execute("DELETE FROM login_log WHERE id < (SELECT MAX(id) - 3000 FROM login_log)")
+
+
+def seen_device(user_id: int, ip, ua) -> bool:
+    """Has this person logged in successfully from this browser + address in the last 90 days?"""
+    with _conn() as con:
+        return bool(con.execute(
+            "SELECT 1 FROM login_log WHERE user_id = ? AND ok = 1 AND ip IS ? AND ua IS ?"
+            " AND at > datetime('now', '-90 days') LIMIT 1", (user_id, ip, (ua or "")[:300])).fetchone())
+
+
+def list_sessions() -> list:
+    with _conn() as con:
+        return [dict(r) for r in con.execute(
+            "SELECT s.rowid AS id, s.token_hash, s.user_id, s.created_at, s.ip, s.ua, s.via, s.last_seen,"
+            " u.name, u.email FROM sessions s JOIN users u ON u.id = s.user_id"
+            " WHERE s.expires_at > strftime('%s','now') ORDER BY COALESCE(s.last_seen, 0) DESC")]
+
+
+def delete_session_ids(ids: list):
+    with _conn() as con:
+        con.executemany("DELETE FROM sessions WHERE rowid = ?", [(int(i),) for i in ids])
+
+
+def recent_logins(limit: int = 40) -> list:
+    with _conn() as con:
+        return [dict(r) for r in con.execute(
+            "SELECT l.*, u.name FROM login_log l LEFT JOIN users u ON u.id = l.user_id"
+            " ORDER BY l.id DESC LIMIT ?", (limit,))]
 
 
 def get_session_user(token_hash: str, now: float):
     with _conn() as con:
         row = con.execute(
-            "SELECT u.id, u.email, u.name, u.role, u.desks, u.access, u.must_change"
+            "SELECT u.id, u.email, u.name, u.role, u.desks, u.access, u.must_change, s.last_seen"
             " FROM sessions s JOIN users u ON u.id = s.user_id"
             " WHERE s.token_hash = ? AND s.expires_at > ?",
             (token_hash, now),
         ).fetchone()
-    return dict(row) if row else None
+        if row and (row["last_seen"] or 0) < now - 300:
+            con.execute("UPDATE sessions SET last_seen = ? WHERE token_hash = ?", (now, token_hash))
+    if not row:
+        return None
+    out = dict(row)
+    out.pop("last_seen", None)
+    return out
 
 
 def delete_session(token_hash: str):
@@ -1535,6 +1620,9 @@ def get_setting(key: str, default=None):
 
 
 def set_setting(key: str, value: str):
+    import vault
+    if vault.is_secret_setting(key):
+        value = vault.seal(value)
     with _conn() as con:
         con.execute(
             "INSERT INTO settings (key, value) VALUES (?, ?)"
