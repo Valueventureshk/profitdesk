@@ -76,6 +76,7 @@ import timetrack
 import agent
 import slack_client
 import meta_manage
+import meta_cuts
 import ads_launcher
 import meta_rules
 import meta_brain
@@ -9628,27 +9629,44 @@ async def _assist_tool(name: str, args: dict, user: dict):
                                           "pixel_purchases": r["px_purchases"], "pixel_value": r["px_value"], "pixel_roas": r["px_roas"],
                                           "autopilot_added": r.get("auto_added")} for r in d["rows"]]})
         if name == "meta_autopilot":
-            up, cut = _up_cfg(st["id"]), _cut_cfg(st["id"])
+            up = _up_cfg(st["id"])
+            cuts = []
+            for r in _cut_rules(st["id"]):
+                sx = _cut_state(st["id"], r["id"])
+                cuts.append({**{k: r[k] for k in meta_cuts.BASE}, "today": {k: sx.get(k) for k in ("checked_day", "checked", "runs", "last", "done")}})
             return {"store": st["name"].strip(), "currency": cur,
                     "up10": {k: up[k] for k in ("on", "name", "step", "cap", "caps", "started_at", "stopped_at")},
-                    "budget_cut": {k: cut[k] for k in ("on", "name", "spend", "roas", "pct", "every", "checked_day", "checked", "runs", "last")},
+                    "budget_cut_rules": cuts,
                     "explain": "up10: every pixel purchase credited to a campaign raises its daily budget by step (cap 0 = no cap). "
-                               "budget_cut: when today's spend reaches `spend` (and again every `every` more, if every > 0) and overall "
-                               "pixel ROAS is below `roas` at that checkpoint, campaigns below `roas` get their daily budget cut by "
-                               "`pct`%. Resets at the store's midnight."}
+                               "budget_cut_rules (each with its own id, on/off): trigger 'account' = when today's spend of the rule's "
+                               "campaigns reaches `spend` (and again every `every` more) and their overall ROAS is below `roas`, each "
+                               "of them with ROAS below `roas` is cut; trigger 'campaign' = each campaign by itself once it has spent "
+                               "camp_pct % of its starting budget (camp_by pct) or camp_spend (camp_by amount) today with ROAS below "
+                               "`roas`, once a day. scope all|picked (campaigns {id: name}), basis pixel|meta ROAS, action cut|pause, "
+                               "pct = cut %, base start (budget at the start of the store day) | now, floor = never below, "
+                               "hour_from/hour_to = active hours on the store clock, reset = put budgets back at midnight, "
+                               "mode auto|ask (ask = proposals wait on the Manage tab)."}
         if not auth.at_least(user or {}, "metaads", "manage"):
             return {"error": "Changing Meta Ads needs Manage access to the Meta Ads desk."}
         if name == "propose_meta_autopilot":
             rule = args.get("rule")
             if rule not in ("up10", "budget_cut"):
                 return {"error": "rule must be up10 or budget_cut."}
+            cut_keys = tuple(meta_cuts.NUMBERS) + tuple(meta_cuts.CHOICES) + meta_cuts.FLAGS + ("name", "campaigns")
             body = {k: v for k, v in (args.get("settings") or {}).items()
-                    if k in (("step", "cap") if rule == "up10" else ("spend", "roas", "pct", "every")) and v is not None}
+                    if k in (("step", "cap") if rule == "up10" else cut_keys) and v is not None}
+            if rule == "budget_cut" and args.get("rule_id"):
+                rules = _cut_rules(st["id"])
+                hit = next((r for r in rules if r["id"] == str(args["rule_id"]) or r["name"].lower() == str(args["rule_id"]).lower()), None)
+                if not hit:
+                    return {"error": "No budget-cut rule with that id or name (read them with meta_autopilot)."}
+                body["rule_id"] = hit["id"]
             if args.get("on") is not None:
                 body["on"] = bool(args["on"])
             if not body:
                 return {"error": "Nothing to change: give on (true/false) and/or settings."}
-            label = "$10 up every purchase" if rule == "up10" else "Budget cut on a poor day"
+            label = "$10 up every purchase" if rule == "up10" else next(
+                (r["name"] for r in _cut_rules(st["id"]) if r["id"] == body.get("rule_id")), "Budget cut on a poor day")
             detail = ", ".join(f"{k} = {v}" for k, v in body.items())
             return _propose(user, "meta_auto", f"{st['name'].strip()}: {label}", detail,
                             {"store": st["id"], "rule": rule, "body": body})
@@ -12813,115 +12831,333 @@ def _cut_cfg(store_id: int) -> dict:
     return {**CUT_DEFAULTS, **got}
 
 
-async def _cut_run(st, conn) -> dict | None:
-    """Check today's spend against the next checkpoint; cut the poor campaigns when overall ROAS is below the line.
-    Returns what it did at this checkpoint, or None."""
-    cfg = _cut_cfg(st["id"])
-    today = _store_today(st).isoformat()
-    if not cfg["on"]:
-        return None
-    every = float(cfg.get("every") or 0)
-    checked = cfg["checked"] if cfg.get("checked_day") == today else None
-    if checked is None and cfg.get("fired_day") == today:         # fired before checkpoints existed
-        checked = cfg["spend"]
-    if checked is not None and every <= 0:
-        return None
+def _cut_rules(store_id: int) -> list:
+    """The store's budget-cut rules (meta_cuts.py). First read: the 20 Oct poor-day settings become rule "poorday"."""
+    raw = db.get_setting(f"meta_cutrules:{store_id}")
+    if raw:
+        try:
+            return [meta_cuts.full(r) for r in json.loads(raw) if isinstance(r, dict) and r.get("id")]
+        except ValueError:
+            pass
+    rule, state = meta_cuts.migrate(_cut_cfg(store_id))
+    db.set_setting(f"meta_cutrules:{store_id}", json.dumps([rule]))
+    if not db.get_setting(f"meta_cutstate:{store_id}:poorday"):
+        db.set_setting(f"meta_cutstate:{store_id}:poorday", json.dumps(state))
+    return [rule]
+
+
+def _cut_save_rules(store_id: int, rules: list):
+    db.set_setting(f"meta_cutrules:{store_id}", json.dumps([{k: r[k] for k in meta_cuts.BASE} for r in rules]))
+
+
+def _cut_state(store_id: int, rid: str) -> dict:
+    try:
+        return meta_cuts.full_state(json.loads(db.get_setting(f"meta_cutstate:{store_id}:{rid}") or "{}"))
+    except ValueError:
+        return meta_cuts.full_state({})
+
+
+def _cut_save_state(store_id: int, rid: str, state: dict):
+    db.set_setting(f"meta_cutstate:{store_id}:{rid}", json.dumps({k: state.get(k) for k in meta_cuts.STATE}))
+
+
+def _cut_source(rid: str, back=False) -> str:
+    if back:
+        return f"strategy:cutback:{rid}"
+    return "strategy:cut" if rid == "poorday" else f"strategy:cut:{rid}"
+
+
+def _cut_day_start(st, today: str) -> str:
+    return datetime.combine(date.fromisoformat(today), clock.min, _zone(st)).astimezone(timezone.utc).isoformat(timespec="seconds")
+
+
+def _cut_starts(st, rows: list, today: str, save=True) -> dict:
+    """Each campaign's daily budget at the start of today (store clock): the first time a campaign is seen today, the
+    budget before EcomVital's first change to it today (any change but our midnight put-backs), else its budget now."""
+    key = f"meta_startbud:{st['id']}"
+    try:
+        got = json.loads(db.get_setting(key) or "{}")
+    except ValueError:
+        got = {}
+    if got.get("day") != today:
+        got = {"day": today, "b": {}}
+    missing = [r for r in rows if str(r["id"]) not in got["b"] and r.get("daily_budget")]
+    if missing:
+        a = _cut_day_start(st, today)
+        with db._conn() as con:
+            for r in missing:
+                first = con.execute("SELECT before FROM mads_actions WHERE store_id = ? AND obj_id = ? AND status = 'done' AND"
+                                    " change = 'budget' AND done_at >= ? AND source NOT LIKE 'strategy:cutback%'"
+                                    " ORDER BY done_at, id LIMIT 1", (st["id"], str(r["id"]), a)).fetchone()
+                was = None
+                if first:
+                    try:
+                        was = float(json.loads(first[0] or "{}").get("daily_budget") or 0) or None
+                    except (TypeError, ValueError):
+                        was = None
+                got["b"][str(r["id"])] = round(was or r["daily_budget"], 2)
+        if save:
+            db.set_setting(key, json.dumps(got))
+    return got["b"]
+
+
+async def _cut_change(st, conn, batch: str, who: str) -> list:
+    """Make one logged change, waiting and trying again when Meta says slow down (#613/#17/#4)."""
+    for attempt in range(4):
+        try:
+            return await _mads_run_batch(st, conn, batch, who, cap=0)
+        except HTTPException as e:
+            msg = str(getattr(e, "detail", None) or e)
+            if attempt < 3 and re.search(r"#613|#17\b|#4\b|rate limit|too many calls|request limit", msg, re.I):
+                with db._conn() as con:          # the failed step goes back to waiting, so it can run again
+                    con.execute("UPDATE mads_actions SET status = 'proposed', error = NULL WHERE batch = ?", (batch,))
+                await asyncio.sleep(35)
+                continue
+            raise
+    return []
+
+
+async def _cut_reset(st, conn, rule: dict, today: str):
+    """Put back yesterday's cuts at the store's midnight (rule option `reset`): only where the budget is still what the
+    rule set (someone or another rule changed it since = left alone); paused campaigns switched back on."""
+    state = _cut_state(st["id"], rule["id"])
+    done = state["done"]
+    if not rule["reset"] or not done.get("day") or done["day"] == today or not done.get("items"):
+        return
+    items = done["items"]
+    state["done"] = {"day": today, "items": {}}
+    _cut_save_state(st["id"], rule["id"], state)            # saved first: a put-back never runs twice
+    cur = st.get("meta_currency") or st["currency"]
+    for cid, it in items.items():
+        try:
+            now_ = await meta_manage.read(conn["access_token"], cid)
+            if it.get("action") == "cut" and it.get("from"):
+                budget = meta_manage._money(now_.get("daily_budget"), cur)
+                if not budget or abs(budget - float(it["to"])) > 0.01:
+                    continue
+                step = {"change": "budget", "level": "campaign", "id": cid, "name": it.get("name") or cid, "to": it["from"],
+                        "reason": f"{rule['name']}: new day, budget put back from {budget:.2f} to {float(it['from']):.2f}"}
+            elif it.get("action") == "pause" and now_.get("status") == "PAUSED":
+                step = {"change": "status", "level": "campaign", "id": cid, "name": it.get("name") or cid, "to": "ACTIVE",
+                        "reason": f"{rule['name']}: new day, switched back on"}
+            else:
+                continue
+            batch = _mads_batch("cutback")
+            with db._conn() as con:
+                _mads_log(con, st["id"], batch, _cut_source(rule["id"], back=True), step)
+            await _cut_change(st, conn, batch, f"{rule['name']} (autopilot)")
+            await asyncio.sleep(3)
+        except (meta.MetaAdsError, HTTPException) as e:
+            print(f"Budget-cut put-back failed ({st['name']}, {cid}): {str(getattr(e, 'detail', None) or e)[:200]}", flush=True)
+
+
+async def _cut_run_rule(st, conn, rule: dict, rows: list, starts: dict, today: str, hour: int) -> dict:
+    """Check one rule now and act on what it finds (Autopilot) or propose it (Ask me first)."""
+    d = meta_cuts.decide(rule, _cut_state(st["id"], rule["id"]), rows, starts, today, hour)
+    now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    if d["state"] is not None:                                # account checkpoint: marked before anything is cut
+        _cut_save_state(st["id"], rule["id"], d["state"])
+    cur = st.get("meta_currency") or st["currency"]
+    results, items = [], {}
+    ask = rule["mode"] == "ask"
+    ask_batch = _mads_batch("cutask") if ask and d["cuts"] else None
+    for c in d["cuts"]:
+        try:
+            now_ = await meta_manage.read(conn["access_token"], c["id"])
+            budget = meta_manage._money(now_.get("daily_budget"), cur)
+            if rule["action"] == "pause":
+                if now_.get("status") != "ACTIVE":
+                    items[c["id"]] = {"action": "skip", "name": c["name"]}
+                    results.append(f"{c['name']}: already paused.")
+                    continue
+                step = {"change": "status", "level": "campaign", "id": c["id"], "name": c["name"], "to": "PAUSED",
+                        "reason": f"{rule['name']}: {c['why']} → pause"}
+                item = {"action": "pause", "name": c["name"]}
+            else:
+                if not budget:
+                    items[c["id"]] = {"action": "skip", "name": c["name"]}
+                    results.append(f"{c['name']}: its budget is on the ad sets (or lifetime), so it wasn't cut.")
+                    continue
+                to = meta_cuts.target(rule, c["start"], budget)
+                if to >= budget - 0.009:
+                    items[c["id"]] = {"action": "skip", "name": c["name"]}
+                    results.append(f"{c['name']}: budget {budget:.2f} is already at or below {to:.2f}, left as is.")
+                    continue
+                step = {"change": "budget", "level": "campaign", "id": c["id"], "name": c["name"], "to": to,
+                        "reason": f"{rule['name']}: {c['why']}; budget {budget:.2f} → {to:.2f}"}
+                item = {"action": "cut", "name": c["name"], "from": budget, "to": to, "start": c["start"]}
+            if ask:
+                with db._conn() as con:
+                    _mads_log(con, st["id"], ask_batch, _cut_source(rule["id"]), step)
+                items[c["id"]] = {**item, "action": "proposed"}
+                results.append(f"{c['name']}: proposed ({step['reason'].split(': ', 1)[-1]}), waiting for Do it on the Manage tab.")
+                continue
+            batch = _mads_batch("cut")              # one campaign per batch: a refusal never blocks the others
+            with db._conn() as con:
+                _mads_log(con, st["id"], batch, _cut_source(rule["id"]), step)
+            items[c["id"]] = item                    # before acting: never twice, even if the change half-fails
+            results += await _cut_change(st, conn, batch, f"{rule['name']} (autopilot)")
+            await asyncio.sleep(3)                   # space the changes out so Meta doesn't push back
+        except (meta.MetaAdsError, HTTPException) as e:
+            items[c["id"]] = {"action": "failed", "name": c["name"]}
+            results.append(f"{c['name']}: Meta refused ({str(getattr(e, 'detail', None) or e)[:200]})")
+    state = _cut_state(st["id"], rule["id"])        # re-read: the checkpoint may have been saved above
+    done = state["done"] if state["done"].get("day") == today else {"day": today, "items": {}}
+    done["items"].update(items)
+    state["done"] = done
+    state["watch"] = {"at": now_iso, "rows": d["watch"], "note": d["note"]} if rule["trigger"] == "campaign" else \
+        {"at": now_iso, "note": d["note"]}
+    if d["run"]:
+        runs = state["runs"] if state.get("checked_day") == today else []
+        state["runs"] = (runs + [{**d["run"], "at": now_iso, "cut": sum(1 for v in items.values() if v["action"] in ("cut", "pause", "proposed"))}])[-20:]
+    if d["cuts"]:
+        state["last"] = {"day": today, "at": now_iso, **(d["run"] or {}), "results": results}
+        state["fired_day"] = today
+    _cut_save_state(st["id"], rule["id"], state)
+    return {"results": results, "note": d["note"]}
+
+
+async def _cut_store(st, conn, rules: list):
     lock = _cut_lock.setdefault(st["id"], asyncio.Lock())
     if lock.locked():
-        return None
+        return
     async with lock:
         _mads_db()
-        d = await _mads_rows(st, conn, "campaign", 1, False, (today, today, 1))
-        spend, value = d["total"]["spend"], d["total"]["px_value"]
-        roas = value / spend if spend else 0.0
-        if spend < cfg["spend"]:
-            return None
-        point = cfg["spend"] + (int((spend - cfg["spend"]) // every) * every if every > 0 else 0)
-        if checked is not None and point <= checked:
-            return None
-        cur = d["currency"]
-        # mark this checkpoint first, so it can never run twice today, whatever happens below
-        cfg = _cut_cfg(st["id"])
-        runs = cfg["runs"] if cfg.get("checked_day") == today else []
-        cfg.update(checked_day=today, checked=point)
-        if roas >= cfg["roas"]:
-            runs = runs + [{"point": point, "spend": round(spend, 2), "roas": round(roas, 2), "cut": 0,
-                            "at": datetime.now(timezone.utc).isoformat(timespec="seconds")}]
-            cfg["runs"] = runs[-20:]
-            db.set_setting(f"meta_cut:{st['id']}", json.dumps({k: cfg[k] for k in CUT_DEFAULTS}))
-            return None
-        cfg["fired_day"] = today
-        db.set_setting(f"meta_cut:{st['id']}", json.dumps({k: cfg[k] for k in CUT_DEFAULTS}))
-        results = []
-        for r in d["rows"]:
-            if not r["spend"] or (r["px_roas"] or 0) >= cfg["roas"]:
-                continue
+        today, hour = _store_today(st).isoformat(), _now_in(st).hour
+        for rule in rules:
+            await _cut_reset(st, conn, rule, today)
+        on = [r for r in rules if r["on"]]
+        if not on:
+            return
+        fresh = any(r["trigger"] == "campaign" for r in on)       # per-campaign spend: never older than this check
+        d = await _mads_rows(st, conn, "campaign", 1, fresh, (today, today, 1))
+        starts = _cut_starts(st, d["rows"], today)
+        for rule in on:
             try:
-                now_ = await meta_manage.read(conn["access_token"], r["id"])
-                budget = meta_manage._money(now_.get("daily_budget"), cur)
-                if not budget:
-                    results.append(f"{r['name']}: its budget is on the ad sets (or lifetime), so it wasn't cut.")
-                    continue
-                to = round(budget * (1 - cfg["pct"] / 100), 2)
-                batch = _mads_batch("cut")              # one campaign per batch: a refusal never blocks the others
-                with db._conn() as con:
-                    _mads_log(con, st["id"], batch, "strategy:cut", {
-                        "change": "budget", "level": "campaign", "id": r["id"], "name": r["name"], "to": to,
-                        "reason": f"{cfg['name']}: today's spend {cur} {spend:,.2f}, overall ROAS {roas:.2f} (below "
-                                  f"{cfg['roas']:g}); this campaign {r['px_roas'] or 0:.2f}, budget {budget:.2f} − {cfg['pct']:g}%"})
-                done = None
-                for attempt in range(4):              # Meta's "slow down" (#613/#17/#4): wait and try again
-                    try:
-                        done = await _mads_run_batch(st, conn, batch, f"{cfg['name']} (autopilot)", cap=0)
-                        break
-                    except HTTPException as e:
-                        msg = str(getattr(e, "detail", None) or e)
-                        if attempt < 3 and re.search(r"#613|#17\b|#4\b|rate limit|too many calls|request limit", msg, re.I):
-                            with db._conn() as con:      # the failed step goes back to waiting, so it can run again
-                                con.execute("UPDATE mads_actions SET status = 'proposed', error = NULL WHERE batch = ?", (batch,))
-                            await asyncio.sleep(35)
-                            continue
-                        raise
-                results += done or []
-                await asyncio.sleep(3)                    # space the changes out so Meta doesn't push back
-            except (meta.MetaAdsError, HTTPException) as e:
-                results.append(f"{r['name']}: Meta refused ({str(getattr(e, 'detail', None) or e)[:200]})")
-        last = {"day": today, "at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "spend": round(spend, 2),
-                "roas": round(roas, 2), "point": point,
-                "results": results or ["No campaign below the ROAS line had spend today."]}
-        cfg = _cut_cfg(st["id"])                   # re-read: someone may have changed it meanwhile
-        runs = cfg["runs"] if cfg.get("checked_day") == today else []
-        runs = runs + [{"point": point, "spend": round(spend, 2), "roas": round(roas, 2), "at": last["at"],
-                        "cut": sum(1 for x in results if " → " in x or " -> " in x)}]
-        cfg.update(fired_day=today, last=last, runs=runs[-20:])
-        db.set_setting(f"meta_cut:{st['id']}", json.dumps({k: cfg[k] for k in CUT_DEFAULTS}))
-        return last
+                await _cut_run_rule(st, conn, rule, d["rows"], starts, today, hour)
+            except Exception as e:
+                print(f"Budget-cut rule “{rule['name']}” failed for {st['name']}: {str(getattr(e, 'detail', None) or e)[:300]}", flush=True)
 
 
 async def _cut_tick():
-    """Called every minute by _up_loop: each store with the rule on is checked at most every 5 minutes."""
+    """Called every minute by _up_loop: each store with a rule on (or a put-back due) is checked at most every 5 minutes."""
     now_ = time.monotonic()
     for st in db.list_stores():
-        if not st.get("meta_account_id") or not _cut_cfg(st["id"])["on"] or now_ - _cut_checked.get(st["id"], 0) < 300:
+        if not st.get("meta_account_id") or now_ - _cut_checked.get(st["id"], 0) < 300:
+            continue
+        rules = [r for r in _cut_rules(st["id"]) if r["on"] or r["reset"]]
+        if not rules:
             continue
         _cut_checked[st["id"]] = now_
         try:
             st2, conn = _mads_store(st["id"])
-            await _cut_run(st2, conn)
+            await _cut_store(st2, conn, rules)
         except Exception as e:
-            print(f"Budget-cut rule failed for {st['name']}: {str(getattr(e, 'detail', None) or e)[:300]}", flush=True)
+            print(f"Budget-cut rules failed for {st['name']}: {str(getattr(e, 'detail', None) or e)[:300]}", flush=True)
+
+
+def _cut_view(st, rule: dict) -> dict:
+    state = _cut_state(st["id"], rule["id"])
+    with db._conn() as con:
+        feed = [dict(r) for r in con.execute(
+            "SELECT id, name, to_value, before, status, summary, error, done_at, created_at, source FROM mads_actions WHERE"
+            " store_id = ? AND source IN (?, ?) ORDER BY id DESC LIMIT 20",
+            (st["id"], _cut_source(rule["id"]), _cut_source(rule["id"], back=True)))]
+    return {**rule, "state": state, "feed": feed}
+
+
+@app.get("/api/metaads/cutrules")
+def api_cutrules_get(store: int):
+    _mads_db()
+    st, _conn = _mads_store(store)
+    return {"rules": [_cut_view(st, r) for r in _cut_rules(st["id"])], "today": _store_today(st).isoformat(),
+            "hour": _now_in(st).hour, "currency": st.get("meta_currency") or st["currency"],
+            "templates": {k: v["name"] for k, v in meta_cuts.TEMPLATES.items()}}
+
+
+@app.get("/api/metaads/cutrules/preview")
+async def api_cutrules_preview(store: int, rule: str):
+    """What the rule would do right now, without changing anything (Check now)."""
+    _mads_db()
+    st, conn = _mads_store(store)
+    r = next((x for x in _cut_rules(st["id"]) if x["id"] == rule), None)
+    if not r:
+        raise HTTPException(404, "Rule not found.")
+    today, hour = _store_today(st).isoformat(), _now_in(st).hour
+    d = await _mads_rows(st, conn, "campaign", 1, True, (today, today, 1))
+    starts = _cut_starts(st, d["rows"], today, save=False)
+    got = meta_cuts.decide({**r, "on": True}, _cut_state(st["id"], r["id"]), d["rows"], starts, today, hour)
+    return {"cuts": got["cuts"], "watch": got["watch"], "note": got["note"], "run": got["run"],
+            "currency": d["currency"], "at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+
+
+@app.post("/api/metaads/cutrules/{store_id}")
+def api_cutrules_add(store_id: int, payload: dict):
+    st, _conn = _mads_store(store_id)
+    rules = _cut_rules(st["id"])
+    if len(rules) >= 12:
+        raise HTTPException(400, "Up to 12 budget-cut rules per store.")
+    rule = meta_cuts.new_rule(str(payload.get("template") or "campaign"))
+    rules.append(rule)
+    _cut_save_rules(st["id"], rules)
+    return {"ok": True, "id": rule["id"]}
+
+
+def _cut_update(store_id: int, rid: str, payload: dict, who: str) -> dict:
+    rules = _cut_rules(store_id)
+    i = next((k for k, x in enumerate(rules) if x["id"] == rid), None)
+    if i is None:
+        raise HTTPException(404, "Rule not found.")
+    try:
+        rule = meta_cuts.apply(rules[i], payload)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    now_ = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    if "on" in payload:
+        on = bool(payload["on"])
+        if on and rule["scope"] == "picked" and not rule["campaigns"]:
+            raise HTTPException(400, "Pick at least one campaign first (or choose All campaigns).")
+        if on and not rule["on"]:
+            rule.update(on=True, started_at=now_, stopped_at=None, by=who)
+        elif not on and rule["on"]:
+            rule.update(on=False, stopped_at=now_, by=who)
+    elif rule["on"] and rule["scope"] == "picked" and not rule["campaigns"]:
+        raise HTTPException(400, "This rule is on: keep at least one campaign switched on, or turn the rule off first.")
+    rules[i] = rule
+    _cut_save_rules(store_id, rules)
+    _cut_checked.pop(store_id, None)
+    return rule
+
+
+@app.put("/api/metaads/cutrules/{store_id}/{rid}")
+def api_cutrules_set(store_id: int, rid: str, payload: dict, request: Request):
+    """Switch a rule on/off, change its settings, or switch one campaign in / out ({campaign: {id, name, on}})."""
+    st, _conn = _mads_store(store_id)
+    _cut_update(st["id"], rid, payload, (request.state.user or {}).get("email", ""))
+    return {"ok": True}
+
+
+@app.delete("/api/metaads/cutrules/{store_id}/{rid}")
+def api_cutrules_del(store_id: int, rid: str):
+    st, _conn = _mads_store(store_id)
+    rules = _cut_rules(st["id"])
+    r = next((x for x in rules if x["id"] == rid), None)
+    if not r:
+        raise HTTPException(404, "Rule not found.")
+    if r["on"]:
+        raise HTTPException(400, "Turn the rule off first.")
+    _cut_save_rules(st["id"], [x for x in rules if x["id"] != rid])
+    return {"ok": True}
 
 
 @app.get("/api/metaads/cutrule")
 def api_cut_get(store: int):
+    """The first budget-cut rule (older callers)."""
     _mads_db()
     st, _conn = _mads_store(store)
-    cfg = _cut_cfg(st["id"])
-    with db._conn() as con:
-        feed = [dict(r) for r in con.execute(
-            "SELECT id, name, to_value, before, status, summary, error, done_at, created_at FROM mads_actions WHERE store_id = ? AND"
-            " source = 'strategy:cut' ORDER BY id DESC LIMIT 20", (st["id"],))]
-    return {**cfg, "today": _store_today(st).isoformat(), "currency": st.get("meta_currency") or st["currency"], "feed": feed}
+    r = _cut_view(st, _cut_rules(st["id"])[0])
+    return {**r, **{k: v for k, v in r["state"].items() if k != "done"}, "today": _store_today(st).isoformat(),
+            "currency": st.get("meta_currency") or st["currency"]}
 
 
 # ---- Meta Ads → Launcher (ads_launcher.py): approved advertorial / listing tasks → one campaign + one ad set, one ad
@@ -13322,25 +13558,11 @@ async def _launcher_run(rid: int, user: dict):
 
 @app.put("/api/metaads/cutrule/{store_id}")
 def api_cut_set(store_id: int, payload: dict, request: Request):
-    """Switch the rule on/off, or change its trigger spend / ROAS line / cut %."""
+    """A budget-cut rule's on/off or settings (payload `rule_id`, default the poor-day rule / the first rule)."""
     st, _conn = _mads_store(store_id)
-    cfg = _cut_cfg(st["id"])
-    who = (request.state.user or {}).get("email", "")
-    now_ = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    if "on" in payload:
-        on = bool(payload["on"])
-        if on and not cfg["on"]:
-            cfg.update(on=True, started_at=now_, stopped_at=None, by=who)
-        elif not on and cfg["on"]:
-            cfg.update(on=False, stopped_at=now_, by=who)
-    for k, lo, hi in (("spend", 1.0, 10_000_000.0), ("roas", 0.1, 100.0), ("pct", 1.0, 90.0), ("every", 0.0, 10_000_000.0)):
-        if k in payload:
-            try:
-                cfg[k] = min(hi, max(lo, float(payload[k])))
-            except (TypeError, ValueError):
-                raise HTTPException(400, f"{k} must be a number.")
-    db.set_setting(f"meta_cut:{st['id']}", json.dumps({k: cfg[k] for k in CUT_DEFAULTS}))
-    _cut_checked.pop(st["id"], None)
+    rules = _cut_rules(st["id"])
+    rid = str(payload.get("rule_id") or "") or next((r["id"] for r in rules if r["id"] == "poorday"), rules[0]["id"])
+    _cut_update(st["id"], rid, {k: v for k, v in payload.items() if k != "rule_id"}, (request.state.user or {}).get("email", ""))
     return {"ok": True}
 
 

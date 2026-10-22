@@ -118,13 +118,16 @@ TOOLS += [
           {**_STORE, "summary": {"type": "string"}, "steps": {"type": "array", "items": {"type": "object"}}},
           ["store", "summary", "steps"]),
     _tool("meta_autopilot", "A store's Meta autopilot rules and their settings: '$10 up every purchase' (up10) and 'Budget cut "
-          "on a poor day' (budget_cut), with the last budget-cut run.", _STORE, ["store"]),
+          "rules' (budget_cut_rules: several per store, each with an id, trigger, campaigns and options), with what they did today.", _STORE, ["store"]),
     _tool("propose_meta_autopilot", "Propose switching a store's Meta autopilot rule on/off or changing its numbers (needs Manage "
           "on Meta Ads; the person confirms). rule up10 settings: step (raise per purchase), cap (max daily budget per campaign, "
-          "0 = no cap). rule budget_cut settings: spend (today's spend that triggers it), roas (line below which campaigns are "
-          "cut), pct (cut %), every (check again each time spend passes this much more, e.g. 200; 0 = once a day). These are the only Meta rules EcomVital runs by itself; other ideas: tell the person and use "
-          "request_change.", {**_STORE, "rule": {"type": "string"}, "on": {"type": ["boolean", "null"]},
-                              "settings": {"type": "object"}}, ["store", "rule", "on", "settings"]),
+          "0 = no cap). rule budget_cut (+ rule_id = the rule's id or name from meta_autopilot; default the poor-day rule) settings: "
+          "trigger account|campaign, spend, every, camp_by pct|amount, camp_pct, camp_spend, roas, basis pixel|meta, action cut|pause, "
+          "pct, base start|now, floor, hour_from, hour_to, reset (true/false), mode auto|ask, scope all|picked, campaigns {id: name} "
+          "(the whole picked list). New budget-cut rules are added on the Meta Ads page. These are the only Meta rules EcomVital runs "
+          "by itself; other ideas: tell the person and use request_change.",
+          {**_STORE, "rule": {"type": "string"}, "rule_id": {"type": ["string", "null"]}, "on": {"type": ["boolean", "null"]},
+           "settings": {"type": "object"}}, ["store", "rule", "on", "settings"]),
     _tool("google_product_issues", "Products Google won't show (disapproved / limited / not eligible) for a store's Google Ads "
           "account, with Google's reasons, and links to each product in Shopify admin and on the store. Read only.",
           {**_STORE}, ["store"]),
@@ -296,7 +299,7 @@ Desks (pages) and what they hold:
 - Also: Reports (CSV exports), Size Charts, Product Importer, Session Recordings, Settings (connections, people, WhatsApp, backups).
 - Time (Apps): staff hours, activity %, apps/sites and screenshots from the EcomVital Time desktop app (Mac + Windows), like Hubstaff.
 - Agent (Apps): the ops agent working through Slack: its work log (jobs and steps), advice that becomes lessons, its questions; it files supplier invoices posted in Slack into COG, keeps bank transfer notices and checks them against the bank, shows each supplier's position (paid up to which invoice/order, on credit) and has its own Ask chat.
-- Meta Ads (Apps): campaigns / ad sets / ads with Meta's and the pixel's results; Manage tab where Claude proposes changes and rules for Meta ads (Ask me first: every change waits for Do it, with Undo). Autopilot rules per store: "$10 up every purchase" and "Budget cut on a poor day" (once a day: today's spend ≥ a trigger and pixel ROAS below a line → weak campaigns' budgets cut by a %). Launcher tab: approved advertorial / listing tasks → one campaign + one ad set + one ad per task (flexible ads), every Advantage+ switch, scheduled start, presets; staff save drafts, Manage launches. In chat: meta_campaigns, meta_autopilot read them; propose_meta_change (budgets / pause / switch on) and propose_meta_autopilot (rule on/off and its numbers) change them after the person confirms.
+- Meta Ads (Apps): campaigns / ad sets / ads with Meta's and the pixel's results; Manage tab where Claude proposes changes and rules for Meta ads (Ask me first: every change waits for Do it, with Undo). Autopilot rules per store: "$10 up every purchase" and Budget cut rules (several per store, each on/off: "poor day" = today's total spend ≥ a trigger and ROAS below a line → weak campaigns cut by a %; "per campaign" = a picked campaign that has spent N% of its starting budget with ROAS below a line → cut by a % of its starting budget, once a day; options: pause instead, budget floor, active hours, put back at midnight, Ask me first). Launcher tab: approved advertorial / listing tasks → one campaign + one ad set + one ad per task (flexible ads), every Advantage+ switch, scheduled start, presets; staff save drafts, Manage launches. In chat: meta_campaigns, meta_autopilot read them; propose_meta_change (budgets / pause / switch on) and propose_meta_autopilot (rule on/off and its numbers) change them after the person confirms.
 - Tasks: a board where admins give staff work: listing + ads (competitor ad / landing / product links and a To do list: advertorial, collection, product pages, branded page, creatives, ad copy, custom items) or a custom task, with special instructions (text, voice notes, screen recordings); staff hand back one main landing page link plus each item, or a note saying why they couldn't; admins approve, then tick one or several approved cards and launch them on Meta with a strategy (X/Y/Z), everything PAUSED (switched on in Ads Manager); launched tasks go to History. End of day shows what each person did.
 WhatsApp: you answer only in this one-to-one chat (no group chats). Voice notes need the OpenAI key in Settings → WhatsApp. Changes you propose are confirmed by replying YES.
 

@@ -145,61 +145,185 @@ async function loadStrategy() {
   };
 }
 
-/* ------------------------------------------------ rule: "Budget cut on a poor day" (autopilot, once a day) */
+/* ------------------------------------------------ Budget cut rules (several per store, autopilot or ask first) */
 
-async function loadCut() {
-  let s;
-  try { s = await api(`/api/metaads/cutrule?store=${state.store}`); } catch { $("cutrule").hidden = true; return; }
-  const manage = window.pdLevel === "manage";
-  const box = $("cutrule");
-  box.hidden = false;
-  box.classList.toggle("on", !!s.on);
-  const c = s.currency;
-  const last = s.last;
-  const every = +s.every || 0;
-  const runs = s.checked_day === s.today ? (s.runs || []) : [];
-  const next = every > 0 ? (s.checked_day === s.today && s.checked != null ? +s.checked + every : +s.spend) : null;
-  const status = !s.on ? (s.stopped_at ? `Switched off ${when(s.stopped_at)}.` : "Off.")
-    : every > 0 ? `Today: ${runs.length ? runs.map((r) => `${c} ${num(r.point, 0)} → ROAS ${(+r.roas).toFixed(2)}${r.cut ? `, ${r.cut} cut` : ", nothing cut"}`).join(" · ") + ". " : ""}Next check at ${c} ${num(next, 0)} spend. Resets at midnight.`
-    : (s.checked_day === s.today || s.fired_day === s.today) ? `Already checked today${last && last.day === s.today ? ` (${when(last.at)}): spend ${c} ${num(last.spend, 0)}, ROAS ${last.roas.toFixed(2)}` : ""}. Next check tomorrow.`
-    : `Watching today: checks every 5 minutes, runs at most once a day.`;
-  const feed = (s.feed || []).slice(0, 8).map((f) => `<li class="${f.status === "done" ? "down" : ""}"><time>${when(f.done_at || f.created_at)}</time>
-    <span>${f.status === "done" ? "▼ " : ""}${esc(f.summary || f.error || f.name)}</span></li>`).join("");
-  box.innerHTML = `<div class="ma-strat-head">
-      <div><span class="ma-pill ${s.on ? "on" : "off"}">${s.on ? "AUTOPILOT ON" : "Off"}</span>
-        <b>${esc(s.name)}</b>
-        <p class="hint">When today's spend across all campaigns reaches <b>${c} ${num(s.spend, 0)}</b> and today's overall ROAS
-          (EcomVital tracking) is below <b>${num(s.roas, 1)}</b>, every campaign with ROAS below ${num(s.roas, 1)} gets its daily budget cut by
-          <b>${num(s.pct, 0)}%</b>. Campaigns at ${num(s.roas, 1)} or above are not touched. ${every > 0 ? `Checks again at every extra <b>${c} ${num(every, 0)}</b> of spend (${c} ${num(+s.spend + every, 0)}, ${c} ${num(+s.spend + 2 * every, 0)} …), each checkpoint once a day.` : "Once a day at most."} ${status}</p></div>
-      ${manage ? `<div class="ma-strat-acts">
-        <button class="btn ${s.on ? "btn-danger ma-off" : "btn-primary"}" id="cutToggle">${s.on ? "Turn off this rule" : "Turn on"}</button>
-        <details><summary>Settings</summary><div class="ma-rule-fields">
-          <label>Today's spend reaches (${c})<input class="control" id="cutSpend" value="${s.spend}"></label>
-          <label>ROAS below<input class="control" id="cutRoas" value="${s.roas}"></label>
-          <label>Cut budget by (%)<input class="control" id="cutPct" value="${s.pct}"></label>
-          <label>Check again every (${c} of extra spend, 0 = once a day)<input class="control" id="cutEvery" value="${every}"></label>
-          <div class="row-actions"><button class="btn btn-sm" id="cutSave">Save</button></div>
-        </div></details></div>` : ""}
-    </div>
-    ${last && last.results || feed ? `<details class="ma-log" data-log="cut"${state.logOpen.cut ? " open" : ""}><summary>Changes made${last && last.results
-        ? ` (last run ${esc(last.day)}: ${last.results.filter((x) => / → /.test(x)).length} cut${last.results.filter((x) => /refused|couldn't/i.test(x)).length ? `, ${last.results.filter((x) => /refused|couldn't/i.test(x)).length} refused by Meta` : ""})` : ""}</summary>
-      ${last && last.results ? `<ul class="ma-feed">${last.results.map((x) => `<li class="${/ → /.test(x) ? "down" : ""}"><span>${/ → /.test(x) ? "▼ " : ""}${esc(x)}</span></li>`).join("")}</ul>` : ""}
-      ${feed ? `<ul class="ma-feed">${feed}</ul>` : ""}</details>` : ""}`;
-  keepLogs(box);
-  if (!manage) return;
-  $("cutToggle").onclick = async () => {
-    const on = !s.on;
-    if (on && !confirm(`Turn on “${s.name}”? Once a day, if spend reaches ${c} ${s.spend} with ROAS below ${s.roas}, the weak campaigns' budgets are cut by ${s.pct}% on Meta, without asking.`)) return;
-    try { await api(`/api/metaads/cutrule/${state.store}`, { method: "PUT", json: { on } }); toast(on ? "Budget-cut rule on." : "Budget-cut rule off."); loadCut(); }
-    catch (e) { toast(e.message, true); }
-  };
-  $("cutSave").onclick = async () => {
-    try {
-      await api(`/api/metaads/cutrule/${state.store}`, { method: "PUT", json: { spend: $("cutSpend").value, roas: $("cutRoas").value, pct: $("cutPct").value, every: $("cutEvery").value } });
-      toast("Saved"); loadCut();
-    } catch (e) { toast(e.message, true); }
-  };
+const CUT_STATE = { "cut now": "bad", "would cut (outside active hours)": "bad", "cut today": "bad", "paused today": "bad",
+  "ROAS fine": "on", waiting: "off" };
+
+function cutSentence(r, c) {
+  const roasFrom = r.basis === "meta" ? "Meta's ROAS" : "ROAS (EcomVital tracking)";
+  const act = r.action === "pause" ? "the campaign is <b>paused</b>"
+    : `its daily budget is cut by <b>${num(r.pct, 0)}%</b> of ${r.base === "start" ? "its budget at the start of the day" : "its budget at that moment"}${+r.floor ? `, never below <b>${c} ${num(r.floor, 2)}</b>` : ""}`;
+  const who = r.scope === "all" ? "any campaign" : `a picked campaign (${Object.keys(r.campaigns || {}).length} switched on)`;
+  const trig = r.trigger === "campaign"
+    ? `When ${who} has spent <b>${r.camp_by === "pct" ? `${num(r.camp_pct, 0)}% of its starting budget` : `${c} ${num(r.camp_spend, 2)}`}</b> today and its ${roasFrom} is below <b>${num(r.roas, 2)}</b>, ${act}. Once per campaign per day.`
+    : `When today's spend of ${r.scope === "all" ? "all campaigns" : "the picked campaigns"} reaches <b>${c} ${num(r.spend, 0)}</b> and their overall ${roasFrom} is below <b>${num(r.roas, 2)}</b>, each of them with ROAS below ${num(r.roas, 2)} that spent today: ${act}.${+r.every ? ` Checks again every extra <b>${c} ${num(r.every, 0)}</b> of spend.` : " Once a day."}`;
+  const extra = [];
+  if (+r.hour_from > 0 || +r.hour_to < 24) extra.push(`Only between ${String(r.hour_from).padStart(2, "0")}:00 and ${String(r.hour_to).padStart(2, "0")}:00 (store clock).`);
+  if (r.reset) extra.push("Budgets go back at midnight.");
+  if (r.mode === "ask") extra.push("<b>Ask me first</b>: cuts wait for Do it on the Manage tab.");
+  return `${trig} ${extra.join(" ")}`;
 }
+
+function cutField(label, inner, show = "") { return `<label${show ? ` data-show="${show}"` : ""}>${label}${inner}</label>`; }
+function cutSelect(id, cur, opts) {
+  return `<select class="control" data-f="${id}">${opts.map(([v, t]) => `<option value="${v}"${String(cur) === String(v) ? " selected" : ""}>${t}</option>`).join("")}</select>`;
+}
+function cutInput(id, v) { return `<input class="control" data-f="${id}" value="${esc(v)}">`; }
+
+function cutSettings(r, c) {
+  const hours = Array.from({ length: 25 }, (_, h) => [h, `${String(h).padStart(2, "0")}:00`]);
+  return `<div class="ma-rule-fields ma-cut-fields" data-rule="${r.id}">
+    ${cutField("Name", cutInput("name", r.name))}
+    ${cutField("What starts it", cutSelect("trigger", r.trigger, [["campaign", "Each campaign by itself"], ["account", "Today's total spend (poor day)"]]))}
+    ${cutField("Campaigns", cutSelect("scope", r.scope, [["picked", "Only the ones I switch on"], ["all", "All campaigns"]]))}
+    ${cutField("Campaign has spent", cutSelect("camp_by", r.camp_by, [["pct", "% of its starting budget"], ["amount", `an amount (${c})`]]), "campaign")}
+    ${cutField("% of starting budget", cutInput("camp_pct", r.camp_pct), "campaign pct")}
+    ${cutField(`Amount spent (${c})`, cutInput("camp_spend", r.camp_spend), "campaign amount")}
+    ${cutField(`Today's spend reaches (${c})`, cutInput("spend", r.spend), "account")}
+    ${cutField(`Check again every (${c}, 0 = once a day)`, cutInput("every", r.every), "account")}
+    ${cutField("ROAS below", cutInput("roas", r.roas))}
+    ${cutField("ROAS from", cutSelect("basis", r.basis, [["pixel", "EcomVital tracking"], ["meta", "Meta's own count"]]))}
+    ${cutField("Then", cutSelect("action", r.action, [["cut", "Cut the daily budget"], ["pause", "Pause the campaign"]]))}
+    ${cutField("Cut by (%)", cutInput("pct", r.pct), "cut")}
+    ${cutField("% taken from", cutSelect("base", r.base, [["start", "Budget at the start of the day"], ["now", "Budget at that moment"]]), "cut")}
+    ${cutField(`Never below (${c}, 0 = no floor)`, cutInput("floor", r.floor), "cut")}
+    ${cutField("Active from (store clock)", cutSelect("hour_from", r.hour_from, hours.slice(0, 24)))}
+    ${cutField("Active until", cutSelect("hour_to", r.hour_to, hours.slice(1)))}
+    ${cutField("At midnight", cutSelect("reset", r.reset ? 1 : 0, [[0, "Keep the new budget"], [1, "Put the budget back"]]))}
+    ${cutField("How", cutSelect("mode", r.mode, [["auto", "Autopilot: does it"], ["ask", "Ask me first (Manage tab)"]]))}
+    <div class="row-actions"><button class="btn btn-sm" data-cutsave="${r.id}">Save</button></div></div>`;
+}
+
+function cutShowFields(box) {
+  const v = (f) => (box.querySelector(`[data-f="${f}"]`) || {}).value;
+  const on = new Set([v("trigger"), v("action"), v("trigger") === "campaign" ? v("camp_by") : ""]);
+  for (const l of box.querySelectorAll("[data-show]")) l.hidden = !l.dataset.show.split(" ").every((x) => on.has(x));
+}
+
+function cutCampaigns(r, manage) {
+  const picked = r.campaigns || {};
+  const list = (state.cutCamps || []).slice();
+  for (const [id, name] of Object.entries(picked)) if (!list.some((x) => x.id === id)) list.push({ id, name, effective: "" });
+  const rows = list.map((x) => `<label class="ma-sw-row"><span class="ma-sw"><input type="checkbox" data-cutcamp="${r.id}" data-id="${esc(x.id)}" data-name="${esc(x.name)}"${picked[x.id] !== undefined ? " checked" : ""}${manage ? "" : " disabled"}><i></i></span>
+      <span class="nm">${esc(x.name)}</span>${x.effective && x.effective !== "ACTIVE" ? `<span class="ma-sub">${esc(STATUS[x.effective] || x.effective)}</span>` : ""}</label>`).join("");
+  return `<details class="ma-cut-camps" data-open="camps-${r.id}"${state.logOpen[`camps-${r.id}`] ? " open" : ""}>
+    <summary>Campaigns in this rule: <b>${Object.keys(picked).length}</b> switched on ▾</summary>
+    <div class="ma-sw-list">${state.cutCamps ? rows || '<p class="hint">No campaigns ran in the last 7 days.</p>' : '<p class="hint">Loading campaigns…</p>'}</div></details>`;
+}
+
+function cutWatch(rows, c, at) {
+  if (!rows || !rows.length) return "";
+  return `<table class="table ma-cut-watch"><thead><tr><th>Campaign</th><th>Budget at start</th><th>Budget now</th><th>Spend today</th><th>% of start</th><th>Starts at</th><th>ROAS</th><th>Rule</th></tr></thead>
+    <tbody>${rows.map((w) => `<tr><td>${esc(w.name)}</td><td>${w.start == null ? "–" : `${c} ${num(w.start, 2)}`}</td><td>${w.budget == null ? "–" : `${c} ${num(w.budget, 2)}`}</td>
+      <td>${c} ${num(w.spend, 2)}</td><td>${w.spent_pct == null ? "–" : pct(w.spent_pct)}</td><td>${w.trigger_at == null ? "–" : `${c} ${num(w.trigger_at, 2)}`}</td>
+      <td>${roasTxt(w.roas)}</td><td><span class="ma-pill ${CUT_STATE[w.state] || "off"}">${esc(w.state)}</span></td></tr>`).join("")}</tbody></table>
+    ${at ? `<p class="hint">As of ${when(at)}.</p>` : ""}`;
+}
+
+async function loadCut(force = false) {
+  const box = $("cutrule");
+  if (!force && box.querySelector("details.ma-cut-set[open], .ma-cut-preview")) return;      // someone is editing / reading a check
+  let s;
+  try { s = await api(`/api/metaads/cutrules?store=${state.store}`); } catch { box.hidden = true; return; }
+  state.cut = s;
+  const manage = window.pdLevel === "manage";
+  const c = s.currency;
+  box.hidden = false;
+  box.classList.toggle("on", s.rules.some((r) => r.on));
+  box.innerHTML = `<div class="ma-cut-top"><b>Budget cut rules</b>
+      <span class="hint">Each rule has its own switch. Checked every 5 minutes. Every change is logged with Undo on the Manage tab.</span>
+      ${manage ? `<span class="ma-cut-add">${cutSelect("tpl", "campaign", Object.entries(s.templates))}<button class="btn btn-sm" id="cutAdd">+ Add rule</button></span>` : ""}</div>
+    ${s.rules.map((r) => {
+      const st = r.state || {};
+      const today = st.checked_day === s.today ? (st.runs || []) : [];
+      const done = st.done && st.done.day === s.today ? Object.values(st.done.items || {}) : [];
+      const status = !r.on ? (r.stopped_at ? `Switched off ${when(r.stopped_at)}.` : "Off.")
+        : r.trigger === "account" ? (today.length ? `Today: ${today.map((x) => `${c} ${num(x.point, 0)} → ROAS ${(+x.roas).toFixed(2)}${x.cut ? `, ${x.cut} cut` : ", nothing cut"}`).join(" · ")}.` : `Watching today${st.watch ? ` (${esc(st.watch.note)})` : ""}.`)
+        : `Today: ${done.filter((x) => ["cut", "pause", "proposed"].includes(x.action)).length} acted on${st.watch ? `, ${esc(st.watch.note)}` : ""}.`;
+      const feed = (r.feed || []).slice(0, 10).map((f) => `<li class="${f.status === "done" ? "down" : ""}"><time>${when(f.done_at || f.created_at)}</time>
+        <span>${f.status === "done" ? (f.source.startsWith("strategy:cutback") ? "▲ " : "▼ ") : f.status === "proposed" ? "… " : ""}${esc(f.summary || f.error || f.name)}${f.status === "proposed" ? " (waiting for Do it)" : ""}</span></li>`).join("");
+      return `<div class="ma-cut ${r.on ? "on" : ""}" data-rule="${r.id}">
+        <div class="ma-strat-head">
+          <div><span class="ma-pill ${r.on ? "on" : "off"}">${r.on ? (r.mode === "ask" ? "ON · ASK FIRST" : "AUTOPILOT ON") : "Off"}</span> <b>${esc(r.name)}</b>
+            <p class="hint">${cutSentence(r, c)} ${status}</p></div>
+          <div class="ma-strat-acts">
+            ${manage ? `<button class="btn ${r.on ? "btn-danger ma-off" : "btn-primary"}" data-cuttoggle="${r.id}">${r.on ? "Turn off this rule" : "Turn on"}</button>` : ""}
+            <span class="ma-cut-btns"><button class="btn btn-sm btn-ghost" data-cutcheck="${r.id}">Check now</button>
+            ${manage && !r.on ? `<button class="btn btn-sm btn-ghost" data-cutdel="${r.id}">Remove</button>` : ""}</span>
+            ${manage ? `<details class="ma-cut-set"><summary>Settings</summary>${cutSettings(r, c)}</details>` : ""}
+          </div>
+        </div>
+        ${r.scope === "picked" ? cutCampaigns(r, manage) : ""}
+        <div class="ma-cut-check" id="cutCheck-${r.id}"></div>
+        ${r.trigger === "campaign" && r.on && st.watch && st.watch.rows && st.watch.rows.length ? `<details class="ma-log" data-log="watch-${r.id}"${state.logOpen[`watch-${r.id}`] ? " open" : ""}><summary>Today per campaign</summary>${cutWatch(st.watch.rows, c, st.watch.at)}</details>` : ""}
+        ${feed ? `<details class="ma-log" data-log="cut-${r.id}"${state.logOpen[`cut-${r.id}`] ? " open" : ""}><summary>Changes made (last ${(r.feed || []).slice(0, 10).length})</summary><ul class="ma-feed">${feed}</ul></details>` : ""}
+      </div>`;
+    }).join("")}`;
+  keepLogs(box);
+  for (const d of box.querySelectorAll("details[data-open]")) d.addEventListener("toggle", () => { state.logOpen[d.dataset.open] = d.open; });
+  for (const f of box.querySelectorAll(".ma-cut-fields")) { cutShowFields(f); f.addEventListener("change", () => cutShowFields(f)); }
+  if (!state.cutCamps && s.rules.some((r) => r.scope === "picked")) {
+    api(`/api/metaads/overview?store=${state.store}&level=campaign&period=7&active=0`).then((d) => {
+      state.cutCamps = (d.rows || []).map((x) => ({ id: x.id, name: x.name, effective: x.effective }));
+      loadCut(true);
+    }).catch(() => { state.cutCamps = []; });
+  }
+}
+
+async function cutPut(rid, body, msg) {
+  try { await api(`/api/metaads/cutrules/${state.store}/${rid}`, { method: "PUT", json: body }); if (msg) toast(msg); loadCut(true); return true; }
+  catch (e) { toast(e.message, true); loadCut(true); return false; }
+}
+
+$("cutrule").addEventListener("click", async (e) => {
+  const el = e.target.closest("[data-cuttoggle],[data-cutsave],[data-cutcheck],[data-cutdel],#cutAdd");
+  if (!el) return;
+  const rules = (state.cut || {}).rules || [];
+  const c = (state.cut || {}).currency || "";
+  if (el.id === "cutAdd") {
+    try {
+      const tpl = $("cutrule").querySelector('[data-f="tpl"]').value;
+      await api(`/api/metaads/cutrules/${state.store}`, { json: { template: tpl } });
+      toast("Rule added (off). Pick its campaigns and settings, then Turn on.");
+      loadCut(true);
+    } catch (err) { toast(err.message, true); }
+  } else if (el.dataset.cuttoggle) {
+    const r = rules.find((x) => x.id === el.dataset.cuttoggle);
+    const on = !r.on;
+    if (on && !confirm(`Turn on “${r.name}”?\n\n${cutSentence(r, c).replace(/<[^>]+>/g, "")}\n\n${r.mode === "ask" ? "Changes wait for Do it on the Manage tab." : "EcomVital makes these changes on Meta without asking."}`)) return;
+    cutPut(r.id, { on }, on ? "Rule on." : "Rule off.");
+  } else if (el.dataset.cutsave) {
+    const body = {};
+    for (const f of $("cutrule").querySelectorAll(`.ma-cut-fields[data-rule="${el.dataset.cutsave}"] [data-f]`)) body[f.dataset.f] = f.value;
+    body.reset = body.reset === "1";
+    cutPut(el.dataset.cutsave, body, "Saved");
+  } else if (el.dataset.cutdel) {
+    const r = rules.find((x) => x.id === el.dataset.cutdel);
+    if (!confirm(`Remove the rule “${r.name}”? Its past changes stay in the log.`)) return;
+    try { await api(`/api/metaads/cutrules/${state.store}/${r.id}`, { method: "DELETE" }); toast("Removed"); loadCut(true); }
+    catch (err) { toast(err.message, true); }
+  } else if (el.dataset.cutcheck) {
+    const out = $(`cutCheck-${el.dataset.cutcheck}`);
+    out.className = "ma-cut-check ma-cut-preview";
+    out.innerHTML = '<p class="hint">Checking with Meta…</p>';
+    try {
+      const d = await api(`/api/metaads/cutrules/preview?store=${state.store}&rule=${el.dataset.cutcheck}`);
+      out.innerHTML = `<p class="hint"><b>Check now (nothing changed):</b> ${d.cuts.length ? `would act on ${d.cuts.length}: ${d.cuts.map((x) => `${esc(x.name)} (${esc(x.why)})`).join("; ")}` : esc(d.note) || "nothing to do."}
+        <button class="btn btn-sm btn-ghost" data-cutclose="1">Close</button></p>${cutWatch(d.watch, d.currency, d.at)}`;
+    } catch (err) { out.innerHTML = `<p class="hint">${esc(err.message)} <button class="btn btn-sm btn-ghost" data-cutclose="1">Close</button></p>`; }
+  }
+});
+$("cutrule").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-cutclose]");
+  if (b) { const box = b.closest(".ma-cut-check"); box.className = "ma-cut-check"; box.innerHTML = ""; }
+});
+$("cutrule").addEventListener("change", (e) => {
+  const cb = e.target.closest("[data-cutcamp]");
+  if (!cb) return;
+  cutPut(cb.dataset.cutcamp, { campaign: { id: cb.dataset.id, name: cb.dataset.name, on: cb.checked } },
+    `${cb.dataset.name}: ${cb.checked ? "in the rule" : "out of the rule"}`);
+});
 
 /* ------------------------------------------------ overview */
 
@@ -299,7 +423,8 @@ async function loadManage() {
   renderManage();
 }
 
-const SOURCE = (s) => s === "ai" ? "Claude" : s === "manual" ? "By hand" : s.startsWith("rule:") ? "Rule" : s.startsWith("undo:") ? "Undo" : s;
+const SOURCE = (s) => s === "ai" ? "Claude" : s === "manual" ? "By hand" : s.startsWith("rule:") ? "Rule" : s.startsWith("undo:") ? "Undo"
+  : s.startsWith("strategy:cutback") ? "Budget put back" : s.startsWith("strategy:cut") ? "Budget-cut rule" : s === "strategy:up" ? "$10 up" : s;
 const changeText = (a) => a.change === "status" ? `${a.to_value === "ACTIVE" ? "Switch on" : "Pause"} ${LEVEL[a.level].toLowerCase()} “${esc(a.name)}”`
   : `Daily budget of ${LEVEL[a.level].toLowerCase()} “${esc(a.name)}” → ${money(Number(a.to_value))}`;
 
@@ -396,7 +521,7 @@ $("levels").onclick = (e) => {
   for (const x of $("levels").querySelectorAll("button")) x.classList.toggle("on", x === b);
   loadOverview();
 };
-$("store").onchange = () => { state.store = +$("store").value; storeInfo(); loadStrategy(); showPage(state.page); };
+$("store").onchange = () => { state.store = +$("store").value; state.cutCamps = null; storeInfo(); loadStrategy(); showPage(state.page); };
 $("days").onchange = () => {
   const custom = $("days").value === "custom";
   $("customDates").hidden = !custom;
