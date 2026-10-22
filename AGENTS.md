@@ -300,6 +300,12 @@ COG rules (replaced the old per-store "Other costs %", which is no longer used):
   to a supplier per payee or per payment (`supplier_payees`, '' = not a supplier). Invoice check:
   expected = single prices (bundles: singles less the usual discount); "matches" = no price to decide,
   nothing unmatched/billed twice/missing, AI agrees. Orders fulfilled 14+ days ago on no invoice are listed.
+- Supplier switch (owner, 22 Oct 2026): `SUPPLIER_RULES` (setting `supplier_rules` overrides): every order placed from
+  `main_from` 2026-10-17 is Dayone's (Graypop cut at the end of 16 Oct; `_fulfilled_rows` sets the supplier); `settled`
+  {Graypop: 2026-10-16} = that supplier's orders up to the day count as paid, invoiced or not (not in estimated). All Graypop
+  invoices marked paid 22 Oct (its last two CUTEHOME invoices, #16481–#16544CH, came by WhatsApp and were uploaded by hand).
+  Dayone's new prices for orders from 17 Oct: owner to send; until then costs stay as they are. Supplier names are made
+  canonical (`_canon_supplier`: "Dayone Fulfillment Co.,Ltd" → Dayone) on upload and once at start-up for saved invoices.
 - Next steps planned: invoice upload (AI reading) with price-change flags and
   approval, supplier payments ledger from Airwallex payouts, write cost to Shopify
   "Cost per item" (needs read_products, read_inventory, write_inventory).

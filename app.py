@@ -151,6 +151,10 @@ async def lifespan(app):
     db.init()
     co.init()
     _MAIN["loop"] = asyncio.get_running_loop()
+    try:
+        await asyncio.to_thread(_canon_invoice_suppliers)
+    except Exception as e:
+        print(f"Supplier names on invoices: {e}", flush=True)
     auth.on_event = _security_event
     asyncio.create_task(_seal_loop())
     import threading
@@ -1387,8 +1391,8 @@ def _usual_suppliers() -> dict:
 PLACED_DAYS = 30      # orders not shipped yet count as owed from the day they're placed, for this long
 
 # How the business works with suppliers (owner, 22 Oct 2026; setting `supplier_rules` overrides):
-#  main / main_from: orders placed from that day that aren't on an invoice yet are owed to the main supplier
-#    (Dayone ships everything; Graypop only cross-fulfils and then sends its own invoice for that order);
+#  main / main_from: every order placed from that day is the main supplier's (Graypop was cut at the end of 16 Oct;
+#    Dayone fulfils everything from 17 Oct);
 #  settled: {supplier: day}: that supplier's orders up to and including the day are paid, invoiced or not
 #    (all Graypop orders were paid off; its last invoices came by WhatsApp, not all reached the app).
 SUPPLIER_RULES = {"main": "Dayone", "main_from": "2026-10-17", "settled": {"Graypop": "2026-10-16"}}
@@ -1399,6 +1403,24 @@ def _supplier_rules() -> dict:
         return {**SUPPLIER_RULES, **json.loads(db.get_setting("supplier_rules") or "{}")}
     except ValueError:
         return SUPPLIER_RULES
+
+
+def _canon_invoice_suppliers() -> int:
+    """Invoices saved under a longer name of a known supplier ("Dayone Fulfillment Co.,Ltd") get the known name, so
+    they count for that supplier. Runs at start-up."""
+    n, seen = 0, {}
+    for inv in db.list_invoices():
+        name = inv.get("supplier") or ""
+        if name not in seen:
+            seen[name] = _canon_supplier(name) if name else name
+        real = seen[name]
+        if name and real != name:
+            with db._conn() as con:
+                con.execute("UPDATE invoices SET supplier = ? WHERE id = ?", (real, inv["id"]))
+            n += 1
+    if n:
+        _payable_cache.clear()
+    return n
 
 
 def _canon_supplier(name: str) -> str:
@@ -1431,8 +1453,8 @@ def _fulfilled_rows(since_day: date) -> list:
     cog_desk.set_suppliers(lines, inv_lines, cog_desk.supplier_shares(inv_lines))     # cross-fulfilled orders
     rules = _supplier_rules()
     if rules.get("main") and rules.get("main_from"):
-        for l in lines:           # not on an invoice yet and placed after the switch: the main supplier ships it
-            if not l["on_invoice"] and (l.get("created") or "")[:10] >= rules["main_from"]:
+        for l in lines:           # placed after the switch: the main supplier fulfils it
+            if (l.get("created") or "")[:10] >= rules["main_from"]:
                 l["supplier"] = rules["main"]
     rows = suppliers.fulfilled_orders(lines, fulfilled, CASH_TZ)
     settled = {cog_desk.sup_key(k): v for k, v in (rules.get("settled") or {}).items()}
