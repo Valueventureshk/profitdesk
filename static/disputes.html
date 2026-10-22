@@ -28,12 +28,17 @@
   <main class="content">
     <div id="problems" class="warnings"></div>
     <section id="cards" class="cards"></section>
-    <div class="exp-periods dsp-tabs" id="tabs">
-      <button data-s="respond" class="on">Needs our response <b data-n="respond"></b></button>
-      <button data-s="waiting">Waiting on customer <b data-n="waiting"></b></button>
-      <button data-s="review">PayPal / bank deciding <b data-n="review"></b></button>
-      <button data-s="closed">Closed <b data-n="closed"></b></button>
-    </div>
+    <section class="dsp-closed" id="closedBox">
+      <div class="dsp-closed-head"><h2>Closed cases</h2>
+        <label class="dsp-month">Closed in <select id="month" class="control"></select></label></div>
+      <div class="cards" id="closedCards"></div>
+    </section>
+    <nav class="dsp-tabs" id="tabs" role="tablist">
+      <button data-s="respond" class="on" role="tab"><i class="dot respond"></i>Needs our response <b data-n="respond"></b></button>
+      <button data-s="waiting" role="tab"><i class="dot waiting"></i>Waiting on customer <b data-n="waiting"></b></button>
+      <button data-s="review" role="tab"><i class="dot review"></i>PayPal / bank deciding <b data-n="review"></b></button>
+      <button data-s="closed" role="tab"><i class="dot closed"></i>Closed <b data-n="closed"></b></button>
+    </nav>
     <section class="panel">
       <div class="table-wrap"><table class="table dsp-list" id="list"><tbody><tr><td class="hint">Reading PayPal and Airwallex…</td></tr></tbody></table></div>
     </section>

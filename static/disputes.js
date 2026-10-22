@@ -3,6 +3,7 @@
 
 const $ = (id) => document.getElementById(id);
 let data = null, state = PDUrl.get("s") || "respond", openKey = PDUrl.get("case") || null, current = null;
+let month = PDUrl.get("m") || null;
 
 function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -12,6 +13,17 @@ function money(v, cur) {
   try { return new Intl.NumberFormat(undefined, { style: "currency", currency: cur || "USD" }).format(v); }
   catch { return Number(v).toFixed(2) + " " + (cur || ""); }
 }
+function day(d) {
+  if (!d) return "—";
+  const t = new Date(d + "T00:00:00");
+  return isNaN(t) ? d : t.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+}
+function monthName(m) {
+  if (m === "all") return "All time";
+  const t = new Date(m + "-01T00:00:00");
+  return isNaN(t) ? m : t.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+}
+const perCur = (o) => Object.entries(o || {}).map(([cur, v]) => money(v, cur)).join(" · ") || money(0, "AUD");
 function when(iso) {
   if (!iso) return "";
   const t = new Date(iso);
@@ -79,21 +91,44 @@ async function load(fresh = false) {
     <div class="card"><div class="card-label">Open cases</div><div class="card-value">${data.cases.filter((c) => c.state !== "closed").length}</div><div class="card-note">${data.counts.respond || 0} need our response</div></div>
     <div class="card"><div class="card-label">Money at stake</div><div class="card-value dsp-stake">${stake}</div><div class="card-note">open cases</div></div>
     <div class="card"><div class="card-label">Due within 3 days</div><div class="card-value">${soon}</div><div class="card-note">${soon ? "answer these first" : "nothing urgent"}</div></div>`;
+  const months = Object.keys(data.closed_months || {}).filter((m) => m !== "all").sort().reverse();
+  if (!month || !(data.closed_months || {})[month]) month = months[0] || "all";
+  $("month").innerHTML = [...months, "all"].map((m) => `<option value="${m}"${m === month ? " selected" : ""}>${esc(monthName(m))}</option>`).join("");
+  drawClosed();
   drawList();
   if (openKey) openCase(openKey, false);
 }
 
+function drawClosed() {
+  const m = (data.closed_months || {})[month] || { count: 0, won_count: 0, lost_count: 0, other_count: 0, total: {}, won: {}, lost: {}, by_outcome: {} };
+  const bo = m.by_outcome || {};
+  const split = (a, b, na, nb) => [bo[a] ? `${bo[a]} ${na}` : "", bo[b] ? `${bo[b]} ${nb}` : ""].filter(Boolean).join(" · ");
+  $("closedCards").innerHTML = `
+    <div class="card"><div class="card-label">Closed cases</div><div class="card-value">${m.count}</div>
+      <div class="card-note">${esc(perCur(m.total))} in total</div></div>
+    <div class="card dsp-won"><div class="card-label">Won</div><div class="card-value dsp-stake">${esc(perCur(m.won))}</div>
+      <div class="card-note">${m.won_count} case${m.won_count === 1 ? "" : "s"}${split("won", "cancelled", "won", "withdrawn by the customer") ? " · " + esc(split("won", "cancelled", "won", "withdrawn by the customer")) : ""}</div></div>
+    <div class="card dsp-lost"><div class="card-label">Lost</div><div class="card-value dsp-stake">${esc(perCur(m.lost))}</div>
+      <div class="card-note">${m.lost_count} case${m.lost_count === 1 ? "" : "s"}${split("lost", "refunded", "lost", "refunded / accepted") ? " · " + esc(split("lost", "refunded", "lost", "refunded / accepted")) : ""}</div></div>`;
+}
+
 function drawList() {
   for (const b of document.querySelectorAll("#tabs [data-s]")) b.classList.toggle("on", b.dataset.s === state);
-  const rows = data.cases.filter((c) => c.state === state);
-  $("list").innerHTML = rows.length ? `<thead><tr><th>Due</th><th>Case</th><th>Order</th><th>Customer</th><th>Amount</th></tr></thead><tbody>
+  const onTab = document.querySelector("#tabs .on");
+  if (onTab) $("tabs").scrollLeft = onTab.offsetLeft - 8;     // phones: the chosen tab stays in view
+  const closed = state === "closed";
+  const rows = data.cases.filter((c) => c.state === state && (!closed || month === "all" || (c.closed_day || "").slice(0, 7) === month));
+  $("list").innerHTML = rows.length ? `<thead><tr><th>${closed ? "Outcome" : "Due"}</th><th>Case</th><th>Order</th><th>Customer</th><th class="num">Amount</th>
+      <th>Came in</th>${closed ? "<th>Closed</th>" : ""}</tr></thead><tbody>
     ${rows.map((c) => `<tr class="clickable${c.key === openKey ? " on" : ""}" data-key="${esc(c.key)}">
       <td>${due(c)}</td>
       <td class="name">${who(c)} ${esc(c.stage)} · ${esc(c.reason)}<span class="sub">${esc(c.account)} · ${esc(c.id)}</span></td>
       <td>${c.order_name ? `${esc(c.order_name)}<span class="sub">${esc(c.store)}</span>` : `<span class="hint">not linked</span>`}</td>
       <td>${esc(c.customer || "")}</td>
-      <td>${money(c.amount, c.currency)}</td></tr>`).join("")}</tbody>`
-    : `<tbody><tr><td class="hint">No cases here.</td></tr></tbody>`;
+      <td class="num">${money(c.amount, c.currency)}</td>
+      <td class="dsp-date">${esc(day(c.opened_day))}</td>
+      ${closed ? `<td class="dsp-date">${esc(day(c.closed_day))}</td>` : ""}</tr>`).join("")}</tbody>`
+    : `<tbody><tr><td class="hint">${closed && month !== "all" ? `No cases closed in ${esc(monthName(month))}.` : "No cases here."}</td></tr></tbody>`;
   for (const tr of $("list").querySelectorAll("[data-key]")) tr.onclick = () => openCase(tr.dataset.key);
 }
 
@@ -248,5 +283,12 @@ async function aiDraft() {
 }
 
 for (const b of document.querySelectorAll("#tabs [data-s]")) b.onclick = () => { state = b.dataset.s; PDUrl.set({ s: state === "respond" ? null : state }); drawList(); };
+$("month").onchange = () => {
+  month = $("month").value;
+  state = "closed";
+  PDUrl.set({ m: month, s: "closed" });
+  drawClosed();
+  drawList();
+};
 $("refresh").onclick = () => load(true);
 load();

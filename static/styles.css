@@ -1597,7 +1597,31 @@ tr.pc-checking td { background: rgba(245,158,11,.05); }
 .preset-picks { display: inline-flex; flex-wrap: wrap; gap: 6px; margin-left: 6px; }
 
 /* Disputes desk */
-.dsp-tabs b { font-weight: 600; margin-left: 4px; font-family: "IBM Plex Mono", monospace; }
+.dsp-tabs { position: relative; display: flex; gap: 4px; padding: 4px; margin: 18px 0 12px; border: 1px solid var(--line);
+  border-radius: 12px; background: var(--panel); overflow-x: auto; scrollbar-width: none; }
+.dsp-tabs::-webkit-scrollbar { display: none; }
+.dsp-tabs button { flex: 1 0 auto; display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  font: inherit; font-size: 13.5px; font-weight: 500; padding: 9px 14px; border: 0; border-radius: 9px; cursor: pointer;
+  background: transparent; color: var(--muted, #6b7280); white-space: nowrap; transition: background .15s, color .15s; }
+.dsp-tabs button:hover { color: var(--ink); background: color-mix(in srgb, var(--ink) 5%, transparent); }
+.dsp-tabs button.on { background: var(--ink); color: var(--panel); box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+.dsp-tabs b { font-weight: 600; font-family: "IBM Plex Mono", monospace; font-size: 12px; min-width: 22px; padding: 1px 7px;
+  border-radius: 999px; background: color-mix(in srgb, currentColor 14%, transparent); }
+.dsp-tabs b:empty { display: none; }
+.dsp-tabs .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.dsp-tabs .dot.respond { background: var(--down); }
+.dsp-tabs .dot.waiting { background: #C9932B; }
+.dsp-tabs .dot.review { background: var(--sales); }
+.dsp-tabs .dot.closed { background: var(--faint); }
+.dsp-closed { margin-top: 18px; }
+.dsp-closed-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+.dsp-closed-head h2 { font-size: 15px; margin: 0; }
+.dsp-month { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted, #6b7280); }
+.dsp-month select { width: auto; min-width: 160px; }
+html .cards .card.dsp-won .card-value { color: var(--up); }
+html .cards .card.dsp-lost .card-value { color: var(--down); }
+.dsp-date { white-space: nowrap; font-family: "IBM Plex Mono", monospace; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.dsp-list td.num, .dsp-list th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .dsp-list tr.on td { background: color-mix(in srgb, var(--spend) 8%, transparent); }
 .dsp-list .logo, .dsp-case h2 .logo { width: 16px; height: 16px; vertical-align: -3px; }
 .dsp-stake { font-size: 20px; }
@@ -2208,3 +2232,5 @@ body:not(.tab-social) .social-only, body.tab-social .mail-only { display: none; 
   .soc-page { grid-template-columns: minmax(0, 1fr); gap: 8px; }
   .soc-head { flex-wrap: wrap; }
 }
+.dsp-list td.name, .dsp-list th:nth-child(2), .dsp-list th:nth-child(3), .dsp-list th:nth-child(4), .dsp-list td:nth-child(3), .dsp-list td:nth-child(4) { text-align: left; }
+@media (max-width: 640px) { .dsp-tabs button { flex: 0 0 auto; padding: 8px 12px; font-size: 13px; } .dsp-month select { min-width: 0; } }

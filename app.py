@@ -5187,8 +5187,55 @@ async def api_disputes(refresh: int = 0):
         counts[c["state"]] += 1
         if c["state"] != "closed":
             at_stake[c["currency"]] += c["amount"]
+        c["opened_day"] = _dispute_day(c.get("created"))
+        c["closed_day"] = _dispute_day(c.get("updated")) if c["state"] == "closed" else None
     return {"cases": cases, "counts": counts, "at_stake": at_stake, "problems": problems,
+            "closed_months": _dispute_months(closed),
             "connected": any(c["provider"] in ("paypal", "airwallex") for c in db.list_cash_connections())}
+
+
+def _dispute_day(iso):
+    """A case's date on the Hong Kong clock (YYYY-MM-DD), or None."""
+    if not iso:
+        return None
+    try:
+        return datetime.fromisoformat(str(iso).replace("Z", "+00:00")).astimezone(CASH_TZ).date().isoformat()
+    except ValueError:
+        return str(iso)[:10]
+
+
+# Closed cases' outcomes as money: won = we kept it (won, or the customer cancelled); lost = it went back
+# (lost, or we accepted / refunded).
+_WON, _LOST = ("won", "cancelled"), ("lost", "refunded")
+
+
+def _dispute_months(closed: list) -> dict:
+    """Closed cases per month they closed (HK clock), plus "all": count, total, won and lost per currency."""
+    out = {}
+    for c in closed:
+        day = _dispute_day(c.get("updated")) or ""
+        for key in ("all", day[:7]):
+            if not key:
+                continue
+            m = out.setdefault(key, {"count": 0, "won_count": 0, "lost_count": 0, "other_count": 0,
+                                     "total": defaultdict(float), "won": defaultdict(float), "lost": defaultdict(float),
+                                     "by_outcome": defaultdict(int)})
+            cur, amt, oc = c["currency"], float(c["amount"] or 0), c.get("outcome") or "closed"
+            m["count"] += 1
+            m["total"][cur] += amt
+            m["by_outcome"][oc] += 1
+            if oc in _WON:
+                m["won_count"] += 1
+                m["won"][cur] += amt
+            elif oc in _LOST:
+                m["lost_count"] += 1
+                m["lost"][cur] += amt
+            else:
+                m["other_count"] += 1
+    for m in out.values():
+        for k in ("total", "won", "lost"):
+            m[k] = {cur: round(v, 2) for cur, v in m[k].items()}
+    return out
 
 
 async def _dispute_conn(key: str):
