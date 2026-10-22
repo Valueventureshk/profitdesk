@@ -84,19 +84,30 @@ function kindsNote(byKind) {
   return parts.join(" · ");
 }
 
+// Top-right of the position card: what's still owed out of it (ads, suppliers).
+function payables(s, sup) {
+  const rows = [];
+  if (s.ads_payable !== undefined && Math.abs(s.ads_payable) >= 0.5) {
+    rows.push(`<div class="pay-row" title="Ad spend Meta and Google haven't charged yet"><span>Ads</span><b>−${money(s.ads_payable)}</b>
+      ${s.ads ? `<small>Meta ${money(s.ads.meta)} · Google ${money(s.ads.google)}</small>` : ""}</div>`);
+  }
+  if (sup && Math.abs(sup.total) >= 0.5) {
+    rows.push(`<div class="pay-row" title="COG → Invoices: invoices not marked paid, plus shipped orders the supplier hasn't billed yet"><span>Suppliers</span><b>−${money(sup.total)}</b>
+      <small>${money(sup.credit)} on credit · ${money(sup.estimated)} not invoiced yet</small></div>`);
+  }
+  return rows.length ? `<div class="payables">${rows.join("")}</div>` : "";
+}
+
 function renderCards(s, sup) {
   const position = `<div class="card position" id="positionCard" role="button" tabindex="0"
       title="Open the statement">
       <div class="card-label"><span class="dot" style="background:var(--sales)"></span>Available + receivable</div>
-      <div class="card-value">${money(s.position)}${s.ads_payable !== undefined && Math.abs(s.ads_payable) >= 0.5
-        ? `<span class="ads-owed" title="Ad spend Meta and Google haven't charged yet">−${money(s.ads_payable)} ads payable</span>` : ""}</div>
+      ${payables(s, sup)}
+      <div class="card-value">${money(s.position)}</div>
       ${s.after_ads !== undefined ? `<div class="after-ads">${money(s.after_ads)} <span>after ad bills</span></div>` : ""}
-      ${sup && Math.abs(sup.total) >= 0.5 ? `<div class="after-ads">${money(sup.after)} <span>after ad bills and suppliers</span></div>
-        <div class="card-note" title="COG → Invoices: invoices not marked paid, plus shipped orders the supplier hasn't billed yet">Suppliers payable ${money(sup.total)}:
-          ${money(sup.credit)} on credit + ${money(sup.estimated)} estimated, not invoiced yet</div>` : ""}
+      ${sup && Math.abs(sup.total) >= 0.5 ? `<div class="after-ads">${money(sup.after)} <span>after ad bills and suppliers</span></div>` : ""}
       <div class="card-note">${money(s.available)} available now + ${money(s.receivable)} receivable
-        (sales settling, reserves and PayPal holds still to be released)${s.ads
-          ? ` · ad bills: Meta ${money(s.ads.meta)}, Google ${money(s.ads.google)}` : ""}</div>
+        (sales settling, reserves and PayPal holds still to be released)</div>
       <div class="card-link">View statement →</div>
     </div>`;
   const now = `<div class="card feature">
