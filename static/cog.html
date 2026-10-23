@@ -139,13 +139,15 @@
               <option value="listed">Newest listed</option><option value="cost">Highest cost</option>
             </select>
             <select id="pdkShow" class="control">
-              <option value="">All products</option><option value="unvetted">Sold, no vetted price</option>
-              <option value="vetted">Vetted</option><option value="flags">Price checks</option>
+              <option value="">All products</option><option value="unvetted">Sold, not checked by us</option>
+              <option value="auto">Filled by the app (brown)</option><option value="vetted">Checked by us (blue)</option>
+              <option value="flags">Price checks</option>
             </select>
             <label class="imp-check"><input type="checkbox" id="pdkIssues"><span>Only with tickets or complaints</span></label>
           </span>
           <span class="hint" id="pdkCount"></span></div>
-        <p class="hint pdk-tip"><b class="pdk-blue">Vetted price</b> (blue) = what the supplier should charge, set by the team; it is the
+        <p class="hint pdk-tip"><b class="pdk-blue">Vetted price</b> = what the supplier should charge: <b class="pdk-brown">brown</b> = filled by EcomVital from
+          invoices, <b class="pdk-blue">blue</b> = checked by the team. It is the
           cost of every order of the product (dashboard too). Latest cost turns <b class="pdk-red">red</b> when an invoice doesn't match it.
           Latest cost = the supplier's latest confirmed price for one item (invoices and the orders sheet).
           CS tickets are matched by the order numbers in each ticket, else the customer's latest order (best effort).

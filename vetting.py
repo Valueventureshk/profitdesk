@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS pd_vet_prices (
     from_day   TEXT    NOT NULL,        -- store day this price applies from (YYYY-MM-DD)
     tiers      TEXT    NOT NULL,        -- JSON {"pieces": usd total}, e.g. {"1": 14.5, "2": 25.1} or {"2": 16.3, "4": 30}
     offer      TEXT,                    -- JSON {"type": "qty" | "bundle", "pack": 2}
+    source     TEXT    NOT NULL DEFAULT 'team',   -- team (checked by people, blue) | auto (filled from invoices, brown)
     by         TEXT,
     at         TEXT    NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (store_id, product_id, from_day)
@@ -58,6 +59,8 @@ MAX_PIECES = 50
 def init():
     with db._conn() as con:
         con.executescript(SCHEMA)
+        if "source" not in {r[1] for r in con.execute("PRAGMA table_info(pd_vet_prices)")}:
+            con.execute("ALTER TABLE pd_vet_prices ADD COLUMN source TEXT NOT NULL DEFAULT 'team'")
 
 
 def policy(store_id: int) -> str:
@@ -99,11 +102,11 @@ def load() -> dict:
     init()
     out = defaultdict(list)
     with db._conn() as con:
-        for r in con.execute("SELECT store_id, product_id, from_day, tiers, offer, by, at FROM pd_vet_prices"
+        for r in con.execute("SELECT store_id, product_id, from_day, tiers, offer, by, at, source FROM pd_vet_prices"
                              " ORDER BY from_day, at"):
             out[(r[0], r[1])].append({"from": r[2], "tiers": json.loads(r[3] or "{}"),
                                       "offer": json.loads(r[4] or "{}") or {"type": "qty", "pack": 1},
-                                      "by": r[5], "at": r[6]})
+                                      "by": r[5], "at": r[6], "source": r[7] or "team"})
     return dict(out)
 
 
@@ -120,20 +123,24 @@ def latest(versions: list):
     return versions[-1] if versions else None
 
 
-def save(store_id: int, product_id: str, tiers: dict, offer: dict, from_day: str, by: str) -> dict:
+def save(store_id: int, product_id: str, tiers: dict, offer: dict, from_day: str, by: str, source: str = "team") -> dict:
     tiers = clean_tiers(tiers)
     offer = clean_offer(offer, tiers)
     init()
     with db._conn() as con:
+        if source == "team":                # the team's price takes over: the app's guesses for this product go
+            con.execute("DELETE FROM pd_vet_prices WHERE store_id = ? AND product_id = ? AND source = 'auto'",
+                        (store_id, product_id))
         if tiers:
-            con.execute("INSERT INTO pd_vet_prices (store_id, product_id, from_day, tiers, offer, by, at)"
-                        " VALUES (?,?,?,?,?,?,datetime('now')) ON CONFLICT(store_id, product_id, from_day)"
-                        " DO UPDATE SET tiers = excluded.tiers, offer = excluded.offer, by = excluded.by, at = excluded.at",
-                        (store_id, product_id, from_day, json.dumps(tiers), json.dumps(offer), by))
+            con.execute("INSERT INTO pd_vet_prices (store_id, product_id, from_day, tiers, offer, by, at, source)"
+                        " VALUES (?,?,?,?,?,?,datetime('now'),?) ON CONFLICT(store_id, product_id, from_day)"
+                        " DO UPDATE SET tiers = excluded.tiers, offer = excluded.offer, by = excluded.by, at = excluded.at,"
+                        " source = excluded.source",
+                        (store_id, product_id, from_day, json.dumps(tiers), json.dumps(offer), by, source))
         else:
             con.execute("DELETE FROM pd_vet_prices WHERE store_id = ? AND product_id = ? AND from_day = ?",
                         (store_id, product_id, from_day))
-    return {"tiers": tiers, "offer": offer, "from": from_day}
+    return {"tiers": tiers, "offer": offer, "from": from_day, "source": source}
 
 
 def base(tiers: dict):
@@ -182,13 +189,14 @@ def learn(lines: list, inv_lines: list, vetted: dict, policies: dict, starts: di
     from cog import order_key
     from products_desk import pid_of
     orders = defaultdict(lambda: defaultdict(int))      # (store, order key) -> {pid: pieces}
-    names, days = {}, {}
+    names, days, titles = {}, {}, {}
     for l in lines:
         if l.get("cancelled") or not l.get("product_id"):
             continue
         k = (l["store_id"], order_key(l["order_name"]))
         orders[k][pid_of(l["product_id"])] += max(int(l.get("quantity") or 1), 1)
         names[k], days[k] = l["order_name"], l.get("day")
+        titles[(l["store_id"], pid_of(l["product_id"]))] = l.get("product") or ""
     charged, inv = defaultdict(float), {}
     for l in inv_lines:
         if l.get("status") in DROP or not l.get("store_id") or l.get("ai_check") == "review":
@@ -208,8 +216,9 @@ def learn(lines: list, inv_lines: list, vetted: dict, policies: dict, starts: di
         d = (inv[k].get("date") or days.get(k) or "")
         cur = sug[(k[0], pid)].get(q)
         if not cur or d > cur[0]:
-            sug[(k[0], pid)][q] = (d, round(charged[k], 2))
+            sug[(k[0], pid)][q] = (d, round(charged[k], 2), days.get(k) or "")
     suggested = {key: {str(q): v[1] for q, v in sorted(t.items())} for key, t in sug.items()}
+    sug_day = {key: max(v[2] for v in t.values()) for key, t in sug.items()}     # newest order behind the suggestion
 
     def tiers_on(sid, pid, day):
         v = active(vetted.get((sid, pid)), day)
@@ -252,7 +261,38 @@ def learn(lines: list, inv_lines: list, vetted: dict, policies: dict, starts: di
                           "products": list(its), "pieces": sum(its.values()), "charged": round(charged[k], 2),
                           "expected": round(exp, 2), "gap": gap, "invoice": inv[k]})
     flags.sort(key=lambda f: (f["invoice"].get("date") or "", f["order"]), reverse=True)
-    return {"per_item": per_item, "suggested": suggested, "flags": flags}
+    return {"per_item": per_item, "suggested": suggested, "suggested_day": sug_day, "titles": titles, "flags": flags}
+
+
+def auto_fill(learned: dict, vetted: dict) -> list:
+    """Brown prices: every product with invoice prices and no price checked by the team gets the app's price from its
+    latest invoices, applying from that order's day (older orders aren't re-checked). Quantities seen later are added
+    to the app's price; prices already filled aren't changed, so a later different invoice becomes a price check.
+    Returns [(store id, product id, from day)] that were filled or extended."""
+    from cog import pack
+    done = []
+    for key, tiers in learned["suggested"].items():
+        sid, pid = key
+        if not pid.isdigit() or not tiers:
+            continue
+        vs = vetted.get(key) or []
+        if any(v.get("source") == "team" for v in vs):
+            continue                                    # the team has checked this product: leave it
+        last = latest(vs)
+        if last:
+            add = {q: p for q, p in tiers.items() if q not in last["tiers"]}
+            if not add:
+                continue
+            save(sid, pid, {**last["tiers"], **add}, last["offer"], last["from"], "EcomVital", "auto")
+            done.append((sid, pid, last["from"]))
+            continue
+        n = pack(learned["titles"].get(key) or "")
+        offer = {"type": "bundle", "pack": n} if n > 1 else {"type": "qty", "pack": 1}
+        day = learned["suggested_day"].get(key) or ""
+        if day:
+            save(sid, pid, tiers, offer, day, "EcomVital", "auto")
+            done.append((sid, pid, day))
+    return done
 
 
 def round95(x: float) -> float:

@@ -149,8 +149,8 @@ function drawPdk() {
   const show = $("pdkShow").value;
   let rows = pdk.rows.filter((r) => (!q || r.title.toLowerCase().includes(q) || (r.supplier || "").toLowerCase().includes(q)
     || (r.material || "").toLowerCase().includes(q)) && (!issues || r.tickets || r.notes.complaints)
-    && (!show || (show === "unvetted" ? !Object.keys(r.vetted || {}).length && r.units > 0 && /^\d+$/.test(r.pid)
-      : show === "vetted" ? Object.keys(r.vetted || {}).length > 0 : r.flags > 0)));
+    && (!show || (show === "unvetted" ? r.vetted_source !== "team" && r.units > 0 && /^\d+$/.test(r.pid)
+      : show === "vetted" ? r.vetted_source === "team" : show === "auto" ? r.vetted_source === "auto" : r.flags > 0)));
   const key = { units: (r) => r.units, tickets: (r) => r.tickets, complaints: (r) => r.notes.complaints,
     recent: (r) => r.last_order || "", listed: (r) => r.listed || "", cost: (r) => r.cost || 0 }[sort];
   rows = rows.slice().sort((a, b) => (key(a) < key(b) ? 1 : key(a) > key(b) ? -1 : b.units - a.units));

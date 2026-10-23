@@ -2305,3 +2305,5 @@ body:not(.tab-social) .social-only, body.tab-social .mail-only { display: none; 
 .vet-row label[hidden] { display: none; }
 .vet-h4 { margin: 14px 0 6px; font-size: 13px; }
 .vet-hist div { font-size: 12.5px; padding: 4px 0; border-top: 1px solid var(--line); }
+.pdk-brown, .pdk-brown a { color: #9A5B1E !important; }
+[data-theme="dark"] .pdk-brown { color: #D9A066 !important; }

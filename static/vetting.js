@@ -19,11 +19,13 @@
       <div class="pdk-card"><span>Average COG % <em>all time</em></span>
         <b class="${p.avg_cog_pct === null ? "" : over ? "pdk-red" : "pdk-ok"}">${pct(p.avg_cog_pct)}</b>
         <small>target ${p.target}% of the selling price</small></div>
-      <button class="pdk-card click" data-show="unvetted"><span>Sold, no vetted price</span>
+      <button class="pdk-card click" data-show="unvetted"><span>Sold, not checked by us</span>
         <b class="${p.unvetted ? "pdk-warn" : "pdk-ok"}">${p.unvetted}</b>
-        <small>${p.unvetted ? "ask the supplier for the real price (and bundle / qty prices)" : "every sold product is vetted"}</small></button>
-      <button class="pdk-card click" data-show="vetted"><span>Vetted products</span><b class="pdk-blue">${p.vetted}</b>
-        <small>their cost is the vetted price</small></button>
+        <small>${p.unvetted ? `confirm with the supplier (incl. bundle / qty prices)${p.no_price ? ` · ${p.no_price} have no price at all` : ""}` : "every sold product is checked"}</small></button>
+      <button class="pdk-card click" data-show="auto"><span>Filled by the app</span><b class="pdk-brown">${p.auto || 0}</b>
+        <small>from invoices, until you check them</small></button>
+      <button class="pdk-card click" data-show="vetted"><span>Checked by us</span><b class="pdk-blue">${p.vetted}</b>
+        <small>confirmed prices</small></button>
       <button class="pdk-card click" data-flagsheet><span>Price checks</span>
         <b class="${p.flags ? "pdk-red" : "pdk-ok"}">${p.flags}</b>
         <small>${p.flags ? "invoices that don't match the vetted price" : "invoices match the vetted prices"}</small></button>
@@ -39,16 +41,18 @@
     const keys = [...new Set([...Object.keys(v), ...Object.keys(s)])].map(Number).sort((a, b) => a - b);
     const has = Object.keys(v).length > 0;
     const first = has ? Math.min(...Object.keys(v).map(Number)) : null;
-    const vet = has ? `<b class="pdk-blue">${money(v[first], "USD")}</b><span class="sub">${esc(pieceName(first, r))} · from ${esc(r.vetted_from || "")}</span>`
-      : `<span class="hint">not vetted</span>`;
+    const col = r.vetted_source === "team" ? "pdk-blue" : "pdk-brown";
+    const vet = has ? `<b class="${col}">${money(v[first], "USD")}</b><span class="sub">${esc(pieceName(first, r))} · from ${esc(r.vetted_from || "")}${r.vetted_source === "auto" ? " · by the app" : ""}</span>`
+      : `<span class="hint">no price yet</span>`;
     const dd = keys.length ? `<details class="pdk-dd"><summary>${r.offer && r.offer.type === "bundle" ? `bundle of ${r.offer.pack}` : "Buy 1–4"}</summary>${keys.map((k) =>
-      `<span class="sub">${esc(pieceName(k, r))}: ${v[k] ? `<b class="pdk-blue">${money(v[k], "USD")}</b>` : `<span title="from invoices, not vetted">${money(s[k], "USD")} (invoice)</span>`}</span>`).join("")}</details>` : "";
+      `<span class="sub">${esc(pieceName(k, r))}: ${v[k] ? `<b class="${col}">${money(v[k], "USD")}</b>` : `<span title="from invoices, not vetted">${money(s[k], "USD")} (invoice)</span>`}</span>`).join("")}</details>` : "";
     const cur = r.price_currency;
     const guide = r.recommended
       ? (Math.abs(r.price_change) < 0.5 ? `<span class="sub pdk-ok">on target</span>`
         : `<span class="sub ${r.price_change > 0 ? "pdk-warn" : "pdk-ok"}">${r.price_change > 0 ? "raise" : "lower"} by ${money(Math.abs(r.price_change), cur)}</span>`)
       : "";
     return `<td class="num"><a href="#" data-vet="${i}" title="Set the vetted prices">${vet}</a>${dd}
+        ${r.vetted_source === "auto" ? `<a href="#" class="sub" data-confirm="${i}" data-write-only>✓ confirm</a>` : ""}
         <a href="#" class="sub" data-vet="${i}" data-write-only>${has ? "edit / new price" : "set prices"}</a></td>
       <td class="num">${r.cog_pct !== null && r.cog_pct !== undefined ? `<b class="${r.cog_pct > 29 ? "pdk-warn" : ""}">${r.cog_pct}%</b>
         <span class="sub">${{ vetted: "vetted", invoice: "invoiced", latest: "latest" }[r.base_from] || ""} cost${r.base_pieces > 1 ? ` of ${r.base_pieces} pcs (one sale)` : ""}
@@ -93,8 +97,8 @@
       <div class="vet-actions"><button class="btn btn-primary" data-save>Save vetted prices</button>
         ${Object.keys(s).length ? `<button class="btn btn-ghost" data-fill>Use the invoice prices</button>` : ""}</div>
       ${(r.vetted_history || []).length ? `<h4 class="vet-h4">Prices set</h4><div class="vet-hist">${r.vetted_history.map((h) =>
-        `<div><b>from ${esc(h.from)}</b> ${Object.entries(h.tiers).map(([k, x]) => `${esc(pieceName(+k, r))} ${money(x, "USD")}`).join(" · ")}
-          <span class="hint">${esc((h.by || "").split("@")[0])}</span> <a href="#" data-del="${esc(h.from)}" data-write-only>remove</a></div>`).join("")}</div>` : ""}`);
+        `<div><b class="${h.source === "team" ? "pdk-blue" : "pdk-brown"}">from ${esc(h.from)}</b> ${Object.entries(h.tiers).map(([k, x]) => `${esc(pieceName(+k, r))} ${money(x, "USD")}`).join(" · ")}
+          <span class="hint">${h.source === "team" ? esc((h.by || "").split("@")[0]) : "filled by the app"}</span> <a href="#" data-del="${esc(h.from)}" data-write-only>remove</a></div>`).join("")}</div>` : ""}`);
     // 4 boxes by default (Buy 1-4, or 1-4 sales of a bundle); more can be added, and saved extra ones always show
     const extra = new Set([...Object.keys(v), ...Object.keys(s)].map(Number));
     const keysFor = () => {
@@ -214,7 +218,19 @@
     };
   }
 
-  $("pdk").addEventListener("click", (e) => {
+  $("pdk").addEventListener("click", async (e) => {
+    const c = e.target.closest("[data-confirm]");
+    if (c) {
+      e.preventDefault(); e.stopPropagation();
+      const r = pdk.rows[+c.dataset.confirm];
+      if (!confirm(`Confirm the app's prices for ${r.title} as checked (they turn blue)?`)) return;
+      try {
+        await post("/api/cog/pdesk/vetted", { store: r.store_id, pid: r.pid, tiers: r.vetted, offer: r.offer, from: r.vetted_from }, "PUT");
+        toast("Confirmed.");
+        loadPdk(true, true);
+      } catch (err) { toast(err.message, true); }
+      return;
+    }
     const v = e.target.closest("[data-vet]");
     if (v) { e.preventDefault(); e.stopPropagation(); editVetted(pdk.rows[+v.dataset.vet]); return; }
     const a = e.target.closest("[data-apply]");

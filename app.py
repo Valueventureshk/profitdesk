@@ -160,6 +160,7 @@ async def lifespan(app):
         print(f"Supplier names on invoices: {e}", flush=True)
     auth.on_event = _security_event
     asyncio.create_task(_seal_loop())
+    asyncio.create_task(_vet_loop())
     import threading
     asyncio.create_task(_heartbeat())
     threading.Thread(target=_watchdog, args=(threading.get_ident(),), daemon=True).start()
@@ -2686,8 +2687,13 @@ async def _vet_learned(force: bool = False) -> dict:
         vetted = vetting.load()
         policies = {x["id"]: vetting.policy(x["id"]) for x in db.list_stores()}
         starts = {x["id"]: vetting.checks_from(x["id"]) for x in db.list_stores()}
-        got = vetting.learn(lines, db.invoice_lines(), vetted, policies, starts)
-        got["starts"] = starts
+        invs = db.invoice_lines()
+        got = vetting.learn(lines, invs, vetted, policies, starts)
+        filled = vetting.auto_fill(got, vetted)          # brown prices for products the team hasn't checked
+        if filled:
+            vetted = vetting.load()
+            got = vetting.learn(lines, invs, vetted, policies, starts)
+        got["starts"], got["filled"] = starts, filled
         changed = False
         for sid, d in got["per_item"].items():
             key = f"supplier_per_item:{sid}"
@@ -2699,10 +2705,34 @@ async def _vet_learned(force: bool = False) -> dict:
             got["marks"] = {(r[0], r[1]): dict(r) for r in con.execute("SELECT * FROM pd_flag_marks")}
         return got, changed
     got, changed = await asyncio.to_thread(work)
-    if changed:
+    if changed or got.get("filled"):
         _cog.pop("catalog", None)
+    if got.get("filled"):                               # the new brown prices cost those products' orders from their day
+        by_store = defaultdict(list)
+        for sid, pid, day in got["filled"]:
+            by_store[sid].append((pid, day))
+        for sid, items in by_store.items():
+            with db._conn() as con:
+                names = set()
+                for pid, day in items:
+                    names |= {r[0] for r in con.execute("SELECT DISTINCT order_name FROM cog_lines WHERE store_id = ?"
+                                                        " AND product_id LIKE ? AND day >= ?", (sid, f"%/{pid}", day))}
+            if names:
+                asyncio.create_task(_recost(sid, names))
+        print(f"Vetted prices filled from invoices: {len(got['filled'])} products", flush=True)
     _vet_learn.update(at=time.time(), data=got)
     return got
+
+
+async def _vet_loop():
+    """Every 30 minutes: brown prices for products with new invoices, and fresh price checks."""
+    await asyncio.sleep(240)
+    while True:
+        try:
+            await _vet_learned(force=True)
+        except Exception as e:
+            print(f"Vetted prices job failed: {e}", flush=True)
+        await asyncio.sleep(1800)
 
 
 def _vet_open_flags(learned: dict) -> list:
@@ -2729,7 +2759,9 @@ async def _vet_extras(stores: list, products: list, lines_all: list, sold_ever: 
         t = cur["tiers"] if cur else {}
         r["vetted"] = t
         r["vetted_from"] = cur["from"] if cur else None
-        r["vetted_history"] = [{"from": v["from"], "tiers": v["tiers"], "by": v["by"]} for v in reversed(vs)][:10]
+        r["vetted_source"] = cur["source"] if cur else None
+        r["vetted_history"] = [{"from": v["from"], "tiers": v["tiers"], "by": v["by"], "source": v["source"]}
+                               for v in reversed(vs)][:10]
         r["pack"] = cog.pack(r["title"])
         r["offer"] = cur["offer"] if cur else ({"type": "bundle", "pack": r["pack"]} if r["pack"] > 1 else {"type": "qty", "pack": 1})
         r["suggested"] = learned["suggested"].get(key) or {}
@@ -2757,9 +2789,12 @@ async def _vet_extras(stores: list, products: list, lines_all: list, sold_ever: 
         if l["store_id"] in sids and not l["cancelled"] and l.get("cost_usd") is not None and (l.get("subtotal") or 0) > 0:
             cog_usd += l["cost_usd"]
             sales_usd += l["subtotal"] / (rates.get(l["store_id"]) or 1)
-    unvetted = [k for k in sold_ever if not vetted.get(k)]
+    src = {k: (vetting.latest(vetted.get(k)) or {}).get("source") for k in sold_ever}
     return {"avg_cog_pct": round(cog_usd / sales_usd * 100, 1) if sales_usd else None,
-            "unvetted": len(unvetted), "vetted": sum(1 for k in sold_ever if vetted.get(k)),
+            "unvetted": sum(1 for k in sold_ever if src[k] != "team"),            # not checked by the team yet
+            "no_price": sum(1 for k in sold_ever if not src[k]),
+            "auto": sum(1 for k in sold_ever if src[k] == "auto"),
+            "vetted": sum(1 for k in sold_ever if src[k] == "team"),
             "starts": {str(x["id"]): (learned.get("starts") or {}).get(x["id"], "") for x in stores},
             "flags": sum(1 for f in open_flags if f["store_id"] in sids),
             "policies": {str(x["id"]): learned["policies"].get(x["id"], "per_item") for x in stores},
