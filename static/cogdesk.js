@@ -82,15 +82,17 @@
     }).join("") : `<tr><td colspan="8" class="cd-empty">${cd.orders.length ? "No orders match." : "No orders costed for this period yet."}</td></tr>`;
   }
 
-  // Subtotal = the items before discounts (Shopify), then the discount and why, and staff-made draft orders
+  // Bold: what the customer paid (Shopify order total). Grey under it: the items before discount, the discount
+  // and why, shipping; and a tag for staff-made draft orders (replacements).
   function subtotal(o) {
     const s = o.shop;
-    if (!s) return usd(o.sale);
-    let h = `<b>${usd(s.subtotal)}</b>`;
+    if (!s) return `<b>${usd(o.sale)}</b>`;
+    let h = `<b>${usd(s.total)}</b>`;
     if (s.discount >= 0.01) {
-      h += `<span class="cd-disc">−${usd(s.discount)} discount</span>`;
-      if (s.discount_names && s.discount_names.length) h += `<span class="sub">${esc(s.discount_names.join(", "))}</span>`;
+      h += `<span class="cd-disc">${usd(s.subtotal)} before discount</span>`;
+      h += `<span class="cd-disc">−${usd(s.discount)}${s.discount_names && s.discount_names.length ? " · " + esc(s.discount_names.join(", ")) : " discount"}</span>`;
     }
+    if (s.shipping >= 0.01) h += `<span class="cd-disc">incl. ${usd(s.shipping)} shipping</span>`;
     if (s.draft) h += `<span class="cd-tag t-draft" title="Made by staff in Shopify (Draft Orders), e.g. a replacement">Staff draft order</span>`;
     return h;
   }
