@@ -396,14 +396,14 @@ function drawSetup() {
     <p class="hint trk-pad">The EcomVital pixel is a Shopify web pixel inside each store's EcomVital app (like the wetracked.io Connect app).
       Shopify only runs it for shoppers who allowed tracking in the store's cookie banner. <b>Watch only</b>: tracks and reports, sends nothing
       to Meta, so it can run next to wetracked.io without double counting.</p>
-    <div class="table-wrap"><table class="table"><thead><tr><th>Store</th><th>Pixel</th><th>Last 24 h</th><th>Meta pixel ID</th><th>Conversions API token</th><th>Mode</th></tr></thead><tbody>
+    <div class="table-wrap"><table class="table"><thead><tr><th>Store</th><th>Pixel</th><th>Last 24 h</th><th>Meta pixel ID</th><th>Conversions API token</th><th>Send to Meta</th></tr></thead><tbody>
     ${stores.map((s) => { const d = s.health.day || {}; return `<tr data-s="${s.id}"><td class="name">${esc(s.name)}<span class="sub">${esc(s.domain)}</span></td>
       <td>${s.installed ? `<span class="src invoice">On</span> <button class="btn btn-sm btn-ghost" data-install>Re-install</button>` : `<button class="btn btn-sm btn-primary" data-install>Switch on</button>`}</td>
       <td class="hint">${s.health.last ? `${d.page_viewed || 0} views · ${d.product_added_to_cart || 0} carts · ${d.checkout_started || 0} checkouts · ${d.checkout_completed || 0} orders` : "—"}</td>
       <td><input class="control trk-in" data-f="meta_pixel" value="${esc(s.cfg.meta_pixel)}" placeholder="Dataset ID"></td>
       <td><input class="control trk-in" data-f="meta_token" type="password" placeholder="${s.cfg.has_token ? "Saved · paste to replace" : "Paste token"}"></td>
-      <td><select class="control" data-f="mode"><option value="watch"${s.cfg.mode === "watch" ? " selected" : ""}>Watch only</option>
-        <option value="send" disabled>Send to Meta (next)</option></select></td></tr>`; }).join("")}</tbody></table></div>`;
+      <td><button class="btn btn-sm btn-ghost" data-meta="${s.id}">Meta sending…</button></td></tr>`; }).join("")}</tbody></table></div>`;
+  for (const b of $("setup").querySelectorAll("[data-meta]")) b.onclick = () => { mStore = b.dataset.meta; $("mpanel").hidden = false; drawMeta(); $("mpanel").scrollIntoView({ behavior: "smooth" }); };
   $("setupClose").onclick = () => { $("setup").hidden = true; };
   for (const b of $("setup").querySelectorAll("[data-install]")) b.onclick = async () => {
     b.disabled = true;
@@ -535,6 +535,100 @@ async function drawOurs() {
   $("gMode").onchange = () => save({ mode: $("gMode").value });
 }
 
+/* ------------------------------------------------ EcomVital → Meta (Conversions API) */
+let mStore = null;
+const MMODE = {
+  off: ["Off", "Nothing is sent to Meta."],
+  test: ["Test", "Sends to the store's pixel with Meta's test code: the events show only in Events Manager → Test events and are never counted. Safe to try any time."],
+  shadow: ["Parallel run", "Sends to a separate dataset that no campaign uses, so you can compare it with Shopify's Meta app for a week without counting anything twice."],
+  live: ["Live", "Sends to the pixel your campaigns optimise on. Use it from the day Shopify's Meta app stops sending (otherwise Meta may count purchases twice)."],
+};
+async function drawMeta() {
+  const box = $("mpanel");
+  mStore = mStore || String(state.store || (stores[0] || {}).id || "");
+  box.innerHTML = `<div class="panel-head"><h2>EcomVital → Meta (Conversions API)</h2>
+      <span><select class="control" id="mStore">${stores.map((s) => `<option value="${s.id}"${String(s.id) === mStore ? " selected" : ""}>${esc(s.name)}</option>`).join("")}</select>
+      <button class="btn btn-sm btn-ghost" id="mClose">Close</button></span></div><div id="mBody"><p class="hint trk-pad">Loading…</p></div>`;
+  $("mClose").onclick = () => { box.hidden = true; };
+  $("mStore").onchange = () => { mStore = $("mStore").value; drawMeta(); };
+  const mine = mStore;
+  let d;
+  try { d = await api(`/api/tracking/meta/status?store=${mStore}`); } catch (e) { $("mBody").innerHTML = `<p class="hint trk-pad">${esc(e.message)}</p>`; return; }
+  if (mine !== mStore) return;
+  const sent = Object.entries(d.sent_24h);
+  const tok = d.token === "pasted" ? "a pasted Conversions API token" : d.token === "connection" ? "your Meta connection (Settings)" : "";
+  $("mBody").innerHTML = `
+    <p class="hint trk-pad">EcomVital sends each page view, product view, add to cart, checkout, payment step and purchase it tracks to Meta from the server,
+      with what helps Meta match them to people: hashed email / phone, IP, browser, Meta's click cookies. Purchases from orders the browser missed go too.
+      Keep Shopify's Facebook &amp; Instagram app on until you decide to rely on this.</p>
+    <div class="mstate trk-pad"><span class="src ${d.mode === "off" ? "new" : d.mode === "live" ? "invoice" : "estimate"}">${MMODE[d.mode][0]}</span>
+      ${d.mode === "off" ? "" : d.pixel ? `Sending to dataset <b>${esc(d.pixel)}</b>${d.mode === "test" ? ` with test code <b>${esc(d.test_code)}</b>` : ""} · token: ${esc(tok || "none")}
+        ${d.started_at ? ` · since ${new Date(d.started_at).toLocaleString()}` : ""}` : `<span class="neg">Not sending: ${esc(d.missing)}</span>`}
+      ${d.events_manager ? ` · <a href="${esc(d.events_manager)}" target="_blank">Events Manager ↗</a>` : ""}</div>
+    ${d.mode !== "off" ? `<div class="gstats trk-pad">
+      ${sent.length ? sent.map(([k, v]) => `<span><b>${v}</b> ${esc(k)}</span>`).join("") : `<span>Nothing sent yet in the last 24 h${d.waiting ? "" : " (new events go within a minute)"}</span>`}
+      <span>Meta took <b>${d.received_24h}</b></span>${d.errors_24h ? `<span class="neg">${d.errors_24h} refused batch${d.errors_24h === 1 ? "" : "es"}</span>` : ""}
+      ${d.waiting ? `<span>${d.waiting} new event${d.waiting === 1 ? "" : "s"} to look at</span>` : ""}</div>` : ""}
+    <div class="mgrid trk-pad" data-manage-only>
+      <label>Store's Meta pixel (dataset) ID<input class="control" id="mMain" value="${esc(d.main_pixel)}" placeholder="e.g. 681154293413634"></label>
+      <label>Token<input class="control" id="mTok" type="password" placeholder="${tok ? `Using ${tok} · paste to replace` : "Paste a Conversions API token"}"></label>
+      <label>Mode<select class="control" id="mMode">${d.choices.modes.map((m) => `<option value="${m}"${m === d.mode ? " selected" : ""}>${MMODE[m][0]}</option>`).join("")}</select></label>
+      <label id="mTestL">Test code (Events Manager → Test events)<input class="control" id="mTest" value="${esc(d.test_code)}" placeholder="TEST12345"></label>
+      <label id="mShadowL">Separate dataset for the parallel run<input class="control" id="mShadow" value="${esc(d.shadow_pixel)}" placeholder="a new dataset's ID"></label>
+    </div>
+    <p class="hint trk-pad" id="mModeHint"></p>
+    <div class="trk-pad mevents" data-manage-only><b>Events to send:</b> ${d.choices.events.map((e) => `<label><input type="checkbox" data-mev="${e}"${d.events.includes(e) ? " checked" : ""}> ${e}</label>`).join("")}</div>
+    <div class="trk-pad row-actions" style="justify-content:flex-start" data-manage-only>
+      <button class="btn btn-primary" id="mSave">Save</button>
+      <button class="btn btn-ghost" id="mSend"${d.mode === "off" ? " disabled" : ""}>Send now</button>
+      <button class="btn btn-ghost" id="mPrev">What would be sent?</button></div>
+    <div id="mPreview"></div>
+    ${d.log.length ? `<details class="trk-pad"><summary class="hint">Last batches sent</summary><div class="table-wrap"><table class="table"><thead><tr><th>When</th><th>Mode</th><th>Dataset</th><th>Events</th><th>Meta took</th><th></th></tr></thead><tbody>
+      ${d.log.map((l) => `<tr><td>${new Date(l.at).toLocaleString()}</td><td>${esc(MMODE[l.mode] ? MMODE[l.mode][0] : l.mode || "")}</td><td>${esc(l.pixel_id || "")}</td>
+        <td>${Object.entries(l.counts || {}).map(([k, v]) => `${v} ${esc(k)}`).join(", ") || l.sent}</td><td class="num">${l.received}</td>
+        <td>${l.error ? `<span class="neg">${esc(l.error)}</span>` : ""}</td></tr>`).join("")}</tbody></table></div></details>` : ""}`;
+  const hint = () => {
+    const m = $("mMode").value;
+    $("mModeHint").textContent = MMODE[m][1];
+    $("mTestL").hidden = m !== "test";
+    $("mShadowL").hidden = m !== "shadow";
+  };
+  hint();
+  $("mMode").onchange = hint;
+  $("mSave").onclick = async () => {
+    const mode = $("mMode").value;
+    const body = { main_pixel: $("mMain").value, mode, test_code: $("mTest").value, shadow_pixel: $("mShadow").value,
+      events: [...$("mBody").querySelectorAll("[data-mev]")].filter((x) => x.checked).map((x) => x.dataset.mev) };
+    if ($("mTok").value.trim()) body.meta_token = $("mTok").value.trim();
+    if (mode === "live" && d.mode !== "live") {
+      if (!confirm("Live sends every event to the pixel your campaigns optimise on.\n\nOnly do this once Shopify's Facebook & Instagram app has stopped sending data for this store, or Meta may count purchases twice.\n\nGo live?")) return;
+      body.confirm = "live";
+    }
+    try { await api(`/api/tracking/meta/settings/${mStore}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+          toast(mode === "off" ? "Saved. Nothing is sent." : "Saved. New events go to Meta within a minute."); drawMeta(); }
+    catch (e) { toast(e.message, true); }
+  };
+  $("mSend").onclick = async () => {
+    $("mSend").disabled = true; $("mSend").textContent = "Sending…";
+    try { const r = await api(`/api/tracking/meta/send/${mStore}`, { method: "POST" });
+          toast(r.error ? r.error : r.skipped ? `Not sent: ${r.skipped}` : `Sent ${r.sent || 0} · Meta took ${r.received || 0}`, !!(r.error || r.skipped)); }
+    catch (e) { toast(e.message, true); }
+    drawMeta();
+  };
+  $("mPrev").onclick = async () => {
+    $("mPreview").innerHTML = '<p class="hint trk-pad">Looking…</p>';
+    try {
+      const r = await api(`/api/tracking/meta/preview?store=${mStore}`);
+      const lbl = { em: "email", ph: "phone", client_ip_address: "IP", client_user_agent: "browser", fbp: "fbp cookie", fbc: "ad click (fbc)", external_id: "visitor id" };
+      $("mPreview").innerHTML = r.events.length ? `<div class="table-wrap trk-pad"><p class="hint">The latest tracked events as Meta would get them (nothing was sent; values hidden):</p>
+        <table class="table"><thead><tr><th>Event</th><th>Time</th><th>Value</th><th>Matching details it carries</th></tr></thead><tbody>
+        ${r.events.slice().reverse().map((e) => `<tr><td>${esc(e.event)}${e.source !== "website" ? ` <span class="hint">(from the order)</span>` : ""}</td><td>${new Date(e.time).toLocaleString()}</td>
+          <td class="num">${e.value != null ? `${esc(e.currency || "")} ${e.value.toFixed(2)}` : "—"}</td><td>${e.matching.map((k) => lbl[k] || k).join(", ")}</td></tr>`).join("")}</tbody></table></div>`
+        : '<p class="hint trk-pad">No recent events for this store.</p>';
+    } catch (e) { $("mPreview").innerHTML = `<p class="hint trk-pad neg">${esc(e.message)}</p>`; }
+  };
+}
+
 /* ------------------------------------------------ wiring */
 $("storeBtn").onclick = () => menu($("storeMenu"), stores.map((s) => [s.id, `${s.name} · ${s.domain}${s.installed ? "" : " (pixel off)"}`]), state.store, (v) => { state.store = v; state.cur = ""; load(); });
 $("rangeBtn").onclick = () => menu($("rangeMenu"), RANGES, state.range, (v) => {
@@ -552,6 +646,7 @@ $("q").oninput = () => { page = 0; if (data) draw(); };
 $("rows").onchange = () => { page = 0; $("rowsName").textContent = $("rows").value; if (data) draw(); };
 $("noteX").onclick = () => { $("note").hidden = true; try { localStorage.setItem("pdTrkNote", "off"); } catch { /* private */ } };
 $("gBtn").onclick = () => { $("gpanel").hidden = !$("gpanel").hidden; if (!$("gpanel").hidden) drawGoogle(); };
+$("mBtn").onclick = () => { $("mpanel").hidden = !$("mpanel").hidden; if (!$("mpanel").hidden) drawMeta(); };
 $("setupBtn").onclick = () => { $("setup").hidden = !$("setup").hidden; if (!$("setup").hidden) drawSetup(); };
 $("evClose").onclick = () => { $("evModal").hidden = true; };
 for (const m of ["evModal", "colsModal"]) $(m).onclick = (e) => { if (e.target === $(m)) $(m).hidden = true; };

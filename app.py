@@ -78,6 +78,7 @@ import slack_client
 import meta_manage
 import meta_cuts
 import bulk_launcher
+import meta_capi
 import ads_launcher
 import meta_rules
 import meta_brain
@@ -173,6 +174,7 @@ async def lifespan(app):
     asyncio.create_task(_time_loop())
     asyncio.create_task(_up_loop())
     asyncio.create_task(_gconv_loop())
+    asyncio.create_task(_capi_loop())
     asyncio.create_task(_px_order_loop())
     asyncio.create_task(_store_task_remind_loop())
     asyncio.create_task(_assist_loop())
@@ -9328,6 +9330,263 @@ async def _gconv_loop():
                 print(f"Google conversions failed for {st['name']}: {str(e)[:300]}", flush=True)
         n += 1
         await asyncio.sleep(600)
+
+
+# ---- Tracking → Meta: EcomVital's own tracking sent to Meta's Conversions API (meta_capi.py, 23 Oct 2026).
+# Per store setting `capi:<store>`: off | test (main pixel + Meta's test code, never counted) | shadow (a separate
+# dataset, the parallel run) | live (main pixel). Every minute the new events since the mode was set go out.
+
+_capi_ready = {"ok": False}
+_capi_lock: dict = {}
+
+
+def _capi_db():
+    if not _capi_ready["ok"]:
+        with db._conn() as con:
+            con.executescript(meta_capi.SCHEMA)
+        _capi_ready["ok"] = True
+
+
+def _capi_cfg(store_id: int) -> dict:
+    return meta_capi.cfg_of(db.get_setting(f"capi:{store_id}"))
+
+
+def _capi_save(store_id: int, cfg: dict):
+    db.set_setting(f"capi:{store_id}", json.dumps({k: cfg[k] for k in meta_capi.DEFAULTS}))
+
+
+def _capi_token(st) -> tuple:
+    """(token, where it comes from): a pasted Conversions API token wins, else the store's Meta connection."""
+    pasted = db.get_setting(f"px_meta_token:{st['id']}") or ""
+    if pasted:
+        return pasted, "pasted"
+    conn = next((c for c in db.list_meta_connections() if c["id"] == st.get("meta_connection_id")), None)
+    return (conn["access_token"], "connection") if conn and conn.get("access_token") else ("", "")
+
+
+def _capi_max_rowid(store_id: int) -> int:
+    with db._conn() as con:
+        return con.execute("SELECT COALESCE(MAX(rowid), 0) FROM px_events WHERE store_id = ?", (store_id,)).fetchone()[0]
+
+
+def _capi_rows(st, cfg: dict, pixel: str, limit: int) -> tuple:
+    """(Meta events, purchase keys, last rowid looked at, skipped count) for the next new events."""
+    wanted = [meta_capi.META_NAMES[e] for e in cfg["events"]]
+    if not wanted:
+        return [], [], cfg["since_rowid"], 0
+    with db._conn() as con:
+        rows = [dict(r) for r in con.execute(
+            "SELECT rowid AS rid, * FROM px_events WHERE store_id = ? AND rowid > ? ORDER BY rowid LIMIT ?",
+            (st["id"], int(cfg["since_rowid"] or 0), limit))]
+        cids = list({r["client_id"] for r in rows if r["name"] in wanted})
+        vis = {}
+        for k in range(0, len(cids), 400):
+            part = cids[k:k + 400]
+            for v in con.execute(f"SELECT * FROM px_visitors WHERE store_id = ? AND client_id IN ({','.join('?' * len(part))})",
+                                 (st["id"], *part)):
+                vis[v["client_id"]] = dict(v)
+        sent = {r[0] for r in con.execute("SELECT order_key FROM capi_sent WHERE store_id = ? AND pixel_id = ?", (st["id"], pixel))}
+    now = datetime.now(timezone.utc)
+    events, keys, skipped, seen = [], [], 0, set()
+    last = rows[-1]["rid"] if rows else cfg["since_rowid"]
+    for r in rows:
+        if r["name"] not in wanted:
+            continue
+        if meta_capi.too_old(r["at"], now):
+            skipped += 1
+            continue
+        if r["name"] == "checkout_completed":
+            k = meta_capi.order_key(r)
+            if k in sent or k in seen:
+                continue
+            seen.add(k)
+        ev = meta_capi.build(r, vis.get(r["client_id"]), st.get("shop_domain") or "", st.get("currency") or "")
+        if not ev:
+            skipped += 1
+            continue
+        events.append(ev)
+        if r["name"] == "checkout_completed":
+            keys.append(meta_capi.order_key(r))
+    return events, keys, last, skipped
+
+
+async def _capi_run(st, limit: int = 2000) -> dict:
+    """Send this store's new events (if its mode sends anything). Returns what happened."""
+    _capi_db()
+    lock = _capi_lock.setdefault(st["id"], asyncio.Lock())
+    if lock.locked():
+        return {"busy": True}
+    async with lock:
+        cfg = _capi_cfg(st["id"])
+        pixel, test = meta_capi.target(cfg, _px_cfg(st["id"])["meta_pixel"])
+        if not pixel:
+            return {"skipped": test}
+        token, _src = _capi_token(st)
+        if not token:
+            return {"skipped": "no Meta token: paste one, or link the store's Meta ad account in Settings"}
+        if cfg["since_rowid"] is None:
+            cfg["since_rowid"] = _capi_max_rowid(st["id"])
+            _capi_save(st["id"], cfg)
+            return {"started": True}
+        events, keys, last, skipped = _capi_rows(st, cfg, pixel, limit)
+        now_s = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        total = {"sent": 0, "received": 0, "skipped": skipped}
+        err = None
+        for k in range(0, len(events), meta_capi.BATCH):
+            part = events[k:k + meta_capi.BATCH]
+            counts = {}
+            for e in part:
+                counts[e["event_name"]] = counts.get(e["event_name"], 0) + 1
+            try:
+                got = await meta_capi.send(token, pixel, part, test, meta._version())
+            except meta_capi.CapiError as e:
+                err = str(e)
+                with db._conn() as con:
+                    con.execute("INSERT INTO capi_log (store_id, at, pixel_id, mode, counts, sent, received, error) VALUES (?,?,?,?,?,?,?,?)",
+                                (st["id"], now_s, pixel, cfg["mode"], json.dumps(counts), len(part), 0, err[:600]))
+                break
+            total["sent"] += len(part)
+            total["received"] += got["received"]
+            with db._conn() as con:
+                con.execute("INSERT INTO capi_log (store_id, at, pixel_id, mode, counts, sent, received, trace) VALUES (?,?,?,?,?,?,?,?)",
+                            (st["id"], now_s, pixel, cfg["mode"], json.dumps(counts), len(part), got["received"], got["trace"]))
+                pk = {e["event_id"] for e in part if e["event_name"] == "Purchase"}
+                con.executemany("INSERT OR IGNORE INTO capi_sent (store_id, pixel_id, order_key, at) VALUES (?,?,?,?)",
+                                [(st["id"], pixel, x, now_s) for x in keys if x in pk])
+        cfg = _capi_cfg(st["id"])                         # re-read: settings may have changed meanwhile
+        if cfg["mode"] != "off" and meta_capi.target(cfg, _px_cfg(st["id"])["meta_pixel"])[0] == pixel:
+            if err is None:
+                cfg.update(since_rowid=last, fails=0)
+            else:
+                cfg["fails"] = int(cfg.get("fails") or 0) + 1
+                if cfg["fails"] >= 5:                     # one bad batch must never block everything after it
+                    cfg.update(since_rowid=last, fails=0)
+                    with db._conn() as con:
+                        con.execute("INSERT INTO capi_log (store_id, at, pixel_id, mode, sent, received, error) VALUES (?,?,?,?,?,?,?)",
+                                    (st["id"], now_s, pixel, cfg["mode"], 0, 0, f"Skipped {len(events)} events after 5 refusals in a row."))
+            _capi_save(st["id"], cfg)
+        if err:
+            total["error"] = err
+        return total
+
+
+async def _capi_loop():
+    """Every minute: each store whose Meta sending is on."""
+    await asyncio.sleep(120)
+    n = 0
+    while True:
+        for st in db.list_stores():
+            try:
+                if _capi_cfg(st["id"])["mode"] != "off":
+                    await _capi_run(st)
+            except Exception as e:
+                print(f"Meta Conversions API failed for {st['name']}: {str(e)[:300]}", flush=True)
+        n += 1
+        if n % 720 == 0:                                   # twice a day: keep the log and the purchase list short
+            old = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat(timespec="seconds")
+            with db._conn() as con:
+                con.execute("DELETE FROM capi_log WHERE at < ?", (old,))
+                con.execute("DELETE FROM capi_sent WHERE at < ?", (old,))
+        await asyncio.sleep(60)
+
+
+def _capi_store(store_id: int):
+    st = next((x for x in db.list_stores() if x["id"] == store_id), None)
+    if not st:
+        raise HTTPException(404, "Store not found.")
+    return st
+
+
+@app.get("/api/tracking/meta/status")
+def api_capi_status(store: int):
+    _capi_db()
+    st = _capi_store(store)
+    cfg = _capi_cfg(st["id"])
+    main = _px_cfg(st["id"])["meta_pixel"]
+    pixel, why = meta_capi.target(cfg, main)
+    _tok, src = _capi_token(st)
+    since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat(timespec="seconds")
+    with db._conn() as con:
+        logs = [dict(r) for r in con.execute("SELECT at, pixel_id, mode, counts, sent, received, error FROM capi_log WHERE store_id = ?"
+                                             " ORDER BY id DESC LIMIT 15", (st["id"],))]
+        day = [dict(r) for r in con.execute("SELECT counts, received, error FROM capi_log WHERE store_id = ? AND at >= ?", (st["id"], since))]
+        waiting = con.execute("SELECT COUNT(*) FROM px_events WHERE store_id = ? AND rowid > ?",
+                              (st["id"], int(cfg["since_rowid"] or 0))).fetchone()[0] if cfg["since_rowid"] is not None else 0
+    by = {}
+    for r in day:
+        if r["error"]:
+            continue
+        for k, v in json.loads(r["counts"] or "{}").items():
+            by[k] = by.get(k, 0) + v
+    for l in logs:
+        l["counts"] = json.loads(l["counts"] or "{}")
+    return {"store": st["name"].strip(), "mode": cfg["mode"], "events": cfg["events"], "test_code": cfg["test_code"],
+            "shadow_pixel": cfg["shadow_pixel"], "main_pixel": main, "pixel": pixel, "missing": None if pixel else why,
+            "token": src, "started_at": cfg["started_at"], "by": cfg["by"], "sent_24h": by,
+            "received_24h": sum(r["received"] or 0 for r in day), "errors_24h": sum(1 for r in day if r["error"]),
+            "waiting": waiting if cfg["mode"] != "off" else 0, "log": logs,
+            "choices": {"modes": meta_capi.MODES, "events": meta_capi.DEFAULT_EVENTS},
+            "events_manager": f"https://business.facebook.com/events_manager2/list/dataset/{pixel}/overview" if pixel else ""}
+
+
+@app.put("/api/tracking/meta/settings/{store_id}")
+def api_capi_settings(store_id: int, payload: dict, request: Request):
+    """Mode, test code, separate (shadow) dataset, which events; main pixel id is the Setup one (also settable here)."""
+    _capi_db()
+    st = _capi_store(store_id)
+    cfg = _capi_cfg(st["id"])
+    try:
+        if "main_pixel" in payload:
+            px = _px_cfg(st["id"])
+            px["meta_pixel"] = meta_capi.valid_pixel(payload["main_pixel"])
+            db.set_setting(f"px:{st['id']}", json.dumps({k: px[k] for k in ("mode", "meta_pixel")}))
+        if "shadow_pixel" in payload:
+            cfg["shadow_pixel"] = meta_capi.valid_pixel(payload["shadow_pixel"])
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if cfg["shadow_pixel"] and cfg["shadow_pixel"] == _px_cfg(st["id"])["meta_pixel"]:
+        raise HTTPException(400, "The parallel-run dataset must be a different pixel from the store's main one, "
+                                 "or Meta would count purchases twice.")
+    if "test_code" in payload:
+        cfg["test_code"] = re.sub(r"[^A-Za-z0-9_-]", "", str(payload["test_code"] or ""))[:40]
+    if "events" in payload and isinstance(payload["events"], list):
+        cfg["events"] = [e for e in payload["events"] if e in meta_capi.META_NAMES]
+    if "meta_token" in payload and str(payload["meta_token"] or "").strip():
+        db.set_setting(f"px_meta_token:{st['id']}", str(payload["meta_token"]).strip())
+    if payload.get("mode") in meta_capi.MODES and payload["mode"] != cfg["mode"]:
+        if payload["mode"] == "live" and payload.get("confirm") != "live":
+            raise HTTPException(400, "Live sends to the pixel your campaigns use. Confirm it on the page.")
+        cfg.update(mode=payload["mode"], since_rowid=None, fails=0,
+                   started_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                   by=(request.state.user or {}).get("email", ""))
+        if payload["mode"] != "off":
+            cfg["since_rowid"] = _capi_max_rowid(st["id"])       # from now on; nothing old is sent
+    _capi_save(st["id"], cfg)
+    return {"ok": True}
+
+
+@app.post("/api/tracking/meta/send/{store_id}")
+async def api_capi_send(store_id: int):
+    """Send what's waiting now instead of within the minute."""
+    st = _capi_store(store_id)
+    return await _capi_run(st)
+
+
+@app.get("/api/tracking/meta/preview")
+def api_capi_preview(store: int):
+    """The next few events as Meta would get them (which details each carries, never the values). Sends nothing."""
+    _capi_db()
+    st = _capi_store(store)
+    cfg = _capi_cfg(st["id"])
+    pixel = meta_capi.target(cfg, _px_cfg(st["id"])["meta_pixel"])[0] or "preview"
+    look = {**cfg, "since_rowid": max(0, _capi_max_rowid(st["id"]) - 400), "events": cfg["events"] or meta_capi.DEFAULT_EVENTS}
+    events, _k, _l, _s = _capi_rows(st, look, pixel, 400)
+    out = []
+    for e in events[-12:]:
+        out.append({"event": e["event_name"], "time": datetime.fromtimestamp(e["event_time"], timezone.utc).isoformat(timespec="seconds"),
+                    "source": e["action_source"], "matching": sorted(e["user_data"].keys()),
+                    "value": (e.get("custom_data") or {}).get("value"), "currency": (e.get("custom_data") or {}).get("currency")})
+    return {"events": out}
 
 
 @app.get("/api/tracking/google/status")
