@@ -1146,6 +1146,12 @@ async def api_cog_orders(start: str, end: str = None, store: str = "all"):
                          "discount_names": d["discount_names"], "draft": d["draft"], "via": d["via"],
                          "shipping": round(sale_usd(o["store_id"], d["shipping"]), 2),
                          "total": round(sale_usd(o["store_id"], d["total"]), 2)}
+    def _when(o):                                   # stores are on different clocks: compare real moments
+        try:
+            return datetime.fromisoformat(str(o["created"]).replace("Z", "+00:00")).timestamp()
+        except (TypeError, ValueError):
+            return 0.0
+    rows.sort(key=_when, reverse=True)              # newest order on top
     count = defaultdict(int)
     for o in rows:
         count[o["kind"]] += 1
