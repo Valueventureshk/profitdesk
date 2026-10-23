@@ -71,6 +71,7 @@ import research
 import research_hunt
 import social
 import vault
+import vetting
 import world
 import timetrack
 import agent
@@ -939,7 +940,7 @@ def _page(filename: str, assets) -> HTMLResponse:
 
 @app.get("/cog", response_class=HTMLResponse)
 def cog_page():
-    return _page("cog.html", ("cog.js", "nav.js", "styles.css", "skin.css", "chat.js"))
+    return _page("cog.html", ("cog.js", "cogdesk.js", "cogdesk.css", "vetting.js", "nav.js", "styles.css", "skin.css", "chat.js"))
 
 
 @app.put("/api/cog/sheet")
@@ -2572,6 +2573,7 @@ async def api_pdesk(store: str = "all", start: str = "", end: str = ""):
         raise HTTPException(404, "Store not found.")
     lines = await asyncio.to_thread(_pd_lines, [x["id"] for x in stores])
     groups = _pd_groups(lines)
+    sold_ever = {k for k, g in groups.items() if g["units"] > 0 and k[1].isdigit()}     # the panel is all time
     if start or end:                       # the period's sales only; products with none are left out
         lo, hi = start or "0000", end or start or "9999"
         sold = _pd_groups([l for l in lines if lo <= (l["day"] or "") <= hi])
@@ -2627,7 +2629,16 @@ async def api_pdesk(store: str = "all", start: str = "", end: str = ""):
             "qc_photos": qc.get((sid, pid), 0), "notes": notes.get((sid, pid)) or {"complaints": 0, "notes": 0, "last": None},
         })
     out.sort(key=lambda r: -r["units"])
-    return {"products": out, "stores": [{"id": x["id"], "name": names[x["id"]]} for x in stores],
+    try:
+        with db._conn() as con:
+            all_lines = [dict(r) for r in con.execute(
+                f"SELECT store_id, cancelled, cost_usd, subtotal FROM cog_lines WHERE store_id IN ({','.join('?' * len(stores))})",
+                [x["id"] for x in stores])]
+        panel = await _vet_extras(stores, out, all_lines, sold_ever)
+    except Exception as e:
+        print(f"Products panel failed: {e}", flush=True)
+        panel = None
+    return {"products": out, "stores": [{"id": x["id"], "name": names[x["id"]]} for x in stores], "panel": panel,
             "start": start, "end": end, "costed_at": (_cog.get("synced") or (None,))[0]}
 
 
@@ -2654,6 +2665,208 @@ async def api_pdesk_item(store: int, pid: str):
     for t in tickets_:
         t["how"] = tk.get(t["id"])
     return {"cost": cost, "tickets": tickets_, "notes": notes, "photos": photos}
+
+
+# ---- COG → Products: vetted supplier prices, price checks, panel, recommended selling price (vetting.py)
+
+_vet_learn: dict = {"at": 0.0, "data": None}
+
+
+async def _vet_learned(force: bool = False) -> dict:
+    """vetting.learn over every store (5-minute cache). Also keeps each store's learned per-item discount in
+    setting supplier_per_item:<id>, which the costing uses."""
+    if not force and _vet_learn["data"] and time.time() - _vet_learn["at"] < 300:
+        return _vet_learn["data"]
+
+    def work():
+        vetting.init()
+        with db._conn() as con:
+            lines = [dict(r) for r in con.execute(
+                "SELECT store_id, order_name, product_id, quantity, cancelled, day FROM cog_lines WHERE product_id IS NOT NULL")]
+        vetted = vetting.load()
+        policies = {x["id"]: vetting.policy(x["id"]) for x in db.list_stores()}
+        got = vetting.learn(lines, db.invoice_lines(), vetted, policies)
+        changed = False
+        for sid, d in got["per_item"].items():
+            key = f"supplier_per_item:{sid}"
+            if policies.get(sid) == "per_item" and str(d) != (db.get_setting(key) or ""):
+                db.set_setting(key, str(d))
+                changed = True
+        got["policies"] = policies
+        with db._conn() as con:
+            got["marks"] = {(r[0], r[1]): dict(r) for r in con.execute("SELECT * FROM pd_flag_marks")}
+        return got, changed
+    got, changed = await asyncio.to_thread(work)
+    if changed:
+        _cog.pop("catalog", None)
+    _vet_learn.update(at=time.time(), data=got)
+    return got
+
+
+def _vet_open_flags(learned: dict) -> list:
+    """Price checks not yet marked checked (escalated ones stay listed)."""
+    marks = learned.get("marks") or {}
+    return [f for f in learned["flags"] if (marks.get((f["store_id"], f["order_key"])) or {}).get("state") != "ok"]
+
+
+async def _vet_extras(stores: list, products: list, lines_all: list, sold_ever: set) -> dict:
+    """Adds vetted / suggested prices, price-check flags, COG % and a recommended price to each product row,
+    and returns the panel (always all time for the stores shown)."""
+    learned = await _vet_learned()
+    vetted = vetting.load()
+    open_flags = _vet_open_flags(learned)
+    flagged = defaultdict(int)
+    for f in open_flags:
+        for p in f["products"]:
+            flagged[(f["store_id"], p)] += 1
+    rates = {x["id"]: await _usd_to(x["currency"]) for x in stores}
+    for r in products:
+        key = (r["store_id"], r["pid"])
+        t = vetted.get(key) or {}
+        r["vetted"] = t
+        r["suggested"] = learned["suggested"].get(key) or {}
+        r["flags"] = flagged.get(key, 0)
+        r["policy"] = learned["policies"].get(r["store_id"], "per_item")
+        base = float(t["1"]) if t.get("1") else r.get("cost")
+        r["base_cost"] = base
+        r["base_from"] = "vetted" if t.get("1") else ("latest" if base else None)
+        rate = rates.get(r["store_id"]) or 0
+        price = r.get("price_low")
+        rec = vetting.recommend(base * rate if base and rate else None, price)
+        r.update(cog_pct=rec.get("cog_pct"), recommended=rec.get("recommended"), price_change=rec.get("change"))
+    sids = {x["id"] for x in stores}
+    cog_usd = sales_usd = 0.0
+    for l in lines_all:
+        if l["store_id"] in sids and not l["cancelled"] and l.get("cost_usd") is not None and (l.get("subtotal") or 0) > 0:
+            cog_usd += l["cost_usd"]
+            sales_usd += l["subtotal"] / (rates.get(l["store_id"]) or 1)
+    unvetted = [k for k in sold_ever if not (vetted.get(k) or {}).get("1")]
+    return {"avg_cog_pct": round(cog_usd / sales_usd * 100, 1) if sales_usd else None,
+            "unvetted": len(unvetted), "vetted": sum(1 for k in sold_ever if (vetted.get(k) or {}).get("1")),
+            "flags": sum(1 for f in open_flags if f["store_id"] in sids),
+            "policies": {str(x["id"]): learned["policies"].get(x["id"], "per_item") for x in stores},
+            "per_item": {str(x["id"]): learned["per_item"].get(x["id"], 0.0) for x in stores},
+            "target": vetting.TARGET_COG * 100}
+
+
+@app.put("/api/cog/pdesk/vetted")
+async def api_pdesk_vetted(payload: dict, request: Request):
+    """Work level: set a product's vetted supplier prices {store, pid, tiers: {"1": usd, ...}} (empty = remove).
+    Every order of the product is re-costed with them."""
+    _pd_db()
+    store, pid = int(payload.get("store") or 0), str(payload.get("pid") or "")
+    if not store or not pid.isdigit():
+        raise HTTPException(400, "Pick a product.")
+    tiers = vetting.save(store, pid, payload.get("tiers") or {}, (request.state.user or {}).get("email", ""))
+    _cog.pop("catalog", None)
+    _vet_learn["at"] = 0.0
+    with db._conn() as con:
+        names = {r[0] for r in con.execute("SELECT DISTINCT order_name FROM cog_lines WHERE store_id = ? AND product_id LIKE ?",
+                                           (store, f"%/{pid}"))}
+    asyncio.create_task(_recost(store, names))
+    return {"ok": True, "tiers": tiers, "recosting": len(names)}
+
+
+@app.put("/api/cog/pdesk/policy")
+async def api_pdesk_policy(payload: dict, request: Request):
+    """Manage: which Dayone discount a store is on: tiered (same product, less per piece) or per_item."""
+    _need_level(request, "cog", "manage")
+    mode = payload.get("mode")
+    if mode not in ("tiered", "per_item"):
+        raise HTTPException(400, "Pick tiered or per item.")
+    sid = int(payload.get("store") or 0)
+    db.set_setting(f"supplier_policy:{sid}", mode)
+    _cog.pop("catalog", None)
+    _vet_learn["at"] = 0.0
+    pids = [p for (s_, p) in vetting.load() if s_ == sid]
+    if pids:
+        with db._conn() as con:
+            names = {r[0] for r in con.execute(
+                f"SELECT DISTINCT order_name FROM cog_lines WHERE store_id = ? AND ({' OR '.join('product_id LIKE ?' for _ in pids)})",
+                (sid, *[f"%/{p}" for p in pids]))}
+        asyncio.create_task(_recost(sid, names))
+    return {"ok": True}
+
+
+@app.get("/api/cog/pdesk/flags")
+async def api_pdesk_flags(store: str = "all"):
+    """The price-check sheet: invoiced orders whose charge doesn't match the vetted prices."""
+    _pd_db()
+    learned = await _vet_learned()
+    names = {x["id"]: x["name"].strip() for x in db.list_stores()}
+    with db._conn() as con:
+        titles = {}
+        for r in con.execute("SELECT store_id, product_id, product FROM cog_lines WHERE product_id IS NOT NULL"):
+            titles[(r[0], products_desk.pid_of(r[1]))] = cog.base_name(r[2]) or r[2]
+    out = []
+    for f in learned["flags"]:
+        if store not in ("", "all") and str(f["store_id"]) != str(store):
+            continue
+        m = (learned.get("marks") or {}).get((f["store_id"], f["order_key"])) or {}
+        out.append({**f, "store": names.get(f["store_id"], ""), "titles": [titles.get((f["store_id"], p), p) for p in f["products"]],
+                    "state": m.get("state") or "open", "mark_note": m.get("note") or "", "mark_by": m.get("by") or ""})
+    return {"flags": out, "per_item": learned["per_item"], "policies": learned["policies"]}
+
+
+@app.post("/api/cog/pdesk/flags/mark")
+def api_pdesk_flag_mark(payload: dict, request: Request):
+    """Work level: mark a price check escalated (asked the supplier) or ok (checked, nothing to do); state '' clears."""
+    vetting.init()
+    sid, key, state = int(payload.get("store") or 0), str(payload.get("order_key") or ""), payload.get("state") or ""
+    with db._conn() as con:
+        if state in ("escalated", "ok"):
+            con.execute("INSERT INTO pd_flag_marks (store_id, order_key, state, note, by, at) VALUES (?,?,?,?,?,datetime('now'))"
+                        " ON CONFLICT(store_id, order_key) DO UPDATE SET state = excluded.state, note = excluded.note,"
+                        " by = excluded.by, at = excluded.at",
+                        (sid, key, state, str(payload.get("note") or "")[:500], (request.state.user or {}).get("email", "")))
+        else:
+            con.execute("DELETE FROM pd_flag_marks WHERE store_id = ? AND order_key = ?", (sid, key))
+    _vet_learn["at"] = 0.0
+    return {"ok": True}
+
+
+PD_VARIANTS = """query($id: ID!) { product(id: $id) { title variants(first: 100) { nodes { id price compareAtPrice } } } }"""
+
+
+@app.post("/api/cog/pdesk/apply-price")
+async def api_pdesk_apply_price(payload: dict, request: Request):
+    """Manage: set the product's selling price to the recommended one (29% COG, ending .95). Every variant moves by
+    the same %, the compare-at (was) price too, so the sale badge stays the same. {store, pid, price?, dry?}"""
+    _need_level(request, "cog", "manage")
+    st = next((x for x in db.list_stores() if x["id"] == int(payload.get("store") or 0)), None)
+    pid = str(payload.get("pid") or "")
+    if not st or not pid.isdigit():
+        raise HTTPException(400, "Pick a product.")
+    client = ShopifyClient(st["shop_domain"], st["access_token"])
+    try:
+        p = (await client.gql(PD_VARIANTS, {"id": f"gid://shopify/Product/{pid}"})).get("product")
+    except ShopifyError as e:
+        raise HTTPException(400, str(e)[:300])
+    if not p:
+        raise HTTPException(404, "Product not found in Shopify.")
+    vs = p["variants"]["nodes"]
+    low = min(float(v["price"]) for v in vs)
+    try:
+        target = float(payload.get("price"))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "No price to apply.")
+    if target <= 0 or low <= 0:
+        raise HTTPException(400, "That price doesn't look right.")
+    f = target / low
+    changes = []
+    for v in vs:
+        new = vetting.round95(float(v["price"]) * f) if abs(float(v["price"]) - low) > 0.005 else round(target, 2)
+        was = vetting.round95(float(v["compareAtPrice"]) * f) if v.get("compareAtPrice") and float(v["compareAtPrice"]) > 0 else None
+        changes.append({"id": v["id"], "price": f"{new:.2f}", **({"compareAtPrice": f"{was:.2f}"} if was else {}),
+                        "_old": v["price"], "_old_was": v.get("compareAtPrice")})
+    if payload.get("dry"):
+        return {"title": p["title"], "changes": changes}
+    await _imp_gql(client, importer.VARIANTS_UPDATE, {"productId": f"gid://shopify/Product/{pid}",
+                                                      "variants": [{k: c[k] for k in c if not k.startswith("_")} for c in changes]},
+                   "productVariantsBulkUpdate")
+    _pd_shop.get(st["id"], {}).pop(pid, None)            # read the new price next time
+    print(f"Price applied by {(request.state.user or {}).get('email')}: {st['name']} {pid} {low} -> {target}", flush=True)
+    return {"ok": True, "title": p["title"], "changes": changes}
 
 
 @app.put("/api/cog/pdesk/info")

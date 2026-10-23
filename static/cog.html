@@ -129,6 +129,7 @@
         <span id="pdkDates" hidden><input type="date" id="pdkFrom" class="control"> <span class="hint">to</span> <input type="date" id="pdkTo" class="control"></span>
         <span class="hint" id="pdkFresh"></span>
       </div>
+      <section class="pdk-board" id="pdkPanel"></section>
       <section class="panel">
         <div class="panel-head"><h2>Products</h2>
           <span class="pdk-filters">
@@ -137,10 +138,16 @@
               <option value="complaints">Most complaints</option><option value="recent">Latest order</option>
               <option value="listed">Newest listed</option><option value="cost">Highest cost</option>
             </select>
+            <select id="pdkShow" class="control">
+              <option value="">All products</option><option value="unvetted">Sold, no vetted price</option>
+              <option value="vetted">Vetted</option><option value="flags">Price checks</option>
+            </select>
             <label class="imp-check"><input type="checkbox" id="pdkIssues"><span>Only with tickets or complaints</span></label>
           </span>
           <span class="hint" id="pdkCount"></span></div>
-        <p class="hint pdk-tip">Latest cost = the supplier's latest confirmed price for one item (invoices and the orders sheet).
+        <p class="hint pdk-tip"><b class="pdk-blue">Vetted price</b> (blue) = what the supplier should charge, set by the team; it is the
+          cost of every order of the product (dashboard too). Latest cost turns <b class="pdk-red">red</b> when an invoice doesn't match it.
+          Latest cost = the supplier's latest confirmed price for one item (invoices and the orders sheet).
           CS tickets are matched by the order numbers in each ticket, else the customer's latest order (best effort).
           Click a product for its cost history, tickets, notes and quality-check photos.</p>
         <div class="table-wrap"><table class="table pdk-table" id="pdk"></table></div>
@@ -198,6 +205,7 @@
 <script src="/static/nav.js"></script>
 <script src="/static/chat.js"></script>
 <script src="/static/cog.js"></script>
+<script src="/static/vetting.js"></script>
 <script src="/static/cogdesk.js"></script>
 </body>
 </html>

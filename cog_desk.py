@@ -151,7 +151,9 @@ def order_rows(lines: list, inv_by_order: dict, invoices: dict, fulfilled: set, 
         inv_lines = [l for l in inv_by_order.get((sid, order_key(name)), []) if l["status"] not in DROP]
         mark = marks.get((sid, name)) or {}
         kind, pct = order_kind(o["cancelled"], inv_lines, o["sources"], mark)
-        if kind == "est" and "catalog" not in o["sources"] and "invoice" not in o["sources"]:
+        if kind == "est" and o["sources"] == {"vetted"}:
+            sub = "est_vetted"       # every item has a vetted price
+        elif kind == "est" and "catalog" not in o["sources"] and "invoice" not in o["sources"] and "vetted" not in o["sources"]:
             sub = "est_avg"          # store's usual COG %
         elif kind == "est":
             sub = "est_last"         # product's last price

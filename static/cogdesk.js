@@ -17,7 +17,7 @@
   const SUB = {
     inv: "Supplier's invoice for this order", same: "Matches the last invoice for this product",
     new: "Never bought before: price from its first invoice", est_last: "The product's last invoiced price, until its invoice arrives",
-    est_avg: "Store's usual cost %, until the invoice arrives", up: "Click to compare with the last invoice",
+    est_avg: "Store's usual cost %, until the invoice arrives", est_vetted: "Vetted price (what the supplier should charge)", up: "Click to compare with the last invoice",
     down: "Click to compare with the last invoice", review: "Waiting for the supplier's answer",
     real: "New price used from now on", kept: "Supplier corrected it: the old price is used",
     bundle: "Billed as a bundle / BOGO: not a price rise", note: "" };
@@ -131,6 +131,8 @@
     if (o.answer) $("cdAnswers").insertAdjacentHTML("beforeend", '<button data-a="clear"><b>Undo my answer</b><span>Back to “to check”.</span></button>');
     $("cdCmp").hidden = false;
   }
+
+  window.cdOpenCompare = (o) => openCompare({ kind: "", answer: "", ...o });     // Products → price checks
 
   async function answer(o, a, extra = {}) {
     const r = await post("/api/invoices/orders/answer", { store_id: o.store_id, order: o.order, answer: a, ...extra });
