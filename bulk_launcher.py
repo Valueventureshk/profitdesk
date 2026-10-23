@@ -198,8 +198,12 @@ _POS = {"feed": "Feed", "story": "Stories", "facebook_reels": "Reels", "reels": 
         "profile_feed": "Profile feed", "ig_search": "Search", "messenger_home": "Inbox", "classic": "Native / banner",
         "rewarded_video": "Rewarded video", "notification": "Notifications", "facebook_reels_overlay": "Reels overlay",
         "biz_disco_feed": "Business discovery", "profile_reels": "Profile reels"}
-_ATTR = {((("CLICK_THROUGH", 7), ("VIEW_THROUGH", 1))): "7c1v", (("CLICK_THROUGH", 7),): "7c",
+_ATTR = {(("CLICK_THROUGH", 7), ("VIEW_THROUGH", 1)): "7c1v", (("CLICK_THROUGH", 7),): "7c",
+         (("CLICK_THROUGH", 7), ("ENGAGED_VIDEO_VIEW", 1), ("VIEW_THROUGH", 1)): "7c1e1v",
          (("CLICK_THROUGH", 1),): "1c", (("CLICK_THROUGH", 1), ("VIEW_THROUGH", 1)): "1c1v"}
+# Targeting keys that are part of Meta's normal (Advantage+) setup, not audience choices worth calling out
+_QUIET = {"age_range", "user_age_unknown", "threads_positions", "whatsapp_positions", "messenger_positions",
+          "audience_network_positions", "targeting_optimization", "brand_safety_content_filter_levels"}
 _BID = {"LOWEST_COST_WITHOUT_CAP": "Highest volume", "COST_CAP": "Cost per result goal",
         "LOWEST_COST_WITH_BID_CAP": "Bid cap", "LOWEST_COST_WITH_MIN_ROAS": "ROAS goal"}
 
@@ -224,8 +228,9 @@ def blueprint(camp: dict, adset: dict | None, cr: dict | None, base: dict, cur: 
         warns.append(f"This campaign's objective is {obj}; the launcher makes Sales campaigns.")
     cb = _money(camp.get("daily_budget"), factor)
     if cb:
-        c.update(budget_mode="cbo", daily_budget=str(cb))
-        feats.append(f"Budget on the campaign (Advantage+ campaign budget): {cur} {cb:,.2f} a day")
+        c["budget_mode"] = "cbo"
+        feats.append(f"Budget on the campaign (Advantage+ campaign budget). Its budget today is {cur} {cb:,.2f} a day: "
+                     f"not copied, set your own below")
     elif camp.get("lifetime_budget") not in (None, "", "0"):
         warns.append("The campaign has a lifetime budget; the launcher uses daily budgets, so set one here.")
     bid = (camp.get("bid_strategy") if cb else (adset or {}).get("bid_strategy")) or c["bid_strategy"]
@@ -237,8 +242,7 @@ def blueprint(camp: dict, adset: dict | None, cr: dict | None, base: dict, cur: 
         if not cb:
             c["budget_mode"] = "abo"
             if ab:
-                c["daily_budget"] = str(ab)
-                feats.append(f"Budget on each ad set: {cur} {ab:,.2f} a day")
+                feats.append(f"Budget on each ad set. Its budget today is {cur} {ab:,.2f} a day: not copied, set your own below")
             elif adset.get("lifetime_budget") not in (None, "", "0"):
                 warns.append("The ad set has a lifetime budget; the launcher uses daily budgets, so set one here.")
         bm = _money(adset.get("bid_amount"), factor)
@@ -256,8 +260,16 @@ def blueprint(camp: dict, adset: dict | None, cr: dict | None, base: dict, cur: 
             a["event"] = po["custom_event_type"]
         feats.append(f"Optimised for: {(po.get('custom_event_type') or adset.get('optimization_goal') or '').replace('_', ' ').title()}"
                      + (f" on pixel {po['pixel_id']}" if po.get("pixel_id") else ""))
-        if adset.get("optimization_goal") not in (None, "OFFSITE_CONVERSIONS"):
-            warns.append(f"The ad set optimises for {adset['optimization_goal']}; the launcher optimises for conversions.")
+        goal = adset.get("optimization_goal")
+        if goal == "VALUE":
+            a["goal"] = "value"
+            feats.append("Optimisation: value of purchases (highest value)")
+            feats[:] = ["Bid strategy: Highest value" if f == "Bid strategy: Highest volume" else f for f in feats]
+        elif goal in (None, "OFFSITE_CONVERSIONS"):
+            a["goal"] = "conversions"
+            feats.append("Optimisation: number of purchases")
+        else:
+            warns.append(f"The ad set optimises for {goal}; the launcher optimises for purchases (number or value).")
         spec = tuple(sorted((x.get("event_type"), int(x.get("window_days") or 0)) for x in adset.get("attribution_spec") or []))
         key = _ATTR.get(spec)
         if key:
@@ -278,7 +290,11 @@ def blueprint(camp: dict, adset: dict | None, cr: dict | None, base: dict, cur: 
         feats.append(f"Advantage+ audience: {'on' if adv else 'off'}")
         feats.append(f"Who: {', '.join(geo.get('countries') or []) or 'see locations'} · ages {a['age_min']}-{a['age_max']}"
                      f"{'+' if a['age_max'] == 65 else ''} · {'women' if g == [2] else 'men' if g == [1] else 'everyone'}")
-        if t.get("publisher_platforms"):
+        plats = set(t.get("publisher_platforms") or [])
+        if plats >= {"facebook", "instagram", "audience_network", "messenger"}:
+            a["placements"] = "advantage"
+            feats.append("Placements: everywhere (" + ", ".join(p.replace("_", " ").title() for p in t["publisher_platforms"]) + ")")
+        elif t.get("publisher_platforms"):
             a["placements"] = "manual"
             a["platforms"] = list(t["publisher_platforms"])
             a["fb_positions"] = list(t.get("facebook_positions") or a["fb_positions"])
@@ -293,7 +309,7 @@ def blueprint(camp: dict, adset: dict | None, cr: dict | None, base: dict, cur: 
             feats.append("Placements: Advantage+ (all)")
         extra = []
         for k, v in t.items():
-            if k in _BASIC_TARGETING or not v:
+            if k in _BASIC_TARGETING or k in _QUIET or not v:
                 continue
             if k == "custom_audiences":
                 extra.append(f"{len(v)} custom audience{'s' if len(v) != 1 else ''} included")
@@ -312,17 +328,14 @@ def blueprint(camp: dict, adset: dict | None, cr: dict | None, base: dict, cur: 
         for k in ("regions", "cities", "zips", "places", "custom_locations"):
             if geo.get(k):
                 extra.append(f"locations: {k}")
-        if extra or (t.get("device_platforms") and set(t["device_platforms"]) != {"mobile", "desktop"}):
-            if t.get("device_platforms") and set(t["device_platforms"]) != {"mobile", "desktop"}:
-                extra.append("devices: " + ", ".join(t["device_platforms"]))
-            a["audience"] = "copied"
-            a["targeting_raw"] = t
-            a["targeting_from"] = adset.get("name") or adset.get("id") or ""
-            feats.append("Audience extras (copied exactly): " + ", ".join(extra))
-        else:
-            a["audience"] = "form"
-            a["targeting_raw"] = None
-            a["targeting_from"] = ""
+        if t.get("device_platforms") and set(t["device_platforms"]) != {"mobile", "desktop"}:
+            extra.append("devices: " + ", ".join(t["device_platforms"]))
+        # the audience (and placements) are always copied exactly; the form fields above are filled too, for
+        # "Use my own audience instead"
+        a["audience"] = "copied"
+        a["targeting_raw"] = t
+        a["targeting_from"] = adset.get("name") or adset.get("id") or ""
+        feats.append("Audience extras: " + ", ".join(extra) if extra else "No custom audiences or interests (broad)")
         if adset.get("is_dynamic_creative"):
             feats.append("Dynamic creative ad set")
             warns.append("This ad set uses dynamic creative; bulk ads use flexible ads instead, which Meta now recommends.")

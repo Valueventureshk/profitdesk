@@ -13361,7 +13361,8 @@ async def api_launcher_options(store: int):
             "errors": errs, "settings": last, "presets": cfg["presets"], "drafts": cfg["drafts"], "bulk_drafts": cfg["bulk_drafts"],
             "bulk_choices": {"adsets": bulk_launcher.ADSETS, "ads": bulk_launcher.ADS},
             "choices": {"bid": ads_launcher.BID_STRATEGIES, "events": ads_launcher.EVENTS, "attribution": ads_launcher.ATTRIBUTION,
-                        "cta": ads_launcher.CTAS, "enhancements": ads_launcher.ENHANCEMENTS},
+                        "cta": ads_launcher.CTAS, "enhancements": ads_launcher.ENHANCEMENTS,
+                        "enh_extra": ads_launcher.ENH_EXTRA, "goals": ads_launcher.GOALS},
             "can_launch": True}
 
 

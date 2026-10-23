@@ -176,6 +176,7 @@ function adsetSection(num) {
       ${copied ? "" : field("Gender", sel("adset.genders", optMap({ all: "Everyone", women: "Women", men: "Men" }, a.genders)))}
       ${field("Pixel", sel("adset.pixel_id", `<option value="">Pick…</option>${opt(o.pixels, a.pixel_id)}`))}
       ${field("Optimise for", sel("adset.event", optMap(o.choices.events, a.event)))}
+      ${o.choices.goals ? field("Optimisation", sel("adset.goal", optMap(o.choices.goals, a.goal || "conversions")), L.s.campaign.bid_strategy === "LOWEST_COST_WITH_MIN_ROAS" ? "A ROAS goal always optimises for value" : "") : ""}
       ${field("Attribution", sel("adset.attribution", optMap(o.choices.attribution, a.attribution)))}
     </div>
     ${copied ? `<div class="lx-bp"><p><b>Audience copied exactly</b> from the ad set “${esc(a.targeting_from)}”: locations, ages, custom audiences, interests and placements stay as they are there.</p>
@@ -202,14 +203,25 @@ function adSection(num) {
       ${field("Ad name", inp("ad.name", ad.name), bulk() ? "{file} {n} {date} are filled in" : "{task} {date} are filled in")}
       ${field("Facebook Page", sel("ad.page_id", `<option value="">Pick…</option>${opt(o.pages, ad.page_id)}`))}
       ${field("Instagram account", sel("ad.instagram_id", `<option value="">Use the Facebook Page</option>${opt(o.instagram, ad.instagram_id)}`))}
-      ${field("Button", sel("ad.cta", optMap(o.choices.cta, ad.cta)))}
+      ${field("Button", sel("ad.cta", optMap(ad.cta && !o.choices.cta[ad.cta] ? { ...o.choices.cta, [ad.cta]: ad.cta.replace(/_/g, " ").toLowerCase() } : o.choices.cta, ad.cta)))}
       ${bulk() ? "" : field("Tasks with several creatives", sel("ad.multi", optMap({ flexible: "One flexible ad (Meta mixes them)", separate: "One ad per creative" }, ad.multi)))}
     </div>
     <div class="lx-switches">${chk("ad.utm", ad.utm, "Tracking tags on the link", ad.url_tags ? " — the copied campaign's own tags" : " — so EcomVital credits the sales to this campaign / ad set / ad")}</div>
     <details class="lx-enh" open><summary>Advantage+ creative enhancements <em class="hint">(${Object.keys(o.choices.enhancements).filter((k) => (ad.enhancements || {})[k]).length} on)</em></summary>
       <div class="lx-switches lx-cols">${Object.entries(o.choices.enhancements).map(([k, v]) => chk(`enh.${k}`, (ad.enhancements || {})[k], esc(v))).join("")}</div>
+      ${extraEnh(ad, o)}
     </details>
   </section>`;
+}
+
+/* Enhancements Meta offers beyond the main list (and any a copied ad had): sent only when switched on. */
+function extraEnh(ad, o) {
+  const extra = { ...(o.choices.enh_extra || {}) };
+  for (const k of Object.keys(ad.enhancements || {})) if (!o.choices.enhancements[k] && !extra[k]) extra[k] = k.replace(/_/g, " ");
+  const keys = Object.keys(extra);
+  if (!keys.length) return "";
+  return `<p class="hint">More (only sent to Meta when switched on):</p>
+    <div class="lx-switches lx-cols">${keys.map((k) => chk(`enh.${k}`, (ad.enhancements || {})[k], esc(extra[k]))).join("")}</div>`;
 }
 
 function render() {

@@ -23,7 +23,7 @@ DEFAULTS = {
               "advantage_audience": True, "placements": "advantage",
               "platforms": ["facebook", "instagram"], "fb_positions": ["feed", "story", "facebook_reels"],
               "ig_positions": ["stream", "story", "reels", "explore"],
-              "pixel_id": "", "event": "PURCHASE", "attribution": "7c1v",
+              "pixel_id": "", "event": "PURCHASE", "attribution": "7c1v", "goal": "conversions",
               "start": "now", "start_at": "", "end_at": "",
               "mode": "new", "existing_id": "",                     # bulk: a new ad set, or add the ads to an existing one
               "audience": "form", "targeting_raw": None, "targeting_from": ""},   # "copied" = an ad set's audience exactly
@@ -33,9 +33,15 @@ DEFAULTS = {
 BID_STRATEGIES = {"LOWEST_COST_WITHOUT_CAP": "Highest volume (no cap)", "COST_CAP": "Cost per result goal (cost cap)",
                   "LOWEST_COST_WITH_BID_CAP": "Bid cap", "LOWEST_COST_WITH_MIN_ROAS": "ROAS goal"}
 EVENTS = {"PURCHASE": "Purchase", "ADD_TO_CART": "Add to cart", "INITIATED_CHECKOUT": "Initiate checkout"}
-ATTRIBUTION = {"7c1v": "7-day click or 1-day view", "7c": "7-day click", "1c": "1-day click", "1c1v": "1-day click or 1-day view"}
+ATTRIBUTION = {"7c1v": "7-day click or 1-day view", "7c1e1v": "7-day click, 1-day engaged view or 1-day view",
+               "7c": "7-day click", "1c": "1-day click", "1c1v": "1-day click or 1-day view"}
+ATTR_SPEC = {"7c1v": [("CLICK_THROUGH", 7), ("VIEW_THROUGH", 1)],
+             "7c1e1v": [("CLICK_THROUGH", 7), ("ENGAGED_VIDEO_VIEW", 1), ("VIEW_THROUGH", 1)],
+             "7c": [("CLICK_THROUGH", 7)], "1c": [("CLICK_THROUGH", 1)], "1c1v": [("CLICK_THROUGH", 1), ("VIEW_THROUGH", 1)]}
+GOALS = {"conversions": "Number of purchases (conversions)", "value": "Value of purchases (highest value)"}
 CTAS = {"SHOP_NOW": "Shop now", "LEARN_MORE": "Learn more", "SEE_MORE": "See more", "GET_OFFER": "Get offer",
-        "ORDER_NOW": "Order now", "BUY_NOW": "Buy now"}
+        "ORDER_NOW": "Order now", "BUY_NOW": "Buy now", "SEE_DETAILS": "See details", "SIGN_UP": "Sign up",
+        "SUBSCRIBE": "Subscribe", "CONTACT_US": "Contact us", "GET_QUOTE": "Get quote", "BOOK_NOW": "Book now"}
 # Advantage+ creative enhancements, each its own switch (Meta's creative_features_spec names). Off unless switched on.
 ENHANCEMENTS = {
     "text_optimizations": "Text improvements (Meta rewrites / swaps your text)",
@@ -54,6 +60,11 @@ ENHANCEMENTS = {
     "site_extensions": "Site links",
     "video_auto_crop": "Video auto-crop",
 }
+# Enhancements Meta also offers that the launcher only sends when switched on (copied from a live ad), never as OPT_OUT.
+ENH_EXTRA = {"show_destination_blurbs": "Show destination info", "standard_enhancements": "Standard enhancements (older bundle)",
+             "video_filtering": "Video filters", "pac_relaxation": "Relax placement customisation",
+             "show_summary": "Show summary", "product_extensions": "Product extensions", "reveal_details_over_time": "Reveal details over time",
+             "add_stickers": "Add stickers", "translate_text": "Translate text", "image_auto_crop": "Image auto-crop"}
 UTM = ("utm_source=facebook&utm_medium=paid&utm_campaign={{campaign.name}}&utm_term={{adset.name}}"
        "&utm_content={{ad.name}}&utm_id={{campaign.id}}")
 
@@ -148,10 +159,10 @@ def adset_body(s: dict, name: str, campaign_id: str, minor: int | None, tz_name:
 
 def _adset_rest(s: dict, name: str, campaign_id: str, minor, tz_name: str, bid_minor, targeting: dict) -> dict:
     a, c = s["adset"], s["campaign"]
-    attr = {"7c1v": [("CLICK_THROUGH", 7), ("VIEW_THROUGH", 1)], "7c": [("CLICK_THROUGH", 7)],
-            "1c": [("CLICK_THROUGH", 1)], "1c1v": [("CLICK_THROUGH", 1), ("VIEW_THROUGH", 1)]}.get(a.get("attribution"), [])
+    attr = ATTR_SPEC.get(a.get("attribution"), [])
+    value = a.get("goal") == "value" or c["bid_strategy"] == "LOWEST_COST_WITH_MIN_ROAS"   # a ROAS goal needs value optimising
     body = {"name": name, "campaign_id": campaign_id, "status": "PAUSED", "billing_event": "IMPRESSIONS",
-            "optimization_goal": "OFFSITE_CONVERSIONS",
+            "optimization_goal": "VALUE" if value else "OFFSITE_CONVERSIONS",
             "promoted_object": {"pixel_id": a["pixel_id"], "custom_event_type": a.get("event") or "PURCHASE"},
             "targeting": targeting,
             "attribution_spec": [{"event_type": e, "window_days": d} for e, d in attr]}
@@ -171,7 +182,10 @@ def _adset_rest(s: dict, name: str, campaign_id: str, minor, tz_name: str, bid_m
 
 def enhancements_spec(s: dict) -> dict:
     on = (s["ad"].get("enhancements") or {})
-    return {"creative_features_spec": {k: {"enroll_status": "OPT_IN" if on.get(k) else "OPT_OUT"} for k in ENHANCEMENTS}}
+    spec = {k: {"enroll_status": "OPT_IN" if on.get(k) else "OPT_OUT"} for k in ENHANCEMENTS}
+    spec.update({k: {"enroll_status": "OPT_IN"} for k, v in on.items() if v and k not in ENHANCEMENTS
+                 and re.fullmatch(r"[a-z0-9_]{2,60}", str(k))})
+    return {"creative_features_spec": spec}
 
 
 def creative_body(s: dict, name: str, page_id: str, ig_id: str, link: str, copy: dict, media: list) -> dict:
