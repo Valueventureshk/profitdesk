@@ -233,7 +233,7 @@ function draw() {
 
   $("tBody").innerHTML = `${colgroup}<tbody>${shown.map((r) => `<tr data-name="${esc(r.name)}"${picked.has(r.name) ? ' class="on"' : ""}>
       <th class="trk-pin"><span class="trk-cell"><label class="trk-cb"><input type="checkbox" data-pick${picked.has(r.name) ? " checked" : ""}><i></i></label>
-      <span class="trk-name" title="${esc(r.name)} · click to see each event">${esc(r.name)}</span></span></th>
+      <span class="trk-name" title="${r.name === "N/A" ? "Shoppers who didn't come from an ad link: direct visits, Google search, social bios, your own team" : esc(r.name)} · click to see each event">${r.name === "N/A" ? "No ad (direct / search / social)" : esc(r.name)}</span></span></th>
       ${cols.map(([k, , kind]) => `<td><span class="trk-cell">${fmt(kind, r[k])}</span></td>`).join("")}</tr>`).join("")
     || `<tr><td class="trk-empty" colspan="${cols.length + 1}">${data.health?.last ? "No results in this period." : "No events from this store yet. Switch the pixel on in Setup."}</td></tr>`}</tbody>`;
 

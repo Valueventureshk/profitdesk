@@ -8179,6 +8179,19 @@ def _trk_window(st: dict, day: str, h0: int, h1: int):
     return a, (base + timedelta(hours=h1)).astimezone(timezone.utc)
 
 
+@app.post("/api/tracking/remove-test")
+def api_tracking_remove_test(payload: dict, request: Request):
+    """Owner: delete test events (e.g. a setup test campaign) from a store's tracking: {store, campaign}."""
+    _owner_only(request)
+    store, camp = int(payload.get("store") or 0), str(payload.get("campaign") or "").strip()
+    if not store or not camp or camp == "N/A":
+        raise HTTPException(400, "Pick the store and the test campaign name.")
+    with db._conn() as con:
+        n = con.execute("DELETE FROM px_events WHERE store_id = ? AND a_campaign = ?", (store, camp)).rowcount
+    print(f"Tracking test events removed by {(request.state.user or {}).get('email')}: store {store} '{camp}' x{n}", flush=True)
+    return {"removed": n}
+
+
 @app.get("/api/tracking/events")
 async def api_tracking_events(store: int, start: str, end: str, value: str, field: str = "a_campaign", hour: str = "",
                               hours: str = ""):
