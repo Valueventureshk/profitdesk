@@ -88,18 +88,33 @@
           <input class="control" type="number" min="2" max="6" data-pack value="${offer.pack > 1 ? offer.pack : 2}"></label>
         <label><span>Price applies from</span><input class="control" type="date" data-from value="${esc(today)}" max="${esc(today)}"></label></div>
       <div class="vet-grid" data-grid></div>
+      <button class="btn btn-sm btn-ghost" data-more>+ Add another quantity (e.g. Buy 8, Buy 10)</button>
       <div class="vet-actions"><button class="btn btn-primary" data-save>Save vetted prices</button>
         ${Object.keys(s).length ? `<button class="btn btn-ghost" data-fill>Use the invoice prices</button>` : ""}</div>
       ${(r.vetted_history || []).length ? `<h4 class="vet-h4">Prices set</h4><div class="vet-hist">${r.vetted_history.map((h) =>
         `<div><b>from ${esc(h.from)}</b> ${Object.entries(h.tiers).map(([k, x]) => `${esc(pieceName(+k, r))} ${money(x, "USD")}`).join(" · ")}
           <span class="hint">${esc((h.by || "").split("@")[0])}</span> <a href="#" data-del="${esc(h.from)}" data-write-only>remove</a></div>`).join("")}</div>` : ""}`);
-    const keysFor = () => (offer.type === "bundle" ? [1, 2, 3].map((n) => n * offer.pack) : [1, 2, 3, 4]);
+    // 4 boxes by default (Buy 1-4, or 1-4 sales of a bundle); more can be added, and saved extra ones always show
+    const extra = new Set([...Object.keys(v), ...Object.keys(s)].map(Number));
+    const keysFor = () => {
+      const base = offer.type === "bundle" ? [1, 2, 3, 4].map((n) => n * offer.pack) : [1, 2, 3, 4];
+      const more = [...extra].filter((k) => !base.includes(k) && (Object.keys(v).map(Number).includes(k) || added.has(k)));
+      return [...new Set([...base, ...more])].sort((a, b) => a - b);
+    };
+    const added = new Set();
     const draw = () => {
       const keep = Object.fromEntries([...d.querySelectorAll("[data-tier]")].map((x) => [x.dataset.tier, x.value]));
       d.querySelector("[data-grid]").innerHTML = keysFor().map((k) => `<label><span>${esc(pieceName(k, { offer }))}</span>
         <input class="control" type="number" step="0.01" min="0" data-tier="${k}" value="${keep[k] ?? v[k] ?? ""}" placeholder="${s[k] ? s[k] + " (invoice)" : ""}"></label>`).join("");
     };
     draw();
+    d.querySelector("[data-more]").onclick = () => {
+      const n = parseInt(prompt(offer.type === "bundle" ? "How many pieces (e.g. 10)?" : "Buy how many (e.g. 8)?", "") || "", 10);
+      if (!n || n < 1 || n > 50) return;
+      added.add(n);
+      extra.add(n);
+      draw();
+    };
     d.querySelector("[data-otype]").onchange = (e) => {
       offer = { type: e.target.value, pack: e.target.value === "bundle" ? Math.max(2, +d.querySelector("[data-pack]").value || 2) : 1 };
       d.querySelector("[data-packbox]").hidden = offer.type !== "bundle";

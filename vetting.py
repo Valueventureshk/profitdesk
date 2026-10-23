@@ -52,7 +52,7 @@ DEFAULT_POLICY = {6: "tiered"}        # CUTEHOME bundles the same product (tiere
 DEFAULT_CHECKS_FROM = {6: "2026-10-17"}   # CUTEHOME moved to Dayone on 17 Oct 2026
 TOLERANCE = 0.10                      # USD: a smaller gap between invoice and vetted price isn't a price change
 DROP = ("unmatched", "duplicate", "superseded")
-MAX_PIECES = 12
+MAX_PIECES = 50
 
 
 def init():
