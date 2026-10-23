@@ -79,12 +79,13 @@ MAX_FILES_BYTES = 20 * 1024 * 1024          # Gmail allows 25 MB per email, file
 
 
 async def send(refresh_token: str, sender: str, sender_name: str, to: str, subject: str, text: str,
-               in_reply_to: str = "", references: str = "", thread: str = "", files: list = None) -> dict:
-    """files: [(file name, content type, bytes)] attached to the reply."""
+               in_reply_to: str = "", references: str = "", thread: str = "", files: list = None, fresh: bool = False) -> dict:
+    """files: [(file name, content type, bytes)] attached to the reply. fresh: a new email (bulk email), not a reply."""
     msg = EmailMessage()
     msg["From"] = formataddr((sender_name, sender)) if sender_name else sender
     msg["To"] = to
-    msg["Subject"] = subject if re.match(r"^\s*re\s*:", subject or "", re.I) else f"Re: {subject or ''}".strip()
+    msg["Subject"] = (subject or "").strip() if fresh else (
+        subject if re.match(r"^\s*re\s*:", subject or "", re.I) else f"Re: {subject or ''}".strip())
     msg["Message-ID"] = make_msgid(domain=sender.split("@")[-1])
     if in_reply_to:
         msg["In-Reply-To"] = in_reply_to

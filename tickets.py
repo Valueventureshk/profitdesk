@@ -21,6 +21,7 @@ import re
 from datetime import datetime, timedelta, timezone
 
 import ai_brain
+import bulkmail
 import db
 
 KIND_OF = {"customer": "support", "inquiry": "inquiry", "legal": "legal"}
@@ -86,6 +87,24 @@ async def process(api_key: str, limit: int = 150, finder=None) -> dict:
         if not acct:
             continue
         own = acct["address"].lower()
+        # Bulk email (bulkmail.py): our sent copies and the customers' replies belong to the campaign, not tickets
+        with db._conn() as con:
+            rid = None
+            if msg["direction"] == "out" and msg.get("message_id"):
+                try:
+                    r = con.execute("SELECT id FROM bulk_recipients WHERE message_id = ?", (msg["message_id"],)).fetchone()
+                    rid = r[0] if r else None
+                except Exception:
+                    rid = None
+            elif msg["direction"] == "in":
+                rid = bulkmail.recipient_for_reply(con, msg)
+            if rid:
+                con.execute("UPDATE mail_messages SET processed = 1, category = 'bulk', bulk_recipient_id = ? WHERE id = ?",
+                            (rid, msg["id"]))
+                if msg["direction"] == "in":
+                    con.execute("UPDATE bulk_recipients SET replies = replies + 1, last_reply_at = ? WHERE id = ?",
+                                (msg["date"] or _now(), rid))
+                continue
         if msg["direction"] == "out":
             with db._conn() as con:
                 tid = _ticket_for_headers(con, msg)

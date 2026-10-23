@@ -108,6 +108,25 @@ TOOLS += [
           "set_budget to budget x 1.2.",
           {**_STORE, "summary": {"type": "string"}, "steps": {"type": "array", "items": {"type": "object"}}},
           ["store", "summary", "steps"], ),
+    _tool("bulk_email_audience", "Inbox → Bulk email: who a bulk email would go to. kind scm_stuck = a store's orders whose "
+          "parcels were fulfilled at least min_days ago and are still in one of statuses (info_received = label made, not "
+          "moving; also pending, in_transit, exception), not delivered; kind orders = the order numbers given. Returns the "
+          "count and a sample. Orders emailed in the last 7 days are left out.",
+          {**_STORE, "kind": {"type": "string", "enum": ["scm_stuck", "orders"]},
+           "statuses": {"type": ["array", "null"], "items": {"type": "string"}}, "min_days": {"type": ["integer", "null"]},
+           "max_days": {"type": ["integer", "null"]}, "orders": {"type": ["string", "null"], "description": "order numbers, comma separated"}},
+          ["store", "kind", "statuses", "min_days", "max_days", "orders"]),
+    _tool("bulk_email_create", "Make a bulk email DRAFT in Inbox → Bulk email (nothing is sent): name, subject, body (plain text, "
+          "the store's voice, honest: e.g. a delay apology with what happens next; no promises the store hasn't made) and the "
+          "audience (same fields as bulk_email_audience). Fields: {first_name} {name} {order} {tracking_number} {tracking_link} "
+          "{store}. Returns the draft id and its link; show the person the text and count before proposing to send.",
+          {**_STORE, "name": {"type": "string"}, "subject": {"type": "string"}, "body": {"type": "string"},
+           "kind": {"type": "string", "enum": ["scm_stuck", "orders"]},
+           "statuses": {"type": ["array", "null"], "items": {"type": "string"}}, "min_days": {"type": ["integer", "null"]},
+           "max_days": {"type": ["integer", "null"]}, "orders": {"type": ["string", "null"]}},
+          ["store", "name", "subject", "body", "kind", "statuses", "min_days", "max_days", "orders"]),
+    _tool("propose_bulk_email_send", "Propose sending a bulk email draft (needs Manage on the Inbox). Nothing is sent until the "
+          "person confirms. Replies come back to Inbox → Bulk email, not to tickets.", {"id": {"type": "integer"}}, ["id"]),
     _tool("meta_campaigns", "A store's Meta (Facebook/Instagram) ad campaigns: status, daily budget, spend, Meta's purchases and "
           "ROAS, EcomVital pixel purchases / value / ROAS (real orders), and what the $10-up autopilot added. period: today, "
           "yesterday, 3, 7, 14, 30, month, lastmonth.", {**_STORE, "period": {"type": "string"}}, ["store", "period"]),
@@ -275,7 +294,8 @@ TOOLS += [
 # Anthropic allows at most 20 strict tools: the simple ones (few or no inputs) don't need it.
 _LOOSE = {"propose_google_change", "meta_campaigns", "propose_meta_change", "meta_autopilot", "propose_meta_autopilot", "list_stores", "get_cash", "get_inbox", "list_schedules_alerts", "delete_schedule_alert",
           "store_health", "tracking_live", "google_campaigns", "google_product_issues", "find_shopify_products",
-          "remember", "forget", "product_sales", "get_disputes", "find_parcels", "data_schema", "data_query", "request_change", "list_change_requests", "tasks_list", "task_get", "task_start", "task_save", "task_comment", "task_review", "task_create", "advertorial_save", "task_add_image"}
+          "remember", "forget", "product_sales", "get_disputes", "find_parcels", "data_schema", "data_query", "request_change", "list_change_requests", "tasks_list", "task_get", "task_start", "task_save", "task_comment", "task_review", "task_create", "advertorial_save", "task_add_image",
+          "bulk_email_audience", "bulk_email_create", "propose_bulk_email_send"}
 for _t in TOOLS:
     if _t["name"] in _LOOSE:
         _t.pop("strict", None)

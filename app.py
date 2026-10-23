@@ -70,6 +70,7 @@ import paypal_track
 import research
 import research_hunt
 import social
+import bulkmail
 import vault
 import vetting
 import world
@@ -154,6 +155,7 @@ async def lifespan(app):
     db.init()
     co.init()
     _MAIN["loop"] = asyncio.get_running_loop()
+    bulkmail.init()
     try:
         await asyncio.to_thread(_canon_invoice_suppliers)
     except Exception as e:
@@ -3445,7 +3447,7 @@ async def _suggest_labels():
 
 @app.get("/inbox", response_class=HTMLResponse)
 def inbox_page():
-    return _page("inbox.html", ("inbox.js", "social.js", "nav.js", "styles.css", "skin.css", "chat.js"))
+    return _page("inbox.html", ("inbox.js", "social.js", "bulk.js", "nav.js", "styles.css", "skin.css", "chat.js"))
 
 
 @app.get("/api/inbox/mailboxes")
@@ -3950,6 +3952,302 @@ async def api_inbox_reply(ticket_id: int, request: Request):
             await _sort_mail()
     asyncio.create_task(pick_up())
     return {"ok": True}
+
+
+# ---------------------------------------------------------------- Inbox → Bulk email (bulkmail.py)
+
+_bulk_running: dict = {}
+
+
+def _bulk_mailboxes(store_id: int) -> list:
+    return [{"id": a["id"], "address": a["address"], "can_send": bool(a.get("gmail_token"))}
+            for a in db.list_mail_accounts() if a.get("store_id") == store_id]
+
+
+def _bulk_aud_args(p: dict) -> dict:
+    return {"kind": "orders" if p.get("kind") == "orders" else "scm_stuck",
+            "statuses": [x for x in (p.get("statuses") or ["info_received"]) if x in bulkmail.STUCK],
+            "min_days": max(0, min(int(p.get("min_days") or 7), 90)), "max_days": max(1, min(int(p.get("max_days") or 45), 120)),
+            "orders": [o for o in re.split(r"[\s,]+", str(p.get("orders") or "")) if o] if isinstance(p.get("orders"), str)
+            else (p.get("orders") or []), "skip_emailed": p.get("skip_emailed", True) is not False}
+
+
+@app.get("/api/inbox/bulk")
+def api_bulk_list():
+    bulkmail.init()
+    stores = {x["id"]: x["name"].strip() for x in db.list_stores()}
+    with db._conn() as con:
+        rows = [dict(r) for r in con.execute("SELECT * FROM bulk_campaigns ORDER BY id DESC LIMIT 100")]
+        for r in rows:
+            r["store"] = stores.get(r["store_id"], "")
+            r["counts"] = bulkmail.summary(con, r["id"])
+            r["audience"] = json.loads(r["audience"] or "{}")
+    return {"campaigns": rows, "stores": [{"id": k, "name": v, "mailboxes": _bulk_mailboxes(k)} for k, v in stores.items()],
+            "statuses": list(bulkmail.STUCK), "fields": list(bulkmail.FIELDS)}
+
+
+@app.post("/api/inbox/bulk/preview")
+def api_bulk_preview(payload: dict):
+    """Who would get it: count and the first 15."""
+    store = int(payload.get("store") or 0)
+    got = bulkmail.audience(store, **_bulk_aud_args(payload))
+    return {"count": len(got), "sample": got[:15]}
+
+
+@app.post("/api/inbox/bulk")
+def api_bulk_create(payload: dict, request: Request):
+    """A draft: name, store, mailbox, subject, text and the audience (its list is taken now)."""
+    bulkmail.init()
+    store = int(payload.get("store") or 0)
+    st = next((x for x in db.list_stores() if x["id"] == store), None)
+    if not st:
+        raise HTTPException(400, "Pick the store.")
+    subject, body = str(payload.get("subject") or "").strip(), str(payload.get("body") or "").strip()
+    if not subject or not body:
+        raise HTTPException(400, "Write the subject and the email.")
+    bad = bulkmail.unknown_fields(subject, body)
+    if bad:
+        raise HTTPException(400, "Unknown fields: " + ", ".join("{" + b + "}" for b in bad) + ". Use "
+                            + ", ".join("{" + f + "}" for f in bulkmail.FIELDS) + ".")
+    boxes = [b for b in _bulk_mailboxes(store) if b["can_send"]]
+    acct = int(payload.get("account_id") or 0) or (boxes[0]["id"] if boxes else None)
+    aud = _bulk_aud_args(payload.get("audience") or payload)
+    people = bulkmail.audience(store, **aud)
+    if not people:
+        raise HTTPException(400, "Nobody matches that audience.")
+    with db._conn() as con:
+        cid = con.execute("INSERT INTO bulk_campaigns (store_id, account_id, name, subject, body, audience, created_by)"
+                          " VALUES (?,?,?,?,?,?,?)",
+                          (store, acct, str(payload.get("name") or subject)[:120], subject[:300], body[:20000],
+                           json.dumps(aud), (request.state.user or {}).get("email", ""))).lastrowid
+        con.executemany("INSERT INTO bulk_recipients (campaign_id, order_name, email, name, tracking, tracking_url)"
+                        " VALUES (?,?,?,?,?,?)", [(cid, p["order_name"], p["email"], p["name"], p["tracking"], p["tracking_url"])
+                                                  for p in people])
+    return {"ok": True, "id": cid, "recipients": len(people)}
+
+
+def _bulk_row(cid: int) -> dict:
+    with db._conn() as con:
+        c = con.execute("SELECT * FROM bulk_campaigns WHERE id = ?", (cid,)).fetchone()
+    if not c:
+        raise HTTPException(404, "That bulk email isn't there any more.")
+    return dict(c)
+
+
+@app.get("/api/inbox/bulk/{cid}")
+def api_bulk_get(cid: int, show: str = "all"):
+    bulkmail.init()
+    c = _bulk_row(cid)
+    st = next((x for x in db.list_stores() if x["id"] == c["store_id"]), None) or {}
+    with db._conn() as con:
+        where = {"replied": " AND replies > 0", "unread": " AND replies > 0 AND (read_at IS NULL OR read_at < last_reply_at)",
+                 "failed": " AND status = 'failed'"}.get(show, "")
+        rec = [dict(r) for r in con.execute(f"SELECT * FROM bulk_recipients WHERE campaign_id = ?{where}"
+                                            " ORDER BY (replies > 0) DESC, last_reply_at DESC, id", (cid,))]
+        c["counts"] = bulkmail.summary(con, cid)
+    first = rec[0] if rec else {"name": "Jane Smith", "order_name": "#1001", "tracking": "", "tracking_url": ""}
+    c["preview"] = {"subject": bulkmail.render(c["subject"], first, st.get("name", "").strip()),
+                    "body": bulkmail.render(c["body"], first, st.get("name", "").strip())}
+    c["audience"] = json.loads(c["audience"] or "{}")
+    c["store"] = st.get("name", "").strip()
+    c["mailboxes"] = _bulk_mailboxes(c["store_id"])
+    return {"campaign": c, "recipients": rec[:1000]}
+
+
+@app.put("/api/inbox/bulk/{cid}")
+def api_bulk_edit(cid: int, payload: dict):
+    c = _bulk_row(cid)
+    if c["status"] != "draft":
+        raise HTTPException(400, "It has been sent; make a new one instead.")
+    subject = str(payload.get("subject") or c["subject"]).strip()
+    body = str(payload.get("body") or c["body"]).strip()
+    bad = bulkmail.unknown_fields(subject, body)
+    if bad:
+        raise HTTPException(400, "Unknown fields: " + ", ".join("{" + b + "}" for b in bad))
+    with db._conn() as con:
+        con.execute("UPDATE bulk_campaigns SET name = ?, subject = ?, body = ?, account_id = ? WHERE id = ?",
+                    (str(payload.get("name") or c["name"])[:120], subject[:300], body[:20000],
+                     int(payload.get("account_id") or c["account_id"] or 0) or None, cid))
+    return {"ok": True}
+
+
+@app.delete("/api/inbox/bulk/{cid}")
+def api_bulk_delete(cid: int):
+    c = _bulk_row(cid)
+    if c["status"] != "draft":
+        raise HTTPException(400, "Sent bulk emails stay as a record.")
+    with db._conn() as con:
+        con.execute("DELETE FROM bulk_recipients WHERE campaign_id = ?", (cid,))
+        con.execute("DELETE FROM bulk_campaigns WHERE id = ?", (cid,))
+    return {"ok": True}
+
+
+def _bulk_acct(c: dict) -> dict:
+    a = next((x for x in db.list_mail_accounts() if x["id"] == c.get("account_id")), None)
+    if not a or not a.get("gmail_token"):
+        raise HTTPException(400, "This store's mailbox isn't signed in for sending yet (Settings → Support mailboxes → "
+                                 "Sign in to send).")
+    return a
+
+
+@app.post("/api/inbox/bulk/{cid}/test")
+async def api_bulk_test(cid: int, payload: dict):
+    """One copy (first recipient's details) to an address of yours, e.g. the mailbox itself."""
+    c = _bulk_row(cid)
+    a = _bulk_acct(c)
+    to = str(payload.get("to") or a["address"]).strip()
+    st = next((x for x in db.list_stores() if x["id"] == c["store_id"]), None) or {}
+    with db._conn() as con:
+        r = con.execute("SELECT * FROM bulk_recipients WHERE campaign_id = ? ORDER BY id LIMIT 1", (cid,)).fetchone()
+    r = dict(r) if r else {}
+    try:
+        await gmail_send.send(a["gmail_token"], a["address"], st.get("name", "").strip(), to,
+                              "[TEST] " + bulkmail.render(c["subject"], r, st.get("name", "").strip()),
+                              bulkmail.render(c["body"], r, st.get("name", "").strip()), fresh=True)
+    except gmail_send.SendError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True, "to": to}
+
+
+async def _bulk_send(cid: int, user: str):
+    """Send to everyone still queued, one by one (a pause between, so Gmail doesn't treat it as spam)."""
+    _bulk_running[cid] = True
+    try:
+        c = _bulk_row(cid)
+        a = next((x for x in db.list_mail_accounts() if x["id"] == c["account_id"]), None)
+        st = next((x for x in db.list_stores() if x["id"] == c["store_id"]), None) or {}
+        name = st.get("name", "").strip()
+        while True:
+            c = _bulk_row(cid)
+            if c["status"] != "sending":
+                break
+            with db._conn() as con:
+                r = con.execute("SELECT * FROM bulk_recipients WHERE campaign_id = ? AND status = 'queued' ORDER BY id LIMIT 1",
+                                (cid,)).fetchone()
+            if not r:
+                with db._conn() as con:
+                    con.execute("UPDATE bulk_campaigns SET status = 'sent', finished_at = ? WHERE id = ?",
+                                (datetime.now(timezone.utc).isoformat(timespec="seconds"), cid))
+                break
+            r = dict(r)
+            try:
+                got = await gmail_send.send(a["gmail_token"], a["address"], name, r["email"],
+                                            bulkmail.render(c["subject"], r, name), bulkmail.render(c["body"], r, name), fresh=True)
+                with db._conn() as con:
+                    con.execute("UPDATE bulk_recipients SET status = 'sent', message_id = ?, gmail_thread = ?, sent_at = ?,"
+                                " error = NULL WHERE id = ?", (got.get("message_id"), got.get("threadId"),
+                                                               datetime.now(timezone.utc).isoformat(timespec="seconds"), r["id"]))
+            except Exception as e:
+                with db._conn() as con:
+                    con.execute("UPDATE bulk_recipients SET status = 'failed', error = ? WHERE id = ?", (str(e)[:300], r["id"]))
+                if "Sign it in again" in str(e) or "isn't switched on" in str(e):
+                    with db._conn() as con:             # every next one would fail the same way
+                        con.execute("UPDATE bulk_campaigns SET status = 'stopped' WHERE id = ?", (cid,))
+                    break
+            await asyncio.sleep(2)
+        with db._conn() as con:
+            print(f"Bulk email {cid} by {user}: {bulkmail.summary(con, cid)}", flush=True)
+        if a:
+            await asyncio.sleep(5)
+            await _read_mailbox(a)                      # pick the sent copies up, so replies are matched
+            await _sort_mail()
+    finally:
+        _bulk_running.pop(cid, None)
+
+
+@app.post("/api/inbox/bulk/{cid}/send")
+async def api_bulk_send(cid: int, request: Request):
+    """Manage: send it (or carry on after a stop)."""
+    _need_level(request, "inbox", "manage")
+    c = _bulk_row(cid)
+    _bulk_acct(c)
+    if _bulk_running.get(cid):
+        return {"ok": True, "already": True}
+    with db._conn() as con:
+        con.execute("UPDATE bulk_campaigns SET status = 'sending', sent_by = ?, started_at = COALESCE(started_at, ?) WHERE id = ?",
+                    ((request.state.user or {}).get("email", ""), datetime.now(timezone.utc).isoformat(timespec="seconds"), cid))
+    asyncio.create_task(_bulk_send(cid, (request.state.user or {}).get("email", "")))
+    return {"ok": True}
+
+
+@app.post("/api/inbox/bulk/{cid}/stop")
+def api_bulk_stop(cid: int):
+    with db._conn() as con:
+        con.execute("UPDATE bulk_campaigns SET status = 'stopped' WHERE id = ? AND status = 'sending'", (cid,))
+    return {"ok": True}
+
+
+@app.get("/api/inbox/bulk/recipient/{rid}")
+def api_bulk_recipient(rid: int):
+    """Our email and the customer's replies, oldest first; marks the replies read."""
+    bulkmail.init()
+    with db._conn() as con:
+        r = con.execute("SELECT * FROM bulk_recipients WHERE id = ?", (rid,)).fetchone()
+        if not r:
+            raise HTTPException(404, "Not found.")
+        msgs = [dict(m) for m in con.execute("SELECT id, direction, from_name, from_addr, subject, date, text FROM mail_messages"
+                                             " WHERE bulk_recipient_id = ? ORDER BY date", (rid,))]
+        con.execute("UPDATE bulk_recipients SET read_at = ? WHERE id = ?", (datetime.now(timezone.utc).isoformat(timespec="seconds"), rid))
+    return {"recipient": dict(r), "messages": msgs}
+
+
+@app.post("/api/inbox/bulk/recipient/{rid}/reply")
+async def api_bulk_reply(rid: int, payload: dict, request: Request):
+    """Answer a customer's reply in the same email thread."""
+    text = str(payload.get("text") or "").strip()
+    if not text:
+        raise HTTPException(400, "Write the reply first.")
+    with db._conn() as con:
+        r = dict(con.execute("SELECT * FROM bulk_recipients WHERE id = ?", (rid,)).fetchone() or {})
+        last = con.execute("SELECT message_id, refs, subject FROM mail_messages WHERE bulk_recipient_id = ? AND direction = 'in'"
+                           " ORDER BY date DESC LIMIT 1", (rid,)).fetchone()
+    if not r:
+        raise HTTPException(404, "Not found.")
+    c = _bulk_row(r["campaign_id"])
+    a = _bulk_acct(c)
+    st = next((x for x in db.list_stores() if x["id"] == c["store_id"]), None) or {}
+    mid = (last["message_id"] if last else r["message_id"]) or ""
+    try:
+        got = await gmail_send.send(a["gmail_token"], a["address"], st.get("name", "").strip(), r["email"],
+                                    (last["subject"] if last else c["subject"]) or c["subject"], text, in_reply_to=mid,
+                                    references=(last["refs"] if last else "") or "", thread=r.get("gmail_thread") or "")
+    except gmail_send.SendError as e:
+        raise HTTPException(400, str(e))
+    with db._conn() as con:                        # so the sent copy and the next reply stay with this customer
+        con.execute("UPDATE bulk_recipients SET message_id = COALESCE(message_id, ?) WHERE id = ?", (got.get("message_id"), rid))
+    asyncio.create_task(_bulk_pickup(a))
+    return {"ok": True}
+
+
+async def _bulk_pickup(a: dict):
+    await asyncio.sleep(4)
+    await _read_mailbox(a)
+    await _sort_mail()
+
+
+@app.post("/api/inbox/bulk/recipient/{rid}/ticket")
+def api_bulk_ticket(rid: int, payload: dict, request: Request):
+    """Turn a customer's reply into a ticket (SCM or CS) with the emails so far."""
+    label = "CS" if str(payload.get("label") or "").upper() == "CS" else "SCM"
+    with db._conn() as con:
+        r = con.execute("SELECT * FROM bulk_recipients WHERE id = ?", (rid,)).fetchone()
+        if not r:
+            raise HTTPException(404, "Not found.")
+        if r["ticket_id"]:
+            return {"ok": True, "ticket_id": r["ticket_id"]}
+        c = con.execute("SELECT * FROM bulk_campaigns WHERE id = ?", (r["campaign_id"],)).fetchone()
+        last = con.execute("SELECT date, subject, text FROM mail_messages WHERE bulk_recipient_id = ? AND direction = 'in'"
+                           " ORDER BY date DESC LIMIT 1", (rid,)).fetchone()
+        tid = con.execute("INSERT INTO tickets (account_id, store_id, kind, labels, customer_email, customer_name, subject, summary,"
+                          " orders, status, waiting, last_message_at) VALUES (?,?,?,?,?,?,?,?,?,'open','us',?)",
+                          (c["account_id"], c["store_id"], "support", label, r["email"], r["name"],
+                           (last["subject"] if last else c["subject"]) or c["subject"],
+                           f"Reply to bulk email “{c['name']}”: " + ((last["text"] if last else "") or "")[:300],
+                           r["order_name"] or "", (last["date"] if last else None))).lastrowid
+        con.execute("UPDATE mail_messages SET ticket_id = ? WHERE bulk_recipient_id = ?", (tid, rid))
+        con.execute("UPDATE bulk_recipients SET ticket_id = ? WHERE id = ?", (tid, rid))
+    print(f"Ticket {tid} made from bulk reply {rid} by {(request.state.user or {}).get('email')}", flush=True)
+    return {"ok": True, "ticket_id": tid}
 
 
 @app.post("/api/inbox/translate-text")
@@ -4518,6 +4816,18 @@ async def _confirm_action(action_id: str, confirm: bool, user: dict) -> dict:
         fn = api_up_set if a["payload"]["rule"] == "up10" else api_cut_set
         fn(st["id"], a["payload"]["body"], _AsUser(user))
         return {"ok": True, "text": f"Saved: {a['title']} ({', '.join(f'{k} = {v}' for k, v in a['payload']['body'].items())})."}
+    if a["kind"] == "bulk_send":
+        if not auth.at_least(user, "inbox", "manage"):
+            raise HTTPException(403, "You need Manage access to the Inbox to send a bulk email.")
+        _chat_actions.pop(action_id, None)
+        cid = a["payload"]["id"]
+        _bulk_acct(_bulk_row(cid))
+        with db._conn() as con:
+            con.execute("UPDATE bulk_campaigns SET status = 'sending', sent_by = ?, started_at = COALESCE(started_at, ?) WHERE id = ?",
+                        (user.get("email", ""), datetime.now(timezone.utc).isoformat(timespec="seconds"), cid))
+        if not _bulk_running.get(cid):
+            asyncio.create_task(_bulk_send(cid, user.get("email", "")))
+        return {"ok": True, "text": f"Sending now, one every 2 seconds. Follow it in Inbox → Bulk email ({BASE_URL}/inbox?tab=bulk&bulk={cid})."}
     if not auth.at_least(user, "cog", "work"):
         raise HTTPException(403, "You need Work access to the COG desk to confirm this.")
     _chat_actions.pop(action_id, None)
@@ -10374,6 +10684,30 @@ async def _assist_tool(name: str, args: dict, user: dict):
         names = {x["id"]: x["name"].strip() for x in sts}
         return {"hours_utc": "clock hours in UTC", "stores": {names[k]: v for k, v in data.items()},
                 "note": "Only stores with the EcomVital pixel; only shoppers who allowed tracking."}
+    if name in ("bulk_email_audience", "bulk_email_create", "propose_bulk_email_send"):
+        _need(user, "inbox")
+        bulkmail.init()
+        if name == "propose_bulk_email_send":
+            if not auth.at_least(user, "inbox", "manage"):
+                return {"error": "Sending a bulk email needs Manage access to the Inbox."}
+            c = _bulk_row(int(args.get("id") or 0))
+            if c["status"] not in ("draft", "stopped"):
+                return {"error": f"That bulk email is {c['status']}."}
+            with db._conn() as con:
+                n = con.execute("SELECT COUNT(*) FROM bulk_recipients WHERE campaign_id = ? AND status = 'queued'", (c["id"],)).fetchone()[0]
+            return _propose(user, "bulk_send", f"Send “{c['name']}” to {n} customers",
+                            f"Subject: {c['subject']}\n\n{c['body'][:1500]}", {"id": c["id"]})
+        aud = {"kind": args.get("kind") or "scm_stuck", "statuses": args.get("statuses") or ["info_received"],
+               "min_days": args.get("min_days") or 7, "max_days": args.get("max_days") or 45, "orders": args.get("orders") or ""}
+        store = int(re.sub(r"\D", "", str(args.get("store") or "")) or 0)
+        if name == "bulk_email_audience":
+            got = api_bulk_preview({**aud, "store": store})
+            return {"count": got["count"], "sample": [{k: x[k] for k in ("order_name", "name", "status", "fulfilled_at")}
+                                                      for x in got["sample"][:10]]}
+        got = api_bulk_create({"store": store, "name": args.get("name"), "subject": args.get("subject"),
+                               "body": args.get("body"), "audience": aud}, _AsUser(user))
+        return {**got, "link": f"{BASE_URL}/inbox?tab=bulk&bulk={got['id']}",
+                "note": "Draft only. Show the person the text and the count, then propose_bulk_email_send if they want it sent."}
     if name in ("meta_campaigns", "propose_meta_change", "meta_autopilot", "propose_meta_autopilot"):
         _need(user, "metaads")
         _mads_db()

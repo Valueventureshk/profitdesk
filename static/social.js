@@ -22,11 +22,14 @@
   function setTab(t, quiet) {
     tab = t;
     document.body.classList.toggle("tab-social", t === "social");
+    document.body.classList.toggle("tab-bulk", t === "bulk");
     for (const b of $("inboxTabs").querySelectorAll("[data-tab]")) b.classList.toggle("on", b.dataset.tab === t);
-    $("mailMain").hidden = t === "social";
+    $("mailMain").hidden = t !== "mail";
     $("social").hidden = t !== "social";
-    if (!quiet) PDUrl.set({ tab: t === "social" ? "social" : null });
+    if ($("bulk")) $("bulk").hidden = t !== "bulk";
+    if (!quiet) PDUrl.set({ tab: t === "mail" ? null : t });
     if (t === "social") { loadOverview().then(() => loadView()); }
+    else if (t === "bulk") { if (window.bulkShow) window.bulkShow(); }
     else if (typeof refresh === "function") refresh();
   }
   $("inboxTabs").addEventListener("click", (e) => {
@@ -474,7 +477,8 @@
       const item = PDUrl.get("sitem") || "";
       if (item.startsWith("c:")) openComment(item.slice(2));
       else if (item.startsWith("m:")) openChat(item.slice(2));
-    } else loadOverview();
+    } else if (PDUrl.get("tab") === "bulk") { setTab("bulk", true); loadOverview(); }
+    else loadOverview();
     setInterval(() => {
       if (document.hidden) return;
       loadOverview();

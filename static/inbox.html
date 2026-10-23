@@ -23,6 +23,7 @@
     <div class="scm-pages inbox-tabs" id="inboxTabs">
       <button data-tab="mail" class="on">Email</button>
       <button data-tab="social">Comments &amp; Messages<span class="tab-badge" id="socialBadge" hidden></span></button>
+      <button data-tab="bulk">Bulk email<span class="tab-badge" id="bulkBadge" hidden></span></button>
     </div>
     <div class="controls">
       <select id="mailboxSelect" class="control mail-only"></select>
@@ -57,6 +58,11 @@
       <p class="hint inbox-empty">Pick a ticket or email.</p>
     </section>
   </main>
+  <main class="bulk-main" id="bulk" hidden>
+    <aside class="bulk-side"><button class="btn btn-primary btn-block" id="bulkNew" data-write-only>+ New bulk email</button>
+      <div id="bulkList" class="bulk-list"></div></aside>
+    <section class="bulk-body" id="bulkBody"><p class="hint">Pick a bulk email, or make a new one.</p></section>
+  </main>
   <main class="inbox inbox3 social" id="social" hidden>
     <nav class="inbox-nav" id="snav">
       <div class="inbox-search"><input type="search" id="socialSearch" class="control" placeholder="Search name or words…" autocomplete="off"></div>
@@ -83,5 +89,6 @@
 <script src="/static/chat.js"></script>
 <script src="/static/inbox.js"></script>
 <script src="/static/social.js"></script>
+<script src="/static/bulk.js"></script>
 </body>
 </html>
