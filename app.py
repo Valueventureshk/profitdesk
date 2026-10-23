@@ -1157,7 +1157,7 @@ _cog_det_cache: dict = {}
 COG_DET_Q = """query($q: String!, $after: String) { orders(first: 40, after: $after, query: $q) {
   pageInfo { hasNextPage endCursor }
   nodes { name sourceName app { name } subtotalPriceSet { shopMoney { amount } } totalPriceSet { shopMoney { amount } }
-    totalShippingPriceSet { shopMoney { amount } }
+    totalShippingPriceSet { shopMoney { amount } } totalTaxSet { shopMoney { amount } } taxesIncluded
     lineItems(first: 12) { nodes { originalTotalSet { shopMoney { amount } } } }
     discountApplications(first: 4) { nodes { targetType
       ... on AutomaticDiscountApplication { title } ... on DiscountCodeApplication { code }
@@ -1194,7 +1194,10 @@ async def _cog_order_details(stores: list, start: str, end: str, wanted: set) ->
                 got[n["name"]] = {"subtotal": round(items, 2), "discount": round(max(0.0, items - sub), 2),
                                   "discount_names": names, "draft": src == "shopify_draft_order",
                                   "via": (n.get("app") or {}).get("name") or src,
-                                  "shipping": m(n.get("totalShippingPriceSet")), "total": m(n.get("totalPriceSet"))}
+                                  # shipping actually charged (after free-shipping discounts): the rest of the total
+                                  "shipping": round(max(0.0, m(n.get("totalPriceSet")) - sub
+                                                        - (0.0 if n.get("taxesIncluded") else m(n.get("totalTaxSet")))), 2),
+                                  "total": m(n.get("totalPriceSet"))}
             info = page.get("pageInfo") or {}
             if not info.get("hasNextPage"):
                 break
