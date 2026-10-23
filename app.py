@@ -1133,11 +1133,85 @@ async def api_cog_orders(start: str, end: str = None, store: str = "all"):
     rows = cog_desk.order_rows(lines, inv_by_order, imap, fulfilled, _cog_marks(), sale_usd, _cog_cutoff(),
                                {x["id"]: x["name"].strip() for x in stores}, cog_desk.billed_up_to(imap, lines_of),
                                _usual_suppliers(), shares)
+    try:                               # subtotal, discounts and draft orders, from Shopify
+        det = await _cog_order_details(stores, start, end, {(r["store_id"], r["order_name"]) for r in lines})
+    except Exception as e:
+        print(f"Check orders: Shopify details failed: {e}", flush=True)
+        det = {}
+    for o in rows:
+        d = det.get((o["store_id"], o["order"]))
+        if d:
+            o["shop"] = {"subtotal": round(sale_usd(o["store_id"], d["subtotal"]), 2),
+                         "discount": round(sale_usd(o["store_id"], d["discount"]), 2),
+                         "discount_names": d["discount_names"], "draft": d["draft"], "via": d["via"],
+                         "shipping": round(sale_usd(o["store_id"], d["shipping"]), 2),
+                         "total": round(sale_usd(o["store_id"], d["total"]), 2)}
     count = defaultdict(int)
     for o in rows:
         count[o["kind"]] += 1
     return {"start": start, "end": end, "orders": rows, "counts": count, "cutoff": _cog_cutoff(),
             "sale": round(sum(o["sale"] for o in rows), 2), "cog": round(sum(o["cog"] for o in rows), 2)}
+
+
+_cog_det_cache: dict = {}
+COG_DET_Q = """query($q: String!, $after: String) { orders(first: 40, after: $after, query: $q) {
+  pageInfo { hasNextPage endCursor }
+  nodes { name sourceName app { name } subtotalPriceSet { shopMoney { amount } } totalPriceSet { shopMoney { amount } }
+    totalShippingPriceSet { shopMoney { amount } }
+    lineItems(first: 12) { nodes { originalTotalSet { shopMoney { amount } } } }
+    discountApplications(first: 4) { nodes { targetType
+      ... on AutomaticDiscountApplication { title } ... on DiscountCodeApplication { code }
+      ... on ManualDiscountApplication { title } ... on ScriptDiscountApplication { title } } } } } }"""
+
+
+async def _cog_order_details(stores: list, start: str, end: str, wanted: set) -> dict:
+    """{(store id, order name): subtotal (items before discounts), discount on the items, discount names, draft or not,
+    shipping, total} in store currency, from Shopify. Kept 10 minutes."""
+    out = {}
+
+    async def one(st):
+        key = (st["id"], start, end)
+        hit = _cog_det_cache.get(key)
+        if hit and time.time() - hit[0] < 600:
+            return hit[1]
+        a = (date.fromisoformat(start) - timedelta(days=1)).isoformat()
+        b = (date.fromisoformat(end) + timedelta(days=2)).isoformat()
+        client = ShopifyClient(st["shop_domain"], st["access_token"])
+        got, after = {}, None
+        for _ in range(60):
+            r = await client.gql(COG_DET_Q, {"q": f"created_at:>={a} created_at:<{b}", "after": after})
+            page = ((r.get("data") or r).get("orders") or {})
+            for n in page.get("nodes") or []:
+                m = lambda x: float(((x or {}).get("shopMoney") or {}).get("amount") or 0)
+                items = sum(m(li.get("originalTotalSet")) for li in (n.get("lineItems") or {}).get("nodes") or [])
+                sub = m(n.get("subtotalPriceSet"))
+                names = []
+                for d in (n.get("discountApplications") or {}).get("nodes") or []:
+                    t = d.get("code") or d.get("title")
+                    if t and d.get("targetType") != "SHIPPING_LINE" and t not in names:
+                        names.append(t)
+                src = n.get("sourceName") or ""
+                got[n["name"]] = {"subtotal": round(items, 2), "discount": round(max(0.0, items - sub), 2),
+                                  "discount_names": names, "draft": src == "shopify_draft_order",
+                                  "via": (n.get("app") or {}).get("name") or src,
+                                  "shipping": m(n.get("totalShippingPriceSet")), "total": m(n.get("totalPriceSet"))}
+            info = page.get("pageInfo") or {}
+            if not info.get("hasNextPage"):
+                break
+            after = info.get("endCursor")
+        _cog_det_cache[key] = (time.time(), got)
+        return got
+
+    sts = [x for x in stores if x.get("access_token") and any(k[0] == x["id"] for k in wanted)]
+    res = await asyncio.gather(*[one(x) for x in sts], return_exceptions=True)
+    for st, g in zip(sts, res):
+        if isinstance(g, Exception):
+            print(f"Check orders: {st['name']}: {g}", flush=True)
+            continue
+        for name, d in g.items():
+            if (st["id"], name) in wanted:
+                out[(st["id"], name)] = d
+    return out
 
 
 def _review_channel(supplier: str):

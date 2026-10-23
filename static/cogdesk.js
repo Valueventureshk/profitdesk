@@ -72,7 +72,7 @@
       return `<tr class="${o.state === "invoiced" ? "click" : ""}" data-k="${esc(keyOf(o))}">
         <td class="cd-n"><b>${esc(o.order)}</b><span class="sub">${esc(o.store)}</span><span class="sub">${esc(when(o.created))}</span></td>
         <td class="items">${items}</td>
-        <td class="cd-n">${cancel ? "–" : usd(o.sale)}</td>
+        <td class="cd-n">${cancel ? "–" : subtotal(o)}</td>
         <td class="cd-n"><b>${cancel ? "–" : usd(o.cog)}</b></td>
         <td class="cd-n"><b class="${(o.cog_pct || 0) >= 40 ? "hi" : ""}">${cancel || o.cog_pct == null ? "–" : Math.round(o.cog_pct) + "%"}</b>${cancel ? "" : '<span class="sub">of the sale</span>'}</td>
         <td><div class="cd-flags">${cancel ? "" : o.paid ? '<span class="cd-tag t-inv">Paid</span>' : '<span class="cd-tag t-bad">Unpaid</span>'}${STATE[o.state] || ""}</div>
@@ -82,6 +82,18 @@
     }).join("") : `<tr><td colspan="8" class="cd-empty">${cd.orders.length ? "No orders match." : "No orders costed for this period yet."}</td></tr>`;
   }
 
+  // Subtotal = the items before discounts (Shopify), then the discount and why, and staff-made draft orders
+  function subtotal(o) {
+    const s = o.shop;
+    if (!s) return usd(o.sale);
+    let h = `<b>${usd(s.subtotal)}</b>`;
+    if (s.discount >= 0.01) {
+      h += `<span class="cd-disc">−${usd(s.discount)} discount</span>`;
+      if (s.discount_names && s.discount_names.length) h += `<span class="sub">${esc(s.discount_names.join(", "))}</span>`;
+    }
+    if (s.draft) h += `<span class="cd-tag t-draft" title="Made by staff in Shopify (Draft Orders), e.g. a replacement">Staff draft order</span>`;
+    return h;
+  }
   const byKey = (k) => cd.orders.find((o) => keyOf(o) === k);
   $("cdChips").onclick = (e) => { const b = e.target.closest(".cd-chip"); if (b) { cd.filter = b.dataset.f; draw(); } };
   $("cdFind").oninput = draw;

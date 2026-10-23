@@ -119,3 +119,6 @@ table.cd.dates td { vertical-align: top; }
   .cd-cmp, .cd-answers, .cd-money { grid-template-columns: 1fr; }
 }
 @media (prefers-reduced-motion: no-preference) { .cd-box { animation: cdpop .14s ease-out; } @keyframes cdpop { from { transform: translateY(6px); opacity: .6; } } }
+.cd-disc { display: block; font-size: 12px; color: var(--muted, #64748B); margin-top: 2px; font-variant-numeric: tabular-nums; }
+.t-draft { display: inline-block; margin-top: 4px; background: #FFF4E5; color: #9A5B00; }
+[data-theme="dark"] .t-draft { background: rgba(255,170,60,.14); color: #F5B860; }
