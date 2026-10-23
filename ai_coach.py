@@ -67,7 +67,7 @@ def clean_text(text: str, limit: int = 1800) -> str:
     return re.sub(r"\n{3,}", "\n\n", body).strip()[:limit]
 
 
-def threads(messages: list, limit: int = 500) -> list:
+def threads(messages: list, limit: int = 1000) -> list:
     """Group copied emails into conversations (customer + store + subject) and keep
     those where we replied. Newest first. Each: {customer, store_id, subject,
     turns: [(direction, text)], last}"""

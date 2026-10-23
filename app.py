@@ -4329,7 +4329,7 @@ async def api_learn(payload: dict):
     if _learn.get("running"):
         raise HTTPException(400, "Already learning. Wait for it to finish.")
     days = max(0, min(int(payload.get("days") or 0), 365))
-    limit = max(20, min(int(payload.get("limit") or 500), 500))
+    limit = max(20, min(int(payload.get("limit") or 500), 1000))
     asyncio.create_task(_learn_job(days, limit))
     return {"ok": True}
 

@@ -749,7 +749,7 @@ async function loadTraining() {
             <option value="90">Last 3 months</option><option value="180" selected>Last 6 months</option>
             <option value="365">Last 12 months</option></select></label>
         <label>Conversations to learn from
-          <select id="trLimit" class="control"><option>100</option><option>250</option><option selected>500</option></select></label>
+          <select id="trLimit" class="control"><option>100</option><option>250</option><option>500</option><option selected>1000</option></select></label>
         <button class="btn btn-primary" id="trLearn" ${j.running ? "disabled" : ""}>${d.learned ? "Learn again" : "Start learning"}</button>
       </div>
       <p class="hint">Uses Claude Sonnet 5.5. Learning from 500 conversations costs roughly US$2–4 of your API credit and takes a few minutes.</p>
