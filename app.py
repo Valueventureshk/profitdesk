@@ -5750,6 +5750,8 @@ async def _dispute_fresh(key: str) -> dict:
     try:
         if case["provider"] == "paypal":
             case = disputes.from_paypal(await paypal.dispute(c["client_id"], c["secret"], case["id"]), c)
+            if case["state"] == "closed":
+                case["outcome_read"] = True          # full details read: its result is known
         else:
             case = disputes.from_airwallex(await awx.dispute(c["client_id"], c["secret"], case["id"], c.get("account_id")), c)
     except (paypal.PayPalError, awx.AirwallexError) as e:
