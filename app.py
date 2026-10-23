@@ -2746,7 +2746,7 @@ async def _vet_extras(stores: list, products: list, lines_all: list, sold_ever: 
             "flags": sum(1 for f in open_flags if f["store_id"] in sids),
             "policies": {str(x["id"]): learned["policies"].get(x["id"], "per_item") for x in stores},
             "per_item": {str(x["id"]): learned["per_item"].get(x["id"], 0.0) for x in stores},
-            "target": vetting.TARGET_COG * 100}
+            "target": round(vetting.TARGET_COG * 100)}
 
 
 @app.put("/api/cog/pdesk/vetted")
