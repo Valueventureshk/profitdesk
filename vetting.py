@@ -4,7 +4,8 @@ Per store and product, admins / Work-level staff set what the supplier SHOULD ch
 of PIECES (what the supplier ships, USD incl. shipping):
 - single items ("qty" offer): Buy 1, Buy 2, Buy 3, Buy 4 pieces;
 - bundles ("bundle" offer, e.g. a Buy 1 Get 1 product sold only in packs of 2): Buy 2, 4, 6 ... pieces.
-An order line's pieces = its quantity × cog.pack(name) (a BOGO sale is 2 pieces).
+An order line's pieces = its quantity (CUTEHOME's BOGO lines are one pair each since the Dayone switch: one sale = 2
+lines or quantity 2, billed US$25.10 together).
 
 Every price has a "from" date (default the day it's set; can be back-dated): it costs the orders placed on or
 after that day (cog.cost_order, source "vetted"), until a newer price takes over, so a supplier price change only
@@ -178,7 +179,7 @@ def learn(lines: list, inv_lines: list, vetted: dict, policies: dict, starts: di
     """From saved order lines (cog_lines: store_id, order_name, product, product_id, quantity, cancelled, day) and
     invoice lines: per store the learned per-item discount, per product prices suggested by invoices (by pieces), and
     the invoiced orders whose charge doesn't match the vetted price of their day (the price-check sheet)."""
-    from cog import order_key, pack
+    from cog import order_key
     from products_desk import pid_of
     orders = defaultdict(lambda: defaultdict(int))      # (store, order key) -> {pid: pieces}
     names, days = {}, {}
@@ -186,7 +187,7 @@ def learn(lines: list, inv_lines: list, vetted: dict, policies: dict, starts: di
         if l.get("cancelled") or not l.get("product_id"):
             continue
         k = (l["store_id"], order_key(l["order_name"]))
-        orders[k][pid_of(l["product_id"])] += max(int(l.get("quantity") or 1), 1) * pack(l.get("product") or "")
+        orders[k][pid_of(l["product_id"])] += max(int(l.get("quantity") or 1), 1)
         names[k], days[k] = l["order_name"], l.get("day")
     charged, inv = defaultdict(float), {}
     for l in inv_lines:

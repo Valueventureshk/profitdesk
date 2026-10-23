@@ -334,12 +334,12 @@ def cost_order(order: dict, store, catalog: Catalog, usd_to_store: float) -> lis
     items = 0 if order["cancelled"] else sum(max(x["quantity"], 1) * pack(label(x)) for x in order["lines"])
     out = []
     # Vetted prices (owner, 23 Oct 2026): what the supplier should charge is the cost, invoices or not, for orders
-    # on or after the price's from-date. Pieces = quantity x pack (a BOGO sale ships 2).
+    # on or after the price's from-date. Pieces = the quantity ordered (a BOGO line is one pair).
     vet_cost = {}
     if catalog.vetted and not order["cancelled"]:
         import vetting
         pid_ = lambda x: str(x.get("product_id") or "").rsplit("/", 1)[-1]
-        mine = [(pid_(x), max(x["quantity"], 1) * pack(label(x))) for x in order["lines"] if pid_(x)]
+        mine = [(pid_(x), max(x["quantity"], 1)) for x in order["lines"] if pid_(x)]
         distinct = len({p for p, _ in mine})
         mode = catalog.policy.get(store, "per_item")
         by = defaultdict(int)
@@ -356,7 +356,7 @@ def cost_order(order: dict, store, catalog: Catalog, usd_to_store: float) -> lis
         vp = str(li.get("product_id") or "").rsplit("/", 1)[-1]
         if vp in vet_cost:
             total, q_all, mode, since = vet_cost[vp]
-            share = total * qty / q_all                              # lines of the same product share its cost
+            share = total * max(li["quantity"], 1) / q_all           # lines of the same product share its cost
             out.append({**li, "product": name, "cost": share, "source": "vetted", "supplier": "",
                         "note": f"Vetted price from {since}, {q_all} piece{'s' if q_all > 1 else ''}"
                                 + (" (tiered)" if mode == "tiered" else "")})
