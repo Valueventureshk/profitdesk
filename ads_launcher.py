@@ -24,9 +24,11 @@ DEFAULTS = {
               "platforms": ["facebook", "instagram"], "fb_positions": ["feed", "story", "facebook_reels"],
               "ig_positions": ["stream", "story", "reels", "explore"],
               "pixel_id": "", "event": "PURCHASE", "attribution": "7c1v",
-              "start": "now", "start_at": "", "end_at": ""},
+              "start": "now", "start_at": "", "end_at": "",
+              "mode": "new", "existing_id": "",                     # bulk: a new ad set, or add the ads to an existing one
+              "audience": "form", "targeting_raw": None, "targeting_from": ""},   # "copied" = an ad set's audience exactly
     "ad": {"name": "{task}", "page_id": "", "instagram_id": "", "cta": "SHOP_NOW", "utm": True,
-           "multi": "flexible", "enhancements": {}},
+           "multi": "flexible", "enhancements": {}, "display_link": "", "url_tags": ""},
 }
 BID_STRATEGIES = {"LOWEST_COST_WITHOUT_CAP": "Highest volume (no cap)", "COST_CAP": "Cost per result goal (cost cap)",
                   "LOWEST_COST_WITH_BID_CAP": "Bid cap", "LOWEST_COST_WITH_MIN_ROAS": "ROAS goal"}
@@ -68,7 +70,8 @@ def store_cfg(store_id: int) -> dict:
         got = json.loads(db.get_setting(f"launcher:{store_id}") or "{}")
     except ValueError:
         got = {}
-    return {"presets": got.get("presets") or [], "last": got.get("last") or {}, "drafts": got.get("drafts") or []}
+    return {"presets": got.get("presets") or [], "last": got.get("last") or {}, "drafts": got.get("drafts") or [],
+            "bulk_drafts": got.get("bulk_drafts") or []}
 
 
 def save_cfg(store_id: int, cfg: dict):
@@ -125,6 +128,9 @@ def campaign_body(s: dict, name: str, minor: int | None) -> dict:
 
 def adset_body(s: dict, name: str, campaign_id: str, minor: int | None, tz_name: str, bid_minor: int | None) -> dict:
     a, c = s["adset"], s["campaign"]
+    if a.get("audience") == "copied" and isinstance(a.get("targeting_raw"), dict):
+        targeting = json.loads(json.dumps(a["targeting_raw"]))          # an existing ad set's audience, exactly
+        return _adset_rest(s, name, campaign_id, minor, tz_name, bid_minor, targeting)
     targeting = {"geo_locations": {"countries": countries(a["countries"])},
                  "age_min": int(a.get("age_min") or 18), "age_max": int(a.get("age_max") or 65),
                  "targeting_automation": {"advantage_audience": 1 if a.get("advantage_audience") else 0}}
@@ -137,6 +143,11 @@ def adset_body(s: dict, name: str, campaign_id: str, minor: int | None, tz_name:
             targeting["facebook_positions"] = a.get("fb_positions") or ["feed"]
         if "instagram" in plats:
             targeting["instagram_positions"] = a.get("ig_positions") or ["stream"]
+    return _adset_rest(s, name, campaign_id, minor, tz_name, bid_minor, targeting)
+
+
+def _adset_rest(s: dict, name: str, campaign_id: str, minor, tz_name: str, bid_minor, targeting: dict) -> dict:
+    a, c = s["adset"], s["campaign"]
     attr = {"7c1v": [("CLICK_THROUGH", 7), ("VIEW_THROUGH", 1)], "7c": [("CLICK_THROUGH", 7)],
             "1c": [("CLICK_THROUGH", 1)], "1c1v": [("CLICK_THROUGH", 1), ("VIEW_THROUGH", 1)]}.get(a.get("attribution"), [])
     body = {"name": name, "campaign_id": campaign_id, "status": "PAUSED", "billing_event": "IMPRESSIONS",
@@ -168,7 +179,7 @@ def creative_body(s: dict, name: str, page_id: str, ig_id: str, link: str, copy:
     cta = s["ad"].get("cta") or "SHOP_NOW"
     body = {"name": name, "degrees_of_freedom_spec": enhancements_spec(s)}
     if s["ad"].get("utm", True):
-        body["url_tags"] = UTM
+        body["url_tags"] = s["ad"].get("url_tags") or UTM
     story = {"page_id": page_id}
     if ig_id:
         story["instagram_user_id"] = ig_id

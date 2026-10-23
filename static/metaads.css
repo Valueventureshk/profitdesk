@@ -172,3 +172,32 @@
 .ma-cut-watch { font-size: 12.5px; margin-top: 6px; }
 .ma-cut-watch td, .ma-cut-watch th { padding: 5px 8px; white-space: nowrap; }
 @media (max-width: 720px) { .ma-strat-acts .ma-cut-fields { min-width: 0; grid-template-columns: 1fr; } .ma-cut-watch { display: block; overflow-x: auto; } }
+
+/* Launcher: bulk upload + copy setup */
+.lx-modes { margin-bottom: 12px; }
+.lx-bp { border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; margin-top: 10px; font-size: 13.5px; background: var(--bg); }
+.lx-bp p { margin: 0 0 6px; }
+.lx-bp ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; }
+.lx-bp ul.lx-warn { margin-top: 8px; color: var(--loss, #B3402A); }
+.lx-drop { display: block; border: 2px dashed var(--line); border-radius: 12px; padding: 22px; text-align: center; cursor: pointer; color: var(--muted); font-size: 13.5px; margin-bottom: 12px; }
+.lx-drop b { display: block; color: var(--ink); font-size: 15px; margin-bottom: 4px; }
+.lx-drop.over, .lx-drop:hover { border-color: var(--up); background: var(--bg); }
+.lx-selbar { display: flex; gap: 10px; align-items: center; margin-bottom: 8px; font-size: 13px; }
+.lx-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; }
+.lx-tile { position: relative; display: flex; flex-direction: column; border: 2px solid var(--line); border-radius: 10px; overflow: hidden; cursor: pointer; background: var(--panel); }
+.lx-tile.on { border-color: var(--up); }
+.lx-tile input { position: absolute; top: 6px; left: 6px; z-index: 1; }
+.lx-tile img { width: 100%; aspect-ratio: 1; object-fit: cover; display: block; background: var(--bg); }
+.lx-vid { width: 100%; aspect-ratio: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; font-size: 28px; color: var(--muted); background: var(--bg); }
+.lx-vid em { font-style: normal; font-size: 11px; }
+.lx-num { position: absolute; top: 6px; right: 6px; min-width: 22px; height: 22px; border-radius: 11px; background: var(--up); color: #fff; font-size: 12px; display: flex; align-items: center; justify-content: center; font-family: "IBM Plex Mono", monospace; }
+.lx-tname { font-size: 11.5px; padding: 4px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
+.lx-x { position: absolute; bottom: 24px; right: 4px; border: 0; border-radius: 6px; background: rgba(0,0,0,.55); color: #fff; width: 22px; height: 22px; cursor: pointer; display: none; }
+.lx-tile:hover .lx-x { display: block; }
+.lx-copy { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.lx-texts { display: grid; gap: 6px; margin-bottom: 10px; font-size: 13px; }
+.lx-texts textarea { resize: vertical; font: inherit; }
+.lx-texts .btn { justify-self: start; }
+.lx-tree { margin: 6px 0; font-size: 13.5px; }
+.lx-tree ul { margin: 2px 0 0 18px; }
+@media (max-width: 720px) { .lx-copy { grid-template-columns: 1fr; } .lx-tiles { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); } .lx-x { display: block; } }
