@@ -2735,11 +2735,18 @@ async def _vet_extras(stores: list, products: list, lines_all: list, sold_ever: 
         r["suggested"] = learned["suggested"].get(key) or {}
         r["flags"] = flagged.get(key, 0)
         r["policy"] = learned["policies"].get(r["store_id"], "per_item")
-        b = vetting.base(t)
-        base = b[1] if b else r.get("cost")
-        r["base_cost"] = base
-        r["base_pieces"] = b[0] if b else None
-        r["base_from"] = "vetted" if b else ("latest" if base else None)
+        # The selling price is for one sale: one piece, or a whole bundle (e.g. the Orthora BOGO's A$109.99 = 2 pairs),
+        # so COG % and the suggested price use the cost of that many pieces.
+        per_sale = r["offer"]["pack"] if r["offer"].get("type") == "bundle" else 1
+        if t:
+            base, frm = vetting.pieces_cost(t, per_sale), "vetted"
+        elif r["suggested"].get(str(per_sale)):
+            base, frm = r["suggested"][str(per_sale)], "invoice"
+        else:
+            base, frm = r.get("cost"), ("latest" if r.get("cost") else None)
+        r["base_cost"] = round(base, 2) if base else base
+        r["base_pieces"] = per_sale
+        r["base_from"] = frm
         rate = rates.get(r["store_id"]) or 0
         price = r.get("price_low")
         rec = vetting.recommend(base * rate if base and rate else None, price)

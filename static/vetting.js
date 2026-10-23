@@ -51,7 +51,8 @@
     return `<td class="num"><a href="#" data-vet="${i}" title="Set the vetted prices">${vet}</a>${dd}
         <a href="#" class="sub" data-vet="${i}" data-write-only>${has ? "edit / new price" : "set prices"}</a></td>
       <td class="num">${r.cog_pct !== null && r.cog_pct !== undefined ? `<b class="${r.cog_pct > 29 ? "pdk-warn" : ""}">${r.cog_pct}%</b>
-        <span class="sub">${r.base_from === "vetted" ? "vetted cost" : "latest cost"} vs price</span>` : "—"}</td>
+        <span class="sub">${{ vetted: "vetted", invoice: "invoiced", latest: "latest" }[r.base_from] || ""} cost${r.base_pieces > 1 ? ` of ${r.base_pieces} pcs (one sale)` : ""}
+          ${r.base_cost ? money(r.base_cost, "USD") : ""} vs price</span>` : "—"}</td>
       <td class="num">${r.recommended ? `<b>${money(r.recommended, cur)}</b>${guide}
         ${Math.abs(r.price_change) >= 0.5 ? `<button class="btn btn-sm" data-apply="${i}" data-manage-only>Apply</button>` : ""}` : "—"}</td>`;
   };
