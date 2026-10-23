@@ -2682,10 +2682,12 @@ async def _vet_learned(force: bool = False) -> dict:
         vetting.init()
         with db._conn() as con:
             lines = [dict(r) for r in con.execute(
-                "SELECT store_id, order_name, product_id, quantity, cancelled, day FROM cog_lines WHERE product_id IS NOT NULL")]
+                "SELECT store_id, order_name, product, product_id, quantity, cancelled, day FROM cog_lines WHERE product_id IS NOT NULL")]
         vetted = vetting.load()
         policies = {x["id"]: vetting.policy(x["id"]) for x in db.list_stores()}
-        got = vetting.learn(lines, db.invoice_lines(), vetted, policies)
+        starts = {x["id"]: vetting.checks_from(x["id"]) for x in db.list_stores()}
+        got = vetting.learn(lines, db.invoice_lines(), vetted, policies, starts)
+        got["starts"] = starts
         changed = False
         for sid, d in got["per_item"].items():
             key = f"supplier_per_item:{sid}"
@@ -2704,9 +2706,9 @@ async def _vet_learned(force: bool = False) -> dict:
 
 
 def _vet_open_flags(learned: dict) -> list:
-    """Price checks not yet marked checked (escalated ones stay listed)."""
+    """Price checks not yet settled: open or escalated (refunded and OK ones are done)."""
     marks = learned.get("marks") or {}
-    return [f for f in learned["flags"] if (marks.get((f["store_id"], f["order_key"])) or {}).get("state") != "ok"]
+    return [f for f in learned["flags"] if (marks.get((f["store_id"], f["order_key"])) or {}).get("state") not in ("ok", "refunded")]
 
 
 async def _vet_extras(stores: list, products: list, lines_all: list, sold_ever: set) -> dict:
@@ -2722,14 +2724,22 @@ async def _vet_extras(stores: list, products: list, lines_all: list, sold_ever: 
     rates = {x["id"]: await _usd_to(x["currency"]) for x in stores}
     for r in products:
         key = (r["store_id"], r["pid"])
-        t = vetted.get(key) or {}
+        vs = vetted.get(key) or []
+        cur = vetting.latest(vs)
+        t = cur["tiers"] if cur else {}
         r["vetted"] = t
+        r["vetted_from"] = cur["from"] if cur else None
+        r["vetted_history"] = [{"from": v["from"], "tiers": v["tiers"], "by": v["by"]} for v in reversed(vs)][:10]
+        r["pack"] = cog.pack(r["title"])
+        r["offer"] = cur["offer"] if cur else ({"type": "bundle", "pack": r["pack"]} if r["pack"] > 1 else {"type": "qty", "pack": 1})
         r["suggested"] = learned["suggested"].get(key) or {}
         r["flags"] = flagged.get(key, 0)
         r["policy"] = learned["policies"].get(r["store_id"], "per_item")
-        base = float(t["1"]) if t.get("1") else r.get("cost")
+        b = vetting.base(t)
+        base = b[1] if b else r.get("cost")
         r["base_cost"] = base
-        r["base_from"] = "vetted" if t.get("1") else ("latest" if base else None)
+        r["base_pieces"] = b[0] if b else None
+        r["base_from"] = "vetted" if b else ("latest" if base else None)
         rate = rates.get(r["store_id"]) or 0
         price = r.get("price_low")
         rec = vetting.recommend(base * rate if base and rate else None, price)
@@ -2740,9 +2750,10 @@ async def _vet_extras(stores: list, products: list, lines_all: list, sold_ever: 
         if l["store_id"] in sids and not l["cancelled"] and l.get("cost_usd") is not None and (l.get("subtotal") or 0) > 0:
             cog_usd += l["cost_usd"]
             sales_usd += l["subtotal"] / (rates.get(l["store_id"]) or 1)
-    unvetted = [k for k in sold_ever if not (vetted.get(k) or {}).get("1")]
+    unvetted = [k for k in sold_ever if not vetted.get(k)]
     return {"avg_cog_pct": round(cog_usd / sales_usd * 100, 1) if sales_usd else None,
-            "unvetted": len(unvetted), "vetted": sum(1 for k in sold_ever if (vetted.get(k) or {}).get("1")),
+            "unvetted": len(unvetted), "vetted": sum(1 for k in sold_ever if vetted.get(k)),
+            "starts": {str(x["id"]): (learned.get("starts") or {}).get(x["id"], "") for x in stores},
             "flags": sum(1 for f in open_flags if f["store_id"] in sids),
             "policies": {str(x["id"]): learned["policies"].get(x["id"], "per_item") for x in stores},
             "per_item": {str(x["id"]): learned["per_item"].get(x["id"], 0.0) for x in stores},
@@ -2757,14 +2768,36 @@ async def api_pdesk_vetted(payload: dict, request: Request):
     store, pid = int(payload.get("store") or 0), str(payload.get("pid") or "")
     if not store or not pid.isdigit():
         raise HTTPException(400, "Pick a product.")
-    tiers = vetting.save(store, pid, payload.get("tiers") or {}, (request.state.user or {}).get("email", ""))
+    st = next((x for x in db.list_stores() if x["id"] == store), None)
+    day = str(payload.get("from") or "").strip() or (_store_today(st).isoformat() if st else date.today().isoformat())
+    try:
+        date.fromisoformat(day)
+    except ValueError:
+        raise HTTPException(400, "Pick the date the price applies from.")
+    got = vetting.save(store, pid, payload.get("tiers") or {}, payload.get("offer") or {}, day,
+                       (request.state.user or {}).get("email", ""))
     _cog.pop("catalog", None)
     _vet_learn["at"] = 0.0
-    with db._conn() as con:
-        names = {r[0] for r in con.execute("SELECT DISTINCT order_name FROM cog_lines WHERE store_id = ? AND product_id LIKE ?",
-                                           (store, f"%/{pid}"))}
+    with db._conn() as con:                         # orders from that day take the price (later versions keep theirs)
+        names = {r[0] for r in con.execute("SELECT DISTINCT order_name FROM cog_lines WHERE store_id = ? AND product_id LIKE ?"
+                                           " AND day >= ?", (store, f"%/{pid}", day))}
     asyncio.create_task(_recost(store, names))
-    return {"ok": True, "tiers": tiers, "recosting": len(names)}
+    return {"ok": True, **got, "recosting": len(names)}
+
+
+@app.put("/api/cog/pdesk/checks-from")
+def api_pdesk_checks_from(payload: dict, request: Request):
+    """Manage: invoices of orders before this store day aren't price-checked (e.g. the switch to a new supplier)."""
+    _need_level(request, "cog", "manage")
+    day = str(payload.get("from") or "").strip()
+    if day:
+        try:
+            date.fromisoformat(day)
+        except ValueError:
+            raise HTTPException(400, "Pick a date.")
+    db.set_setting(f"price_checks_from:{int(payload.get('store') or 0)}", day)
+    _vet_learn["at"] = 0.0
+    return {"ok": True}
 
 
 @app.put("/api/cog/pdesk/policy")
@@ -2778,7 +2811,7 @@ async def api_pdesk_policy(payload: dict, request: Request):
     db.set_setting(f"supplier_policy:{sid}", mode)
     _cog.pop("catalog", None)
     _vet_learn["at"] = 0.0
-    pids = [p for (s_, p) in vetting.load() if s_ == sid]
+    pids = [p for (s_, p) in vetting.load() if s_ == sid]           # re-cost the orders of its vetted products
     if pids:
         with db._conn() as con:
             names = {r[0] for r in con.execute(
@@ -2814,7 +2847,7 @@ def api_pdesk_flag_mark(payload: dict, request: Request):
     vetting.init()
     sid, key, state = int(payload.get("store") or 0), str(payload.get("order_key") or ""), payload.get("state") or ""
     with db._conn() as con:
-        if state in ("escalated", "ok"):
+        if state in ("escalated", "refunded", "ok"):
             con.execute("INSERT INTO pd_flag_marks (store_id, order_key, state, note, by, at) VALUES (?,?,?,?,?,datetime('now'))"
                         " ON CONFLICT(store_id, order_key) DO UPDATE SET state = excluded.state, note = excluded.note,"
                         " by = excluded.by, at = excluded.at",
@@ -12833,9 +12866,10 @@ async def _recost(store_id: int, order_names: set):
         orders = {}
         for r in rows:
             o = orders.setdefault(r["order_name"], {"name": r["order_name"], "cancelled": bool(r["cancelled"]),
-                                                    "lines": [], "nos": []})
+                                                    "day": r["day"], "lines": [], "nos": []})
             o["lines"].append({"title": r["product"], "variant": "", "quantity": r["quantity"],
-                               "subtotal": r["subtotal"], "sku": r["sku"], "original": r.get("original") or 0.0})
+                               "subtotal": r["subtotal"], "sku": r["sku"], "original": r.get("original") or 0.0,
+                               "product_id": r.get("product_id")})
             o["nos"].append(r["line_no"])
         updates = []
         for o in orders.values():

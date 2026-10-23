@@ -184,7 +184,7 @@ class Catalog:
         self.store_sales = defaultdict(float)
         self.unmatched_tags = defaultdict(int)
         self.inv_by_order = defaultdict(list)        # (store, order) -> uploaded invoice lines
-        self.vetted, self.policy, self.per_item = {}, {}, {}   # vetted supplier prices (vetting.py), loaded below
+        self.vetted, self.policy, self.per_item = {}, {}, {}   # vetted supplier price versions (vetting.py)
         try:
             import vetting
             import db as _db
@@ -333,34 +333,33 @@ def cost_order(order: dict, store, catalog: Catalog, usd_to_store: float) -> lis
     label = lambda x: f"{x['title']} - {x['variant']}" if x["variant"] else x["title"]
     items = 0 if order["cancelled"] else sum(max(x["quantity"], 1) * pack(label(x)) for x in order["lines"])
     out = []
-    # Vetted prices (owner, 23 Oct 2026): what the supplier should charge is the cost, invoices or not.
+    # Vetted prices (owner, 23 Oct 2026): what the supplier should charge is the cost, invoices or not, for orders
+    # on or after the price's from-date. Pieces = quantity x pack (a BOGO sale ships 2).
     vet_cost = {}
     if catalog.vetted and not order["cancelled"]:
         import vetting
         pid_ = lambda x: str(x.get("product_id") or "").rsplit("/", 1)[-1]
-        mine = [(pid_(x), max(x["quantity"], 1)) for x in order["lines"] if pid_(x)]
-        distinct = {p for p, _ in mine}
-        vet_items = [(p, q) for p, q in mine if catalog.vetted.get((store, p))]
-        if vet_items:
-            mode = catalog.policy.get(store, "per_item")
-            by = defaultdict(int)
-            for p, q in vet_items:
-                by[p] += q
-            for p, q in by.items():
-                t = catalog.vetted[(store, p)]
-                c = vetting.pieces_cost(t, q) if (mode == "tiered" or str(q) in t) else float(t["1"]) * q
-                if mode == "per_item" and len(distinct) >= 2:
-                    c -= catalog.per_item.get(store, 0.0) * q
-                vet_cost[p] = (max(c or 0.0, 0.0), q, mode)
+        mine = [(pid_(x), max(x["quantity"], 1) * pack(label(x))) for x in order["lines"] if pid_(x)]
+        distinct = len({p for p, _ in mine})
+        mode = catalog.policy.get(store, "per_item")
+        by = defaultdict(int)
+        for p, q in mine:
+            by[p] += q
+        for p, q in by.items():
+            v = vetting.active(catalog.vetted.get((store, p)), order.get("day"))
+            if v and v["tiers"]:
+                vet_cost[p] = (vetting.product_cost(mode, v["tiers"], q, distinct, catalog.per_item.get(store, 0.0)),
+                               q, mode, v["from"])
     for li in order["lines"]:
         name = label(li)
         qty = max(li["quantity"], 1) * pack(name)          # BOGO: one line, two pairs from the supplier
         vp = str(li.get("product_id") or "").rsplit("/", 1)[-1]
         if vp in vet_cost:
-            total, q_all, mode = vet_cost[vp]
-            share = total * max(li["quantity"], 1) / q_all          # lines of the same product share its cost
+            total, q_all, mode, since = vet_cost[vp]
+            share = total * qty / q_all                              # lines of the same product share its cost
             out.append({**li, "product": name, "cost": share, "source": "vetted", "supplier": "",
-                        "note": f"Vetted price, Buy {q_all}" + (" (tiered)" if mode == "tiered" else "")})
+                        "note": f"Vetted price from {since}, {q_all} piece{'s' if q_all > 1 else ''}"
+                                + (" (tiered)" if mode == "tiered" else "")})
             continue
         line = {**li, "product": name, "cost": None, "source": None, "supplier": "", "note": ""}
         one = catalog.single(store, name)

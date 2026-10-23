@@ -3,6 +3,10 @@
 (function () {
   const POLICY = { tiered: "Tiered pricing (same product, less per piece)", per_item: "Per-item discount (different products)" };
   const pct = (v) => (v === null || v === undefined ? "—" : `${v}%`);
+  const post = (path, body, method = "POST") => api(path, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  // "Buy 2" for single items; "4 pcs (2 sales)" for a bundle sold in packs
+  const pieceName = (k, r) => (r.offer && r.offer.type === "bundle"
+    ? `${k} pcs (${k / r.offer.pack} sale${k / r.offer.pack === 1 ? "" : "s"})` : `Buy ${k}`);
 
   // ---- the panel above the table (always all time for the store picked)
   window.pdkDrawPanel = (p, sid) => {
@@ -24,26 +28,28 @@
         <b class="${p.flags ? "pdk-red" : "pdk-ok"}">${p.flags}</b>
         <small>${p.flags ? "invoices that don't match the vetted price" : "invoices match the vetted prices"}</small></button>
       ${one ? `<div class="pdk-card"><span>Supplier discount</span><b class="pdk-small">${esc(POLICY[pol] || pol)}</b>
-        <small>${pol === "per_item" ? `learned from invoices: −${money(p.per_item[sid] || 0, "USD")} per item when products ship together` : "Buy 2 / 3 / 4 prices per product"}
-        <a href="#" data-policy="${pol === "tiered" ? "per_item" : "tiered"}" data-manage-only>switch</a></small></div>` : ""}`;
+        <small>${pol === "per_item" ? `learned from invoices: −${money(p.per_item[sid] || 0, "USD")} per item when products ship together` : "prices per number of pieces, per product"}
+        <a href="#" data-policy="${pol === "tiered" ? "per_item" : "tiered"}" data-manage-only>switch</a><br>
+        price checks from <b>${esc((p.starts || {})[sid] || "the first invoice")}</b> <a href="#" data-checksfrom data-manage-only>change</a></small></div>` : ""}`;
   };
 
   // ---- the vetted / COG % / suggested price cells of one product row
   window.pdkCells = (r, i) => {
     const v = r.vetted || {}, s = r.suggested || {};
-    const tiers = ["1", "2", "3", "4"].filter((k) => v[k] || s[k]);
-    const vet = v["1"]
-      ? `<b class="pdk-blue">${money(v["1"], "USD")}</b>`
+    const keys = [...new Set([...Object.keys(v), ...Object.keys(s)])].map(Number).sort((a, b) => a - b);
+    const has = Object.keys(v).length > 0;
+    const first = has ? Math.min(...Object.keys(v).map(Number)) : null;
+    const vet = has ? `<b class="pdk-blue">${money(v[first], "USD")}</b><span class="sub">${esc(pieceName(first, r))} · from ${esc(r.vetted_from || "")}</span>`
       : `<span class="hint">not vetted</span>`;
-    const dd = tiers.length ? `<details class="pdk-dd"><summary>Buy 1–4</summary>${tiers.map((k) =>
-      `<span class="sub">Buy ${k}: ${v[k] ? `<b class="pdk-blue">${money(v[k], "USD")}</b>` : `<span title="from invoices, not vetted">${money(s[k], "USD")} (invoice)</span>`}</span>`).join("")}</details>` : "";
+    const dd = keys.length ? `<details class="pdk-dd"><summary>${r.offer && r.offer.type === "bundle" ? `bundle of ${r.offer.pack}` : "Buy 1–4"}</summary>${keys.map((k) =>
+      `<span class="sub">${esc(pieceName(k, r))}: ${v[k] ? `<b class="pdk-blue">${money(v[k], "USD")}</b>` : `<span title="from invoices, not vetted">${money(s[k], "USD")} (invoice)</span>`}</span>`).join("")}</details>` : "";
     const cur = r.price_currency;
     const guide = r.recommended
       ? (Math.abs(r.price_change) < 0.5 ? `<span class="sub pdk-ok">on target</span>`
         : `<span class="sub ${r.price_change > 0 ? "pdk-warn" : "pdk-ok"}">${r.price_change > 0 ? "raise" : "lower"} by ${money(Math.abs(r.price_change), cur)}</span>`)
       : "";
     return `<td class="num"><a href="#" data-vet="${i}" title="Set the vetted prices">${vet}</a>${dd}
-        <a href="#" class="sub" data-vet="${i}" data-write-only>${v["1"] ? "edit" : "set prices"}</a></td>
+        <a href="#" class="sub" data-vet="${i}" data-write-only>${has ? "edit / new price" : "set prices"}</a></td>
       <td class="num">${r.cog_pct !== null && r.cog_pct !== undefined ? `<b class="${r.cog_pct > 29 ? "pdk-warn" : ""}">${r.cog_pct}%</b>
         <span class="sub">${r.base_from === "vetted" ? "vetted cost" : "latest cost"} vs price</span>` : "—"}</td>
       <td class="num">${r.recommended ? `<b>${money(r.recommended, cur)}</b>${guide}
@@ -58,32 +64,54 @@
       d.id = "vetDlg";
       d.className = "vet-dlg";
       document.body.appendChild(d);
-      d.addEventListener("click", (e) => { if (e.target === d || e.target.closest("[data-x]")) d.hidden = true; });
     }
     d.innerHTML = `<div class="vet-box"><div class="vet-head"><h3>${esc(title)}</h3><button class="btn btn-sm btn-ghost" data-x>Close</button></div>${html}</div>`;
+    d.onclick = (e) => { if (e.target === d || e.target.closest("[data-x]")) d.hidden = true; };
     d.hidden = false;
     return d;
   }
 
   function editVetted(r) {
     const v = r.vetted || {}, s = r.suggested || {};
+    let offer = { ...(r.offer || { type: "qty", pack: 1 }) };
+    const today = new Date().toISOString().slice(0, 10);
     const d = dialog(`Vetted prices · ${r.title}`, `
-      <p class="hint">What ${esc(r.supplier || "the supplier")} should charge (USD, incl. shipping) for 1, 2, 3 and 4 pieces of this
-        product in one order, in ${esc(r.store)}. ${r.policy === "tiered" ? "This store is on tiered pricing: more pieces, less per piece."
-        : "This store is on the per-item discount: Buy 1 is what counts; the discount for different products shipped together is learned from invoices."}
-        Grey numbers come from invoices. Saving re-costs every order of this product (the dashboard too).</p>
-      <div class="vet-grid">${["1", "2", "3", "4"].map((k) => `<label><span>Buy ${k}</span>
-        <input class="control" type="number" step="0.01" min="0" data-tier="${k}" value="${v[k] ?? ""}" placeholder="${s[k] ? s[k] + " (invoice)" : ""}"></label>`).join("")}</div>
+      <p class="hint">What ${esc(r.supplier || "the supplier")} should charge (USD, incl. shipping) in ${esc(r.store)}, as the total
+        for that many pieces in one order. ${r.policy === "tiered" ? "This store is on tiered pricing: more pieces of the same product, less per piece."
+        : "This store is on the per-item discount: the discount for different products shipped together is learned from invoices."}
+        Grey numbers come from invoices. The price is the cost of every order of this product from the date below (orders
+        before keep their earlier price), and only those orders' invoices are checked against it.</p>
+      <div class="vet-row"><label><span>How it's sold</span><select class="control" data-otype>
+          <option value="qty"${offer.type === "qty" ? " selected" : ""}>Single items (Buy 1, 2, 3, 4)</option>
+          <option value="bundle"${offer.type === "bundle" ? " selected" : ""}>Bundle only (e.g. Buy 1 Get 1: packs of 2)</option></select></label>
+        <label data-packbox ${offer.type === "bundle" ? "" : "hidden"}><span>Pieces per sale</span>
+          <input class="control" type="number" min="2" max="6" data-pack value="${offer.pack > 1 ? offer.pack : 2}"></label>
+        <label><span>Price applies from</span><input class="control" type="date" data-from value="${esc(today)}" max="${esc(today)}"></label></div>
+      <div class="vet-grid" data-grid></div>
       <div class="vet-actions"><button class="btn btn-primary" data-save>Save vetted prices</button>
-        ${Object.keys(s).length ? `<button class="btn btn-ghost" data-fill>Use the invoice prices</button>` : ""}
-        ${v["1"] ? `<button class="btn btn-ghost" data-clear>Remove vetting</button>` : ""}</div>`);
+        ${Object.keys(s).length ? `<button class="btn btn-ghost" data-fill>Use the invoice prices</button>` : ""}</div>
+      ${(r.vetted_history || []).length ? `<h4 class="vet-h4">Prices set</h4><div class="vet-hist">${r.vetted_history.map((h) =>
+        `<div><b>from ${esc(h.from)}</b> ${Object.entries(h.tiers).map(([k, x]) => `${esc(pieceName(+k, r))} ${money(x, "USD")}`).join(" · ")}
+          <span class="hint">${esc((h.by || "").split("@")[0])}</span> <a href="#" data-del="${esc(h.from)}" data-write-only>remove</a></div>`).join("")}</div>` : ""}`);
+    const keysFor = () => (offer.type === "bundle" ? [1, 2, 3].map((n) => n * offer.pack) : [1, 2, 3, 4]);
+    const draw = () => {
+      const keep = Object.fromEntries([...d.querySelectorAll("[data-tier]")].map((x) => [x.dataset.tier, x.value]));
+      d.querySelector("[data-grid]").innerHTML = keysFor().map((k) => `<label><span>${esc(pieceName(k, { offer }))}</span>
+        <input class="control" type="number" step="0.01" min="0" data-tier="${k}" value="${keep[k] ?? v[k] ?? ""}" placeholder="${s[k] ? s[k] + " (invoice)" : ""}"></label>`).join("");
+    };
+    draw();
+    d.querySelector("[data-otype]").onchange = (e) => {
+      offer = { type: e.target.value, pack: e.target.value === "bundle" ? Math.max(2, +d.querySelector("[data-pack]").value || 2) : 1 };
+      d.querySelector("[data-packbox]").hidden = offer.type !== "bundle";
+      draw();
+    };
+    d.querySelector("[data-pack]").onchange = (e) => { offer.pack = Math.max(2, Math.min(6, +e.target.value || 2)); draw(); };
     const tiers = () => Object.fromEntries([...d.querySelectorAll("[data-tier]")].map((x) => [x.dataset.tier, x.value]).filter(([, x]) => x !== ""));
-    const save = async (t) => {
+    const save = async (t, from) => {
       try {
-        const got = await api("/api/cog/pdesk/vetted", { method: "PUT", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ store: r.store_id, pid: r.pid, tiers: t }) });
+        const got = await post("/api/cog/pdesk/vetted", { store: r.store_id, pid: r.pid, tiers: t, offer, from }, "PUT");
         d.hidden = true;
-        toast(`Saved. Re-costing ${got.recosting} order${got.recosting === 1 ? "" : "s"} of this product.`);
+        toast(Object.keys(t).length ? `Saved from ${got.from}. Re-costing ${got.recosting} order${got.recosting === 1 ? "" : "s"} of this product.` : "Removed.");
         loadPdk(true, true);
       } catch (e) { toast(e.message, true); }
     };
@@ -91,19 +119,19 @@
     if (fill) fill.onclick = () => d.querySelectorAll("[data-tier]").forEach((x) => { if (!x.value && s[x.dataset.tier]) x.value = s[x.dataset.tier]; });
     d.querySelector("[data-save]").onclick = () => {
       const t = tiers();
-      if (!t["1"]) { toast("Buy 1 is needed.", true); return; }
-      save(t);
+      const smallest = keysFor()[0];
+      if (!t[smallest]) { toast(`${pieceName(smallest, { offer })} is needed.`, true); return; }
+      save(t, d.querySelector("[data-from]").value);
     };
-    const clr = d.querySelector("[data-clear]");
-    if (clr) clr.onclick = () => { if (confirm("Remove the vetted prices? Its orders go back to invoice / last prices.")) save({}); };
+    d.querySelectorAll("[data-del]").forEach((a) => {
+      a.onclick = (e) => { e.preventDefault(); if (confirm(`Remove the price from ${a.dataset.del}?`)) save({}, a.dataset.del); };
+    });
   }
 
   async function applyPrice(r) {
     let pv;
-    try {
-      pv = await api("/api/cog/pdesk/apply-price", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ store: r.store_id, pid: r.pid, price: r.recommended, dry: true }) });
-    } catch (e) { toast(e.message, true); return; }
+    try { pv = await post("/api/cog/pdesk/apply-price", { store: r.store_id, pid: r.pid, price: r.recommended, dry: true }); }
+    catch (e) { toast(e.message, true); return; }
     const cur = r.price_currency;
     const d = dialog(`Change the price · ${pv.title}`, `
       <p class="hint">${esc(r.store)}: COG is ${r.cog_pct}% now; the target is 29%. Every variant moves by the same %, and the
@@ -114,8 +142,7 @@
       <div class="vet-actions"><button class="btn btn-primary" data-go>Apply in Shopify</button></div>`);
     d.querySelector("[data-go]").onclick = async () => {
       try {
-        await api("/api/cog/pdesk/apply-price", { method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ store: r.store_id, pid: r.pid, price: r.recommended }) });
+        await post("/api/cog/pdesk/apply-price", { store: r.store_id, pid: r.pid, price: r.recommended });
         d.hidden = true;
         toast("Price changed in Shopify.");
         loadPdk(true, true);
@@ -124,6 +151,7 @@
   }
 
   // ---- the price-check sheet
+  const STATE = { ok: "Checked", refunded: "Refunded", escalated: "Escalated" };
   async function flagSheet(onlyPid) {
     const sid = $("productStore").value;
     let f;
@@ -131,8 +159,9 @@
     let rows = f.flags;
     if (onlyPid) rows = rows.filter((x) => x.store_id === onlyPid.store_id && x.products.includes(onlyPid.pid));
     const d = dialog("Price checks: invoices that don't match the vetted price", `
-      <p class="hint">The invoice charged a different amount than the vetted prices${Object.values(f.policies || {}).includes("per_item") ? " (after the learned per-item discount for different products)" : ""}.
-        Compare the two invoices, raise it with the supplier, then mark it.</p>
+      <p class="hint">The invoice charged a different amount than the vetted price for that order's date${Object.values(f.policies || {}).includes("per_item") ? " (after the learned per-item discount for different products)" : ""}.
+        Compare the two invoices, raise it with the supplier, then mark it: Escalated (asked), Refunded (the supplier paid
+        the difference back) or OK (nothing to do).</p>
       ${rows.length ? `<div class="table-wrap"><table class="table vet-tbl"><thead><tr><th>Order</th><th>Products</th><th>Invoice</th>
         <th class="num">Charged</th><th class="num">Vetted</th><th class="num">Difference</th><th></th></tr></thead><tbody>
         ${rows.map((x, n) => `<tr><td><b>${esc(x.order)}</b><span class="sub">${esc(x.store)} · ${esc(x.day || "")}</span></td>
@@ -140,12 +169,14 @@
           <td>${esc(x.invoice.number || "")}<span class="sub">${esc(x.invoice.date || "")} · ${esc(x.invoice.supplier || "")}</span></td>
           <td class="num">${money(x.charged, "USD")}</td><td class="num pdk-blue">${money(x.expected, "USD")}</td>
           <td class="num"><b class="${x.gap > 0 ? "pdk-red" : "pdk-ok"}">${x.gap > 0 ? "+" : ""}${money(x.gap, "USD")}</b></td>
-          <td class="vet-flagbtns">${x.state !== "open" ? `<span class="cd-tag ${x.state === "ok" ? "t-inv" : "t-bad"}">${x.state === "ok" ? "Checked" : "Escalated"}</span>` : ""}
+          <td class="vet-flagbtns">${x.state !== "open" ? `<span class="cd-tag ${x.state === "escalated" ? "t-bad" : "t-inv"}" title="${esc(x.mark_note || "")}">${STATE[x.state] || x.state}</span>` : ""}
             <button class="btn btn-sm" data-cmp="${n}">Compare invoices</button>
             <button class="btn btn-sm" data-mark="escalated" data-n="${n}" data-write-only>Escalated</button>
+            <button class="btn btn-sm" data-mark="refunded" data-n="${n}" data-write-only title="The supplier paid the difference back">Refunded</button>
             <button class="btn btn-sm btn-ghost" data-mark="ok" data-n="${n}" data-write-only>OK</button></td></tr>`).join("")}</tbody></table></div>`
         : `<p class="hint">Nothing to check: every invoice matches the vetted prices.</p>`}`);
     d.onclick = async (e) => {
+      if (e.target === d || e.target.closest("[data-x]")) { d.hidden = true; return; }
       const c = e.target.closest("[data-cmp]");
       if (c) {
         const x = rows[+c.dataset.cmp];
@@ -154,20 +185,16 @@
         return;
       }
       const m = e.target.closest("[data-mark]");
-      if (m) {
-        const x = rows[+m.dataset.n];
-        const note = m.dataset.mark === "escalated" ? (prompt("Note (optional), e.g. asked Dayone on Slack", "") ?? null) : "";
-        if (note === null) return;
-        try {
-          await api("/api/cog/pdesk/flags/mark", { method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ store: x.store_id, order_key: x.order_key, state: m.dataset.mark, note }) });
-          toast("Saved.");
-          flagSheet(onlyPid);
-          loadPdk(true, true);
-        } catch (err) { toast(err.message, true); }
-        return;
-      }
-      if (e.target === d || e.target.closest("[data-x]")) d.hidden = true;
+      if (!m) return;
+      const x = rows[+m.dataset.n];
+      const note = m.dataset.mark === "ok" ? "" : prompt(m.dataset.mark === "refunded" ? "Note (optional), e.g. refund on the 25 Oct invoice" : "Note (optional), e.g. asked Dayone on Slack", "");
+      if (note === null) return;
+      try {
+        await post("/api/cog/pdesk/flags/mark", { store: x.store_id, order_key: x.order_key, state: m.dataset.mark, note });
+        toast("Saved.");
+        flagSheet(onlyPid);
+        loadPdk(true, true);
+      } catch (err) { toast(err.message, true); }
     };
   }
 
@@ -184,15 +211,21 @@
     const s = e.target.closest("[data-show]");
     if (s) { $("pdkShow").value = s.dataset.show; drawPdk(); return; }
     if (e.target.closest("[data-flagsheet]")) { flagSheet(); return; }
+    if (e.target.closest("[data-checksfrom]")) {
+      e.preventDefault();
+      const cur = (pdk.panel?.starts || {})[$("productStore").value] || "";
+      const v = prompt("Check invoices of orders from this day (YYYY-MM-DD), e.g. the day you switched supplier. Empty = all.", cur);
+      if (v === null) return;
+      try { await post("/api/cog/pdesk/checks-from", { store: $("productStore").value, from: v.trim() }, "PUT"); loadPdk(true); }
+      catch (err) { toast(err.message, true); }
+      return;
+    }
     const p = e.target.closest("[data-policy]");
     if (p) {
       e.preventDefault();
-      if (!confirm(`Switch this store to ${POLICY[p.dataset.policy]}? Its orders' costs follow on the next re-cost.`)) return;
-      try {
-        await api("/api/cog/pdesk/policy", { method: "PUT", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ store: $("productStore").value, mode: p.dataset.policy }) });
-        loadPdk(true);
-      } catch (err) { toast(err.message, true); }
+      if (!confirm(`Switch this store to ${POLICY[p.dataset.policy]}? Its vetted products' orders are re-costed.`)) return;
+      try { await post("/api/cog/pdesk/policy", { store: $("productStore").value, mode: p.dataset.policy }, "PUT"); loadPdk(true); }
+      catch (err) { toast(err.message, true); }
     }
   });
 })();
