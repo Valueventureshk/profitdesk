@@ -381,7 +381,7 @@
     }
     $("cdDays").innerHTML = rows.join("") || '<tr><td colspan="6" class="cd-empty">No invoices yet.</td></tr>';
     $("cdSave").disabled = !dirty();
-    $("cdDirty").textContent = dirty() ? "Changes not saved yet" : "Click a day to see its invoices. Change “Mark as”, then save.";
+    $("cdDirty").textContent = dirty() ? "Saving…" : "Click a day to see its invoices. Paid / Not paid saves as soon as you pick it.";
   }
 
   $("cdDays").addEventListener("click", async (e) => {
@@ -400,19 +400,54 @@
     inv.open = inv.open === tr.dataset.d ? null : tr.dataset.d;
     drawDays();
   });
+  // every Paid / Not paid pick and every day note saves at once (a separate Save button was easy to miss:
+  // opening another day or tab before pressing it lost the marks)
+  async function saveNow(body, msg) {
+    $("cdDirty").textContent = "Saving…";
+    try {
+      await post("/api/suppliers/marks", body);
+      for (const [id, v] of Object.entries(body.paid || {})) {
+        const x = inv.d.invoices.find((i) => String(i.id) === String(id));
+        if (x) { x.marked = v; x.paid = v || x.before_cutoff; x.paid_by = "you"; }
+        delete inv.paid[id];
+      }
+      for (const day of Object.keys(body.notes || {})) {
+        inv.d.day_notes[day] = { note: body.notes[day] }; delete inv.notes[day];
+      }
+      toast(msg);
+      drawDays();
+      const keepOpen = inv.open;
+      await cdLoadDays();                     // fresh totals (On credit, Total payable)
+      inv.open = keepOpen; drawDays();
+    } catch (err) {
+      toast("Not saved: " + err.message, true);
+      $("cdDirty").textContent = "Not saved: " + err.message;
+    }
+  }
   $("cdDays").addEventListener("change", (e) => {
-    const m = e.target.closest("[data-mark]"), one = e.target.closest("[data-one]");
-    if (m && m.value) for (const x of inv.d.invoices) if (x.date === m.dataset.mark && x.date >= cutoff()) inv.paid[x.id] = m.value === "paid";
-    if (one) inv.paid[one.dataset.one] = one.value === "1";
-    if (m || one) drawDays();
+    const m = e.target.closest("[data-mark]"), one = e.target.closest("[data-one]"), n = e.target.closest("[data-daynote]");
+    const paid = {};
+    if (m && m.value) for (const x of inv.d.invoices) if (x.date === m.dataset.mark && x.date >= cutoff()) { paid[x.id] = m.value === "paid"; inv.paid[x.id] = paid[x.id]; }
+    if (one) { paid[one.dataset.one] = one.value === "1"; inv.paid[one.dataset.one] = paid[one.dataset.one]; }
+    if (Object.keys(paid).length) {
+      drawDays();
+      const k = Object.keys(paid).length, v = Object.values(paid)[0];
+      saveNow({ paid }, `Saved: ${k > 1 ? k + " invoices" : "invoice"} marked ${v ? "paid" : "not paid"}.`);
+    }
+    if (n) saveNow({ notes: { [n.dataset.daynote]: n.value } }, "Note saved.");
   });
   $("cdDays").addEventListener("input", (e) => {
     const n = e.target.closest("[data-daynote]");
     if (!n) return;
     inv.notes[n.dataset.daynote] = n.value;
-    $("cdSave").disabled = false; $("cdDirty").textContent = "Changes not saved yet";
+    $("cdSave").disabled = false; $("cdDirty").textContent = "Note not saved yet: click outside the box to save it";
   });
-  $("cdCutoff").onchange = () => { inv.cutoff = $("cdCutoff").value || null; drawDays(); };
+  $("cdCutoff").onchange = async () => {
+    const v = $("cdCutoff").value;
+    if (!v || v === inv.d.cutoff) return;
+    if (!confirm(`Count every invoice dated before ${v} as paid?`)) { $("cdCutoff").value = inv.d.cutoff; return; }
+    await saveNow({ cutoff: v }, "Cut-off saved.");
+  };
   $("cdShowEmpty").onchange = drawDays;
   $("cdSup").onchange = () => {
     if (dirty() && !confirm("Leave without saving your changes?")) return;
