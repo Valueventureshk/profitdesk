@@ -51,9 +51,13 @@
       ? (Math.abs(r.price_change) < 0.5 ? `<span class="sub pdk-ok">on target</span>`
         : `<span class="sub ${r.price_change > 0 ? "pdk-warn" : "pdk-ok"}">${r.price_change > 0 ? "raise" : "lower"} by ${money(Math.abs(r.price_change), cur)}</span>`)
       : "";
-    return `<td class="num"><a href="#" data-vet="${i}" title="Set the vetted prices">${vet}</a>${dd}
-        ${r.vetted_source === "auto" ? `<a href="#" class="sub" data-confirm="${i}" data-write-only>✓ confirm</a>` : ""}
-        <a href="#" class="sub" data-vet="${i}" data-write-only>${has ? "edit / new price" : "set prices"}</a></td>
+    // one short line in the table; the pieces, from-date, confirm and edit sit in a pop-up (owner, 24 Oct 2026)
+    r._vetHtml = `<div class="vet-info">${vet}${dd ? `<div class="vet-pieces">${keys.map((k) =>
+        `<div><span>${esc(pieceName(k, r))}</span>${v[k] ? `<b class="${col}">${money(v[k], "USD")}</b>` : `<span class="hint">${money(s[k], "USD")} on invoices</span>`}</div>`).join("")}</div>` : ""}
+      <div class="vet-acts">${r.vetted_source === "auto" ? `<button class="btn btn-sm" data-confirm="${i}" data-write-only>✓ Confirm the app's price</button>` : ""}
+        <button class="btn btn-sm btn-primary" data-vet="${i}" data-write-only>${has ? "Edit / new price" : "Set prices"}</button></div></div>`;
+    return `<td class="num"><a href="#" data-vetinfo="${i}" title="Details">${has ? `<b class="${col}">${money(v[first], "USD")}</b>` : `<span class="hint">no price yet</span>`}</a>
+        <a href="#" class="sub" data-vetinfo="${i}">${has ? (r.vetted_source === "auto" ? "by the app · details" : "details") : "set prices"}</a></td>
       <td class="num">${r.cog_pct !== null && r.cog_pct !== undefined ? `<b class="${r.cog_pct > 29 ? "pdk-warn" : ""}">${r.cog_pct}%</b>
         <span class="sub">${{ vetted: "vetted", invoice: "invoiced", latest: "latest" }[r.base_from] || ""} cost${r.base_pieces > 1 ? ` of ${r.base_pieces} pcs (one sale)` : ""}
           ${r.base_cost ? money(r.base_cost, "USD") : ""} vs price</span>` : "—"}</td>
@@ -218,7 +222,18 @@
     };
   }
 
-  $("pdk").addEventListener("click", async (e) => {
+  async function act(e) {
+    const vi = e.target.closest("[data-vetinfo]");
+    if (vi) {
+      e.preventDefault(); e.stopPropagation();
+      const r = pdk.rows[+vi.dataset.vetinfo];
+      const d = dialog(`Vetted price · ${r.title}`, r._vetHtml || "");
+      d.onclick = (ev) => {
+        if (ev.target === d || ev.target.closest("[data-x]")) { d.hidden = true; return; }
+        if (ev.target.closest("[data-confirm], [data-vet]")) { d.hidden = true; act(ev); }
+      };
+      return true;
+    }
     const c = e.target.closest("[data-confirm]");
     if (c) {
       e.preventDefault(); e.stopPropagation();
@@ -237,7 +252,8 @@
     if (a) { e.preventDefault(); applyPrice(pdk.rows[+a.dataset.apply]); return; }
     const f = e.target.closest("[data-flags]");
     if (f) { e.preventDefault(); const r = pdk.rows[+f.dataset.flags]; flagSheet({ store_id: r.store_id, pid: r.pid }); }
-  }, true);
+  }
+  $("pdk").addEventListener("click", act, true);
 
   $("pdkPanel").addEventListener("click", async (e) => {
     const s = e.target.closest("[data-show]");

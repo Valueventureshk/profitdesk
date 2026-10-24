@@ -81,12 +81,24 @@ query OrderLines($cursor: String, $q: String!) {
           product { id }
           discountedTotalSet { shopMoney { amount } }
           originalTotalSet { shopMoney { amount } }
+          discountAllocations { allocatedAmountSet { shopMoney { amount } } }
         }
       }
     }
   }
 }
 """
+
+
+def _line_net(li: dict) -> float:
+    """What the customer paid for a line after EVERY discount: its full price less all discount allocations, which
+    include order-wide codes (e.g. 10% off 2+ items) that Shopify's discountedTotal leaves out."""
+    amt = lambda m: float(((m or {}).get("shopMoney") or {}).get("amount") or 0)
+    original = amt(li.get("originalTotalSet"))
+    allocs = li.get("discountAllocations")
+    if original > 0 and allocs is not None:
+        return round(max(0.0, original - sum(amt(a.get("allocatedAmountSet")) for a in allocs)), 2)
+    return amt(li.get("discountedTotalSet"))
 
 
 REFUND_LINES_QUERY = """
@@ -379,7 +391,7 @@ class ShopifyClient:
                             "quantity": int(li.get("quantity") or 0), "sku": li.get("sku") or "",
                             "variant_id": (li.get("variant") or {}).get("id"),
                             "product_id": (li.get("product") or {}).get("id"),
-                            "subtotal": float(((li.get("discountedTotalSet") or {}).get("shopMoney") or {}).get("amount") or 0),
+                            "subtotal": _line_net(li),
                             # the price before discounts: what a free replacement / shipping-only order's item is worth
                             "original": float(((li.get("originalTotalSet") or {}).get("shopMoney") or {}).get("amount") or 0),
                         } for li in o["lineItems"]["nodes"]],

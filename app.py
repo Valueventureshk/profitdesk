@@ -2506,8 +2506,29 @@ def _pd_lines(store_ids: list) -> list:
     marks = ",".join("?" * len(store_ids))
     with db._conn() as con:
         return [dict(r) for r in con.execute(
-            f"SELECT store_id, order_name, product, product_id, quantity, cancelled, day, supplier, cost_usd, source FROM cog_lines"
-            f" WHERE store_id IN ({marks})", store_ids)]
+            f"SELECT store_id, order_name, product, product_id, quantity, cancelled, day, supplier, cost_usd, source,"
+            f" subtotal, single_usd FROM cog_lines WHERE store_id IN ({marks})", store_ids)]
+
+
+def _pd_fair(lines: list) -> list:
+    """Each line's share of what its order cost (`fair_cost`, USD). In an order with several products the supplier's
+    multi-item discount is shared by every product in proportion to its own price (its single price when known, else
+    its line cost), so a product isn't cheaper or dearer just because the invoice put the discount on its row.
+    Orders of one product keep their line costs. Changes the lines in place."""
+    orders = defaultdict(list)
+    for l in lines:
+        l["fair_cost"] = 0.0 if l["cancelled"] else (l["cost_usd"] or 0.0)
+        if not l["cancelled"]:
+            orders[(l["store_id"], l["order_name"])].append(l)
+    for ls in orders.values():
+        if len({l["product_id"] or cog.base_name(l["product"]) for l in ls}) < 2:
+            continue
+        total = sum(l["cost_usd"] or 0.0 for l in ls)
+        weights = [(l["single_usd"] if l.get("single_usd") else (l["cost_usd"] or 0.0)) for l in ls]
+        if total > 0 and sum(weights) > 0:
+            for l, w in zip(ls, weights):
+                l["fair_cost"] = total * w / sum(weights)
+    return lines
 
 
 def _pd_groups(lines: list) -> dict:
@@ -2528,6 +2549,8 @@ def _pd_groups(lines: list) -> dict:
             continue
         g["units"] += max(int(l["quantity"] or 1), 1) * cog.pack(l["product"])
         g["orders"].add(l["order_name"])
+        g["sales"] = g.get("sales", 0.0) + (l.get("subtotal") or 0.0)           # store currency, after discounts
+        g["cog"] = g.get("cog", 0.0) + (l.get("fair_cost", l["cost_usd"]) or 0.0)   # USD, the order's cost shared fairly
         if cog.pack(l["product"]) > 1 and l["cost_usd"] and l["source"] in ("invoice", "catalog"):
             # BOGO: what one sale (two pairs) cost on the latest costed order, invoices first
             k = (l["source"] == "invoice", l["day"])
@@ -2565,7 +2588,7 @@ def _pd_tickets(lines: list) -> dict:
 
 
 @app.get("/api/cog/pdesk")
-async def api_pdesk(store: str = "all", start: str = "", end: str = ""):
+async def api_pdesk(store: str = "all", start: str = "", end: str = "", currency: str = ""):
     """COG → Products: one row per product (variants together) with sales, latest confirmed cost, size chart,
     CS tickets, QC photos, material and notes. start/end (store days): only products sold then, with that
     period's units and orders (cost, tickets and the rest stay all-time)."""
@@ -2574,13 +2597,16 @@ async def api_pdesk(store: str = "all", start: str = "", end: str = ""):
               and (store in ("", "all") or str(x["id"]) == str(store))]
     if not stores:
         raise HTTPException(404, "Store not found.")
-    lines = await asyncio.to_thread(_pd_lines, [x["id"] for x in stores])
+    lines = await asyncio.to_thread(lambda: _pd_fair(_pd_lines([x["id"] for x in stores])))
     groups = _pd_groups(lines)
+    base = (currency or _display_currency()).upper()
+    fxt = await fx.table(base)
+    to_base = lambda code: fx.factor(fxt, code, base) if fxt else 1.0
     sold_ever = {k for k, g in groups.items() if g["units"] > 0 and k[1].isdigit()}     # the panel is all time
     if start or end:                       # the period's sales only; products with none are left out
         lo, hi = start or "0000", end or start or "9999"
         sold = _pd_groups([l for l in lines if lo <= (l["day"] or "") <= hi])
-        groups = {k: {**groups[k], "units": v["units"], "orders": v["orders"]}
+        groups = {k: {**groups[k], "units": v["units"], "orders": v["orders"], "sales": v.get("sales", 0.0), "cog": v.get("cog", 0.0)}
                   for k, v in sold.items() if v["units"] and k in groups}
     tick = await asyncio.to_thread(_pd_tickets, lines)
     catalog = await _catalog()
@@ -2623,6 +2649,10 @@ async def api_pdesk(store: str = "all", start: str = "", end: str = ""):
             "variant_low": cost.get("variant_low"), "variant_high": cost.get("variant_high"),
             "price_changes": max(0, len(cost.get("changes") or []) - 1),
             "units": g["units"], "orders": len(g["orders"]), "first_order": g["first"], "last_order": g["last"],
+            "sold": round(g.get("sales", 0.0) * to_base(stores_cur[sid]), 2), "cog_paid": round(g.get("cog", 0.0) * to_base("USD"), 2),
+            "sold_currency": base,
+            "cog_paid_pct": round(g["cog"] * to_base("USD") / (g["sales"] * to_base(stores_cur[sid])) * 100, 1)
+                            if g.get("sales") and g.get("cog") is not None else None,
             "size_chart": ex.get("size_chart") or "", "size_chart_auto": chart["name"] if chart else None,
             "price_low": _pd_money(((p or {}).get("priceRangeV2") or {}).get("minVariantPrice")),
             "price_high": _pd_money(((p or {}).get("priceRangeV2") or {}).get("maxVariantPrice")),

@@ -2340,3 +2340,9 @@ body:not(.tab-social) .social-only, body.tab-social .mail-only { display: none; 
 .bulk-msg.in { background: color-mix(in srgb, var(--up) 8%, var(--panel)); }
 body.tab-bulk .mail-only, body.tab-bulk .social-only { display: none; }
 @media (max-width: 900px) { .bulk-main { grid-template-columns: 1fr; padding: 12px; } .bulk-split { grid-template-columns: 1fr; } }
+.vet-info { display: grid; gap: 10px; font-size: 13.5px; }
+.vet-info > b { font-size: 20px; }
+.vet-pieces { display: grid; gap: 4px; border-top: 1px solid var(--line-soft); padding-top: 8px; }
+.vet-pieces div { display: flex; justify-content: space-between; gap: 12px; font-variant-numeric: tabular-nums; }
+.vet-acts { display: flex; gap: 8px; flex-wrap: wrap; }
+.vet-info .pdk-dd { display: none; }
