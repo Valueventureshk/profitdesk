@@ -274,8 +274,69 @@
       (d.not_shipped ? `, incl. ${d.not_shipped} placed but not shipped yet (${usd(d.not_shipped_cost)})` : "") +
       (d.billed_no_file ? `. Not counted: ${d.billed_no_file} older orders (${usd(d.billed_no_file_cost)}) already billed on invoices that never reached the app.` : "");
     $("cdTotal").textContent = usd(d.total);
+    $("cdAdj").textContent = (d.adj_net > 0 ? "+" : d.adj_net < 0 ? "−" : "") + usd(Math.abs(d.adj_net || 0));
+    $("cdAdjNote").textContent = `${usd(d.adj_refund || 0)} refunds due · ${usd(d.adj_payable || 0)} extra to pay`;
+    $("aSupList").innerHTML = d.suppliers.map((x) => `<option value="${esc(x)}">`).join("");
+    drawAdj();
     drawDays();
   };
+
+  /* ------------------------------------------------ manual adjustments */
+  const ADJ_STATUS = { open: '<span class="cd-tag t-up">Open</span>', done: '<span class="cd-tag t-inv">Done</span>', cancelled: '<span class="cd-tag t-same">Cancelled</span>' };
+  function drawAdj() {
+    const all = $("cdAdjAll").checked;
+    const list = (inv.d.adjustments || []).filter((a) => all || a.status === "open");
+    const can = !document.body.classList.contains("read-only");
+    $("cdAdjRows").innerHTML = list.map((a) => `<tr class="${a.status !== "open" ? "settled" : ""}">
+      <td>${a.kind === "refund" ? '<span class="cd-tag t-inv">Refund due to us</span>' : '<span class="cd-tag t-bad">Extra to pay</span>'}</td>
+      <td>${esc(a.supplier)}</td>
+      <td class="cd-n">${a.kind === "refund" ? "−" : "+"}${usd(a.amount)}</td>
+      <td>${a.due_day ? esc(a.due_day) : '<span class="hint">—</span>'}</td>
+      <td class="note">${a.note ? esc(a.note) : '<span class="hint">—</span>'}</td>
+      <td><span class="hint">${esc((a.by || "").split("@")[0])} · ${esc((a.at || "").slice(0, 10))}${a.edited_by ? `<br>edited by ${esc(a.edited_by.split("@")[0])}` : ""}</span></td>
+      <td>${ADJ_STATUS[a.status] || ""}${a.done_by ? `<span class="sub">${esc(a.done_by.split("@")[0])} · ${esc((a.done_at || "").slice(0, 10))}</span>` : ""}</td>
+      <td class="cd-adjbtn" data-write-only>${a.status === "open"
+        ? `<button class="btn btn-sm" data-adone="${a.id}">${a.kind === "refund" ? "Received" : "Paid"}</button>
+           <button class="btn btn-sm btn-ghost" data-aedit="${a.id}">Edit</button>
+           <button class="btn btn-sm btn-ghost" data-acancel="${a.id}">Cancel</button>`
+        : `<button class="btn btn-sm btn-ghost" data-areopen="${a.id}">Reopen</button>`}</td></tr>`).join("")
+      || `<tr><td colspan="8" class="cd-empty">${all ? "No adjustments yet." : "Nothing open."}${can ? " Add a refund due or an amount to pay above." : ""}</td></tr>`;
+  }
+  let adjEditing = null;
+  function adjForm(a, kind) {
+    adjEditing = a ? a.id : null;
+    $("cdAdjTitle").textContent = a ? "Edit adjustment" : kind === "refund" ? "Refund coming from a supplier" : "Extra amount to pay";
+    $("aKind").value = a ? a.kind : kind;
+    $("aSup").value = a ? a.supplier : ($("cdSup").value || "");
+    $("aAmt").value = a ? a.amount : "";
+    $("aDue").value = a ? a.due_day || "" : "";
+    $("aNote").value = a ? a.note || "" : "";
+    $("cdAdjBox").hidden = false; $("aAmt").focus();
+  }
+  $("cdAdjAdd").onclick = () => adjForm(null, "refund");
+  $("cdAdjAdd2").onclick = () => adjForm(null, "payable");
+  $("cdAdjAll").onchange = drawAdj;
+  $("aSave").onclick = async () => {
+    $("aSave").disabled = true;
+    try {
+      await post("/api/suppliers/adjustments", { id: adjEditing, kind: $("aKind").value, supplier: $("aSup").value, amount: $("aAmt").value,
+        due_day: $("aDue").value, note: $("aNote").value });
+      $("cdAdjBox").hidden = true; toast("Saved. Total payable and Cash flow include it now.");
+      await cdLoadDays();
+    } catch (err) { toast(err.message, true); }
+    $("aSave").disabled = false;
+  };
+  $("cdAdjRows").addEventListener("click", async (e) => {
+    const b = e.target.closest("button"); if (!b) return;
+    const find = (id) => (inv.d.adjustments || []).find((a) => String(a.id) === id);
+    if (b.dataset.aedit) { adjForm(find(b.dataset.aedit)); return; }
+    const id = b.dataset.adone || b.dataset.acancel || b.dataset.areopen;
+    const status = b.dataset.adone ? "done" : b.dataset.acancel ? "cancelled" : "open";
+    if (status === "cancelled" && !confirm("Cancel this adjustment? It stops counting (you can reopen it).")) return;
+    b.disabled = true;
+    try { await post(`/api/suppliers/adjustments/${id}/status`, { status }); toast(status === "open" ? "Reopened." : "Updated."); await cdLoadDays(); }
+    catch (err) { toast(err.message, true); b.disabled = false; }
+  });
 
   function drawDays() {
     const d = inv.d;

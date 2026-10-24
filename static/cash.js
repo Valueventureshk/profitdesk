@@ -93,7 +93,7 @@ function payables(s, sup) {
   }
   if (sup && Math.abs(sup.total) >= 0.5) {
     rows.push(`<div class="pay-row" title="COG → Invoices: invoices not marked paid, plus shipped orders the supplier hasn't billed yet"><span>Suppliers</span><b>−${money(sup.total)}</b>
-      <small>${money(sup.credit)} on credit · ${money(sup.estimated)} not invoiced yet</small></div>`);
+      <small>${money(sup.credit)} on credit · ${money(sup.estimated)} not invoiced yet${sup.adjustments && Math.abs(sup.adjustments) >= 0.5 ? ` · ${sup.adjustments > 0 ? "+" : "−"}${money(Math.abs(sup.adjustments))} adjustments` : ""}</small></div>`);
   }
   if (rows.length > 1 && sup && sup.total_payable !== undefined) {
     rows.push(`<div class="pay-row pay-total"><span>Total payable</span><b>−${money(sup.total_payable)}</b></div>`);

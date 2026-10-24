@@ -75,11 +75,23 @@
       <div class="cd-money">
         <div class="m-credit"><span>On credit</span><b id="cdCredit">…</b><em>Invoiced, not paid yet</em></div>
         <div class="m-est"><span>Estimated, not invoiced yet</span><b id="cdEst">…</b><em id="cdEstNote">Orders the supplier hasn't billed yet (our estimate)</em></div>
-        <div class="m-total"><span>Total payable</span><b id="cdTotal">…</b><em>What Cash flow shows: both together</em></div>
+        <div class="m-adj"><span>Manual adjustments</span><b id="cdAdj">…</b><em id="cdAdjNote">Refunds due from suppliers and extra amounts to pay</em></div>
+        <div class="m-total"><span>Total payable</span><b id="cdTotal">…</b><em>What Cash flow shows: all of these together</em></div>
       </div>
+      <section class="panel cd-adjs">
+        <div class="cd-adjhead"><div><h3>Manual adjustments</h3>
+          <p class="hint">Money no invoice shows: a refund a supplier promised (lowers what we owe) or an extra amount we still have to pay (raises it). Open ones count in Total payable and Cash flow until you mark them done.</p></div>
+          <div class="cd-row-btns"><label class="cd-cut"><input type="checkbox" id="cdAdjAll"> Show done</label>
+            <button class="btn btn-sm" id="cdAdjAdd" data-write-only>+ Refund due</button>
+            <button class="btn btn-sm" id="cdAdjAdd2" data-write-only>+ Amount to pay</button></div></div>
+        <div class="cd-wrap"><table class="cd adj">
+          <thead><tr><th>Type</th><th>Supplier</th><th>Amount</th><th>Expected</th><th>Note</th><th>Added</th><th>Status</th><th></th></tr></thead>
+          <tbody id="cdAdjRows"><tr><td colspan="8" class="cd-empty">Loading…</td></tr></tbody>
+        </table></div>
+      </section>
       <div class="cd-bar">
         <select id="cdSup" class="control"><option value="">All suppliers</option></select>
-        <label class="cd-cut">Everything invoiced before <input type="date" id="cdCutoff" class="control"> counts as paid</label>
+        <label class="cd-cut" title="Only Manage level can change this date">Everything invoiced before <input type="date" id="cdCutoff" class="control"> counts as paid</label>
         <label class="cd-cut"><input type="checkbox" id="cdShowEmpty" checked> Show days with no invoice</label>
       </div>
       <section class="panel">
@@ -88,7 +100,7 @@
           <tbody id="cdDays"><tr><td colspan="6" class="cd-empty">Loading…</td></tr></tbody>
         </table></div>
         <div class="cd-save"><span class="hint" id="cdDirty">Click a day to see its invoices. Change “Mark as”, then save.</span>
-          <button class="btn btn-primary" id="cdSave" data-manage-only disabled>Save</button></div>
+          <button class="btn btn-primary" id="cdSave" data-write-only disabled>Save</button></div>
       </section>
 
       <details class="cd-uploads" open>
@@ -202,6 +214,18 @@
   <textarea class="cd-msg" id="cdRevMsg" rows="9"></textarea>
   <div class="cd-row-btns"><button class="btn btn-primary" id="cdRevGo">Post in Slack</button>
     <button class="btn btn-ghost" id="cdRevOnly">Just mark it as checking</button><button class="btn btn-ghost" data-cdclose>Not now</button></div>
+</div></div>
+<div class="cd-modal" id="cdAdjBox" hidden><div class="cd-box" role="dialog" aria-modal="true" aria-labelledby="cdAdjTitle" style="width:min(520px,100%)">
+  <button class="btn btn-sm btn-ghost closex" data-cdclose>Close</button>
+  <h2 id="cdAdjTitle">Manual adjustment</h2>
+  <label class="cd-field">What is it
+    <select id="aKind" class="control"><option value="refund">Refund coming from the supplier (we owe less)</option>
+      <option value="payable">Extra amount we need to pay (we owe more)</option></select></label>
+  <label class="cd-field">Supplier<input id="aSup" class="control" list="aSupList" placeholder="e.g. Dayone"><datalist id="aSupList"></datalist></label>
+  <label class="cd-field">Amount (US$)<input id="aAmt" class="control" inputmode="decimal" placeholder="e.g. 124.50"></label>
+  <label class="cd-field">Expected on (optional)<input id="aDue" type="date" class="control"></label>
+  <label class="cd-field">Note<textarea id="aNote" rows="3" placeholder="e.g. Perth duffel bags overcharged 12–15 Oct, supplier agreed to refund"></textarea></label>
+  <div class="cd-row-btns"><button class="btn btn-primary" id="aSave">Save</button><button class="btn btn-ghost" data-cdclose>Cancel</button></div>
 </div></div>
 <div id="toast" class="toast" hidden></div>
 <script src="/static/nav.js"></script>

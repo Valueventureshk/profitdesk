@@ -315,7 +315,7 @@ _DESK_HOME = {"profit": "/", "cash": "/cash", "cog": "/cog", "inbox": "/inbox", 
 _EVERYONE = {"/api/me", "/api/me/password", "/api/logout", "/change-password", "/connect-claude", "/api/mcp/tokens",
              "/api/setup", "/api/chat", "/api/assistant/inbox", "/api/assistant/inbox/read"}
 # What "read & write" people may change (owners may change anything).
-_WRITE_OK = ("/api/googleads/tags", "/api/cog/pdesk", "/api/invoices", "/api/suppliers/payee", "/api/disputes", "/api/cog/sync", "/api/inbox", "/api/expenses", "/api/scm", "/api/importer", "/api/sizecharts", "/api/tasks", "/api/agent/advice", "/api/agent/questions", "/api/research/items", "/api/metaads/launcher/drafts", "/api/metaads/launcher/check", "/api/metaads/bulk/media", "/api/metaads/bulk/check", "/api/metaads/bulk/drafts", "/api/sheets")
+_WRITE_OK = ("/api/googleads/tags", "/api/cog/pdesk", "/api/invoices", "/api/suppliers/payee", "/api/suppliers/marks", "/api/suppliers/adjustments", "/api/disputes", "/api/cog/sync", "/api/inbox", "/api/expenses", "/api/scm", "/api/importer", "/api/sizecharts", "/api/tasks", "/api/agent/advice", "/api/agent/questions", "/api/research/items", "/api/metaads/launcher/drafts", "/api/metaads/launcher/check", "/api/metaads/bulk/media", "/api/metaads/bulk/check", "/api/metaads/bulk/drafts", "/api/sheets")
 # What anyone with the desk may do, read-only people included (it changes nothing).
 _ANY_OK = ("/api/reports", "/api/classroom/progress")
 
@@ -1089,6 +1089,22 @@ def _cogdesk_db():
                 note TEXT,
                 by   TEXT,
                 at   TEXT
+            );
+            CREATE TABLE IF NOT EXISTS supplier_adjustments (
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                supplier  TEXT    NOT NULL,
+                kind      TEXT    NOT NULL,      -- refund (supplier pays us back: payable down) | payable (extra we owe: up)
+                amount    REAL    NOT NULL,      -- USD, always positive
+                store_id  INTEGER,
+                due_day   TEXT,
+                note      TEXT,
+                status    TEXT    NOT NULL DEFAULT 'open',   -- open | done (received / paid) | cancelled
+                by        TEXT,
+                at        TEXT,
+                edited_by TEXT,
+                edited_at TEXT,
+                done_by   TEXT,
+                done_at   TEXT
             );""")
         have = {r[1] for r in con.execute("PRAGMA table_info(invoices)")}
         for col in ("paid INTEGER", "paid_by TEXT", "paid_at TEXT"):
@@ -1578,10 +1594,18 @@ def _supplier_payable(supplier: str = "", fresh: bool = False) -> dict:
     credit = round(sum(i["total"] for i in invs if not i["paid"]), 2)
     est = cog_desk.not_invoiced([o for o in _fulfilled_rows(date.fromisoformat(cutoff)) if not o.get("settled")], cutoff, supplier,
                                 cog_desk.billed_up_to(imap, lines_of))
+    with db._conn() as con:
+        adj = [dict(r) for r in con.execute("SELECT * FROM supplier_adjustments ORDER BY COALESCE(due_day, substr(at, 1, 10)) DESC, id DESC")]
+    if supplier:
+        adj = [a for a in adj if a["supplier"] == supplier]
+    open_ = [a for a in adj if a["status"] == "open"]
+    extra = round(sum(a["amount"] for a in open_ if a["kind"] == "payable"), 2)
+    refunds = round(sum(a["amount"] for a in open_ if a["kind"] == "refund"), 2)
     out = {"cutoff": cutoff, "credit": credit, "estimated": est["total"], "estimated_orders": est["orders"],
+           "adjustments": adj, "adj_payable": extra, "adj_refund": refunds, "adj_net": round(extra - refunds, 2),
            "billed_no_file": est["billed_no_file"], "billed_no_file_cost": est["billed_no_file_cost"],
            "not_shipped": est["not_shipped"], "not_shipped_cost": est["not_shipped_cost"],
-           "total": round(credit + est["total"], 2), "invoices": invs,
+           "total": round(credit + est["total"] + extra - refunds, 2), "invoices": invs,
            "by_supplier": est["by_supplier"]}
     _payable_cache[supplier] = (time.time(), out)
     return out
@@ -1593,7 +1617,9 @@ async def api_suppliers_by_day(supplier: str = ""):
     out = await asyncio.to_thread(_supplier_payable, supplier, True)
     with db._conn() as con:
         notes = {r["day"]: {"note": r["note"], "by": r["by"]} for r in con.execute("SELECT * FROM invoice_day_notes WHERE note IS NOT NULL")}
-    sups = sorted({i["supplier"] for i in out["invoices"]})
+    with db._conn() as con:
+        named = {r[0] for r in con.execute("SELECT DISTINCT supplier FROM supplier_adjustments")}
+    sups = sorted({i["supplier"] for i in out["invoices"]} | named | {s for s in (out.get("by_supplier") or {}) if s})
     return {**out, "days": cog_desk.group_days(out["invoices"]), "day_notes": notes, "suppliers": sups,
             "today": datetime.now(CASH_TZ).date().isoformat()}
 
@@ -1604,6 +1630,8 @@ def api_suppliers_marks(payload: dict, request: Request):
     _cogdesk_db()
     who = _who(request)
     cutoff = payload.get("cutoff")
+    if cutoff and cutoff != _cog_cutoff():
+        _need_level(request, "cog", "manage")
     if cutoff:
         try:
             date.fromisoformat(cutoff)
@@ -1621,6 +1649,63 @@ def api_suppliers_marks(payload: dict, request: Request):
     for day, note in (payload.get("notes") or {}).items():
         note = str(note or "").strip()
         _note_lesson(f"daynote:{day}", f"Supplier invoices of {day}: {note}" if note else "", who)
+    _payable_cache.clear()
+    return {"ok": True}
+
+
+@app.post("/api/suppliers/adjustments")
+def api_supplier_adjustment_save(payload: dict, request: Request):
+    """Add or edit a manual adjustment: a refund the supplier will pay back (payable down) or an extra amount we
+    owe that no invoice shows (payable up). Open ones count in Total payable and Cash flow until marked done."""
+    _cogdesk_db()
+    who = _who(request)
+    kind = payload.get("kind")
+    if kind not in ("refund", "payable"):
+        raise HTTPException(400, "Pick: refund coming from the supplier, or an extra amount to pay.")
+    supplier = str(payload.get("supplier") or "").strip()[:80]
+    if not supplier:
+        raise HTTPException(400, "Which supplier is it?")
+    try:
+        amount = round(abs(float(str(payload.get("amount") or "").replace(",", "").replace("$", ""))), 2)
+    except ValueError:
+        raise HTTPException(400, "The amount isn't a number.")
+    if not amount:
+        raise HTTPException(400, "Add the amount (USD).")
+    due = str(payload.get("due_day") or "").strip() or None
+    if due:
+        try:
+            date.fromisoformat(due)
+        except ValueError:
+            raise HTTPException(400, "The date isn't a date.")
+    store = int(payload["store_id"]) if str(payload.get("store_id") or "").isdigit() else None
+    note = str(payload.get("note") or "").strip()[:1000] or None
+    with db._conn() as con:
+        if payload.get("id"):
+            cur = con.execute("UPDATE supplier_adjustments SET supplier = ?, kind = ?, amount = ?, store_id = ?, due_day = ?, note = ?,"
+                              " edited_by = ?, edited_at = ? WHERE id = ?",
+                              (supplier, kind, amount, store, due, note, who, agent.now(), int(payload["id"])))
+            if not cur.rowcount:
+                raise HTTPException(404, "That adjustment no longer exists.")
+            aid = int(payload["id"])
+        else:
+            aid = con.execute("INSERT INTO supplier_adjustments (supplier, kind, amount, store_id, due_day, note, by, at)"
+                              " VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (supplier, kind, amount, store, due, note, who, agent.now())).lastrowid
+    _payable_cache.clear()
+    return {"ok": True, "id": aid}
+
+
+@app.post("/api/suppliers/adjustments/{aid}/status")
+def api_supplier_adjustment_status(aid: int, payload: dict, request: Request):
+    """open | done (refund received / amount paid) | cancelled."""
+    _cogdesk_db()
+    status = payload.get("status")
+    if status not in ("open", "done", "cancelled"):
+        raise HTTPException(400, "Unknown status.")
+    with db._conn() as con:
+        cur = con.execute("UPDATE supplier_adjustments SET status = ?, done_by = ?, done_at = ? WHERE id = ?",
+                          (status, None if status == "open" else _who(request), None if status == "open" else agent.now(), aid))
+        if not cur.rowcount:
+            raise HTTPException(404, "That adjustment no longer exists.")
     _payable_cache.clear()
     return {"ok": True}
 
@@ -5651,7 +5736,8 @@ async def api_cash(currency: str = None):
     try:                                  # what suppliers are owed (COG → Invoices): on credit + estimated
         pay = await asyncio.to_thread(_supplier_payable)
         k = fx.factor(fx_table, "USD", st["base"]) if fx_table else 1.0
-        sup = {"credit": pay["credit"] * k, "estimated": pay["estimated"] * k, "total": pay["total"] * k, "cutoff": pay["cutoff"]}
+        sup = {"credit": pay["credit"] * k, "estimated": pay["estimated"] * k, "total": pay["total"] * k, "cutoff": pay["cutoff"],
+               "adjustments": pay.get("adj_net", 0.0) * k}
         sm = st["summary"] or {}
         sup["after"] = (sm["after_ads"] if sm.get("after_ads") is not None else sm.get("position") or 0.0) - sup["total"]
         sup["total_payable"] = (sm.get("ads_payable") or 0.0) + sup["total"]     # ads + suppliers, for the Payables box
