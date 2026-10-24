@@ -115,13 +115,14 @@
     setUrl({ course: course.id, lesson: lid });
     drawSide();
     drawLesson();
-    if (lesson.tr_status === "working") poll = setTimeout(() => recheck(lid), 15000);
+    if (lesson.tr_status === "working" || lesson.proc_status === "working") poll = setTimeout(() => recheck(lid), 15000);
   }
   async function recheck(lid) {
     if (!lesson || lesson.id !== lid) return;
     try {
       const l = await api(`/api/classroom/lessons/${lid}`);
-      if (l.tr_status !== "working") { lesson = l; drawLesson(); refreshCourse(); toast(l.tr_status === "done" ? "Transcript ready." : "Transcript failed: " + (l.tr_error || ""), l.tr_status !== "done"); return; }
+      if (l.proc_status !== lesson.proc_status && l.proc_status !== "working") { const keepTab = tab; lesson = l; tab = keepTab; drawLesson(); }
+      if (l.tr_status !== "working" && l.proc_status !== "working") { lesson = l; drawLesson(); refreshCourse(); if (l.tr_status === "done") toast("Transcript ready."); else if (l.tr_status === "failed") toast("Transcript failed: " + (l.tr_error || ""), true); return; }
     } catch { /* try again */ }
     poll = setTimeout(() => recheck(lid), 15000);
   }
@@ -150,7 +151,11 @@
       <div class="cl-lhead"><div><h2>${esc(l.title)}</h2><span class="hint">${esc(l.course_title)}${l.duration ? " · " + mins(l.duration) : ""}</span></div>
         <div class="cl-lacts">
           <button class="btn ${l.done ? "" : "btn-primary"}" id="done">${l.done ? "✓ Completed" : "Mark complete"}</button>
+          ${l.has_video ? `<a class="btn btn-ghost" href="/api/classroom/video/${l.id}?download=1" title="Save the video to your computer">⬇ Video</a>` : ""}
           ${manage ? `<button class="btn" id="editLesson">Edit lesson</button>` : ""}</div></div>
+      ${l.proc_status === "working" ? `<p class="hint">Compressing the video… it plays as uploaded meanwhile.</p>` : ""}
+      ${l.proc_status === "failed" && manage ? `<p class="hint cl-bad">Compression didn't work (${esc(l.proc_error || "")}); the original file is kept.</p>` : ""}
+      ${l.proc_status === "done" && l.orig_size && l.video_size && l.orig_size > l.video_size && manage ? `<p class="hint">Compressed from ${size(l.orig_size)} to ${size(l.video_size)}.</p>` : ""}
       <nav class="cl-tabs">${[["notes", "Notes"], ["steps", "Step by step"], ["transcript", "Transcript"]].map(([k, v]) =>
         `<button data-tab="${k}" class="${tab === k ? "on" : ""}">${v}${k === "transcript" && l.tr_status === "working" ? " …" : ""}</button>`).join("")}</nav>
       <div class="cl-tabacts">
@@ -268,7 +273,7 @@
       <div class="field">Recording
         <div class="cl-rec">
           <label class="btn btn-sm">Upload a video / audio file<input type="file" id="lf" accept="video/*,audio/*" hidden></label>
-          <button class="btn btn-sm" id="lrec">● Record my screen</button>
+          <button class="btn btn-sm" id="lrec">● Record (screen + camera)</button>
           ${l && l.has_video ? `<span class="hint">Now: ${esc(l.video_name || "video")} · ${size(l.video_size)}</span>` : ""}
         </div>
         <div class="cl-upbar" id="up" hidden><i></i><span></span></div>
@@ -285,27 +290,55 @@
       lid = r.id;
       return lid;
     };
-    const upload = (file) => new Promise((resolve, reject) => {
+    const upload = (file, extra = {}) => new Promise((resolve, reject) => {
       const bar = box.querySelector("#up"); bar.hidden = false;
       const xhr = new XMLHttpRequest();
       xhr.open("POST", `/api/classroom/lessons/${lid}/video`);
       xhr.upload.onprogress = (e) => { if (e.lengthComputable) { bar.querySelector("i").style.width = (e.loaded / e.total * 100) + "%"; bar.querySelector("span").textContent = `Uploading ${size(e.loaded)} of ${size(e.total)}…`; } };
       xhr.onload = () => { let b = {}; try { b = JSON.parse(xhr.responseText); } catch { /* */ } if (xhr.status < 400) resolve(b); else reject(new Error(b.detail || b.error || `Upload failed (${xhr.status}).`)); };
       xhr.onerror = () => reject(new Error("The upload was interrupted. Check your connection and try again."));
-      const fd = new FormData(); fd.append("file", file); xhr.send(fd);
+      const fd = new FormData(); fd.append("file", file);
+      for (const [k, v] of Object.entries(extra)) fd.append(k, typeof v === "object" ? JSON.stringify(v) : v);
+      xhr.send(fd);
     });
-    const sendFile = async (file) => {
+    const sendFile = async (file, extra) => {
       try {
         await saveText();
-        const r = await upload(file);
-        toast(r.transcribing ? "Uploaded. Transcribing now…" : "Uploaded.");
+        const r = await upload(file, extra);
+        toast(r.transcribing ? "Uploaded. Compressing, then transcribing…" : "Uploaded. Compressing…");
         close(); await refreshCourse(); openLesson(lid);
       } catch (err) { toast(err.message, true); }
     };
     box.querySelector("#lf").onchange = (e) => { if (e.target.files[0]) sendFile(e.target.files[0]); };
     box.querySelector("#lrec").onclick = async () => {
-      const file = await recordScreen();
-      if (file) sendFile(file);
+      try { await saveText(); } catch (err) { toast(err.message, true); return; }
+      const title = box.querySelector("#lt").value || "Lesson";
+      close();
+      window.EVStudio.open({ title, onSave: (file, extra) => { lessonForm({ ...(l || {}), id: lid, title, video_url: box.querySelector("#lu").value, notes: box.querySelector("#ln").value }); sendFileTo(file, extra); } });
+    };
+    const sendFileTo = async (file, extra) => {
+      const bar = $("modalBody").querySelector("#up");
+      try {
+        const r = await new Promise((resolve, reject) => {
+          bar.hidden = false;
+          const xhr = new XMLHttpRequest();
+          xhr.open("POST", `/api/classroom/lessons/${lid}/video`);
+          xhr.upload.onprogress = (e) => { if (e.lengthComputable) { bar.querySelector("i").style.width = (e.loaded / e.total * 100) + "%"; bar.querySelector("span").textContent = `Uploading ${size(e.loaded)} of ${size(e.total)}…`; } };
+          xhr.onload = () => { let b = {}; try { b = JSON.parse(xhr.responseText); } catch { /* */ } if (xhr.status < 400) resolve(b); else reject(new Error(b.detail || b.error || `Upload failed (${xhr.status}).`)); };
+          xhr.onerror = () => reject(new Error("The upload was interrupted. Download the recording to your computer from the studio next time as a backup, then try again."));
+          const fd = new FormData(); fd.append("file", file);
+          for (const [k, v] of Object.entries(extra || {})) fd.append(k, typeof v === "object" ? JSON.stringify(v) : v);
+          xhr.send(fd);
+        });
+        toast(r.transcribing ? "Saved. Compressing, then transcribing…" : "Saved. Compressing…");
+        close(); await refreshCourse(); openLesson(lid);
+      } catch (err) {
+        toast(err.message, true);
+        if (confirm("The recording didn't reach EcomVital. Save it to your computer so it isn't lost? You can upload that file to the lesson later.")) {
+          const a = document.createElement("a"); a.href = URL.createObjectURL(file); a.download = file.name || "recording.webm";
+          document.body.appendChild(a); a.click(); a.remove();
+        }
+      }
     };
     box.querySelector("#lSave").onclick = async () => {
       try { await saveText(); close(); toast("Saved."); await refreshCourse(); openLesson(lid); } catch (err) { toast(err.message, true); }
@@ -317,42 +350,6 @@
     };
   }
   $("newLesson").onclick = () => lessonForm(null);
-
-  /* ------------------------------------------------ record the screen (with the microphone) in the browser */
-  async function recordScreen() {
-    let screen, mic;
-    try {
-      screen = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 24 }, audio: true });
-      try { mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); } catch { mic = null; }
-    } catch { toast("Screen recording was cancelled or isn't allowed in this browser.", true); return null; }
-    const ctx = new AudioContext(), dest = ctx.createMediaStreamDestination();
-    for (const s of [screen, mic]) if (s && s.getAudioTracks().length) ctx.createMediaStreamSource(s).connect(dest);
-    const stream = new MediaStream([...screen.getVideoTracks(), ...dest.stream.getAudioTracks()]);
-    const type = ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"].find((t) => MediaRecorder.isTypeSupported(t)) || "";
-    const rec = new MediaRecorder(stream, type ? { mimeType: type, videoBitsPerSecond: 2_500_000 } : undefined);
-    const chunks = [];
-    rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
-    const bar = document.createElement("div");
-    bar.className = "cl-recbar";
-    const t0 = Date.now();
-    bar.innerHTML = `<span class="cl-dot"></span><b>Recording</b><span id="recTime">0:00</span><button class="btn btn-sm" id="recStop">Stop and upload</button>`;
-    document.body.appendChild(bar);
-    const timer = setInterval(() => { const s = Math.floor((Date.now() - t0) / 1000); bar.querySelector("#recTime").textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; }, 1000);
-    document.title = "● Recording · EcomVital Classroom";
-    return new Promise((resolve) => {
-      const stop = () => { if (rec.state !== "inactive") rec.stop(); };
-      bar.querySelector("#recStop").onclick = stop;
-      screen.getVideoTracks()[0].onended = stop;
-      rec.onstop = () => {
-        clearInterval(timer); bar.remove(); document.title = "EcomVital · Classroom";
-        for (const s of [screen, mic]) if (s) s.getTracks().forEach((t) => t.stop());
-        ctx.close();
-        const blob = new Blob(chunks, { type: "video/webm" });
-        resolve(blob.size ? new File([blob], `recording-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-")}.webm`, { type: "video/webm" }) : null);
-      };
-      rec.start(1000);
-    });
-  }
 
   /* ------------------------------------------------ sections */
   function sectionsForm() {

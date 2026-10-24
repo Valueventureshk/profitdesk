@@ -100,6 +100,12 @@ def ensure():
         if not con.execute("SELECT 1 FROM cls_sections LIMIT 1").fetchone():
             for i, n in enumerate(STARTER_SECTIONS):
                 con.execute("INSERT INTO cls_sections (name, position) VALUES (?, ?)", (n, i))
+        have = {r[1] for r in con.execute("PRAGMA table_info(cls_lessons)")}
+        for col in ("proc_status TEXT NOT NULL DEFAULT 'none'", "proc_error TEXT", "orig_size INTEGER"):
+            if col.split()[0] not in have:
+                con.execute(f"ALTER TABLE cls_lessons ADD COLUMN {col}")
+        con.execute("UPDATE cls_lessons SET proc_status = 'failed', proc_error = 'Compression stopped by a restart; the original is kept.'"
+                    " WHERE proc_status = 'working'")
         # a transcript that was being made when the server restarted is shown as failed (Try again)
         con.execute("UPDATE cls_lessons SET tr_status = 'failed', tr_error = 'Stopped by a restart: press Transcribe again.'"
                     " WHERE tr_status = 'working'")
@@ -164,8 +170,8 @@ def embed_url(url: str) -> str:
 
 
 def _lesson_out(l: dict, full: bool, done: set) -> dict:
-    out = {k: l[k] for k in ("id", "course_id", "title", "position", "video_ext", "video_name", "video_size", "video_url",
-                             "duration", "tr_status", "tr_error", "tr_at", "steps_at", "updated_at")}
+    out = {k: l.get(k) for k in ("id", "course_id", "title", "position", "video_ext", "video_name", "video_size", "video_url",
+                                 "duration", "tr_status", "tr_error", "tr_at", "steps_at", "updated_at", "proc_status", "proc_error", "orig_size")}
     out["has_video"] = bool(l.get("video_ext"))
     out["embed"] = embed_url(l.get("video_url"))
     out["has_transcript"] = bool((l.get("transcript") or "").strip())
@@ -249,7 +255,7 @@ def api_cover(cid: int):
 
 
 @router.get("/api/classroom/video/{lid}")
-def api_video(lid: int, request: Request):
+def api_video(lid: int, request: Request, download: int = 0):
     """The lesson's video, with range requests so it can be skipped through."""
     ensure()
     with db._conn() as con:
@@ -260,7 +266,8 @@ def api_video(lid: int, request: Request):
     p = _video_path(l)
     if not p or not os.path.exists(p):
         raise HTTPException(404, "This lesson has no video file.")
-    return FileResponse(p, filename=l.get("video_name") or os.path.basename(p), content_disposition_type="inline")
+    name = f"{_slug(l['title'])}.{l['video_ext']}" if download else (l.get("video_name") or os.path.basename(p))
+    return FileResponse(p, filename=name, content_disposition_type="attachment" if download else "inline")
 
 
 def _slug(s: str) -> str:
@@ -512,14 +519,80 @@ async def api_video_upload(lid: int, request: Request):
         os.remove(old)
     os.replace(tmp, os.path.join(folder, f"video.{ext}"))
     duration = await asyncio.to_thread(_duration, os.path.join(folder, f"video.{ext}"))
+    def num(k):
+        try:
+            return max(0.0, float(form.get(k))) if str(form.get(k) or "").strip() else None
+        except ValueError:
+            return None
+    trim = (num("trim_start"), num("trim_end"))
+    try:
+        chapters = json.loads(form.get("chapters") or "[]")[:100]
+    except ValueError:
+        chapters = []
     with db._conn() as con:
-        con.execute("UPDATE cls_lessons SET video_ext = ?, video_name = ?, video_size = ?, duration = ?, updated_at = ? WHERE id = ?",
-                    (ext, (f.filename or f"lesson.{ext}")[:200], size, duration, _now(), lid))
-    started = False
-    if db.get_setting("openai_api_key") and str(form.get("transcribe") or "1") != "0":
+        con.execute("UPDATE cls_lessons SET video_ext = ?, video_name = ?, video_size = ?, orig_size = ?, duration = ?, proc_status = 'working',"
+                    " proc_error = NULL, updated_at = ? WHERE id = ?", (ext, (f.filename or f"lesson.{ext}")[:200], size, size, duration, _now(), lid))
+        if chapters:
+            lines = "\n".join(f"[{_stamp(float(c.get('at') or 0))}] {str(c.get('label') or 'Chapter')[:120]}" for c in chapters)
+            notes = re.sub(r"\n*## Chapters\n(\[[^\n]*\n?)*", "", l.get("notes") or "").rstrip()
+            con.execute("UPDATE cls_lessons SET notes = ? WHERE id = ?", ((notes + "\n\n" if notes else "") + "## Chapters\n" + lines, lid))
+    transcribe = bool(db.get_setting("openai_api_key")) and str(form.get("transcribe") or "1") != "0"
+    with db._conn() as con:
+        con.execute("UPDATE cls_lessons SET tr_status = ? WHERE id = ?", ("working" if transcribe else l.get("tr_status") or "none", lid))
+    asyncio.get_event_loop().create_task(_process(lid, trim, transcribe))
+    return {"ok": True, "size": size, "transcribing": transcribe, "compressing": True}
+
+
+def _compress(src: str, dst: str, trim: tuple, audio_only: bool):
+    """H.264 / AAC MP4 (or AAC M4A for sound), at most 1080p, web-ready (faststart); trimmed when asked."""
+    exe = _ffmpeg()
+    if not exe:
+        raise RuntimeError("ffmpeg isn't available on the server.")
+    cmd = [exe, "-hide_banner", "-y", "-i", src]
+    if trim[0]:
+        cmd += ["-ss", f"{trim[0]:.2f}"]
+    if trim[1]:
+        cmd += ["-to", f"{trim[1]:.2f}"]
+    if audio_only:
+        cmd += ["-vn", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", dst]
+    else:
+        cmd += ["-vf", "scale='min(1920,iw)':-2,fps=30", "-c:v", "libx264", "-preset", "veryfast", "-crf", "26",
+                "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", dst]
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=6 * 3600)
+    if p.returncode != 0 or not os.path.exists(dst):
+        raise RuntimeError("Compression failed: " + (p.stderr.strip().splitlines() or ["?"])[-1][:200])
+
+
+async def _process(lid: int, trim: tuple, transcribe: bool):
+    """After an upload: compress (and trim) the file, keep whichever is smaller unless it was trimmed, then transcribe."""
+    try:
+        with db._conn() as con:
+            l = _row(con, "cls_lessons", lid)
+        src = _video_path(l)
+        audio_only = l["video_ext"] in ("mp3", "m4a", "wav")
+        out_ext = "m4a" if audio_only else "mp4"
+        tmp = os.path.join(_lesson_dir(lid), f"compressed.{out_ext}")
+        await asyncio.to_thread(_compress, src, tmp, trim, audio_only)
+        new_size = os.path.getsize(tmp)
+        if trim[0] or trim[1] or new_size < os.path.getsize(src) or l["video_ext"] not in ("mp4", "m4a"):
+            final = os.path.join(_lesson_dir(lid), f"video.{out_ext}")
+            if os.path.abspath(final) != os.path.abspath(src):
+                os.remove(src)
+            os.replace(tmp, final)
+            duration = await asyncio.to_thread(_duration, final)
+            with db._conn() as con:
+                con.execute("UPDATE cls_lessons SET video_ext = ?, video_size = ?, duration = ?, proc_status = 'done', updated_at = ? WHERE id = ?",
+                            (out_ext, new_size, duration, _now(), lid))
+        else:
+            os.remove(tmp)
+            with db._conn() as con:
+                con.execute("UPDATE cls_lessons SET proc_status = 'done' WHERE id = ?", (lid,))
+    except Exception as e:
+        with db._conn() as con:
+            con.execute("UPDATE cls_lessons SET proc_status = 'failed', proc_error = ? WHERE id = ?", (str(e)[:300], lid))
+    if transcribe:
+        _jobs.pop(lid, None)
         start_transcript(lid)
-        started = True
-    return {"ok": True, "size": size, "transcribing": started}
 
 
 # ---------------------------------------------------------------- transcripts (OpenAI Whisper) and AI guides

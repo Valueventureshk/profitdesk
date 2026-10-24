@@ -18788,7 +18788,7 @@ def research_page():
 
 @app.get("/classroom", response_class=HTMLResponse)
 def classroom_page():
-    return _page("classroom.html", ("classroom.js", "classroom.css", "nav.js", "styles.css", "skin.css", "chat.js"))
+    return _page("classroom.html", ("studio.js", "classroom.js", "classroom.css", "nav.js", "styles.css", "skin.css", "chat.js"))
 
 
 @app.get("/sheets", response_class=HTMLResponse)
