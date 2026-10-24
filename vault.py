@@ -28,7 +28,7 @@ COLUMNS = (
     ("google_auth", "refresh_token"),
     ("fb_pages", "page_token"),
 )
-SETTINGS = ("anthropic_api_key", "openai_api_key", "apify_token", "co_awx", "google_client_secret",
+SETTINGS = ("anthropic_api_key", "openai_api_key", "sheets_google_token", "apify_token", "co_awx", "google_client_secret",
             "kit_link_key", "slack_bot_token", "slack_signing_secret", "social_webhook_token",
             "track17_key", "wa_app_secret", "wa_token", "wa_verify", "world_salt")
 SETTING_PREFIXES = ("px_meta_token:",)

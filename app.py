@@ -68,6 +68,8 @@ import products_desk
 import adcopy
 import paypal_track
 import research
+import classroom
+import sheets
 import research_hunt
 import social
 import bulkmail
@@ -187,6 +189,7 @@ async def lifespan(app):
     asyncio.create_task(research.loop())
     asyncio.create_task(research_hunt.loop())
     asyncio.create_task(social.loop())
+    asyncio.create_task(sheets.loop())
     asyncio.create_task(_arrivals_loop())
     for i in db.list_invoices():                     # AI double-checks cut off by a restart
         if i.get("ai_check") == "pending":
@@ -299,20 +302,22 @@ _DESK_PATHS = {
     "time": ("/time", "/api/time"),
     "paypaltrack": ("/paypal-tracking", "/api/paypal-tracking"),
     "research": ("/research", "/api/research"),
+    "classroom": ("/classroom", "/api/classroom"),
+    "sheets": ("/sheets", "/api/sheets", "/auth/sheets"),
 }
 _DESK_HOME = {"profit": "/", "cash": "/cash", "cog": "/cog", "inbox": "/inbox", "reports": "/reports",
              "expenses": "/expenses", "scm": "/scm", "importer": "/importer",
              "sizecharts": "/sizecharts", "disputes": "/disputes",
              "recordings": "/recordings", "googleads": "/googleads",
              "tracking": "/tracking", "checkout": "/checkout", "tasks": "/tasks", "metaads": "/metaads", "agent": "/agent", "time": "/time",
-             "paypaltrack": "/paypal-tracking", "research": "/research"}
+             "paypaltrack": "/paypal-tracking", "research": "/research", "classroom": "/classroom", "sheets": "/sheets"}
 # Shared by every desk's pages: the user's own details and the dropdown lists.
 _EVERYONE = {"/api/me", "/api/me/password", "/api/logout", "/change-password", "/connect-claude", "/api/mcp/tokens",
              "/api/setup", "/api/chat", "/api/assistant/inbox", "/api/assistant/inbox/read"}
 # What "read & write" people may change (owners may change anything).
-_WRITE_OK = ("/api/googleads/tags", "/api/cog/pdesk", "/api/invoices", "/api/suppliers/payee", "/api/disputes", "/api/cog/sync", "/api/inbox", "/api/expenses", "/api/scm", "/api/importer", "/api/sizecharts", "/api/tasks", "/api/agent/advice", "/api/agent/questions", "/api/research/items", "/api/metaads/launcher/drafts", "/api/metaads/launcher/check", "/api/metaads/bulk/media", "/api/metaads/bulk/check", "/api/metaads/bulk/drafts")
+_WRITE_OK = ("/api/googleads/tags", "/api/cog/pdesk", "/api/invoices", "/api/suppliers/payee", "/api/disputes", "/api/cog/sync", "/api/inbox", "/api/expenses", "/api/scm", "/api/importer", "/api/sizecharts", "/api/tasks", "/api/agent/advice", "/api/agent/questions", "/api/research/items", "/api/metaads/launcher/drafts", "/api/metaads/launcher/check", "/api/metaads/bulk/media", "/api/metaads/bulk/check", "/api/metaads/bulk/drafts", "/api/sheets")
 # What anyone with the desk may do, read-only people included (it changes nothing).
-_ANY_OK = ("/api/reports",)
+_ANY_OK = ("/api/reports", "/api/classroom/progress")
 
 
 def _desk_of(path: str):
@@ -5293,6 +5298,12 @@ async def google_callback(request: Request):
             con.execute("UPDATE mail_accounts SET gmail_token = ?, gmail_email = ?, gmail_at = datetime('now') WHERE id = ?",
                         (token, email, aid))
         return _closer(f"{email} can now send replies from EcomVital. You can close this tab.", ok=True)
+    if state in sheets._states:                      # the Sheets desk signing in to read + edit Sheets
+        try:
+            email = await sheets.finish_signin(state, params.get("code", ""), GOOGLE_REDIRECT)
+        except gads.GoogleAdsError as e:
+            return _closer(str(e))
+        return _closer(f"Sheets connected as {email}. You can close this tab and refresh the Sheets desk.", ok=True)
     if state not in _google_states:
         return _closer("That sign-in link had expired. Start the connection again.")
     _google_states.discard(state)
@@ -10628,6 +10639,12 @@ async def _assist_tool(name: str, args: dict, user: dict):
                 "rows": [_round({**a, "orders": len(a["orders"])}) for a in out[:lim]],
                 "note": "Sales are the order lines' value after discounts, in each store's currency; cost is COG in USD. "
                         "Covers orders already costed (synced every 5 minutes)."}
+    if name == "sheets":
+        _need(user, "sheets")
+        return sheets.tool(args)
+    if name == "classroom":
+        _need(user, "classroom")
+        return {"lessons": classroom.search(str(args.get("q") or ""))}
     if name == "facebook_comments":
         _need(user, "inbox")
         return social.hidden_for_chat(int(args.get("days") or 7), int(args.get("store") or 0))
@@ -18755,6 +18772,8 @@ app.include_router(research.router)        # Apps → Research
 app.include_router(research_hunt.router)   # Research → Find competitors
 app.include_router(world.router)           # EcomVital World (Tracking desk's access)
 app.include_router(social.router)          # Inbox → Comments & Messages (Facebook)
+app.include_router(classroom.router)       # Apps → Classroom (training)
+app.include_router(sheets.router)          # Apps → Sheets (Google Sheets backups)
 
 
 @app.get("/world", response_class=HTMLResponse)
@@ -18765,6 +18784,25 @@ def world_page():
 @app.get("/research", response_class=HTMLResponse)
 def research_page():
     return _page("research.html", ("research.js", "research.css", "nav.js", "styles.css", "skin.css", "chat.js"))
+
+
+@app.get("/classroom", response_class=HTMLResponse)
+def classroom_page():
+    return _page("classroom.html", ("classroom.js", "classroom.css", "nav.js", "styles.css", "skin.css", "chat.js"))
+
+
+@app.get("/sheets", response_class=HTMLResponse)
+def sheets_page():
+    return _page("sheets.html", ("sheets.js", "sheets.css", "nav.js", "styles.css", "skin.css", "chat.js"))
+
+
+@app.get("/auth/sheets/start")
+def sheets_signin(request: Request):
+    """Google sign-in for the Sheets desk (read + edit), back through the shared Google callback."""
+    try:
+        return RedirectResponse(sheets.start_signin(request, GOOGLE_REDIRECT))
+    except HTTPException as e:
+        return _closer(str(e.detail))
 
 
 @app.get("/paypal-tracking", response_class=HTMLResponse)

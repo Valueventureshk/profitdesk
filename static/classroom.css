@@ -1,0 +1,97 @@
+/* Classroom (classroom.js): course grid like Skool, lesson player + tabs. App tokens only. */
+.cl-bar { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; margin-bottom: 6px; }
+.cl-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.cl-chips button { font: inherit; font-size: 13px; font-weight: 600; border: 1px solid var(--line); background: var(--panel); color: var(--muted); border-radius: 999px; padding: 6px 12px; cursor: pointer; }
+.cl-chips button.on { background: var(--ink); color: var(--panel); border-color: var(--ink); }
+.cl-search { width: 240px; max-width: 100%; }
+.cl-sec { font-size: 15px; margin: 18px 0 10px; }
+.cl-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 16px; }
+.cl-card { text-align: left; font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 14px; overflow: hidden;
+  padding: 0; cursor: pointer; box-shadow: var(--shadow); display: flex; flex-direction: column; transition: transform .12s, box-shadow .12s; }
+.cl-card:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(15, 23, 42, .12); }
+.cl-cover { position: relative; aspect-ratio: 16 / 9; background: #0b0d10; overflow: hidden; max-width: 100%; }
+.cl-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.cl-cover-text { position: absolute; inset: 0; display: grid; place-items: center; padding: 16px; text-align: center;
+  background: radial-gradient(circle at 30% 20%, #26313f, #0b0d10 70%); }
+.cl-cover-text span { color: #fff; font-weight: 700; font-size: 19px; line-height: 1.25; text-wrap: balance; }
+.cl-cover.small { width: 160px; border-radius: 8px; }
+.cl-cover.small .cl-cover-text span { font-size: 12px; }
+.cl-draft { position: absolute; top: 8px; left: 8px; background: #f59e0b; color: #111; font-size: 11px; font-weight: 700; border-radius: 999px; padding: 2px 8px; }
+.cl-card-body { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 6px; flex: 1; }
+.cl-card-body strong { font-size: 15.5px; }
+.cl-card-body p { margin: 0; color: var(--muted); font-size: 13.5px; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; min-height: 2.9em; }
+.cl-prog { height: 8px; border-radius: 999px; background: var(--line-soft); overflow: hidden; }
+.cl-prog i { display: block; height: 100%; background: var(--up); border-radius: 999px; }
+.cl-pct { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.cl-empty { padding: 22px; }
+.cl-empty p { color: var(--muted); }
+
+.cl-back { display: inline-block; margin: 2px 0 12px; color: var(--muted); text-decoration: none; font-weight: 600; }
+.cl-course { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 16px; align-items: start; }
+.cl-side { padding: 0; position: sticky; top: 12px; max-height: calc(100vh - 24px); overflow: auto; }
+.cl-side-head { padding: 14px; border-bottom: 1px solid var(--line-soft); display: grid; gap: 6px; }
+.cl-side-acts { display: flex; gap: 6px; margin-top: 4px; }
+.cl-lessons { list-style: none; margin: 0; padding: 6px; }
+.cl-lessons li { display: flex; gap: 10px; align-items: flex-start; padding: 9px 8px; border-radius: 10px; cursor: pointer; }
+.cl-lessons li:hover { background: var(--line-soft); }
+.cl-lessons li.on { background: var(--line-soft); outline: 1px solid var(--line); }
+.cl-tick { flex: 0 0 24px; height: 24px; border-radius: 50%; border: 1px solid var(--line); display: grid; place-items: center; font-size: 11.5px; font-weight: 650; color: var(--muted); }
+.cl-tick.done { background: var(--up); border-color: var(--up); color: #fff; }
+.cl-ltitle { flex: 1; min-width: 0; font-size: 13.5px; font-weight: 550; }
+.cl-ltitle small { display: block; color: var(--faint); font-weight: 400; font-size: 11.5px; margin-top: 2px; }
+.cl-move { display: flex; flex-direction: column; gap: 2px; }
+.cl-move button { font-size: 9px; line-height: 1; padding: 2px 4px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); color: var(--muted); cursor: pointer; }
+.cl-move button:disabled { opacity: .3; cursor: default; }
+
+.cl-main { min-width: 0; display: grid; gap: 12px; }
+.cl-player { background: #000; border-radius: 14px; overflow: hidden; }
+.cl-player video { width: 100%; max-height: 72vh; display: block; background: #000; }
+.cl-player audio { width: 100%; display: block; padding: 18px; box-sizing: border-box; background: var(--panel); }
+.cl-embed { position: relative; aspect-ratio: 16 / 9; max-width: 100%; }
+.cl-embed iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+.cl-novideo { aspect-ratio: 16 / 9; max-width: 100%; display: grid; place-items: center; color: #cbd5e1; text-align: center; padding: 20px; font-size: 14px; }
+.cl-novideo a { color: #fff; font-weight: 650; }
+.cl-lhead { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
+.cl-lhead h2 { margin: 0 0 2px; font-size: 19px; text-wrap: balance; }
+.cl-lacts { display: flex; gap: 8px; }
+.cl-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); }
+.cl-tabs button { font: inherit; font-weight: 600; border: 0; background: none; color: var(--muted); padding: 9px 12px; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.cl-tabs button.on { color: var(--ink); border-bottom-color: var(--ink); }
+.cl-tabacts { display: flex; gap: 6px; flex-wrap: wrap; }
+.cl-tabbody { padding: 16px 18px; }
+.cl-text { font-size: 14px; line-height: 1.65; max-width: 80ch; }
+.cl-text h3 { font-size: 15px; margin: 14px 0 4px; }
+.cl-text h4 { font-size: 14px; margin: 10px 0 2px; }
+.cl-tr { font-size: 13.5px; color: var(--ink); max-height: 60vh; overflow: auto; }
+.cl-ts { color: var(--sales); text-decoration: none; font-variant-numeric: tabular-nums; }
+.cl-bad { color: var(--down); }
+
+.cl-modal { position: fixed; inset: 0; z-index: 80; background: rgba(15, 23, 42, .45); display: grid; place-items: center; padding: 16px; }
+.cl-modal[hidden] { display: none; }
+.cl-box { background: var(--panel); color: var(--ink); border-radius: 16px; width: min(640px, 100%); max-height: 92vh; overflow: auto; padding: 18px 20px; box-shadow: 0 20px 60px rgba(0, 0, 0, .25); }
+.cl-box h3 { margin: 0 0 12px; font-size: 17px; }
+.cl-box .field { display: grid; gap: 5px; margin-bottom: 12px; font-size: 13px; color: var(--muted); }
+.cl-box .field .control, .cl-box textarea.control { width: 100%; }
+.cl-big { min-height: 50vh; font-size: 13px; line-height: 1.5; }
+.cl-check { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; font-size: 13.5px; }
+.cl-acts { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.cl-danger { color: var(--down); margin-left: auto; }
+.cl-rec { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.cl-rec .control { flex: 1; min-width: 160px; }
+.cl-coverrow { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.cl-upbar { position: relative; height: 22px; border-radius: 6px; background: var(--line-soft); overflow: hidden; }
+.cl-upbar i { position: absolute; inset: 0 auto 0 0; width: 0; background: var(--sales); opacity: .35; }
+.cl-upbar span { position: relative; font-size: 12px; padding: 0 8px; line-height: 22px; color: var(--ink); }
+.cl-seclist { list-style: none; padding: 0; margin: 0 0 12px; display: grid; gap: 6px; }
+.cl-seclist li { display: flex; gap: 6px; align-items: center; }
+.cl-seclist .control { flex: 1; }
+.cl-recbar { position: fixed; z-index: 90; left: 50%; bottom: calc(18px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); display: flex; gap: 10px; align-items: center;
+  background: #111827; color: #fff; border-radius: 999px; padding: 8px 10px 8px 16px; box-shadow: 0 10px 30px rgba(0, 0, 0, .3); }
+.cl-dot { width: 10px; height: 10px; border-radius: 50%; background: #ef4444; animation: clblink 1s infinite; }
+@keyframes clblink { 50% { opacity: .3; } }
+#recTime { font-variant-numeric: tabular-nums; }
+
+@media (max-width: 900px) {
+  .cl-course { grid-template-columns: 1fr; }
+  .cl-side { position: static; max-height: none; }
+}

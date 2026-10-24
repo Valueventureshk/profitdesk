@@ -10,3 +10,4 @@ Pillow>=10.4
 pillow-heif>=0.18
 openpyxl>=3.1
 cryptography>=43
+imageio-ffmpeg>=0.5

@@ -185,6 +185,18 @@ TOOLS += [
           "waiting, review, closed), deadline, amount, reason, customer, store and order.",
           {"state": {"type": ["string", "null"], "description": "open (default), respond, waiting, review, closed or all"}},
           ["state"]),
+    _tool("sheets", "The Sheets desk: the team's Google Sheets that EcomVital backs up every 15 minutes. With no sheet: the list of "
+          "Sheets with what the AI learned about each and their tabs. With a sheet (id or part of its title): rows of one tab "
+          "from the latest backup (header first), optionally only rows containing words.",
+          {"sheet": {"type": ["string", "null"], "description": "Sheet id or part of its title; null lists the Sheets"},
+           "tab": {"type": ["string", "null"], "description": "tab name (null = the first tab)"},
+           "contains": {"type": ["string", "null"], "description": "only rows containing all these words"},
+           "limit": {"type": ["integer", "null"], "description": "max rows (default 50, max 200; without words the LAST rows)"}},
+          ["sheet", "tab", "contains", "limit"]),
+    _tool("classroom", "The Classroom desk (the team's recorded training): lessons matching the words, each with its written "
+          "step-by-step guide / notes, a transcript excerpt and a link (/classroom?lesson=<id>). Use it for how-to questions "
+          "about the team's own processes (store building, CS, fulfilment, SCM …).",
+          {"q": {"type": ["string", "null"], "description": "what to look for"}}, ["q"]),
     _tool("facebook_comments", "Inbox → Comments & Messages (Facebook Pages): comments needing a reply, open Messenger chats, and "
           "the comments hidden in the last N days with who hid them (auto = the hide-words list, with the word) and when.",
           {"days": {"type": ["integer", "null"], "description": "hidden in the last N days (default 7)"},
@@ -313,6 +325,8 @@ Desks (pages) and what they hold:
 - Inbox: the stores' support mailboxes turned into tickets (SCM = shipping, CS = customer service), AI drafts.
 - SCM: every order's parcels with 17TRACK tracking (status, carrier, fulfilled/delivered dates, transit days), notes, flags; customer tracking page.
 - Disputes: PayPal cases and Airwallex chargebacks, deadlines, evidence, AI replies.
+- Classroom: the team's recorded training (courses by section, lessons with video, transcript, step-by-step guide); tool classroom.
+- Sheets: the team's Google Sheets backed up every 15 minutes with history and a daily log; tool sheets reads them.
 - Apps → Tracking: our own pixel in each store (visits, adds to cart, checkouts, purchases per ad); sends purchases to Google Ads (Data Manager).
 - Apps → Google Ads: product report vs Shopify sales/COG, verdicts, and a Manage tab (AI plans + rules, every change confirmed, undo).
 - Apps → Checkout: our own Airwallex payment page with subscriptions (Amber Ashton refill first).
